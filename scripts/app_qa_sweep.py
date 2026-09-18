@@ -1489,22 +1489,75 @@ def check_trim_capture() -> None:
     predicted vs used delta) that System B does not record at all. Those keys
     must be ABSENT on System B rather than present-and-empty, so a consumer
     can tell "this machine does not record it" from "it recorded nothing".
+
+    EVERY number below is PINNED, not floored. The first version of this
+    section asked only "is it non-empty?" and a review broke real code three
+    separate ways without turning a single check red:
+
+    - Pointing every `_A_PER_POINT` index at column 999 made all seven
+      captured columns come back as `[None] * n` — `read_pass` sets the keys
+      unconditionally and `_aligned` pads a missing column — and a
+      key-presence test still printed PASS. So the columns are now checked
+      for LENGTH (aligned to positions) and SUBSTANCE (a real number in
+      there), not for the key existing.
+    - Truncating `pass_sheets` to its first sheet dropped 2 of 3 passes on
+      the LTS files — the exact failure mode of the per-sheet `except:
+      continue` in the parser, and the bug class fixed in 1c70a0a — and
+      "passes read from every fixture" passed, because it only ever caught a
+      file with ZERO passes. Counts are pinned per file now.
+    - That same truncation slid the blank-limit total from 254 to 92 without
+      tripping a `>= 4 * len(fixtures)` floor. Blanks are pinned per file.
+
+    Pinned values go stale if a fixture is ever replaced; that is the point.
+    A fixture change should require saying so here, in the same commit.
     """
     from laser_trim_analyzer.core.models import SystemType  # noqa: E402
     from laser_trim_analyzer.core.parser import ExcelParser  # noqa: E402
 
     A_PER_POINT = ("trim_target", "initial_trim_value", "final_trim_value",
                    "pred_deltas", "used_deltas", "cut_lengths", "trim_currents")
+    # The sweep columns every pass carries, on every system.
+    CORE = ("positions", "errors", "upper_limits", "lower_limits")
+
+    # Observed on the four tracked fixtures and pinned. "blanks" counts None
+    # cells across upper_limits + lower_limits — the ignored points whose
+    # limits must stay blank rather than become 0.0.
+    EXPECTED = {
+        "dlts_8232-1_242.xls": {"tracks": ["TRK1"], "passes": 2,
+                                "setup_keys": 46, "blanks": 44},
+        "dlts_8232-1_243.xls": {"tracks": ["TRK1"], "passes": 3,
+                                "setup_keys": 46, "blanks": 66},
+        "lts_8232-1_193.xls": {"tracks": ["default"], "passes": 3,
+                               "setup_keys": 70, "blanks": 72},
+        "lts_8232-1_194.xls": {"tracks": ["default"], "passes": 3,
+                               "setup_keys": 70, "blanks": 72},
+    }
 
     fixtures = sorted((REPO / "tests" / "fixtures" / "trim").glob("*.xls"))
+    # A missing fixture is a FAIL, never a skip. These files are TRACKED, so
+    # absence means a broken checkout, not an optional extra — and the old
+    # `warn(); return` quietly removed seven checks from the sweep total while
+    # the run still reported zero failures.
+    present = {f.name for f in fixtures}
+    check("trim capture: every tracked fixture is present",
+          present == set(EXPECTED),
+          f"missing={sorted(set(EXPECTED) - present)} "
+          f"unexpected={sorted(present - set(EXPECTED))}")
     if not fixtures:
-        warn("trim capture: fixtures present", "tests/fixtures/trim is empty")
         return
 
     parser = ExcelParser()
-    no_setup, no_passes, zero_limits, blanks_seen = [], [], [], 0
-    a_missing, b_leaked, parsed_ok = [], [], 0
+    parsed_ok = 0
+    blanks_seen = 0
+    wrong_passes, wrong_tracks, wrong_setup, wrong_blanks = [], [], [], []
+    zero_limits, bad_core, a_bad, b_leaked = [], [], [], []
+
     for f in fixtures:
+        want = EXPECTED.get(f.name)
+        if want is None:
+            check(f"trim capture: {f.name} is a pinned fixture", False,
+                  "not in EXPECTED; add it with its observed counts")
+            continue
         try:
             parsed = parser.parse_file(f)
         except Exception as exc:
@@ -1514,49 +1567,112 @@ def check_trim_capture() -> None:
                   f"{type(exc).__name__}: {exc}")
             continue
         parsed_ok += 1
-        if not parsed.get("trim_setup"):
-            no_setup.append(f.name)
+
+        setup = parsed.get("trim_setup") or {}
+        if len(setup) != want["setup_keys"]:
+            # Not a truthiness test: the parser discards a candidate layout
+            # under 3 keys, so "truthy" only ever proved 3 of the 46/70 keys
+            # these files carry.
+            wrong_setup.append(
+                f"{f.name}: {len(setup)} setup keys, expected {want['setup_keys']}")
+
         system = getattr(parsed.get("metadata"), "system", None)
-        file_passes = 0
-        for track in parsed.get("tracks") or []:
+        tracks = parsed.get("tracks") or []
+        got_tracks = [t.get("track_id") for t in tracks]
+        if got_tracks != want["tracks"]:
+            wrong_tracks.append(f"{f.name}: {got_tracks} != {want['tracks']}")
+
+        file_passes = file_blanks = 0
+        for track in tracks:
             passes = track.get("trim_passes") or []
             file_passes += len(passes)
             for p in passes:
                 where = f"{f.name} {track.get('track_id')} pass {p.get('pass_index')}"
+                n = len(p.get("positions") or [])
                 for side in ("upper_limits", "lower_limits"):
                     vals = p.get(side) or []
-                    blanks_seen += sum(1 for v in vals if v is None)
+                    file_blanks += sum(1 for v in vals if v is None)
                     if any(v == 0.0 for v in vals if v is not None):
                         zero_limits.append(f"{where} {side}")
-                present = [k for k in A_PER_POINT if k in p]
-                if system == SystemType.A and len(present) != len(A_PER_POINT):
-                    a_missing.append(
-                        f"{where}: {sorted(set(A_PER_POINT) - set(present))}")
-                if system != SystemType.A and present:
-                    b_leaked.append(f"{where}: {present}")
-        if not file_passes:
-            no_passes.append(f.name)
+                # Substance, both systems: a column that came back all-None
+                # (wrong index, off the end of the sheet) or out of step with
+                # positions is data loss, and key presence cannot see either.
+                for key in CORE:
+                    bad = _column_defect(p, key, n)
+                    if bad:
+                        bad_core.append(f"{where} {bad}")
+                if system == SystemType.A:
+                    for key in A_PER_POINT:
+                        bad = _column_defect(p, key, n)
+                        if bad:
+                            a_bad.append(f"{where} {bad}")
+                else:
+                    leaked = [k for k in A_PER_POINT if k in p]
+                    if leaked:
+                        b_leaked.append(f"{where}: {leaked}")
 
-    check("trim capture: every fixture parses", parsed_ok == len(fixtures),
-          f"{parsed_ok} of {len(fixtures)}")
-    check("trim capture: passes read from every fixture", not no_passes,
-          "; ".join(no_passes) if no_passes
-          else f"all {len(fixtures)} files yielded passes")
-    check("trim capture: setup read from every fixture", not no_setup,
-          "; ".join(no_setup) if no_setup else f"all {len(fixtures)} files")
-    # Vacuity guard for the check below: without real blanks in the fixtures,
-    # "no 0.0 found" would be true of code that turns every blank into 0.0.
-    check("trim capture: the fixtures really do carry blank limits",
-          blanks_seen >= 4 * len(fixtures), f"{blanks_seen} blank limit cells")
+        if file_passes != want["passes"]:
+            wrong_passes.append(
+                f"{f.name}: {file_passes} passes, expected {want['passes']}")
+        if file_blanks != want["blanks"]:
+            wrong_blanks.append(
+                f"{f.name}: {file_blanks} blank limits, expected {want['blanks']}")
+        blanks_seen += file_blanks
+
+    check("trim capture: every fixture parses", parsed_ok == len(EXPECTED),
+          f"{parsed_ok} of {len(EXPECTED)}")
+    check("trim capture: every fixture yields the passes it is known to hold",
+          not wrong_passes, "; ".join(wrong_passes) if wrong_passes
+          else f"{sum(v['passes'] for v in EXPECTED.values())} passes, "
+               f"per-file counts as pinned")
+    check("trim capture: every fixture yields the tracks it is known to hold",
+          not wrong_tracks, "; ".join(wrong_tracks) if wrong_tracks
+          else f"{sum(len(v['tracks']) for v in EXPECTED.values())} tracks, as pinned")
+    check("trim capture: every fixture yields the setup keys it is known to hold",
+          not wrong_setup, "; ".join(wrong_setup) if wrong_setup
+          else "46/46/70/70 keys, as pinned")
+    # Vacuity guard for the check below, now PINNED rather than floored:
+    # without real blanks in the fixtures, "no 0.0 found" would be true of
+    # code that turns every blank into 0.0.
+    check("trim capture: the fixtures carry exactly the blank limits they are "
+          "known to carry", not wrong_blanks,
+          "; ".join(wrong_blanks) if wrong_blanks
+          else f"{blanks_seen} blank limit cells, per-file counts as pinned")
     check("trim capture: a blank limit never becomes 0.0", not zero_limits,
           "; ".join(zero_limits[:3]) if zero_limits
           else f"0 zero-valued limits across {blanks_seen} blanks")
+    check("trim capture: every sweep column is aligned to positions and "
+          "carries real numbers", not bad_core,
+          "; ".join(bad_core[:3]) if bad_core
+          else f"{len(CORE)} columns on every pass of every fixture")
     check("trim capture: System A keeps its per-point process columns",
-          not a_missing, "; ".join(a_missing[:3]) if a_missing
-          else f"all {len(A_PER_POINT)} columns on every System A pass")
+          not a_bad, "; ".join(a_bad[:3]) if a_bad
+          else f"all {len(A_PER_POINT)} columns present, aligned and populated "
+               f"on every System A pass")
     check("trim capture: System B does not fake the columns it lacks",
           not b_leaked, "; ".join(b_leaked[:3]) if b_leaked
           else "absent, not empty, on every non-System-A pass")
+
+
+def _column_defect(p: dict, key: str, n: int):
+    """Why `p[key]` is not a usable column of length `n`, or None if it is.
+
+    Key presence proves nothing here. `read_pass` sets every System A
+    per-point key unconditionally and `_aligned` pads a column it could not
+    find with None, so a wrong column index yields a full-length list of
+    nothing — present, correctly sized, and empty of data.
+    """
+    if key not in p:
+        return f"{key}: absent"
+    col = p.get(key)
+    if col is None:
+        return f"{key}: None"
+    if len(col) != n:
+        return f"{key}: {len(col)} values, positions has {n}"
+    if not any(isinstance(v, (int, float)) and not isinstance(v, bool)
+               for v in col):
+        return f"{key}: {len(col)} values, every one of them None"
+    return None
 
 
 def check_ingest_group() -> None:
@@ -2923,10 +3039,25 @@ STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == "--only":
-        name = sys.argv[2]
+    # `--only` is found ANYWHERE in argv, not just at position 1. It used to be
+    # tested as `sys.argv[1] == "--only"`, and `main()` never parsed `--only`
+    # at all, so the form this file's own docstrings and briefs use --
+    #     app_qa_sweep.py /tmp/qa_copy.db --only ingest
+    # -- silently ran the FULL sweep instead of the named section: twenty
+    # quiet minutes instead of the twenty seconds that were asked for.
+    if "--only" in sys.argv:
+        i = sys.argv.index("--only")
+        name = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
         if name not in STANDALONE:
             raise SystemExit(f"unknown section {name!r}; have: {', '.join(STANDALONE)}")
+        # Standalone sections build their own throwaway databases and never
+        # open a path from argv, but the production file is refused by name
+        # here too: the refusal must not depend on which branch was taken.
+        for arg in sys.argv[1:]:
+            if not arg.startswith("--") and arg != name \
+                    and Path(arg).name.startswith("analysis.db") \
+                    and Path(arg).resolve() == (REPO / "data" / "analysis.db").resolve():
+                raise SystemExit(f"FATAL | {arg} is the PRODUCTION database")
         STANDALONE[name]()
         raise SystemExit(_tally())
     raise SystemExit(main())

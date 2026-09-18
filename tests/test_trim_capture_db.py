@@ -124,3 +124,101 @@ def test_write_trim_passes_tolerates_duplicate_pass_index(tmp_path, monkeypatch)
             sa.text("SELECT pass_index FROM trim_passes ORDER BY pass_index"))]
     assert n == 2, f"expected the colliding pass to be dropped, got {n} rows"
     assert indices == sorted(set(indices)), "no duplicate pass_index made it to storage"
+
+
+def _two_track_result(proc, src="tests/fixtures/trim/dlts_8232-1_243.xls"):
+    """A real analysed result, widened to two tracks with distinguishable passes.
+
+    All four trim fixtures are single-track, so nothing in the suite exercised
+    the zip in `save_analysis`. Rather than wait for a real TRK1+TRK2 workbook
+    to fixture, clone the real track and label the copy, which is enough to
+    prove the PAIRING -- the thing that would fail silently.
+    """
+    import copy
+    result = proc.process_file(Path(src))
+    assert len(result.tracks) == 1, "fixture is expected to be single-track"
+    first = result.tracks[0]
+    second = copy.deepcopy(first)
+    second.track_id = "TRK2"
+    # Stamp every pass so a mispairing is visible in the stored rows rather
+    # than hidden behind identical payloads.
+    for p in second.trim_passes:
+        p["sheet"] = f"SEC1 TRK2 {p.get('pass_index')}"
+    for p in first.trim_passes:
+        p["sheet"] = f"SEC1 TRK1 {p.get('pass_index')}"
+    result.tracks.append(second)
+    result.metadata.has_multi_tracks = True
+    return result
+
+
+def test_passes_land_on_the_right_track_in_a_multi_track_save(tmp_path, monkeypatch):
+    """The riskiest line Tasks 1-8 added, and the one nothing covered.
+
+    `save_analysis` writes pass rows INSIDE the analysis transaction, pairing
+    parser tracks with freshly-flushed DB rows by `zip(analysis.tracks,
+    db_analysis.tracks)`. Two things can go wrong there and neither raises:
+    a mispairing files TRK2's cuts under TRK1, and a length mismatch makes
+    zip stop early, dropping the tail track's passes entirely. Every trim
+    fixture is single-track, so `zip` of one against one could not express
+    either bug and the whole path read green.
+    """
+    from laser_trim_analyzer.database import manager as mgr
+    from laser_trim_analyzer.core.processor import Processor
+
+    db = mgr.DatabaseManager(tmp_path / "t.db")
+    monkeypatch.setattr(mgr, "_db_manager", db, raising=False)
+    import laser_trim_analyzer.database as dbpkg
+    monkeypatch.setattr(dbpkg, "_db_manager", db, raising=False)
+
+    proc = Processor(use_ml=False)
+    result = _two_track_result(proc)
+    n_passes = sum(len(t.trim_passes) for t in result.tracks)
+    db.save_analysis(result)
+
+    with db.session() as s:
+        rows = s.execute(sa.text(
+            "SELECT t.track_id, p.pass_index, p.sheet FROM trim_passes p "
+            "JOIN track_results t ON t.id = p.track_result_id "
+            "ORDER BY t.track_id, p.pass_index")).all()
+        track_ids = [r[0] for r in s.execute(sa.text(
+            "SELECT track_id FROM track_results ORDER BY track_id"))]
+
+    # 1. Both tracks were stored -- zip's inputs really were the same length.
+    assert track_ids == ["TRK1", "TRK2"], track_ids
+    # 2. Nothing was truncated: every pass of every track has a row.
+    assert len(rows) == n_passes, (
+        f"{len(rows)} pass rows stored, {n_passes} passes in the result -- "
+        f"zip(analysis.tracks, db_analysis.tracks) dropped data")
+    # 3. And each row is filed under the track it actually came from. This is
+    #    the assertion a mispairing fails; the counts above would still pass.
+    misfiled = [r for r in rows if r[0] not in r[2]]
+    assert not misfiled, f"passes filed under the wrong track: {misfiled}"
+    # 4. Both tracks carry a full set, not one track holding everything.
+    per_track = {}
+    for tid, idx, _sheet in rows:
+        per_track.setdefault(tid, []).append(idx)
+    assert per_track["TRK1"] == per_track["TRK2"] == [1, 2, 3], per_track
+
+
+def test_every_parser_track_gets_a_db_track_row(tmp_path, monkeypatch):
+    """The precondition `zip` in save_analysis silently depends on.
+
+    zip stops at the shorter input, so if `_map_analysis_to_db` ever dropped
+    or reordered a track, the tail track's passes would vanish with no error
+    and no log line. Mapping is 1:1 today -- this pins that, so a future
+    change to the mapping breaks here rather than in the data.
+    """
+    from laser_trim_analyzer.database import manager as mgr
+    from laser_trim_analyzer.core.processor import Processor
+
+    db = mgr.DatabaseManager(tmp_path / "t.db")
+    monkeypatch.setattr(mgr, "_db_manager", db, raising=False)
+    proc = Processor(use_ml=False)
+    result = _two_track_result(proc)
+
+    db_analysis = db._map_analysis_to_db(result)
+    assert len(db_analysis.tracks) == len(result.tracks), (
+        f"{len(result.tracks)} parser tracks mapped to "
+        f"{len(db_analysis.tracks)} DB tracks; zip would truncate")
+    assert [t.track_id for t in db_analysis.tracks] == \
+           [t.track_id for t in result.tracks], "mapping reordered the tracks"

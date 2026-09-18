@@ -52,15 +52,23 @@ PRE_EXISTING = [
 ]
 
 
-@pytest.mark.skipif(not FIXTURES, reason="trim fixtures absent")
 def test_no_pre_existing_field_changed():
     """Compares against a baseline captured from the pre-capture tree.
 
     Regenerate ONLY from a commit before this work — see the module docstring.
     A failure here is a real regression. Never regenerate to make it green.
+
+    Neither missing fixtures nor a missing baseline is a skip. Both artifacts
+    are TRACKED, so absence means a broken checkout, and this is the one test
+    whose entire value IS the artifact: skipping it turns the proof into a
+    green line that proves nothing.
     """
-    if not BASELINE.exists():
-        pytest.skip("baseline not captured; see the module docstring")
+    assert FIXTURES, (
+        f"tests/fixtures/trim holds no .xls files; they are tracked, so this "
+        f"is a broken checkout, not an optional extra")
+    assert BASELINE.exists(), (
+        f"{BASELINE.name} is missing. It is tracked. Regenerate it ONLY from "
+        f"the pre-capture tree — see the module docstring — never from HEAD.")
     expected = json.loads(BASELINE.read_text())
     actual = _normalise(_dump())
     # Weak-assertion trap: an empty dump must never read green. If the dump
@@ -72,9 +80,24 @@ def test_no_pre_existing_field_changed():
     diffs = []
     for name, fields in expected.items():
         for key in PRE_EXISTING:
-            if fields.get(key) != actual[name].get(key):
+            if not _same(fields.get(key), actual[name].get(key)):
                 diffs.append(f"{name}.{key}: {fields.get(key)!r} -> {actual[name].get(key)!r}")
     assert not diffs, "capture changed pre-existing values:\n" + "\n".join(diffs[:20])
+
+
+def _same(a, b):
+    """Equality that treats NaN as equal to NaN.
+
+    `nan != nan`, so a plain `!=` would report a permanent, unfixable diff on
+    any column that legitimately stores NaN — and these exact 8232-1 files are
+    the ones that produce it: `max()` returns NaN when element 0 is NaN, and
+    they open with an unmeasured lead-in. A baseline NaN compared against the
+    identical NaN must read "unchanged", because it IS unchanged.
+    """
+    if isinstance(a, float) and isinstance(b, float):
+        if a != a and b != b:       # both NaN
+            return True
+    return a == b
 
 
 def _normalise(dump):
@@ -111,47 +134,89 @@ def _dump():
     import laser_trim_analyzer.database as dbpkg
 
     out = {}
+    # Both globals are RESTORED afterwards, the same saved/finally idiom the
+    # sweep uses. Leaving them pointing at a deleted tmp database is how the
+    # next thing in the process ends up constructing a fresh manager at the
+    # config default — the production path — which is the exact hazard the
+    # injection exists to prevent. `dbpkg._db_manager` is restored by nobody
+    # else, since nothing but this file sets it.
+    saved_mgr = getattr(mgr, "_db_manager", None)
+    saved_pkg = getattr(dbpkg, "_db_manager", None)
     with tempfile.TemporaryDirectory() as d:
         db_path = Path(d) / "noop.db"
         db = mgr.DatabaseManager(db_path)
-        # BOTH globals. `get_database()` ignores a manager handed in elsewhere
-        # and, when its global is unset, CONSTRUCTS one at the config default
-        # — which in a normal checkout is the production work database, opened
-        # read-write. That has been hit three times in this project.
-        mgr._db_manager = db
-        dbpkg._db_manager = db
-        # A bare Config(), not get_config(): get_config() reads config.yaml
-        # from the app directory, which differs between the extracted
-        # pre-capture tree and this one. Dataclass defaults are identical in
-        # both (config.py is untouched by the capture work), so this makes the
-        # two runs differ ONLY in the code being proved.
-        cfg = Config()
-        cfg.database.path = db_path
-        proc = Processor(config=cfg, use_ml=False)
-        for f in FIXTURES:
-            result = proc.process_file(f, generate_plots=False)
-            assert result is not None, f"pipeline returned nothing for {f.name}"
-            db.save_analysis(result)
-        import sqlalchemy as sa
-        with db.session() as s:
-            cols = ", ".join(f"t.{c}" for c in PRE_EXISTING)
-            for row in s.execute(sa.text(
-                    f"SELECT a.filename, {cols} FROM track_results t "
-                    "JOIN analysis_results a ON a.id = t.analysis_id")):
-                out[f"{row[0]}::{row[1]}"] = dict(zip(PRE_EXISTING, row[1:]))
-        db.close()
+        try:
+            # BOTH globals. `get_database()` ignores a manager handed in
+            # elsewhere and, when its global is unset, CONSTRUCTS one at the
+            # config default — which in a normal checkout is the production
+            # work database, opened read-write. Hit three times in this project.
+            mgr._db_manager = db
+            dbpkg._db_manager = db
+            # A bare Config(), not get_config(): get_config() reads config.yaml
+            # from the app directory, which differs between the extracted
+            # pre-capture tree and this one. Dataclass defaults are identical in
+            # both (config.py is untouched by the capture work), so this makes
+            # the two runs differ ONLY in the code being proved.
+            cfg = Config()
+            cfg.database.path = db_path
+            proc = Processor(config=cfg, use_ml=False)
+            for f in FIXTURES:
+                result = proc.process_file(f, generate_plots=False)
+                assert result is not None, f"pipeline returned nothing for {f.name}"
+                db.save_analysis(result)
+            import sqlalchemy as sa
+            with db.session() as s:
+                cols = ", ".join(f"t.{c}" for c in PRE_EXISTING)
+                for row in s.execute(sa.text(
+                        f"SELECT a.filename, {cols} FROM track_results t "
+                        "JOIN analysis_results a ON a.id = t.analysis_id")):
+                    out[f"{row[0]}::{row[1]}"] = dict(zip(PRE_EXISTING, row[1:]))
+        finally:
+            mgr._db_manager = saved_mgr
+            dbpkg._db_manager = saved_pkg
+            db.close()
     return out
+
+
+USAGE = (
+    "usage: python tests/test_trim_capture_noop.py --write-baseline "
+    "--root /tmp/precap\n"
+    "  mkdir -p /tmp/precap && git archive adcc1ce | tar -x -C /tmp/precap\n"
+    "--root is REQUIRED and must NOT be this repo: a baseline taken from the\n"
+    "tree it is meant to be compared against proves nothing, and reads green\n"
+    "forever after."
+)
 
 
 if __name__ == "__main__":
     if "--write-baseline" in sys.argv:
-        root = REPO
-        if "--root" in sys.argv:
+        # `--root` is mandatory, and defaulting it to REPO was the whole hole:
+        # dropping the flag — the brief's own Step 2 command minus one
+        # argument — used to write a self-referential baseline that passed the
+        # provenance check, passed the test, and proved nothing. The likelier
+        # operator error by far, since this file's own rule is "never
+        # regenerate the baseline to make it green" and the bare command is
+        # the obvious thing to reach for.
+        if "--root" not in sys.argv:
+            raise SystemExit("ABORT: --root is required.\n" + USAGE)
+        try:
             root = Path(sys.argv[sys.argv.index("--root") + 1]).resolve()
-            # Ahead of the editable install's .pth entry, and ahead of
-            # anything else on the path. Nothing from laser_trim_analyzer may
-            # be imported before this line.
-            sys.path.insert(0, str(root / "src"))
+        except IndexError:
+            raise SystemExit("ABORT: --root needs a path.\n" + USAGE)
+        if root == REPO.resolve():
+            raise SystemExit(
+                f"ABORT: --root is this repo ({root}). The baseline must come "
+                f"from the tree BEFORE the capture work, not from HEAD.\n"
+                + USAGE)
+        if not (root / "src" / "laser_trim_analyzer").is_dir():
+            raise SystemExit(f"ABORT: no src/laser_trim_analyzer under {root}\n"
+                             + USAGE)
+        # Ahead of the editable install's .pth entry, and ahead of anything
+        # else on the path. Nothing from laser_trim_analyzer may be imported
+        # before this line.
+        sys.path.insert(0, str(root / "src"))
         _check_import_root(root)
         BASELINE.write_text(json.dumps(_normalise(_dump()), indent=1) + "\n")
         print(f"baseline written: {BASELINE}")
+    else:
+        raise SystemExit(USAGE)
