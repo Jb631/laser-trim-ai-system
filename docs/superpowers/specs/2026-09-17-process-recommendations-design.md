@@ -269,3 +269,10 @@ carried by this spec's approval.
 - Trim-side units are unconfirmed against ATP tables. Range and shape
   comparisons are unit-independent and safe; absolute value comparisons on
   the trim station are not.
+- **A reprocess refreshes a final-test row's verdict and tracks, but not its
+  trim link, match confidence, or resistance fields** (added 2026-09-17,
+  Task 8). Those are set only on first insert. Moot for the fresh-database
+  route in section 3, where every column is written once. On a later
+  reprocess over an already-populated database a refreshed verdict can sit
+  beside a trim link from the previous parse, so any analyzer that reads
+  those columns together must not assume they came from the same parse.
