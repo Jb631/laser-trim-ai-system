@@ -133,7 +133,11 @@ strict_equality = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q --strict-markers"
+# No -q here. Everyone types `pytest ... -q` (it is what most notes in this
+# repo say), and a -q in addopts made that verbosity -2 -- below -1 pytest's
+# summary writer returns early, so the "N passed" line vanished and a run that
+# collected NOTHING looked exactly like a clean run.
+addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 markers = [
     "asyncio: mark test as an asyncio test",
