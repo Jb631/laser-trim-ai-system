@@ -257,8 +257,14 @@ PO numbers and prices, and must never be committed).
       which is the case for replacing it. The existing price importer already recognises
       this file's `Item ID` / `Unit Price` columns. Store only model, open quantity, price
       and need date — never customer or PO. Possible bonus: rank Findings by real open
-      demand instead of last year's track count. *Waiting on three answers from James
-      (price rule, variant folding, replace-vs-merge); queued behind the engine build.*
+      demand instead of last year's track count. **DESIGN SETTLED by James, 2026-09-20:**
+      1. **Price = the LATEST order's unit price** for that model ("that's the current
+         price") — latest by `Order Date`, not the most common and not an average.
+      2. **`FAI`, `LAT`, `TEST UNITS` and the like are add-ons and are NOT included** —
+         neither as models nor folded into a base model. Only an `Item ID` that exactly
+         matches a model the app knows counts.
+      3. **Each upload REPLACES the active list.** Manual pinning stays for exceptions.
+      Queued behind the engine build.
 
 ## Housekeeping
 
