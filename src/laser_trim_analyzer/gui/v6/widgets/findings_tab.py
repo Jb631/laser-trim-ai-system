@@ -30,7 +30,7 @@ def _txt(v) -> str:
 
 # What the engine calls each analyzer -> what a person would call it.
 _ANALYZER_NAMES = {"recipe_change": "the recipe history", "ink_target": "the ink target",
-                   "trim_effort": "what each cut buys"}
+                   "trim_effort": "what each cut buys", "limit_tables": "the limit tables"}
 
 
 class FindingsTab(ctk.CTkFrame):
@@ -59,6 +59,14 @@ class FindingsTab(ctk.CTkFrame):
                        "that is a result, not a gap.", muted=True)
         for f in findings:
             self._card(f)
+        tables = facts.get("limit_tables") or []
+        if len(tables) > 1:             # one table is the unremarkable case; two is something to look at
+            self._heading("LIMIT TABLES THIS MODEL HAS BEEN GRADED AGAINST")
+            for tab in tables:
+                self._line(f"{laser_label(tab.get('system'))} · {_txt(tab.get('track'))} · "
+                           f"{_num(tab.get('graded'))} graded points of {_num(tab.get('rows'))} rows · "
+                           f"{_num(tab.get('n'))} tracks · {_txt(tab.get('first'))} → {_txt(tab.get('last'))} · "
+                           f"{_pct(tab.get('trim_pass_pct'))} left the laser inside limits", muted=True)
         history = facts.get("recipe_history") or []
         if history:
             self._heading("RECIPE HISTORY")

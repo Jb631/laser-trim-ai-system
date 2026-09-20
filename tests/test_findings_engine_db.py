@@ -127,7 +127,7 @@ def test_every_documented_key_exists_even_for_a_model_with_no_tracks(monkeypatch
     facts, findings = engine.compute_for_model(None, "EMPTY")
     assert findings == [] and facts["tracks"] == 0
     assert set(facts) == {"model", "tracks", "annual_volume", "latest", "yardstick",
-                          "recipe_history", "trim_effort", "errors"}
+                          "recipe_history", "trim_effort", "limit_tables", "errors"}
 
 
 def test_refresh_reports_what_did_not_get_done(tmp_path, monkeypatch):
@@ -196,3 +196,30 @@ def test_models_whose_analyzers_failed_can_be_listed(tmp_path):
     db.replace_process_findings("OLDROW", {"tracks": 5}, [])                       # a cache row from before "errors" existed
     db.replace_process_findings("HURT", {"tracks": 5, "errors": {"trim_effort": "ValueError: no sweeps"}}, [])
     assert db.get_process_errors() == {"HURT": {"trim_effort": "ValueError: no sweeps"}}
+
+
+def test_the_limit_table_analyzer_runs_inside_the_engine_and_its_history_is_cached(tmp_path, monkeypatch):
+    from findings_helpers import table, table_era
+    from laser_trim_analyzer.findings import engine
+    db = _db(tmp_path)
+    tracks = table_era(0, START, 200, table(12, 0.10), 0.6) + table_era(1000, START, 200, table(23, 0.10), 0.3)
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: tracks)
+    assert engine.refresh_findings(db, ["TWO"]) == 1
+    (found,) = db.get_process_findings("TWO")
+    assert found["analyzer"] == "limit_tables" and found["lever"] == "laser_limit_table"
+    assert found["units_per_year"] is None and found["evidence"]["comparison"]["kind"] == "same_band_other_density"
+    cached = db.get_process_facts("TWO")["limit_tables"]
+    assert [(h["graded"], h["n"]) for h in cached] == [(12, 200), (23, 200)] and db.get_process_errors() == {}
+
+
+def test_a_crash_in_the_limit_table_analyzer_is_named_like_any_other(tmp_path, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    hot = _hot()
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
+
+    def boom(*a, **k):
+        raise RuntimeError("bad table")
+    monkeypatch.setattr(engine.limit_tables, "analyze", boom)
+    facts, findings = engine.compute_for_model(None, "HOT")
+    assert facts["errors"] == {"limit_tables": "RuntimeError: bad table"} and facts["limit_tables"] is None
+    assert [f.analyzer for f in findings] == ["ink_target"]

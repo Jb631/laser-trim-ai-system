@@ -138,3 +138,22 @@ def test_a_value_that_is_not_there_reads_as_a_dash_never_as_zero_and_never_crash
     assert "— tracks cut" in text and "()" not in text
     assert "rests on — tracks" in text and "no gain claimed" in text
     assert "None" not in text
+
+
+def test_more_than_one_limit_table_gets_its_own_section_and_one_does_not(tk_root):
+    tab = _tab(tk_root)
+    two = [{"system": "B", "track": "Track A", "rows": 111, "graded": 89, "n": 1649, "first": "2023-09-22",
+            "last": "2026-01-12", "trim_pass_pct": 34.0},
+           {"system": "B", "track": "Track A", "rows": 57, "graded": 45, "n": 823, "first": "2023-10-05",
+            "last": "2026-09-11", "trim_pass_pct": None}]
+    tab.set_data({"facts": dict(FACTS, limit_tables=two), "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "LIMIT TABLES" in text and "89 graded points of 111 rows" in text and "1,649 tracks" in text
+    assert "45 graded points of 57 rows" in text and "— left the laser inside limits" in text
+    assert "Laser 1 (LTS)" in text and "System B" not in text
+    tab.set_data({"facts": dict(FACTS, limit_tables=two[:1]), "findings": []})
+    assert "LIMIT TABLES" not in " | ".join(_texts(tab))
+    tab.set_data({"facts": dict(FACTS, limit_tables=None, errors={"limit_tables": "RuntimeError: bad table"}),
+                  "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "the limit tables" in text and "RuntimeError: bad table" in text
