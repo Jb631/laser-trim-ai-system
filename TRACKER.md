@@ -69,8 +69,10 @@ ECN? Which 8232-1 table is the intended one?**
 ### One thing of mine to own
 
 A test I briefed used a real (model, price) pair from your backlog as "example data". It was committed
-locally, never pushed; I rewrote the local history to remove it and a checker now scans every commit
-before a push (`.superpowers/checks/backlog_leak_check.py`). Local commit hashes changed as a result.
+locally, never pushed; I rewrote the local history to remove it before pushing. `scripts/check_no_customer_values.py`
+now scans a commit range — every version of every file, and every commit message — for a real price
+beside its model, a customer name or a PO number, and prints only where, never the value. Local
+commit hashes changed as a result of the rewrite.
 
 ## Which laser is which
 
@@ -387,8 +389,11 @@ PO numbers and prices, and must never be committed).
   of rendering "no data", never leaves the previous model's verdict on screen, and no longer says
   "NOT TRAINED" when the drift query simply failed.
 - Claude's own mistake, fixed: an example price in a test was a real one from the backlog export.
-  Scrubbed from local history before the push; `.superpowers/checks/backlog_leak_check.py` now
-  scans every commit in a range before any push.
+  Scrubbed from local history before the push; **`python scripts/check_no_customer_values.py`**
+  now scans every version of every file in a commit range, plus every commit message, for a real
+  price beside its model, a customer name or a PO number — and prints only WHERE, never the value.
+  Proven on a throwaway repository: it passes invented data and fails a real price and a real
+  customer name.
 
 - 2026-09-20 · the app now SHOWS the shop's laser names — "Laser 1 (LTS)",
   "Laser 2 (DLTS)", "Laser 3 (LTS3)" — on the company trend chart (legend in

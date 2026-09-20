@@ -111,6 +111,15 @@ Two more traps this repo has fallen into, both now fixed but worth knowing:
   numbers, while two documents described it as a full diff. It compares every frozen value now; if it
   fails, refresh only the entry that moved and say why in the commit.
 
+### Customer data never reaches a commit
+
+`Work Files/` holds the owner's real backlog export: customer names, PO numbers, unit prices. None of
+it may appear in code, a test, a fixture or a commit message — and "just as an example" is how it got
+in on 2026-09-20 (Claude used a real model/price pair in a brief; an implementer transcribed it).
+Example data is INVENTED. Before any push:
+
+    python scripts/check_no_customer_values.py            # origin/main..HEAD; prints WHERE, never the value
+
 ### QA Sweeps (mandatory before calling any change done)
 Two standing harnesses exercise the whole app against a COPY of the real DB —
 run BOTH after any change to charts, queries, exports, or page data-loaders.
