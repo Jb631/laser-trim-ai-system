@@ -88,8 +88,92 @@ def _write_sweep(ws, measured_of, *, error_column, limits: bool = True):
     ws.cell(row=1, column=18, value=10500.0)
 
 
+def _write_ragged_test_sweep(ws, *, measured_short: int):
+    """A `test` sweep whose per-point columns do NOT all end together.
+
+    The measured column stops `measured_short` rows early, and the error column
+    carries one blank at exactly that row. Both halves are needed to make the
+    readers disagree: the trimmed reader reads the error column with
+    `allow_nan=True` (a mid-column blank keeps the length, so positions/limits
+    stay full-length) while the pre-trim reader stops dead at the first blank
+    and then cannot recover past the end of the measured column. A measured
+    column that is merely short self-heals, because the trimmed reader truncates
+    positions to match and the limits follow.
+    """
+    end = _N_POINTS - measured_short
+    for i in range(_N_POINTS):
+        row = i + 1
+        measured = _theory(i) + _noise(i, 0.03)
+        if i < end:
+            ws.cell(row=row, column=_MEASURED + 1, value=measured)
+        ws.cell(row=row, column=_INDEX + 1, value=i)
+        ws.cell(row=row, column=_THEORY + 1, value=_theory(i))
+        if i != end:
+            ws.cell(row=row, column=_ERROR + 1, value=measured - _theory(i))
+        ws.cell(row=row, column=_POSITION + 1, value=_position(i))
+        ws.cell(row=row, column=_UPPER + 1, value=_SPEC)
+        ws.cell(row=row, column=_LOWER + 1, value=-_SPEC)
+    ws.cell(row=1, column=11, value=30.0)
+    ws.cell(row=1, column=12, value=30.0)
+    ws.cell(row=1, column=18, value=10500.0)
+
+
+# The double-resolution family (confirmed models 1844202 / 1844204 / 1844205)
+# records the measured column at DOUBLE the position/theory grid: coarse
+# position[i] lines up with fine measured[2i]. Subtracting row-by-row compares
+# values at different physical positions and produces a garbage ramp.
+_DR_COARSE = 32                      # position/theory points, as on 1844205
+_DR_FINE = 2 * _DR_COARSE - 1        # measured points
+_DR_NOISE = 0.02
+
+
+def _dr_theory(i: int) -> float:
+    return _TEST_VOLTS * i / (_DR_COARSE - 1)
+
+
+def _dr_position(i: int) -> float:
+    return -((_DR_COARSE - 1) / 2.0) * _TRAVEL + i * _TRAVEL
+
+
+def _dr_measured(j: int) -> float:
+    """Fine grid: measured[2i] is the real reading at coarse point i."""
+    return _TEST_VOLTS * j / (2 * (_DR_COARSE - 1)) + _noise(j, _DR_NOISE)
+
+
+def _write_double_resolution_test_sweep(ws):
+    for j in range(_DR_FINE):
+        ws.cell(row=j + 1, column=_MEASURED + 1, value=_dr_measured(j))
+    for i in range(_DR_COARSE):
+        row = i + 1
+        ws.cell(row=row, column=_INDEX + 1, value=i)
+        ws.cell(row=row, column=_THEORY + 1, value=_dr_theory(i))
+        # The station's own error column: fine measured[i] minus coarse
+        # theory[i], row by row -- the garbage this branch exists to replace.
+        ws.cell(row=row, column=_ERROR + 1, value=_dr_measured(i) - _dr_theory(i))
+        ws.cell(row=row, column=_POSITION + 1, value=_dr_position(i))
+        ws.cell(row=row, column=_UPPER + 1, value=_SPEC)
+        ws.cell(row=row, column=_LOWER + 1, value=-_SPEC)
+    ws.cell(row=1, column=11, value=30.0)
+    ws.cell(row=1, column=12, value=30.0)
+    ws.cell(row=1, column=18, value=10500.0)
+
+
+def _write_double_resolution_template(ws):
+    """The no-cut template at the coarse grid: measured IS theory."""
+    for i in range(_DR_COARSE):
+        row = i + 1
+        ws.cell(row=row, column=_MEASURED + 1, value=_dr_theory(i))
+        ws.cell(row=row, column=_INDEX + 1, value=i)
+        ws.cell(row=row, column=_THEORY + 1, value=_dr_theory(i))
+        ws.cell(row=row, column=_ERROR + 1, value=0.0)
+        ws.cell(row=row, column=_POSITION + 1, value=_dr_position(i))
+        ws.cell(row=row, column=_UPPER + 1, value=_SPEC)
+        ws.cell(row=row, column=_LOWER + 1, value=-_SPEC)
+
+
 def _make_workbook(path, *, lin_error, trim_sheets=(), test_noise=0.03,
-                   test_error="blank"):
+                   test_error="blank", measured_short=0,
+                   double_resolution=False):
     """Build a System B workbook.
 
     `lin_error` is one of:
@@ -100,7 +184,8 @@ def _make_workbook(path, *, lin_error, trim_sheets=(), test_noise=0.03,
       None        -- no `Lin Error` sheet at all
 
     `test_error` picks the shape of the `test` sheet's own error column --
-    see `_write_sweep`.
+    see `_write_sweep`. `measured_short` and `double_resolution` select the
+    ragged and double-resolution `test` sweeps instead.
     """
     from openpyxl import Workbook
 
@@ -109,8 +194,13 @@ def _make_workbook(path, *, lin_error, trim_sheets=(), test_noise=0.03,
     ws_test.title = "test"
     # The pre-trim sweep: real, noisy, and the ONLY real measurement in a
     # no-cut file.
-    _write_sweep(ws_test, lambda i: _theory(i) + _noise(i, test_noise),
-                 error_column=test_error)
+    if double_resolution:
+        _write_double_resolution_test_sweep(ws_test)
+    elif measured_short:
+        _write_ragged_test_sweep(ws_test, measured_short=measured_short)
+    else:
+        _write_sweep(ws_test, lambda i: _theory(i) + _noise(i, test_noise),
+                     error_column=test_error)
 
     for n in trim_sheets:
         ws = wb.create_sheet(title=f"Trim {n}")
@@ -118,7 +208,9 @@ def _make_workbook(path, *, lin_error, trim_sheets=(), test_noise=0.03,
 
     if lin_error is not None:
         ws = wb.create_sheet(title="Lin Error")
-        if lin_error == "template":
+        if lin_error == "template" and double_resolution:
+            _write_double_resolution_template(ws)
+        elif lin_error == "template":
             # measured == theory at every point; error column identically 0.0
             _write_sweep(ws, _theory, error_column="real")
         elif lin_error == "real":
@@ -317,6 +409,158 @@ def test_two_trim_sheets_with_template_lin_error_keep_their_pass_count(tmp_path)
     assert not track.get("is_untrimmed_only")
     errors = [e for e in (track.get("errors") or []) if e is not None and not math.isnan(e)]
     assert max(abs(e) for e in errors) == 0.0, "`Lin Error` still wins the priority"
+
+
+# --------------------------------------------------------------------------
+# the rerouted track must not carry a laser pass it never ran
+# --------------------------------------------------------------------------
+
+def _passes(track):
+    return [(p.get("pass_index"), p.get("sheet")) for p in (track.get("trim_passes") or [])]
+
+
+def test_rerouted_track_carries_no_trim_pass(tmp_path):
+    """`trim_passes` is the table that will teach a model what a cut does to a
+    curve, so a row in it is an assertion that a cut happened.
+
+    `_read_trim_passes` re-derives its sheet list from the workbook, and
+    `core.trim_passes.pass_sheets` appends `Lin Error` as a pass for lasers 1
+    and 3 unconditionally -- so nulling the local `lin_error_sheet` did not
+    reach it. Every rerouted track still came back carrying one pass: the
+    template's ~zero error sweep attached to a full ~3000-unit cut recipe, on a
+    unit the same parse had just declared un-cut. Confirmed on 40 of the first
+    40 fired real files.
+    """
+    path = _make_workbook(_name(tmp_path), lin_error="template")
+    track = _parse_one_track(path)
+
+    assert track.get("is_untrimmed_only") is True
+    assert _passes(track) == [], (
+        "a file with no cut has no pass: the template sheet must not be "
+        f"captured as one (got {_passes(track)})")
+
+
+def test_rerouted_track_has_no_pass_carrying_a_cut_recipe(tmp_path):
+    """The specific falsehood: zero linearity error attributed to a real cut."""
+    path = _make_workbook(_name(tmp_path), lin_error="template")
+    track = _parse_one_track(path)
+
+    for p in (track.get("trim_passes") or []):
+        raise AssertionError(
+            f"pass {p.get('pass_index')} from sheet {p.get('sheet')!r} asserts a "
+            f"cut (laser_cut_length={p.get('laser_cut_length')!r}) with "
+            f"{len(p.get('errors') or [])} error points on an un-cut unit")
+
+
+def test_trim_sheets_still_capture_their_passes(tmp_path):
+    """PINS TODAY'S BEHAVIOUR. A file that really was cut keeps every pass,
+    in order, with its real sweep -- the exclusion must reach the template
+    sheet only."""
+    path = _make_workbook(_name(tmp_path), lin_error="real", trim_sheets=(1,))
+    track = _parse_one_track(path)
+
+    assert _passes(track) == [(1, "Trim 1"), (2, "Lin Error")]
+    first = (track.get("trim_passes") or [])[0]
+    errors = [e for e in (first.get("errors") or []) if e is not None]
+    assert len(errors) == _N_POINTS
+    assert max(abs(e) for e in errors) == pytest.approx(0.01, abs=1e-3), (
+        "the first pass must still carry `Trim 1`'s real sweep")
+
+
+def test_lone_real_lin_error_still_captures_its_pass(tmp_path):
+    """PINS TODAY'S BEHAVIOUR for case (b): a lone `Lin Error` with real data
+    is a real final sweep and is still captured as pass 1."""
+    path = _make_workbook(_name(tmp_path), lin_error="real")
+    track = _parse_one_track(path)
+
+    assert _passes(track) == [(1, "Lin Error")]
+    first = (track.get("trim_passes") or [])[0]
+    errors = [e for e in (first.get("errors") or []) if e is not None]
+    assert len(errors) == _N_POINTS
+    assert max(abs(e) for e in errors) == pytest.approx(0.01, abs=1e-3)
+
+
+# --------------------------------------------------------------------------
+# every per-point array that travels with the track must be the same length
+# --------------------------------------------------------------------------
+
+def test_per_point_arrays_end_together_on_a_ragged_sweep(tmp_path, caplog):
+    """The spec band has to line up with the sweep it grades.
+
+    After rerouting, `upper_limits` / `lower_limits` / `theory_volts` are sized
+    by the trimmed reader (`len(positions)`) while `untrimmed_positions` is
+    truncated independently to `len(untrimmed_errors)` by the pre-trim reader.
+    On a sweep whose columns do not all end together they diverge, and
+    downstream code zips them -- silently pairing each error with some other
+    position's limit."""
+    path = _make_workbook(_name(tmp_path), lin_error="template", measured_short=5)
+    with caplog.at_level(logging.WARNING, logger="laser_trim_analyzer.core.parser"):
+        track = _parse_one_track(path)
+
+    assert track.get("is_untrimmed_only") is True
+    per_point = ("untrimmed_positions", "untrimmed_errors", "upper_limits",
+                 "lower_limits", "theory_volts")
+    lengths = {k: len(track[k]) for k in per_point if track.get(k) is not None}
+    assert len(lengths) == len(per_point), f"an array went missing: {lengths}"
+    assert len(set(lengths.values())) == 1, (
+        f"per-point arrays disagree in length: {lengths}")
+
+    hits = [r for r in caplog.records
+            if "per-point arrays disagree" in r.message and path.name in r.message]
+    assert len(hits) == 1, (
+        f"the truncation must be announced exactly once, naming the file and "
+        f"both lengths (got {len(hits)})")
+    assert "56" in hits[0].message and "61" in hits[0].message, (
+        f"the warning must name both lengths: {hits[0].message}")
+
+
+def test_a_well_formed_sweep_is_not_warned_about(tmp_path, caplog):
+    """The warning must mean something: an ordinary no-cut file must not emit it."""
+    path = _make_workbook(_name(tmp_path), lin_error="template")
+    with caplog.at_level(logging.WARNING, logger="laser_trim_analyzer.core.parser"):
+        track = _parse_one_track(path)
+
+    assert len(track["untrimmed_positions"]) == _N_POINTS
+    assert not [r for r in caplog.records if "per-point arrays disagree" in r.message]
+
+
+# --------------------------------------------------------------------------
+# the double-resolution family (1844202 / 1844204 / 1844205)
+# --------------------------------------------------------------------------
+
+def test_double_resolution_no_cut_file_stores_the_corrected_pre_trim_error(tmp_path):
+    """1844205 alone has 92 no-cut tracks in the work database, and no real
+    file of this family takes the untrimmed-only path in the corpus or the
+    slice -- so this is the only cover it has.
+
+    These models record the measured column at 2x the position/theory grid.
+    Subtracting row by row pairs each reading with a point half a grid step
+    away and yields a garbage ramp (pre-trim sigma ~1.6 instead of ~0.1). The
+    pre-trim reader re-pairs coarse position[i] with fine measured[2i]. A
+    rerouted no-cut file of this family must get the CORRECTED error, which is
+    what every normal file of the same model already gets."""
+    path = _make_workbook(_name(tmp_path), lin_error="template",
+                          double_resolution=True)
+    track = _parse_one_track(path)
+
+    assert track["trim_pass_count"] == 0
+    assert track.get("is_untrimmed_only") is True
+    assert _passes(track) == []
+
+    errors = [e for e in (track.get("untrimmed_errors") or [])
+              if e is not None and not math.isnan(e)]
+    assert len(errors) == _DR_COARSE, (
+        f"expected one error per coarse point, got {len(errors)}")
+    worst = max(abs(e) for e in errors)
+    assert worst == pytest.approx(_DR_NOISE, abs=5e-3), (
+        f"max|error| is {worst:.4f}; the corrected value is ~{_DR_NOISE}. A "
+        f"value of order 1 V means the station's row-by-row garbage was stored")
+
+    # And the arrays still end together.
+    lengths = {k: len(track[k]) for k in
+               ("untrimmed_positions", "untrimmed_errors", "upper_limits",
+                "lower_limits", "theory_volts") if track.get(k) is not None}
+    assert len(set(lengths.values())) == 1, lengths
 
 
 # --------------------------------------------------------------------------

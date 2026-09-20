@@ -9,7 +9,7 @@ import re
 from collections import Counter
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple, Final
+from typing import Dict, List, Optional, Any, Sequence, Tuple, Final
 import logging
 import threading
 from io import BytesIO
@@ -835,6 +835,8 @@ class ExcelParser:
             elif sheet_lower.startswith("trim ") and sheet_lower[5:].isdigit():
                 trim_sheets.append(sheet)
 
+        no_cut_template_sheet = None  # set when the rule below fires
+
         # A "Lin Error" sheet whose measured column IS its theory column is the
         # blank TEMPLATE the station writes when a sweep was taken but NO cut
         # was made — an operator check before, between or after trimming
@@ -856,7 +858,10 @@ class ExcelParser:
         #   * no "Trim N" sheet, so no cut is evidenced anywhere in the file;
         #   * "Lin Error" measured == theory (see _lin_error_is_template);
         #   * a "test" sweep to fall back on, so rerouting preserves the real
-        #     measurement instead of dropping the track entirely.
+        #     measurement instead of dropping the track entirely. For a
+        #     template file with NO "test" sheet the old (wrong) answer is kept
+        #     deliberately: losing the track outright is worse than recording
+        #     it badly, and no such file exists in 5,492 real files.
         # A lone "Lin Error" carrying REAL data keeps its old behaviour, and a
         # file that has "Trim N" sheets is never touched whatever its
         # "Lin Error" looks like.
@@ -882,6 +887,16 @@ class ExcelParser:
                         "%s: Lin Error is the blank template — no cut was "
                         "made; recording the test sweep only",
                         file_path.name)
+                    # Remembered, not just dropped: _read_trim_passes builds
+                    # its own list from the workbook's sheet names and
+                    # trim_passes.pass_sheets appends "Lin Error" as a pass for
+                    # Systems B and C unconditionally, so clearing the local
+                    # variable alone still left the template captured as a
+                    # laser pass — a ~zero-error sweep joined to a full cut
+                    # recipe, in the very table that exists to record what a
+                    # cut does to a curve, on a unit this parse has just called
+                    # un-cut. Named explicitly below.
+                    no_cut_template_sheet = lin_error_sheet
                     lin_error_sheet = None
 
         # Priority: Lin Error > highest Trim N > Trim 1
@@ -940,7 +955,9 @@ class ExcelParser:
                     # same gap, same fix.
                     start_row = None
                 track_data["trim_passes"] = self._read_trim_passes(
-                    xl, SystemType.B, sys_b_track_id, start_row, recipes)
+                    xl, SystemType.B, sys_b_track_id, start_row, recipes,
+                    exclude_sheets=(no_cut_template_sheet,)
+                    if no_cut_template_sheet else ())
                 tracks.append(track_data)
 
         return tracks
@@ -1377,9 +1394,19 @@ class ExcelParser:
 
     def _read_trim_passes(
         self, xl: pd.ExcelFile, system_type: SystemType, track_id: str,
-        start_row: Optional[int], recipes: List[Dict[str, Any]]
+        start_row: Optional[int], recipes: List[Dict[str, Any]],
+        exclude_sheets: Sequence[str] = (),
     ) -> List[Dict[str, Any]]:
         """Sweeps for every pass after the untrimmed one, each joined to its recipe.
+
+        `exclude_sheets` names sheets that are NOT passes for this track, even
+        though they carry a pass sheet's name. The pass list is re-derived here
+        from the workbook's own sheet names (`_tp.pass_sheets`), so a caller
+        that decided a sheet is not a trim result — the no-cut template in
+        `_extract_system_b_tracks` — cannot express that by dropping its own
+        local variable; it has to say so here. Naming the one sheet, rather
+        than suppressing pass capture wholesale, is what keeps a real `Trim N`
+        pass on the same file from being dropped with it.
 
         `start_row` is normally the header-row offset already computed for
         this track's own trimmed sheet, reused here because every pass sheet
@@ -1404,6 +1431,10 @@ class ExcelParser:
         except Exception:
             logger.warning("Could not list trim passes for track %s", track_id, exc_info=True)
             return out
+        if exclude_sheets:
+            excluded = {s.strip().lower() for s in exclude_sheets if s}
+            sheets = [(idx, name) for idx, name in sheets
+                      if name.strip().lower() not in excluded]
         if not sheets:
             return out
 
@@ -1497,6 +1528,13 @@ class ExcelParser:
         # measured angle). The test sheet's K1 IS the measured angle though, so
         # read it directly here. Without this, untrimmed-only B-files fall
         # through to the unit_length (= theoretical L1) fallback.
+        #
+        # Now REDUNDANT but deliberately kept: since this helper passes its
+        # sheet as the untrimmed argument too, _extract_track_data's pre-trim
+        # branch already re-reads K1 from this very sheet and sets the same
+        # value. Kept because it is idempotent and because it is the only thing
+        # that would still hold the angle if that argument were ever changed
+        # back — the cost is one extra read of a sheet already in memory.
         if system_type == SystemType.B and "measured_electrical_angle" in cells:
             try:
                 df_untrim = pd.read_excel(xl, sheet_name=untrimmed_sheet, header=None)
@@ -1519,6 +1557,34 @@ class ExcelParser:
             raw["untrimmed_errors"] = raw.get("errors")
         raw["positions"] = None
         raw["errors"] = None
+
+        # The promotion above promises the limits are "aligned with the
+        # (now-untrimmed) positions", and downstream code zips them. Make that
+        # true rather than usually-true. The two readers size their arrays
+        # independently: the trimmed reader sizes limits/theory to
+        # len(positions), while the pre-trim reader truncates
+        # untrimmed_positions to len(untrimmed_errors). They diverge on a sweep
+        # whose columns do not all end together — the measured column stopping
+        # early, with a blank in the error column at that same row, is enough.
+        # Every corpus track happens to be aligned today, so this is structural
+        # rather than observed; a mismatch that reached the chart would pair
+        # each error with some other position's spec band.
+        per_point = ("untrimmed_positions", "untrimmed_errors",
+                     "upper_limits", "lower_limits",
+                     "upper_limits_wide", "lower_limits_wide", "theory_volts")
+        lengths = {k: len(raw[k]) for k in per_point if raw.get(k) is not None}
+        if len(set(lengths.values())) > 1:
+            shortest = min(lengths.values())
+            logger.warning(
+                "SANITY: %s [%s] track %s: per-point arrays disagree in length "
+                "(%s) — truncating every one to the shortest (%d) so the spec "
+                "band stays aligned with the sweep it grades",
+                file_path.name, untrimmed_sheet, track_id,
+                ", ".join(f"{k}={n}" for k, n in sorted(lengths.items())),
+                shortest,
+            )
+            for key in lengths:
+                raw[key] = raw[key][:shortest]
 
         raw["is_untrimmed_only"] = True
         return raw
