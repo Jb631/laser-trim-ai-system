@@ -9,6 +9,7 @@ Clean, focused Excel export that includes:
 Simplified from v2's multi-format export system.
 """
 
+from laser_trim_analyzer.core.models import laser_label
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -214,7 +215,7 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
         ("Filename:", result.metadata.filename),
         ("Model:", result.metadata.model),
         ("Serial:", result.metadata.serial),
-        ("System:", result.metadata.system.value),
+        ("Laser:", laser_label(result.metadata.system)),
         ("Trim Date:", trim_date.strftime("%Y-%m-%d %H:%M") if trim_date else "N/A"),
         ("Analysis Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         ("Processing Time:", f"{result.processing_time:.2f} seconds"),
@@ -757,7 +758,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         values = [
             (result.metadata.model, None),
             (result.metadata.serial, None),
-            (result.metadata.system.value, None),
+            (laser_label(result.metadata.system), None),
             (trim_date if trim_date else "", "yyyy-mm-dd" if trim_date else None),
             (result.overall_status.value, None),
             (len(result.tracks), None),

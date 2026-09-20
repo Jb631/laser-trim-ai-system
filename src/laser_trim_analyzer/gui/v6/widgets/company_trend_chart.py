@@ -7,6 +7,7 @@ LTS3 (System C) ramp tracks the established lasers.
 
 Dumb widget: page fetches db.get_company_yield_trend and calls set_data.
 """
+from laser_trim_analyzer.core.models import laser_label, LASER_ORDER
 from typing import Any, Dict, Optional
 
 import customtkinter as ctk
@@ -104,13 +105,16 @@ class CompanyTrendChart(ctk.CTkFrame):
 
         # Per-system overlays first (thin), company line on top (bold).
         # Rates are LINEARITY yield (customer basis) — see get_company_yield_trend.
-        for sys_name, series in by_system.items():
+        # Legend in the shop's order (laser 1, 2, 3), not the code's letters.
+        ordered = sorted(by_system.items(), key=lambda kv: (
+            LASER_ORDER.index(kv[0]) if kv[0] in LASER_ORDER else len(LASER_ORDER)))
+        for sys_name, series in ordered:
             ys = [r["linearity_yield"] for r in series]
             if all(v is None for v in ys):
                 continue
             ax.plot(x, ys, lw=1.1, alpha=0.85, marker="o", ms=2.5,
                     color=_SYSTEM_COLORS.get(sys_name, t.TEXT_SECONDARY),
-                    label=f"System {sys_name}", zorder=3)
+                    label=laser_label(sys_name), zorder=3)
         comp_rates = [r["linearity_yield"] for r in company]
         ax.plot(x, comp_rates, lw=2.2, marker="o", ms=3.5,
                 color=t.ACCENT, label="Company", zorder=4)

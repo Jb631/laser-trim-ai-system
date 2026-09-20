@@ -34,6 +34,25 @@ class SystemType(str, Enum):
     UNKNOWN = "Unknown"
 
 
+
+# The shop's names for the three trim systems. They do NOT follow the code's
+# letters (James, 2026-09-20: "DLTS is laser 2, LTS is laser 1 and LTS3 is
+# laser 3"). The letters stay as the STORED and INTERNAL identity -- 85,000
+# database rows, the parser's format branches and the tests all use them --
+# and this is the single translation to what a person at the shop calls the
+# machine. Anything SHOWN to the user goes through laser_label().
+LASER_LABELS = {"B": "Laser 1 (LTS)", "A": "Laser 2 (DLTS)", "C": "Laser 3 (LTS3)",
+                "Unknown": "Unknown laser"}
+LASER_ORDER = ("B", "A", "C")   # shop order: laser 1, laser 2, laser 3
+
+
+def laser_label(system) -> str:
+    """'Laser 2 (DLTS)' for System A, and so on. Accepts the enum, its letter, or None."""
+    key = getattr(system, "value", system)
+    if key is None or key == "":
+        return "N/A"
+    return LASER_LABELS.get(str(key), str(key))
+
 class AnalysisStatus(str, Enum):
     """Analysis status."""
     PASS = "Pass"

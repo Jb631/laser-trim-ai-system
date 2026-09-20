@@ -6,6 +6,16 @@ step-by-step instructions at the work machine; this is the index above it.
 
 Last updated: 2026-09-20
 
+## Which laser is which
+
+The shop's numbers do NOT follow the code's letters (James, 2026-09-20):
+
+| Shop name | Folder | Code | Records |
+|---|---|---|---|
+| **Laser 1** | `LTS` | System B | each pass's sweep + that pass's settings |
+| **Laser 2** | `DLTS` | System A | the same, **plus cut length, trim current and predicted-vs-actual correction at every position** |
+| **Laser 3** | `LTS3` | System C | same format as laser 1 |
+
 ## The critical path — read this first
 
 Three workstreams are open, and almost everything in all three waits on **one
@@ -38,6 +48,13 @@ problem — per-file conversations with the share were. Same code, same laptop:
 - [x] **Read each file once, not six times** — `0add30e`
 - [x] **One file-info lookup per file, not twelve** — each costs 113 ms on the
       share — `74924ae`. Together: 1907 → 976 ms/file, measured on the laptop.
+- [x] **…then corrected the same day** — `30c66ff`. The first version shared a
+      lookup for ten seconds, which let a just-rewritten file look unchanged and
+      be skipped; two existing tests caught it. Sharing is now per parse, never
+      by clock. Lookups per file: 12 → 4 (the unsafe version reached 2). On the
+      VPN expect ~1.2 s/file rather than the 0.98 s measured before the repair.
+      Reaching one lookup safely means carrying a read-time snapshot through
+      the processor — do it inside A3, where that code is opened anyway.
 - [x] **Speed probe** — `scripts/ingest_speed_probe.py`, times each layer
       separately, writes only to a throwaway database.
 - [x] **Ping through the tunnel: 54 ms, no loss** (2026-09-20). A file lookup
@@ -78,7 +95,7 @@ The app tells James what to change about the process to raise yield. It never
 screens parts.
 
 - [x] **B1 · Capture what the parser threw away** — every trim pass, the laser
-      settings, and on laser 1 the per-position cut length, trim current and
+      settings, and on laser 2 (DLTS) the per-position cut length, trim current and
       predicted-vs-actual correction. 17 commits, `adcc1ce..5f94dc4`. Proven to
       change nothing that existed: 645 real files, 26 stored columns.
 - [ ] **B2 · Fresh-database rebuild, overnight.** *James.* Checklist: the
@@ -99,7 +116,7 @@ screens parts.
       10% → 73%) were computed on the old grading. **Do not set ink targets off
       them until this is done.**
 - [ ] **B4 · Four cheap questions about the trim passes, before any model.**
-      *First look at question 1, 2026-09-20 — sample database, laser 1 only,
+      *First look at question 1, 2026-09-20 — sample database, laser 2 (DLTS) only,
       482 tracks pooled across ~240 models, measured as error spread (max − min,
       immune to offset shifts):* **the first pass does NOT generally make
       linearity worse** — it did in only 10% of tracks; the median spread falls
@@ -117,12 +134,21 @@ screens parts.
       against real data.
 - [ ] **B6 · The other nine findings**, one at a time, each with a test that it
       says nothing when there is nothing to say.
-- [ ] **B7 · Cut-length model.** James's priority — deferred, NOT dropped. Entry:
-      B2 done and B4 answered. Gets its own design and approval.
+- [ ] **B7 · Cut-length model — PROMOTED** (James, 2026-09-20: "i want to do the
+      cut length model i feel that is important"). No longer waits for the full
+      rebuild: the home slice supplies real data now. Still gets its own design
+      and approval, and still starts with the B4 questions — they are the cheap
+      first step of this work, not a detour. Data for it:
+      **laser 2 (DLTS) is the only machine recording the cut at every position.**
+      8232-1's laser 2 history is 2013 → 2022-07 (4,178 files; it has run on
+      laser 1 (LTS) since 2023-03). Models on laser 2 THIS year with heavy
+      second-pass burden — where a recommendation could be acted on at the
+      machine today: **7844 (51% need 2+ passes), 7845 (48%), 8762 (30%),
+      6828 (27%)**; all of laser 2 is 28% over 11,199 tracks.
 
 Traps the analyzers must respect (all written into the spec's known limits):
-on lasers 2 and 3 the last captured pass duplicates the one before, so **pass
-counts run one high** · `points_ignored_start/end` are always blank on laser 1
+on lasers 1 and 3 (LTS, LTS3) the last captured pass duplicates the one before, so **pass
+counts run one high** · `points_ignored_start/end` are always blank on laser 2 (DLTS)
 and must never be read as 0 · `initial_trim_value` lives inside the recipe
 block, not its own column.
 
@@ -179,6 +205,11 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
   (`scripts/atp_spec_audit.py`).
 
 ## Done recently
+
+- 2026-09-20 · the app now SHOWS the shop's laser names — "Laser 1 (LTS)",
+  "Laser 2 (DLTS)", "Laser 3 (LTS3)" — on the company trend chart (legend in
+  shop order), the Excel and unit-chart exports, and the V5 classic screens.
+  Stored letters and parsing logic untouched; one function, `laser_label()`.
 
 - 2026-09-20 · speed: one read and one lookup per file; skip warning no longer
   blames laser 3; LTS3 confirmed long since validated (547 files, 0 errors)

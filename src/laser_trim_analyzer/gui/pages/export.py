@@ -7,6 +7,7 @@ Allows users to:
 - Export charts as PNG files or combined PDF
 """
 
+from laser_trim_analyzer.core.models import laser_label
 import customtkinter as ctk
 import logging
 from pathlib import Path
@@ -846,7 +847,7 @@ class ExportPage(ctk.CTkFrame):
         info_lines = [
             f"Model: {result.metadata.model}",
             f"Serial: {result.metadata.serial}",
-            f"System: {result.metadata.system.value}",
+            f"Laser: {laser_label(result.metadata.system)}",
             f"",
             f"Track: {track.track_id}",
             f"Travel Length: {track.travel_length:.3f}" if track.travel_length else "Travel Length: N/A",

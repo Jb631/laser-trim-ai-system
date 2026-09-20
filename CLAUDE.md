@@ -168,6 +168,10 @@ Design docs live in git history at `4c6ebd8` under `archive/completed_docs/`.
 **Company:** AS9100 certified manufacturer, VC/PE owned
 **Key process:** Carbon track elements are laser-trimmed to achieve linearity spec, then units go through final electrical testing
 **Critical issue:** High failure rate at final linearity testing (~40% fail+warning). Most expensive place to catch defects because maximum labor/material already invested.
+**Laser numbering (James, 2026-09-20):** the shop's numbers do NOT follow the code's
+letters. **Laser 1 = `LTS` = System B. Laser 2 = `DLTS` = System A. Laser 3 = `LTS3` =
+System C.** Laser 2 (DLTS) is the one whose files carry per-position cut data. When
+writing to James, say "laser 2 (DLTS)" — never translate A/B/C to 1/2/3.
 **Data note:** Same serial number can appear multiple times — this is VALID (unit trimmed multiple times). Do not treat as duplicates.
 **Linearity spec:** Zero-tolerance — every single measurement point must be in-spec. This is a customer requirement, not configurable.
 

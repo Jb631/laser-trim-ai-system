@@ -5,6 +5,7 @@ This page is for reviewing already-processed files only.
 All file processing is done through the Process Files page.
 """
 
+from laser_trim_analyzer.core.models import laser_label
 import customtkinter as ctk
 import logging
 import numpy as np
@@ -1294,7 +1295,7 @@ class AnalyzePage(ctk.CTkFrame):
         lines.append(f"  Filename:    {analysis.metadata.filename}")
         lines.append(f"  Model:       {analysis.metadata.model}")
         lines.append(f"  Serial:      {analysis.metadata.serial}")
-        lines.append(f"  System:      {analysis.metadata.system.value}")
+        lines.append(f"  Laser:       {laser_label(analysis.metadata.system)}")
         lines.append("")
 
         if analysis.metadata.file_date:
@@ -2095,7 +2096,7 @@ class AnalyzePage(ctk.CTkFrame):
         info_lines = [
             f"Model: {result.metadata.model}",
             f"Serial: {result.metadata.serial}",
-            f"System: {result.metadata.system.value}",
+            f"Laser: {laser_label(result.metadata.system)}",
             f"",
             f"Track: {track.track_id}",
             f"Travel Length: {track.travel_length:.3f}" if track.travel_length else "Travel Length: N/A",

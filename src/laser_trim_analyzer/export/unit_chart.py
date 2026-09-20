@@ -10,6 +10,7 @@ Domain rule (James, 2026-07-07): linearity is the zero-tolerance customer
 requirement and decides accept/reject; sigma only separates PASS from
 "pass, watch process". The builder applies that rule.
 """
+from laser_trim_analyzer.core.models import laser_label
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -333,7 +334,7 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
     _date_label = "Test Date" if is_ft else "Trim Date"
     lines = [f"Model: {meta.get('model', 'N/A')}",
              f"Serial: {meta.get('serial', 'N/A')}",
-             f"System: {meta.get('system', 'N/A')}",
+             f"Laser: {laser_label(meta.get('system'))}",
              f"Track: {meta.get('track_id', 'N/A')}",
              f"{_date_label}: {meta.get('trim_date', 'N/A')}", ""]
     if data.get("untrimmed_resistance") is not None:

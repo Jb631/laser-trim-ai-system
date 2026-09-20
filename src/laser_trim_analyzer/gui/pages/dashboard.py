@@ -786,7 +786,7 @@ class DashboardPage(ctk.CTkFrame):
             if system_comparison and "system_a" in system_comparison:
                 a = system_comparison["system_a"]
                 self.system_a_label.configure(
-                    text=f"System A: {a.get('linearity_pass_rate', 0):.1f}% linearity | "
+                    text=f"Laser 2 (DLTS): {a.get('linearity_pass_rate', 0):.1f}% linearity | "
                          f"{a.get('sigma_pass_rate', 0):.1f}% sigma | "
                          f"{a.get('total_files', 0):,} files",
                     text_color=("gray10", "gray90")
@@ -802,7 +802,7 @@ class DashboardPage(ctk.CTkFrame):
             if system_comparison and "system_b" in system_comparison:
                 b = system_comparison["system_b"]
                 self.system_b_label.configure(
-                    text=f"System B: {b.get('linearity_pass_rate', 0):.1f}% linearity | "
+                    text=f"Laser 1 (LTS): {b.get('linearity_pass_rate', 0):.1f}% linearity | "
                          f"{b.get('sigma_pass_rate', 0):.1f}% sigma | "
                          f"{b.get('total_files', 0):,} files",
                     text_color=("gray10", "gray90")
