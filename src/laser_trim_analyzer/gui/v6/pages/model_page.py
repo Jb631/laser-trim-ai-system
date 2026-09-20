@@ -16,6 +16,7 @@ from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
+from laser_trim_analyzer.gui.v6.widgets.findings_tab import FindingsTab
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
 from laser_trim_analyzer.gui.v6.widgets.history_tab import HistoryTab
 from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
@@ -238,6 +239,8 @@ class ModelPage(PageBase):
         self._trimft_tab.pack(fill="both", expand=True)
         self._history_tab = HistoryTab(self._tabs.add("History"), theme=t)
         self._history_tab.pack(fill="both", expand=True)
+        self._findings_tab = FindingsTab(self._tabs.add("Findings"), theme=t)
+        self._findings_tab.pack(fill="both", expand=True)
         self._predictor = PredictorPanel(self._body, theme=t, db=self.app.db)
         self._predictor.pack(side="top", fill="x", pady=(t.SPACE_MD, 0))
         self._show_empty()
@@ -301,6 +304,7 @@ class ModelPage(PageBase):
             spc = None
             units, smoothness, recent = [], [], {}
             trim_ft, history = {}, {}
+            findings_data = None
             # One anchored cutoff for every tab (None = All): anchored to the
             # model's latest data so stale-but-flagged models still show their
             # record instead of empty windows.
@@ -395,6 +399,13 @@ class ModelPage(PageBase):
                                                     chosen_lot.window)
             except Exception:
                 logger.exception("Model %s: lot stats failed", model)
+            try:
+                process_facts = self.app.db.get_process_facts(model)
+                if process_facts:
+                    findings_data = {"facts": process_facts,
+                                     "findings": self.app.db.get_process_findings(model)}
+            except Exception:
+                logger.exception("Model %s: process findings failed", model)
 
             def apply():
                 if gen != self._reload_gen:
@@ -430,6 +441,7 @@ class ModelPage(PageBase):
                 _try("trim-vs-FT tab", lambda: self._trimft_tab.set_data(trim_ft))
                 _try("FT units tab", lambda: self._ft_units_tab.set_units(ft_units))
                 _try("history tab", lambda: self._history_tab.set_data(history))
+                _try("findings tab", lambda: self._findings_tab.set_data(findings_data))
             if sync:
                 apply()                 # already on the Tk thread — post nothing
             else:
