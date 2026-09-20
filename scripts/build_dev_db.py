@@ -16,6 +16,8 @@ import time
 import logging
 from pathlib import Path
 
+import _db_guard
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
@@ -28,7 +30,7 @@ def main() -> int:
     if not src.is_dir():
         print(f"not a folder: {src}")
         return 2
-    if out.resolve() == (REPO / "data" / "analysis.db").resolve() or out.name == "analysis.db":
+    if _db_guard.is_production_db(out, REPO, by_name=True):
         print("REFUSED: that is the production database. Pick another output path.")
         return 2
     if out.exists():

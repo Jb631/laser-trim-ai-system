@@ -21,6 +21,8 @@ import sys
 import types
 from pathlib import Path
 
+import _db_guard
+
 # ---- headless stubs (same technique as chart_qa_render_all) -----------------
 import matplotlib
 matplotlib.use("Agg")
@@ -1789,7 +1791,7 @@ def main() -> int:
               "(the DB argument is required — the sweep refuses the production database)")
         return 1
     db_path = Path(sys.argv[1])
-    if db_path.resolve() == (REPO / "data" / "analysis.db").resolve():
+    if _db_guard.is_production_db(db_path, REPO, by_name=True):
         print(f"FATAL | {db_path} is the PRODUCTION database and the sweep "
               f"opens it READ-WRITE.\n"
               f"      | make a copy and pass that instead:\n"
@@ -3192,8 +3194,7 @@ if __name__ == "__main__":
         # here too: the refusal must not depend on which branch was taken.
         for arg in sys.argv[1:]:
             if not arg.startswith("--") and arg != name \
-                    and Path(arg).name.startswith("analysis.db") \
-                    and Path(arg).resolve() == (REPO / "data" / "analysis.db").resolve():
+                    and _db_guard.is_production_db(Path(arg), REPO, by_name=True):
                 raise SystemExit(f"FATAL | {arg} is the PRODUCTION database")
         STANDALONE[name]()
         raise SystemExit(_tally())

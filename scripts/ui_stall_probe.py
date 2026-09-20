@@ -26,6 +26,8 @@ import time
 import traceback
 from pathlib import Path
 
+import _db_guard
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
@@ -34,7 +36,7 @@ HEARTBEAT_MS = 20
 
 
 def _refuse_production(db_path: Path) -> None:
-    if db_path.resolve() == (REPO / "data" / "analysis.db").resolve():
+    if _db_guard.is_production_db(db_path, REPO, by_name=True):
         raise SystemExit(
             f"FATAL | {db_path} is the PRODUCTION database; the app opens it "
             f"read-write.\n      |     cp data/analysis.db /tmp/qa_copy.db\n"

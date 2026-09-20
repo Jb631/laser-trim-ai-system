@@ -8,31 +8,14 @@ for a database that was built another way (scripts/build_dev_db.py), or to
 recompute after the analyzers change. It WRITES the two cache tables, so it
 refuses data/analysis.db unless --production is given.
 """
-import os
 import sys
 import textwrap
 from pathlib import Path
 
+import _db_guard
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
-
-
-def _is_production(path: Path) -> bool:
-    """True for the work database under ANY spelling -- compared by identity, not by text.
-
-    On a case-insensitive volume (macOS here, NTFS at work) `data/Analysis.db` IS
-    `data/analysis.db`, but resolve() keeps the case as typed, and a hard link shares no
-    path with its target at all. os.path.samefile compares the file itself. The name rule
-    is the second net: REPO is THIS checkout, so from a git worktree the path rule points at
-    the worktree's empty data folder, never at the real database.
-    """
-    if path.name.casefold() == "analysis.db":
-        return True
-    prod = REPO / "data" / "analysis.db"
-    try:
-        return path.exists() and prod.exists() and os.path.samefile(path, prod)
-    except OSError:
-        return True          # cannot prove it is NOT the work database -- refuse
 
 
 def main() -> int:
@@ -41,7 +24,7 @@ def main() -> int:
         print(__doc__)
         return 2
     path = Path(args[0])
-    is_production = _is_production(path)
+    is_production = _db_guard.is_production_db(path, REPO, by_name=True)
     if is_production and "--production" not in sys.argv:
         print(f"REFUSED: {path} is the work database (named analysis.db, or the same file as "
               "data/analysis.db). Run this on a COPY under another name. The app refreshes its own "

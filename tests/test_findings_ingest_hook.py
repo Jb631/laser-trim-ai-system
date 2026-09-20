@@ -74,6 +74,7 @@ def test_the_tool_refuses_the_work_database_under_another_name(tmp_path):
     (decoy_repo / "data").mkdir()
     script = decoy_repo / "scripts" / "refresh_findings.py"
     shutil.copy(TOOL, script)
+    shutil.copy(REPO / "scripts" / "_db_guard.py", decoy_repo / "scripts" / "_db_guard.py")
     decoy = decoy_repo / "data" / "analysis.db"
     decoy.write_bytes(b"")
     alias = tmp_path / "alias.db"

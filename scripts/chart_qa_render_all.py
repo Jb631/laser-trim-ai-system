@@ -24,6 +24,8 @@ import sys
 import types
 from pathlib import Path
 
+import _db_guard
+
 # ---- make the GUI importable headless (stub Tk/CTk; chart logic untouched) --
 import matplotlib
 matplotlib.use("Agg")
@@ -489,7 +491,7 @@ def refuse_production_db(db_path: Path) -> str | None:
     the production file, so this refuses it even when passed explicitly.
     Returns the error text, or None when the path is fine.
     """
-    if db_path.resolve() == (REPO / "data" / "analysis.db").resolve():
+    if _db_guard.is_production_db(db_path, REPO, by_name=True):
         return (f"FATAL | {db_path} is the PRODUCTION database and opening it "
                 f"WRITES to it.\n"
                 f"      | make a copy and pass that instead:\n"
