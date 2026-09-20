@@ -129,3 +129,24 @@ def test_model_b_never_shows_model_a_pills(make_app, monkeypatch):
                     for m, p in page._pill_row._pills.items()}
     assert actual_texts == fresh_texts
     assert "drift status" in page._load_banner.cget("text")
+
+
+def test_a_failed_drift_status_never_reads_as_not_trained(make_app, monkeypatch):
+    """M-1 review. `_compute_verdict` does not raise on status=None -- it treats a CRASHED drift-status
+    load exactly like a model that was never trained, and returns the confident, specific and false
+    instruction "NOT TRAINED -- run drift training in Settings". The verdict rests on the drift status,
+    so when that load failed the headline must say nothing ("—") and leave the talking to the banner."""
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+    from test_spec3c_model import _seed
+    app = make_app()
+    _seed(app.db, "AAA")
+    page = _open(app, "AAA")
+
+    def _boom(*a, **kw):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(mp, "get_model_drift_status", _boom)
+    page.reload_now()
+    said = page._verdict.cget("text")
+    assert said == "—", said
+    assert "NOT TRAINED" not in said
+    assert "drift status" in page._load_banner.cget("text")

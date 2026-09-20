@@ -464,9 +464,14 @@ class ModelPage(PageBase):
                 _try("pill select", lambda: self._pill_row.set_selected(chosen))
                 # Always configured — never left showing a PREVIOUS model's
                 # verdict when this model's verdict failed to compute.
+                # ...and never a verdict built on a drift status that FAILED to load:
+                # _compute_verdict does not raise on status=None, it answers "NOT TRAINED --
+                # run drift training in Settings" -- confident, specific, and false when the
+                # real reason is a crashed query. The banner below says what happened.
+                shown = verdict if (verdict and "drift status" not in failed) else None
                 _try("verdict", lambda: self._verdict.configure(
-                    text=verdict[0] if verdict else "—",
-                    text_color=verdict[1] if verdict else self.theme.TEXT_SECONDARY))
+                    text=shown[0] if shown else "—",
+                    text_color=shown[1] if shown else self.theme.TEXT_SECONDARY))
                 # Spec banner first, load banner second: both pack with
                 # after=self._verdict, and the LAST one packed lands directly
                 # under the verdict — so when both have something to say, the
