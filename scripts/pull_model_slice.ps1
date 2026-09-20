@@ -13,17 +13,25 @@ run it again and it only fetches what is missing.
 
     .\scripts\pull_model_slice.ps1
     .\scripts\pull_model_slice.ps1 -Models "8232-1","8340-1","6607" -Days 1100
+
+A model can change lasers: 8232-1 ran on laser 1 (DLTS) until 2022-07 and on
+laser 2 (LTS) since, so the default 3-year window correctly copies NOTHING
+from DLTS\8232-1 ("0 copied, 4178 skipped" is right, not a fault). Laser 1 is
+the only one that records cut length and predicted-vs-actual correction at
+every position, so that old history is what the cut-length model will want:
+
+    .\scripts\pull_model_slice.ps1 -Models "8232-1" -Stations "DLTS" -Days 5000
 #>
 param(
     [string[]]$Models = @("8232-1", "8340-1"),
     [int]$Days        = 1100,    # how far back; ~3 years covers the resistance-target history
+    [string[]]$Stations = @("DLTS", "LTS", "LTS3", "Test Station"),
     [string]$Source   = "\\192.168.66.9\BTXData\Departments\System Data\TEST_DATA",
     [string]$Dest     = "C:\dev\ltdata"
 )
 
-$stations = "DLTS", "LTS", "LTS3", "Test Station"
 $started  = Get-Date
-foreach ($station in $stations) {
+foreach ($station in $Stations) {
     $root = Join-Path $Source $station
     if (-not (Test-Path $root)) { Write-Host "skip (not found): $root"; continue }
     foreach ($model in $Models) {
