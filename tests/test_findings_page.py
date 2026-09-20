@@ -83,3 +83,22 @@ def test_a_healthy_cache_says_nothing_about_failures(make_app):
     page = app.page_container.get_page("findings")
     page.reload_now()
     assert not any("could not be" in x for x in _labels(page))
+
+
+def test_a_failure_of_the_secondary_read_does_not_throw_away_the_list(make_app, monkeypatch):
+    """Round B review: the list and "which models failed" are two separate reads. When only the
+    second one fails, the findings the first one returned are still true -- show them, and say that
+    the OTHER thing is unknown. (Before: one try block, so a good list was replaced by an error page.)"""
+    app = make_app()
+    app.db.replace_process_findings("BIG", {"tracks": 1, "errors": {}}, [_finding("BIG", "the big one", 500.0)])
+
+    def boom():
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(app.db, "get_process_errors", boom)
+    page = app.page_container.get_page("findings")
+    page.reload_now()
+    rows = _buttons(page)
+    assert len(rows) == 1 and rows[0].startswith("BIG")
+    text = " | ".join(_labels(page))
+    assert "Findings could not be loaded" not in text
+    assert "could not be checked" in text and "RuntimeError: database is locked" in text

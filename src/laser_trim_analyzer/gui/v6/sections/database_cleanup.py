@@ -64,8 +64,10 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                        "Deletes are permanent and run through the same filters as the preview."))\
         .pack(side="top", fill="x", anchor="w", pady=(0, t.SPACE_MD))
 
+    # wraplength: every job in this section reports here, and the longest reports are the ones
+    # about what went WRONG (model names and all). A label that cannot wrap runs off the window.
     status = ctk.CTkLabel(parent, text="", justify="left", font=t.font(t.SIZE_CAPTION),
-                          text_color=t.TEXT_SECONDARY, anchor="w")
+                          text_color=t.TEXT_SECONDARY, anchor="w", wraplength=640)
     status.pack(side="top", fill="x")
 
     def _async(work_fn):

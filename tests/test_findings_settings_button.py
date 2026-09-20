@@ -129,3 +129,14 @@ def test_if_the_engine_raises_the_user_sees_an_error_and_the_run_is_released(mak
         assert _pump(app, lambda: app.active_run_name() is None)      # a failed run must not lock every other long run
     finally:
         frame.destroy()
+
+
+def test_a_long_failure_message_can_wrap(make_app):
+    """Round B review: eight model names and two sentences in a label that cannot wrap run off the
+    window -- on exactly the run where the most went wrong."""
+    app = make_app()
+    frame, _button, label = _section(app)
+    try:
+        assert int(label.cget("wraplength")) > 0 and label.cget("justify") == "left"
+    finally:
+        frame.destroy()

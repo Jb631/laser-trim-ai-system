@@ -40,15 +40,27 @@ class FindingsPage(PageBase):
         threading.Thread(target=work, daemon=True).start()
 
     def _query(self) -> Dict[str, Any]:
-        """{"rows": [...], "errors": {...}, "failed": None} on success, or on ANY exception
-        (a database error, say) {"rows": [], "errors": {}, "failed": "ExcType: message"} --
-        a failed load must never come back looking like an empty, healthy result."""
+        """{"rows", "errors", "failed", "errors_failed"}. TWO reads, guarded separately:
+
+        * the list itself fails -> `failed` = "ExcType: message". A failed load must never come
+          back looking like an empty, healthy result.
+        * only "which models could not be worked out" fails -> the list is still true, so it is
+          still shown; `errors_failed` says the OTHER thing is unknown. One try block around both
+          used to replace a good list with an error page.
+        """
+        out: Dict[str, Any] = {"rows": [], "errors": {}, "failed": None, "errors_failed": None}
         try:
-            return {"rows": self.app.db.get_process_findings(),
-                    "errors": self.app.db.get_process_errors(), "failed": None}
+            out["rows"] = self.app.db.get_process_findings()
         except Exception as exc:
             logger.exception("Findings page: load failed")
-            return {"rows": [], "errors": {}, "failed": f"{type(exc).__name__}: {exc}"}
+            out["failed"] = f"{type(exc).__name__}: {exc}"
+            return out
+        try:
+            out["errors"] = self.app.db.get_process_errors()
+        except Exception as exc:
+            logger.exception("Findings page: could not read which models failed")
+            out["errors_failed"] = f"{type(exc).__name__}: {exc}"
+        return out
 
     def _apply(self, data: Any) -> None:
         if isinstance(data, list):                 # back-compat: callers may still pass a plain row list
@@ -85,6 +97,12 @@ class FindingsPage(PageBase):
                          f"({f.get('lead_time', '')})  ·  {gain}",
                     command=lambda m=f.get("model"): self._open(m),
                 ).pack(fill="x", pady=(0, t.SPACE_SM))
+        if data.get("errors_failed"):
+            ctk.CTkLabel(self._list, font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY, anchor="w",
+                         justify="left", wraplength=900,
+                         text=f"Whether any model failed on the last refresh could not be checked "
+                              f"({data['errors_failed']}), so this list may be missing models."
+                         ).pack(fill="x", pady=t.SPACE_SM)
         if errors:
             names = sorted(errors)
             shown = ", ".join(names[:10]) + (" …" if len(names) > 10 else "")
