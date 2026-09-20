@@ -925,12 +925,15 @@ class FinalTestParser:
                                                for i, t in enumerate(theory_values)])
                         errors_raw = measured_arr - theory_arr
 
-                        # Normalize by full scale
-                        full_scale = measured_arr.max() - measured_arr.min()
-                        if full_scale > 0:
-                            errors = (errors_raw / full_scale).tolist()
-                        else:
-                            errors = errors_raw.tolist()
+                        # VOLTS, like the limits these are graded against.
+                        # Dividing by full scale turned the error into a
+                        # fraction of full scale while columns G/H stayed in
+                        # volts, shrinking every error ~10x on a 10 V part:
+                        # 7539-2 sn23, which the station failed on 149 points,
+                        # was stored as a PASS with 0 fail points. The
+                        # shop-test parser below recovers errors the same way
+                        # and has never divided.
+                        errors = errors_raw.tolist()
                         logger.debug("Calculated errors from measured vs theory")
                     else:
                         # Fall back to linear fit using electrical angle as X-axis
@@ -942,11 +945,10 @@ class FinalTestParser:
                             ideal_values = np.polyval(coeffs, ea_arr)
                             errors_raw = measured_arr - ideal_values
 
-                            full_scale = measured_arr.max() - measured_arr.min()
-                            if full_scale > 0:
-                                errors = (errors_raw / full_scale).tolist()
-                            else:
-                                errors = errors_raw.tolist()
+                            # Volts, for the same reason as the branch above:
+                            # the residual from the ideal line is judged
+                            # against the sheet's own volt limits.
+                            errors = errors_raw.tolist()
                         else:
                             errors = [0.0] * len(measured_values)
                         logger.debug("Calculated errors from linear fit")
