@@ -182,7 +182,13 @@ screens parts.
       one value per pass; neither follows the resistance change (James's guess, tested:
       +0.01 / +0.07). The per-position data that matters is the cut applied plus the
       output before and after.
-- [ ] **B5 · Recommendation engine + the ink-target finding**, end to end, on
+- [ ] **B5 · Recommendation engine + the first three analyzers** — PLAN WRITTEN 2026-09-20:
+      `docs/superpowers/plans/2026-09-20-process-findings-engine.md` (11 tasks). Its core code was
+      prototyped and RUN on the home slice before the plan was written: 8232-1 → 4 findings (ink
+      target ≈ 34 units/yr held to one laser and one recipe; three recipe changes incl. laser 2's
+      2019 change, 84% → 32% and back), 8340-1 → nothing to act on, 2475-10 → 20% arrive already
+      in linearity spec and 27 of those 31 are below the resistance floor. Awaiting execution.
+      *Was:* Recommendation engine + the ink-target finding, end to end, on
       both screens. Gets its own plan, written after B2 so it is designed
       against real data.
 - [ ] **B6 · The other nine findings**, one at a time, each with a test that it
