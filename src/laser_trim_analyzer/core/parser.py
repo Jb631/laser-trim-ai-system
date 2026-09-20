@@ -1572,7 +1572,12 @@ class ExcelParser:
         per_point = ("untrimmed_positions", "untrimmed_errors",
                      "upper_limits", "lower_limits",
                      "upper_limits_wide", "lower_limits_wide", "theory_volts")
-        lengths = {k: len(raw[k]) for k in per_point if raw.get(k) is not None}
+        # `if raw.get(k)`, not `is not None`: an EMPTY array carries no alignment information, and
+        # letting one in made it the shortest, so every other array was cut to nothing. `theory_volts`
+        # is the one that can legitimately be empty (a theory column that reads as no numbers at all) --
+        # two real corpus files, Test Station/8504-2 shop34 and shop35, lost their whole 23-point sweep
+        # that way. An array with no data cannot decide the length of the arrays that have some.
+        lengths = {k: len(raw[k]) for k in per_point if raw.get(k)}
         if len(set(lengths.values())) > 1:
             shortest = min(lengths.values())
             logger.warning(

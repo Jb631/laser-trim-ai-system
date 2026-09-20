@@ -55,7 +55,7 @@ def _noise(i: int, amplitude: float) -> float:
     return amplitude * math.sin(2.0 * math.pi * i / 17.0)
 
 
-def _write_sweep(ws, measured_of, *, error_column, limits: bool = True):
+def _write_sweep(ws, measured_of, *, error_column, limits: bool = True, theory=True):
     """Fill one System B data sheet. Row 1 carries data AND the metadata cells,
     exactly as the real station workbooks do.
 
@@ -73,7 +73,12 @@ def _write_sweep(ws, measured_of, *, error_column, limits: bool = True):
         measured = measured_of(i)
         ws.cell(row=row, column=_MEASURED + 1, value=measured)
         ws.cell(row=row, column=_INDEX + 1, value=i)
-        ws.cell(row=row, column=_THEORY + 1, value=_theory(i))
+        if theory is True:
+            ws.cell(row=row, column=_THEORY + 1, value=_theory(i))
+        elif theory == "text":
+            # A theory column of text: `_get_column_data` yields NOTHING, which is the shape of the
+            # real mis-mapped 8504-2 shop files in the sample corpus (theory_volts=0 beside a 23-point sweep).
+            ws.cell(row=row, column=_THEORY + 1, value="n/a")
         if error_column == "real":
             ws.cell(row=row, column=_ERROR + 1, value=measured - _theory(i))
         elif error_column == "zeros" and i >= _BLANK_LEAD:
@@ -173,7 +178,7 @@ def _write_double_resolution_template(ws):
 
 def _make_workbook(path, *, lin_error, trim_sheets=(), test_noise=0.03,
                    test_error="blank", measured_short=0,
-                   double_resolution=False):
+                   double_resolution=False, test_theory=True):
     """Build a System B workbook.
 
     `lin_error` is one of:
@@ -200,7 +205,7 @@ def _make_workbook(path, *, lin_error, trim_sheets=(), test_noise=0.03,
         _write_ragged_test_sweep(ws_test, measured_short=measured_short)
     else:
         _write_sweep(ws_test, lambda i: _theory(i) + _noise(i, test_noise),
-                     error_column=test_error)
+                     error_column=test_error, theory=test_theory)
 
     for n in trim_sheets:
         ws = wb.create_sheet(title=f"Trim {n}")
@@ -638,3 +643,55 @@ def test_helper_uses_the_parsers_own_column_constants():
     from laser_trim_analyzer.utils.constants import SYSTEM_B_COLUMNS
     assert SYSTEM_B_COLUMNS["measured_volts"] == _MEASURED
     assert SYSTEM_B_COLUMNS["theory_volts"] == _THEORY
+
+
+_MISMAPPED = [
+    "Test Station/8504-2/8504-2-shop34_9-19-2024 12-27-51 PM.xlsx",
+    "Test Station/8504-2/8504-2-shop35_9-19-2024 12-36-31 PM.xlsx",
+]
+
+
+def test_an_empty_per_point_array_does_not_delete_the_sweep(caplog):
+    """Re-review finding, on the two real files that reproduce it.
+
+    The alignment truncation keyed on `is not None`, so an EMPTY array joined the comparison with
+    length 0, became the shortest, and every other array was cut to nothing -- deleting the one real
+    measurement an untrimmed-only file has. `theory_volts` is the array that can legitimately be
+    empty (a theory column that reads as no numbers at all). These two corpus files are a mis-mapped
+    layout whose sweep was already junk, but the mechanism is general: ANY untrimmed-only track whose
+    theory column reads empty lost its sweep.
+    """
+    import logging
+    from pathlib import Path
+    from laser_trim_analyzer.core.parser import ExcelParser
+    root = Path("Work Files/Sample_Base_2026-04-10")
+    paths = [root / rel for rel in _MISMAPPED]
+    if not all(p.exists() for p in paths):
+        pytest.skip("sample corpus not present")
+    parser = ExcelParser()
+    for path in paths:
+        with caplog.at_level(logging.WARNING):
+            caplog.clear()
+            (track,) = parser.parse_file(path)["tracks"]
+        assert track.get("is_untrimmed_only") is True
+        assert len(track["untrimmed_positions"]) == 23, path.name
+        assert len(track["untrimmed_errors"]) == 23, path.name
+        assert len(track["upper_limits"]) == len(track["lower_limits"]) == 23
+        assert not track.get("theory_volts")                 # the empty array stays empty...
+        said = [r.getMessage() for r in caplog.records if "truncating every one" in r.getMessage()]
+        assert said == [], said                              # ...and nothing is truncated over it
+
+
+def test_a_genuinely_ragged_sweep_is_still_truncated_and_says_so(tmp_path, caplog):
+    """The guard must not disarm the alignment it was added for: arrays that all carry data but end at
+    different rows are still cut to the shortest, with one warning naming every length."""
+    import logging
+    path = _name(tmp_path)
+    _make_workbook(path, lin_error="template", measured_short=5)
+    with caplog.at_level(logging.WARNING):
+        track = _parse_one_track(path)
+    lens = {k: len(track[k]) for k in ("untrimmed_positions", "untrimmed_errors", "upper_limits",
+                                       "lower_limits", "theory_volts") if track.get(k)}
+    assert len(set(lens.values())) == 1 and 0 < min(lens.values()) < _N_POINTS, lens
+    said = [r.getMessage() for r in caplog.records if "truncating every one to the shortest" in r.getMessage()]
+    assert len(said) == 1 and "theory_volts=" in said[0] and "shortest (0)" not in said[0]
