@@ -182,7 +182,9 @@ def test_findings_say_when_they_were_computed_and_the_clock_is_not_deprecated(tm
     import warnings
     db = _db(tmp_path)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)      # datetime.utcnow() is deprecated
+        # ONLY the old clock: a blanket "error" filter would fail this test the day some
+        # library on the save path deprecates something unrelated.
+        warnings.filterwarnings("error", message=r".*utcnow.*", category=DeprecationWarning)
         db.replace_process_findings("X", {"tracks": 1}, [_row("X", 1.0, 5)])
     got = db.get_process_findings("X")[0]
     assert got["computed_at"][:2] == "20" and got["title"] == "t"
