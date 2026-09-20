@@ -241,6 +241,25 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
       change.** They pick "the newest 4,000 rows" by id, and a fresh database
       renumbers. Means nothing; see `BRING_TO_WORK.md`.
 
+## E. Settings: one backlog upload instead of two inputs
+
+James, 2026-09-20: Settings has separate "Active models" and "Pricing" inputs; "we should
+simplify this and allow me to upload a current backlog to get active models and pricing
+all in one." A backlog export is in `Work Files/` (gitignored — it holds customer names,
+PO numbers and prices, and must never be committed).
+
+- [ ] **E1 · Design, then build.** What a first look at the file showed: one sheet, one row
+      per open order line, with `Item ID`, `Balance`, `Unit Price`, `Need Date`. 178 distinct
+      items have an open balance; **98 are models the app knows, and they hold 95% of the
+      open units**. The other 80 are mostly variants (`… FAI`, `… LAT`, `… TEST UNITS`) or
+      products the app never sees. 31 of the 98 carry more than one unit price, so a price
+      rule is needed. The hand-pinned active list is EMPTY today — nobody maintains it,
+      which is the case for replacing it. The existing price importer already recognises
+      this file's `Item ID` / `Unit Price` columns. Store only model, open quantity, price
+      and need date — never customer or PO. Possible bonus: rank Findings by real open
+      demand instead of last year's track count. *Waiting on three answers from James
+      (price rule, variant folding, replace-vs-merge); queued behind the engine build.*
+
 ## Housekeeping
 
 - [ ] **H1 · `CLAUDE.md` step 1 breaks the git remote.** There is no `.env`, so
