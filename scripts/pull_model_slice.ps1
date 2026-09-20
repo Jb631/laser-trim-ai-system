@@ -31,6 +31,12 @@ param(
 )
 
 $started  = Get-Date
+$failed   = 0
+# robocopy reads /MAXAGE values of 1900 or more as a DATE (YYYYMMDD), not as
+# days -- so "-Days 5000" was rejected as an invalid date and nothing copied
+# (2026-09-20). Always hand it a real date; then any number of days is safe.
+$cutoff   = (Get-Date).AddDays(-$Days).ToString("yyyyMMdd")
+Write-Host "copying files modified on or after $cutoff"
 foreach ($station in $Stations) {
     $root = Join-Path $Source $station
     if (-not (Test-Path $root)) { Write-Host "skip (not found): $root"; continue }
@@ -41,10 +47,22 @@ foreach ($station in $Stations) {
         foreach ($d in $dirs) {
             $target = Join-Path (Join-Path $Dest $station) $d.Name
             Write-Host ("`n== {0}\{1}" -f $station, $d.Name)
-            robocopy $d.FullName $target *.xls *.xlsx /S /Z /XO /MT:16 /MAXAGE:$Days /R:2 /W:5 /NP /NFL /NDL /NJH |
-                Select-String -Pattern "Files :|Bytes :|Speed :.*min" | ForEach-Object { "   " + $_.Line.Trim() }
+            # Capture first, THEN filter: piping robocopy straight into the filter
+            # loses its exit code, and the old filter threw the ERROR lines away,
+            # so a run that copied nothing still printed a cheerful "Done".
+            $out  = robocopy $d.FullName $target *.xls *.xlsx /S /Z /XO /MT:16 /MAXAGE:$cutoff /R:2 /W:5 /NP /NFL /NDL /NJH
+            $code = $LASTEXITCODE
+            $out | Select-String -Pattern "^\s*(Files|Bytes) :\s+\d|Speed :.*min|ERROR" |
+                ForEach-Object { "   " + $_.Line.Trim() }
+            if ($code -ge 8) {       # robocopy: 0-7 are flavours of success, 8+ is failure
+                $failed++
+                Write-Host "   ** ROBOCOPY FAILED (exit code $code) -- this folder was NOT copied" -ForegroundColor Red
+                $out | Select-Object -Last 6 | ForEach-Object { "      " + $_ }
+            }
         }
     }
 }
 $size  = (Get-ChildItem $Dest -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum)
-"`nDone in {0:N0} min: {1:N0} files, {2:N2} GB in {3}" -f ((Get-Date) - $started).TotalMinutes, $size.Count, ($size.Sum / 1GB), $Dest
+$verdict = if ($failed) { "FINISHED WITH $failed FAILED FOLDER(S)" } else { "Done" }
+"`n{4} in {0:N0} min. {3} now holds {1:N0} files, {2:N2} GB in total (all runs, not just this one)." -f ((Get-Date) - $started).TotalMinutes, $size.Count, ($size.Sum / 1GB), $Dest, $verdict
+if ($failed) { exit 1 }
