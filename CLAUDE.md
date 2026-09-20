@@ -157,9 +157,10 @@ green once). New features get a sweep entry in the same commit.
 ### What must never be stored (hard-won, 2026-09-20)
 - **A blank measurement is ungraded, never 0.0** — dead centre of the band is the most flattering
   value a zero-tolerance metric can hold.
-- **A file with no cut is not a trimmed unit.** Lasers 1 and 3 write a `Lin Error` sheet even when no
-  cut was made (the blank template: measured == theory). 1,182 tracks were stored as flawless
-  linearity PASSes that way. They take the UNTRIMMED path, and carry no laser pass.
+- **A file with no cut is not a trimmed unit.** Laser 1 writes a `Lin Error` sheet even when no cut
+  was made (the blank template: measured == theory). 1,182 tracks were stored as flawless linearity
+  PASSes that way (1,180 laser 1, 2 laser 2, none laser 3). They take the UNTRIMMED path, and carry
+  no laser pass.
 - **A record that failed processing is not a measurement.** ERROR rows carry the analyser's `999.999`
   marker; `core/model_stats.failed_processing_statuses()` is the ONE definition — filter with it
   before averaging anything.
@@ -217,6 +218,16 @@ Design docs live in git history at `4c6ebd8` under `archive/completed_docs/`.
 letters. **Laser 1 = `LTS` = System B. Laser 2 = `DLTS` = System A. Laser 3 = `LTS3` =
 System C.** Laser 2 (DLTS) is the one whose files carry per-position cut data. When
 writing to James, say "laser 2 (DLTS)" — never translate A/B/C to 1/2/3.
+
+**And laser 3 writes laser 2's sheets, not laser 1's** (James, 2026-09-20: "laser 2 & 3
+use the same style sheet not 1 & 3"). Several comments in this repo claimed the opposite.
+The data settles it: all 547 LTS3 tracks carry `track_id = 'TRK1'`, which only the System A
+reader produces, and LTS3 filenames follow the DLTS convention (`..._TEST DATA_...`), not
+the LTS one (`..._TA_Test Data_...`). `System C` is only an IDENTITY label applied from the
+folder name — `parse_file` passes the detected FORMAT to `_extract_tracks`, so an LTS3 file
+is read by the System A reader. Never pass `SystemType.C` to an extractor: the dispatch
+sends everything that is not A to the System B reader, and an A-format file read as B does
+not raise, it produces wrong numbers. Pinned by `tests/test_laser3_is_read_like_laser2.py`.
 **Data note:** Same serial number can appear multiple times — this is VALID (unit trimmed multiple times). Do not treat as duplicates.
 **Linearity spec:** Zero-tolerance — every single measurement point must be in-spec. This is a customer requirement, not configurable.
 

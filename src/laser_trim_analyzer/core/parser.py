@@ -776,7 +776,7 @@ class ExcelParser:
         """True when a "Lin Error" sheet is the station's blank template.
 
         When a sweep is taken but NO cut is made, laser 1 (LTS, System B) and
-        laser 3 (LTS3, System C) still write a "Lin Error" sheet: the template,
+        still writes a "Lin Error" sheet: the template,
         whose measured column is a verbatim copy of the theory column, leaving
         the error column identically zero. A genuine sweep never matches its
         own theory column to 1e-9 — that is four orders of magnitude below the
@@ -2124,7 +2124,7 @@ def detect_file_type(file_path: Path) -> str:
                 # thousands; measured 2026-09-20). Nothing to grade, so skipping
                 # is correct. This used to blame "the NEW third trim system, not
                 # supported yet" -- stale since System C (LTS3) support shipped,
-                # and LTS3 files are format-identical to System B anyway.
+                # and an LTS3 file is read by whichever reader its FORMAT selects.
                 # Kept at WARNING: a whole MODEL landing here would mean a sheet
                 # layout the parser does not know, and that must stay visible.
                 logger.warning(

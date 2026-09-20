@@ -60,7 +60,9 @@ def _real(x) -> bool:
 def _is_blank_template(errors) -> bool:
     """A final sweep whose every reading is EXACTLY 0.0 is not a measurement.
 
-    Lasers 1 and 3 write a template `Lin Error` sheet (measured == theory) when no cut is made.
+    Laser 1 writes a template `Lin Error` sheet (measured == theory) when no cut is made. (Laser 3
+    writes laser 2's sheets, not laser 1's, so it has no `Lin Error` sheet at all -- and none of the
+    1,182 affected tracks is laser 3.)
     The parser stopped taking it for a final sweep on 2026-09-20, but a database ingested before
     that still holds 1,182 such tracks as flawless linearity PASSes -- so the loader refuses them
     too. No real sweep has zero noise at every point.
@@ -121,7 +123,7 @@ def _date(v) -> Optional[datetime]:
 
 
 def _is_real_cut(sheet: Optional[str]) -> bool:
-    # Lasers 1 and 3 (LTS, LTS3) write a final `Lin Error` sheet that repeats the
+    # Laser 1 (LTS) writes a final `Lin Error` sheet that repeats the
     # last real cut (spec, Known limits). Counting it would add a pass that never ran.
     return not (sheet or "").strip().lower().startswith("lin error")
 

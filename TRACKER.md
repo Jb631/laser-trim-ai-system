@@ -20,7 +20,7 @@ once: `.venv\Scripts\python scripts\run_test_gate.py` — the whole test suite, 
 | | What was wrong | Evidence it is right now |
 |---|---|---|
 | 1 | **Final tests the station FAILED were stored as PASS.** When a sheet's error column is under 90 % filled (normal when the station ignores more than 10 % of its rows) the app recomputed the errors, divided them by full scale, and graded them against limits still in volts. | Real pipeline, before and after: 3,766 of 3,768 slice tracks unchanged in all 13 fields; of the 12 affected tracks 6 flip, **all PASS → FAIL**; agreement with the station's own verdict **5/12 → 11/12**; no station-PASS became a FAIL. ≈1.3 % of final-test files. |
-| 2 | **Units that were never cut were stored as flawless.** When no cut is made, lasers 1 and 3 still write a `Lin Error` sheet — the blank template. The app took it for the final sweep: zero error, linearity PASS. **1,182 tracks** (6126: 455 · 6607: 224 · 8340: 193 · 8232-1: 163 · 1844205: 92). | In your slice the workbook's REAL sweep is out of limits in **111 of 130**. They now load as UNTRIMMED, and no fake laser pass is written for them. Rebuilt slice: 8232-1 laser-1 yield **42.0 % → 39.1 %**; 0 errors in 13,031 files. |
+| 2 | **Units that were never cut were stored as flawless.** When no cut is made, laser 1 still writes a `Lin Error` sheet — the blank template. The app took it for the final sweep: zero error, linearity PASS. **1,182 tracks** (6126: 455 · 6607: 224 · 8340: 193 · 8232-1: 163 · 1844205: 92). | In your slice the workbook's REAL sweep is out of limits in **111 of 130**. They now load as UNTRIMMED, and no fake laser pass is written for them. Rebuilt slice: 8232-1 laser-1 yield **42.0 % → 39.1 %**; 0 errors in 13,031 files. |
 | 3 | **A race in my own speed fix from this morning** (already on `main`): the ingest workers share two caches with no lock. A collision records a GOOD file as ERROR. | Reproduced (325 exceptions in 6 s under a forced-switch loop), fixed, and a test proves the slow network read still happens outside the lock. |
 | 4 | `999.999` error markers were averaged into the evidence workbook and fed to the drift detector (8856, 2024-07: "mean sigma" **432.99** against a true 0.0012). | One shared definition, both consumers, tests red before and green after. |
 
@@ -287,7 +287,7 @@ screens parts.
       6828 (27%)**; all of laser 2 is 28% over 11,199 tracks.
 
 Traps the analyzers must respect (all written into the spec's known limits):
-on lasers 1 and 3 (LTS, LTS3) the last captured pass duplicates the one before, so **pass
+on laser 1 (LTS) the last captured pass duplicates the one before, so **pass
 counts run one high** · `points_ignored_start/end` are always blank on laser 2 (DLTS)
 and must never be read as 0 · `initial_trim_value` lives inside the recipe
 block, not its own column.

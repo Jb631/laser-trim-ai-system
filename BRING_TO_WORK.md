@@ -18,7 +18,7 @@ Then follow "The sequence" in the 2026-09-18 section exactly as written.
 
 - **About 1,100 more records marked UNTRIMMED, and laser yield slightly lower on the models they belong
   to** (6126, 6607, 8340, 8232-1, 1844205). These are files where the operator took a sweep and made **no
-  cut**. Lasers 1 and 3 still write a `Lin Error` sheet in that case — the blank template, measured equal
+  cut**. Laser 1 still writes a `Lin Error` sheet in that case — the blank template, measured equal
   to theory at every point — and the app had been storing it as a finished trim with zero error and a
   linearity PASS. In the home slice the real sweep in those same workbooks is out of limits in 111 of 130.
   The log says so once per file: *"Lin Error is the blank template — no cut was made"*.
