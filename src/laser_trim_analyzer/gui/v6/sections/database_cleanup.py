@@ -230,6 +230,62 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                   fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
                   corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
+    def _refresh_findings():
+        """Recompute cached process findings for every model (Task 10b, 2026-09-20).
+
+        The gap this closes: the post-ingest hook (Task 8) only computes
+        findings for the models in each NEW batch it ingests. After the
+        owner rebuilds his database from `main`, before this engine is
+        pushed, most models would otherwise never get findings without a
+        command line.
+
+        This only recomputes derived, cached findings -- it never touches a
+        stored measurement -- so unlike the destructive buttons above there
+        is no confirmation dialog.
+
+        One long job at a time (2026-09-14): a findings refresh reads the
+        whole database while an ingest or re-grade might be writing it, so
+        refuse BEFORE touching the database -- the same guard
+        `_regrade_final_tests` above uses.
+        """
+        from laser_trim_analyzer.findings import engine as _findings
+
+        busy = getattr(app, "active_run_name", lambda: None)()
+        if busy:
+            status.configure(
+                text=f"{busy} is running — let it finish first. Findings "
+                     f"read the same database it is writing.")
+            return
+
+        status.configure(text="Working out process findings for every "
+                              "model… this can take a few minutes.")
+
+        cancel = threading.Event()
+
+        def work():
+            try:
+                stored = _findings.refresh_findings(db)
+                return (f"Process findings refreshed: {stored:,} findings. "
+                        f"Open Findings in the sidebar.")
+            finally:
+                # Posted, not called: the run registry is Tk-thread state
+                # and this `finally` runs on the worker -- mirrors the
+                # re-grade's own unregister below.
+                drop = getattr(app, "unregister_ingest", None)
+                if drop is not None:
+                    post_ui(app, lambda: drop(cancel))
+
+        thread = _async(work)
+        register = getattr(app, "register_ingest", None)
+        if register is not None and thread is not None:
+            register(cancel, thread, "A findings refresh")
+
+    ctk.CTkButton(parent, text="Refresh process findings",
+                  command=_refresh_findings, fg_color=t.CARD,
+                  hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
+                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w",
+                                                  pady=(t.SPACE_SM, 0))
+
     def _recompute_statuses():
         """Re-grade Pass/Warning/Fail from stored track flags (M4, 2026-07-07).
 
