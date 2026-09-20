@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime
 
 from laser_trim_analyzer.findings.analyzers import ink_target
@@ -27,3 +28,20 @@ def test_a_recipe_change_cannot_masquerade_as_a_resistance_effect():
     pooled = spearman([t.untrimmed_resistance for t in old + new], [1.0 if t.linearity_pass else 0.0 for t in old + new])
     assert pooled < -0.25                                  # the trap is really there...
     assert ink_target.analyze("M", old + new, label) == [] # ...and the analyzer does not fall in
+
+def test_the_configured_window_reported_is_the_most_recent_one_not_the_highest_resistance_ones():
+    tracks = ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25)
+    newest = max(tracks, key=lambda t: t.file_date)
+    highest = max(tracks, key=lambda t: t.untrimmed_resistance)
+    assert newest.track_id != highest.track_id          # otherwise this test proves nothing
+    tracks = [replace(t, initial_r_low=4000.0, initial_r_high=4400.0) if t.track_id == newest.track_id
+              else replace(t, initial_r_low=4200.0, initial_r_high=4600.0) for t in tracks]
+    (f,) = ink_target.analyze("M", tracks, label)
+    assert f.evidence["configured_incoming"] == (4000.0, 4400.0)
+    assert "4,000 to 4,400" in f.summary and "4,200 to 4,600" not in f.summary
+
+
+def test_no_configured_window_is_said_plainly():
+    (f,) = ink_target.analyze("M", ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25), label)
+    assert f.evidence["configured_incoming"] is None
+    assert "no configured incoming window" in f.summary

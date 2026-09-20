@@ -71,8 +71,14 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
     if gain < MIN_GAIN_POINTS:
         return []
     direction = "lower" if rho < 0 else "higher"
-    configured = next(((t.initial_r_low, t.initial_r_high) for t in reversed(ts)
-                       if t.initial_r_low and t.initial_r_high), None)
+    # The station's CURRENT incoming window: from the most recent track that carries one.
+    # `ts` was sorted by RESISTANCE for the binning above, so walking it backwards finds the
+    # highest-resistance track, not the newest -- a stale window reported as the current one.
+    with_window = [t for t in ts if t.initial_r_low and t.initial_r_high]
+    configured = None
+    if with_window:
+        newest = max(with_window, key=lambda t: t.file_date)
+        configured = (newest.initial_r_low, newest.initial_r_high)
     first, last = min(t.file_date for t in ts).date(), max(t.file_date for t in ts).date()
     return [Finding(
         model=model, analyzer="ink_target", category="Ink target",

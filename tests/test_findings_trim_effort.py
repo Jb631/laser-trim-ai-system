@@ -29,3 +29,12 @@ def test_later_cuts_that_add_nothing_are_a_finding():
     _, findings = trim_effort.analyze("M", tracks, label)
     f = [x for x in findings if x.category == "Pass effectiveness"]
     assert len(f) == 1 and f[0].lever == "laser_settings"
+
+def test_a_thin_sample_says_nothing_but_still_reports_the_facts():
+    # 25% arrive in spec and the later cuts add nothing -- both would be findings at n=200 --
+    # but 60 tracks is not enough to say so.
+    tracks = [make_track(i, date=d, system="A", untrimmed_worst=0.6 if i % 4 == 0 else 2.0,
+                         passes=((1.4, 0.75), (1.4, 0.88)), r_in=4300.0) for i, d in enumerate(days(START, 60))]
+    facts, findings = trim_effort.analyze("M", tracks, label)
+    assert findings == []
+    assert facts["A"]["arrive_in_spec_pct"] == 25.0 and facts["A"]["multi_cut_n"] == 60
