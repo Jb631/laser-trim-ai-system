@@ -6,6 +6,21 @@ step-by-step instructions at the work machine; this is the index above it.
 
 Last updated: 2026-09-20
 
+## ▶ While you were away (kept current by Claude)
+
+You said: *"keep pushing through the tracker, dont stop"* and *"you can dispatch multiple agents to
+work in parallel"*. Both are happening. **Nothing has been pushed to `main`** — you pull `main` for
+the rebuild, so a large new feature should not land there unattended. Everything is committed on
+this Mac's `V6` branch. When you have looked it over:
+
+    git push origin V6 && git push origin V6:main
+
+Running order while you are away: (1) finish the findings engine — tasks 1–6 done and reviewed,
+task 7 building, then tasks 8, 9, 10, 10b in parallel with (2) your backlog upload (section E);
+(3) the code review (section C) — three reviewers are reading the codebase now; its ranked list
+will be `docs/CODE_REVIEW_2026-09-20.md`. One thing will still need your eyes: the engine adds a
+seventh sidebar entry, **Findings**, after Investigate. Say so if you would rather it lived on Home.
+
 ## Which laser is which
 
 The shop's numbers do NOT follow the code's letters (James, 2026-09-20):
