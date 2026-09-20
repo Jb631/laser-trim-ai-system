@@ -1135,8 +1135,14 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
     if gain < MIN_GAIN_POINTS:
         return []
     direction = "lower" if rho < 0 else "higher"
-    configured = next(((t.initial_r_low, t.initial_r_high) for t in reversed(ts)
-                       if t.initial_r_low and t.initial_r_high), None)
+    # The station's CURRENT incoming window: from the most recent track that carries one.
+    # `ts` was sorted by RESISTANCE for the binning above, so walking it backwards finds the
+    # highest-resistance track, not the newest -- a stale window reported as the current one.
+    with_window = [t for t in ts if t.initial_r_low and t.initial_r_high]
+    configured = None
+    if with_window:
+        newest = max(with_window, key=lambda t: t.file_date)
+        configured = (newest.initial_r_low, newest.initial_r_high)
     first, last = min(t.file_date for t in ts).date(), max(t.file_date for t in ts).date()
     return [Finding(
         model=model, analyzer="ink_target", category="Ink target",
@@ -1157,6 +1163,9 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
         evidence={"bins": bins, "window": best, "overall_pct": overall, "recipe": describe(recipe),
                   "configured_incoming": configured, "period": [first.isoformat(), last.isoformat()]})]
 ```
+
+
+> **Corrected during execution (2026-09-20, Task 4–6 review).** The prototype built `configured` by walking the RESISTANCE-sorted list backwards, so it reported the highest-resistance track's incoming window as the station's current one; and `trim_effort`'s `MIN_N` gate had no test. Both were the plan author's defects, transcribed faithfully. Fixed in a fix round with three added tests (`test_the_configured_window_reported_is_the_most_recent_one…`, `test_no_configured_window_is_said_plainly`, `test_a_thin_sample_says_nothing_but_still_reports_the_facts`); the code block above already carries the fix. Task 5 therefore ends with 4 tests and Task 6 with 6.
 
 - [ ] **Step 4: Run it and see it pass.** Expected: 4 passed.
 
