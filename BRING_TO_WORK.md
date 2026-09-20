@@ -1,5 +1,52 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-20 night — BEFORE the rebuild: push at home, pull at work, then run it
+
+The rebuild below (2026-09-18 section) is unchanged. What changed is **what it will store**, because
+four bugs were found and fixed the night before. They only reach the work laptop if they are on `main`.
+
+**At home (the Mac), once you have read the top of `TRACKER.md`:**
+
+    git push origin V6 && git push origin V6:main
+
+**At work:**
+
+    git pull
+    .venv\Scripts\python scripts\run_test_gate.py        # optional, ~3–5 minutes: the WHOLE test suite, every file OK
+
+Then follow "The sequence" in the 2026-09-18 section exactly as written.
+
+### What will look different after this rebuild — and why it is right
+
+- **About 1,100 more records marked UNTRIMMED, and laser yield slightly lower on the models they belong
+  to** (6126, 6607, 8340, 8232-1, 1844205). These are files where the operator took a sweep and made **no
+  cut**. Lasers 1 and 3 still write a `Lin Error` sheet in that case — the blank template, measured equal
+  to theory at every point — and the app had been storing it as a finished trim with zero error and a
+  linearity PASS. In the home slice the real sweep in those same workbooks is out of limits in 111 of 130.
+  The log says so once per file: *"Lin Error is the blank template — no cut was made"*.
+- **A few hundred final-test verdicts move PASS → FAIL.** Sheets whose error column is under 90 % filled
+  (normal when the station ignores more than 10 % of its rows) had their errors recomputed, divided by
+  full scale, and graded against limits still in volts. On the files checked, the app now agrees with the
+  station's own verdict on 11 of 12 where it agreed on 5.
+- **No good file should come back as ERROR because of a worker collision** — the two caches the ingest
+  workers share are locked now. If you still see `KeyError` in an ERROR row's message, tell me.
+- **Findings appear by themselves.** After each trim folder finishes, the app works out process findings
+  for the models in it (a minute or two per folder, guarded — it cannot fail an ingest). Open **Findings**
+  in the sidebar. If you rebuild BEFORE pulling this, press Settings → Database → **Refresh process
+  findings** once afterwards.
+
+### A correction to the 2026-09-18 section below
+
+It says *"645 real files were parsed by the old code and the new code, and every stored value compared.
+Zero differences."* The 26-stored-columns proof is exactly that. The 645-file test was NOT: until
+2026-09-20 it compared only whether each file parsed (`error < empty < ok`), and exact numbers for five
+models. On 09-20 every stored value was compared for real: **633 of 641 files identical; the other 8 are
+all explained, deliberate changes** (five final-test verdicts from the graded-window rule of 09-13, each
+now agreeing with the station; two from the units fix above; one recovered blank cell). The test compares
+every value from now on.
+
+---
+
 ## ⚡ 2026-09-18 — THE BIG ONE: a fresh database, run overnight
 
 This is the run everything else has been waiting for. Budget **four to eight

@@ -6,20 +6,71 @@ step-by-step instructions at the work machine; this is the index above it.
 
 Last updated: 2026-09-20
 
-## ▶ While you were away (kept current by Claude)
+## ▶ Read this before you start the rebuild (Claude, night of 2026-09-20)
 
-You said: *"keep pushing through the tracker, dont stop"* and *"you can dispatch multiple agents to
-work in parallel"*. Both are happening. **Nothing has been pushed to `main`** — you pull `main` for
-the rebuild, so a large new feature should not land there unattended. Everything is committed on
-this Mac's `V6` branch. When you have looked it over:
+**Nothing has been pushed.** Everything below is committed on this Mac's `V6` branch and tested.
+You pull `main` on the work laptop, so the rebuild only gets tonight's fixes if you push first:
 
-    git push origin V6 && git push origin V6:main
+    git push origin V6 && git push origin V6:main          # everything (recommended — see "What is new")
+    git push origin prebuild-fixes:main                    # ONLY the fixes that change what gets stored
 
-Running order while you are away: (1) finish the findings engine — tasks 1–6 done and reviewed,
-task 7 building, then tasks 8, 9, 10, 10b in parallel with (2) your backlog upload (section E);
-(3) the code review (section C) — three reviewers are reading the codebase now; its ranked list
-will be `docs/CODE_REVIEW_2026-09-20.md`. One thing will still need your eyes: the engine adds a
-seventh sidebar entry, **Findings**, after Investigate. Say so if you would rather it lived on Home.
+then on the work laptop: `git pull`.
+
+### Four fixes that change what the rebuild stores — take these with you
+
+| | What was wrong | Evidence it is right now |
+|---|---|---|
+| 1 | **Final tests the station FAILED were stored as PASS.** When a sheet's error column is under 90 % filled (normal when the station ignores more than 10 % of its rows) the app recomputed the errors, divided them by full scale, and graded them against limits still in volts. | Real pipeline, before and after: 3,766 of 3,768 slice tracks unchanged in all 13 fields; of the 12 affected tracks 6 flip, **all PASS → FAIL**; agreement with the station's own verdict **5/12 → 11/12**; no station-PASS became a FAIL. ≈1.3 % of final-test files. |
+| 2 | **Units that were never cut were stored as flawless.** When no cut is made, lasers 1 and 3 still write a `Lin Error` sheet — the blank template. The app took it for the final sweep: zero error, linearity PASS. **1,182 tracks** (6126: 455 · 6607: 224 · 8340: 193 · 8232-1: 163 · 1844205: 92). | In your slice the workbook's REAL sweep is out of limits in **111 of 130**. They now load as UNTRIMMED, and no fake laser pass is written for them. Rebuilt slice: 8232-1 laser-1 yield **42.0 % → 39.1 %**; 0 errors in 13,031 files. |
+| 3 | **A race in my own speed fix from this morning** (already on `main`): the ingest workers share two caches with no lock. A collision records a GOOD file as ERROR. | Reproduced (325 exceptions in 6 s under a forced-switch loop), fixed, and a test proves the slow network read still happens outside the lock. |
+| 4 | `999.999` error markers were averaged into the evidence workbook and fed to the drift detector (8856, 2024-07: "mean sigma" **432.99** against a true 0.0012). | One shared definition, both consumers, tests red before and green after. |
+
+**After the rebuild expect:** laser yield a little LOWER on models with no-cut files (that is the fake
+passes leaving), a few hundred final-test verdicts moving PASS → FAIL, and ~1,100 more UNTRIMMED records.
+
+### What is new
+
+- **Findings** — a sidebar page ranking every model's findings, a Findings tab on the Model page, a
+  "Refresh process findings" button in Settings → Database. It fills in by itself after each ingest.
+  Three analyzers so far: ink target (held to one laser, one recipe **and one limit table**), recipe
+  change, trim effort / trim avoidance. It says nothing when there is nothing to say, and names an
+  analyzer that crashed instead of going quiet.
+- **One backlog upload** in Settings replaces the active-model and pricing inputs (latest order's price;
+  FAI / LAT / test-unit lines never count; the active list is replaced, prices are merged).
+- **The test suite runs.** It never took 2.5 hours — it HUNG (a test fixture kept a second Tk window
+  alive). **1,7xx tests, 0 failures, ~3 minutes.** New gate: `python scripts/run_test_gate.py`.
+- **The whole-app review you asked for:** `docs/CODE_REVIEW_2026-09-20.md` — 45 findings, ranked by
+  what they cost you, with what was fixed tonight and what needs your decision.
+
+### Something you may not know: 17 model/laser combinations are graded against TWO limit tables
+
+Within their latest 12 months (a table counted only with 30+ tracks; per track name):
+**8232-1 on laser 1** — 89 graded points until 2025, 45 since, same band; the 45-point table is the one
+final test uses (34 % vs 49 % leave the laser inside limits). **8506A / 8506B on laser 2** — every band
+loosened from ±0.01 V to ±0.0375 V in the first week of July 2025 (83 → 100 %, 70 → 100 %).
+**8340 on laser 1** — the later table is wider at four end positions by up to 0.164 V (34 → 82 %).
+A pass rate is a verdict against a test; every trend across such a change compares two tests. The app
+now reports these as findings (lever: laser limit table, same day). **Were the 8506 limits changed by
+ECN? Which 8232-1 table is the intended one?**
+
+### Decisions that are yours (none blocks the rebuild)
+
+1. **Ungraded final tests count as PASS** at file level and FAIL at track level. Small overall (0.19 %),
+   large per model: 8502 reads 27.6 % FT pass, 15.5 % over files that were really graded.
+2. **One definition of yield.** The Excel export says 12.3 %, the app says 76.0 %, same data (the
+   export counts WARNING as a failure; your rule says sigma is never a rejection).
+3. **"Fix Missing Tracks" writes invented numbers** (sigma 0, spec 0.02). Proposal: write blanks.
+4. **Five backfill scripts write to the work database by default**; one has no dry run at all.
+5. **A full final-test rematch can fire at app startup** after a migration — the shape of the 09-14 night.
+6. Sidebar: **Findings** sits third, after Investigate. Say if you would rather it lived on Home.
+7. Backlog prices are MERGED on upload (a model that drops off the backlog keeps its last price).
+8. A no-cut check sweep is a real measurement of the unit at that moment. Should it count for anything?
+
+### One thing of mine to own
+
+A test I briefed used a real (model, price) pair from your backlog as "example data". It was committed
+locally, never pushed; I rewrote the local history to remove it and a checker now scans every commit
+before a push (`.superpowers/checks/backlog_leak_check.py`). Local commit hashes changed as a result.
 
 ## Which laser is which
 
@@ -197,17 +248,31 @@ screens parts.
       one value per pass; neither follows the resistance change (James's guess, tested:
       +0.01 / +0.07). The per-position data that matters is the cut applied plus the
       output before and after.
-- [ ] **B5 · Recommendation engine + the first three analyzers** — PLAN WRITTEN 2026-09-20:
-      `docs/superpowers/plans/2026-09-20-process-findings-engine.md` (11 tasks). Its core code was
-      prototyped and RUN on the home slice before the plan was written: 8232-1 → 4 findings (ink
-      target ≈ 34 units/yr held to one laser and one recipe; three recipe changes incl. laser 2's
-      2019 change, 84% → 32% and back), 8340-1 → nothing to act on, 2475-10 → 20% arrive already
-      in linearity spec and 27 of those 31 are below the resistance floor. Awaiting execution.
-      *Was:* Recommendation engine + the ink-target finding, end to end, on
-      both screens. Gets its own plan, written after B2 so it is designed
-      against real data.
-- [ ] **B6 · The other nine findings**, one at a time, each with a test that it
-      says nothing when there is nothing to say.
+- [x] **B5 · Recommendation engine + the first three analyzers — SHIPPED** (2026-09-20, plan
+      `docs/superpowers/plans/2026-09-20-process-findings-engine.md`, 11 tasks, every task reviewed).
+      What you have: a **Findings** page in the sidebar (every model's findings, ranked by
+      recoverable units a year), a **Findings tab** on the Model page (what was measured, then what
+      to do about it, then the recipe history and the limit tables), a **Refresh process findings**
+      button in Settings → Database, and a post-ingest phase that works them out by itself after
+      every batch that saves trims. Three analyzers: ink target, recipe change, trim effort /
+      trim avoidance — plus the limit-table analyzer from B6a below.
+      On the rebuilt home slice (3 models): 8 findings in 17 s, no analyzer failures.
+      It can say nothing, and when an analyzer CRASHES the screen names it instead of going quiet.
+- [x] **B6a · Limit tables (catalogue finding #7) — SHIPPED** (2026-09-20, plan
+      `docs/superpowers/plans/2026-09-20-limit-tables.md`). Found on your real database: **17
+      (model, track, laser) groups are graded against two or more limit tables inside their latest
+      12 months.** 8232-1 on laser 1 at 89 graded points until 2025 and 45 since (the 45-point
+      table is the one final test uses); 8506A/B with every band loosened from ±0.01 V to ±0.0375 V
+      in the first week of July 2025; 8340 with the later table wider at four end positions.
+      A pass rate is a verdict against a test, so the analyzer reports these and never claims a
+      gain — and `ink_target` now holds the limit table (and the station's final-resistance window)
+      constant, because pooling across a change of test had it manufacturing an "aim lower"
+      recommendation out of thin air.
+- [ ] **B6 · The remaining eight findings**, one at a time, each with a test that it
+      says nothing when there is nothing to say. The frame is built and proven; each is now a
+      day's work. Next two, in order: **#2 station setup mismatch** (the laser and final test
+      grading to different limit tables — D1 below is its first case, and it needs the rebuilt
+      final-test data) and **#5 rework load** (hand-trim volume per model).
 - [ ] **B7 · Cut-length model — PROMOTED** (James, 2026-09-20: "i want to do the
       cut length model i feel that is important"). No longer waits for the full
       rebuild: the home slice supplies real data now. Still gets its own design
@@ -232,16 +297,15 @@ Agreed shape: **not** one big rewrite — the outputs go to customers. A review
 that produces a ranked list by what each problem costs, then the worst items
 one at a time, each proven against the 645-file baseline. *Starts after B2.*
 
-- [ ] **C1 · The review itself** → a ranked list. Evidence already in hand:
-  - the same hash bug existed three times, once per parser (fixed `0add30e`)
-  - `database/manager.py` is over 10,000 lines
-  - ~70 call sites use a global database handle that ignores a test's
-    database and opens the real one
-  - `generate_plots` is a parameter nothing reads
-  - several QA-sweep checks could not fail (fixed), and
-    `scripts/app_qa_sweep.py` is over 3,000 lines
-  - trained models were saved under scikit-learn 1.8.0 and load under 1.9.0
-    on the Mac with a version warning
+- [x] **C1 · The review itself — DONE** (2026-09-20) → **`docs/CODE_REVIEW_2026-09-20.md`**,
+      45 findings ranked by what each costs you, with what was fixed the same night and what needs
+      a decision from you. Three reviewers read the whole codebase in parallel and every claim
+      about data was checked against a read-only connection to the work database.
+      Its one-line answer: **the app does not need a rewrite.** It needs three diseases treated —
+      the same rule written in several places that have drifted apart, failures that are allowed
+      to look like results, and safety nets that could not fail.
+      Nine of the findings were fixed the same night (see "Done recently"); the rest are in §6 and
+      §9 of that document, including the four that need your decision.
 - [ ] **C2… · Refactors**, from the top of that list.
 
 ## D. Checks at the shop — James
@@ -304,6 +368,27 @@ PO numbers and prices, and must never be committed).
   (`scripts/atp_spec_audit.py`).
 
 ## Done recently
+
+**The night of 2026-09-20** (one session; every item tested, each fix made to fail first):
+
+- **Four fixes to what gets STORED**, all described at the top of this file: final tests the station
+  failed being stored as passes; units that were never cut being stored as flawless; a thread race
+  in the morning's speed fix that could record a good file as an ERROR; `999.999` markers being
+  averaged into the evidence workbook and the drift detector.
+- **The findings engine and the limit-table analyzer** (B5, B6a above).
+- **One backlog upload** replaces the active-models and pricing inputs in Settings.
+- **The test suite runs**: it never took 2.5 hours, it hung. ~1,800 tests in about 3 minutes;
+  `python scripts/run_test_gate.py` is the gate now.
+- **The 645-file parse gate compares every value**, not just whether a file parsed. It had been
+  described as a full diff in two places, including by me.
+- **One production-database guard** (`scripts/_db_guard.py`) compares the FILE, not the path text,
+  and no test names the real database any more.
+- **Screens stop lying when a query fails**: the Model page names what could not be loaded instead
+  of rendering "no data", never leaves the previous model's verdict on screen, and no longer says
+  "NOT TRAINED" when the drift query simply failed.
+- Claude's own mistake, fixed: an example price in a test was a real one from the backlog export.
+  Scrubbed from local history before the push; `.superpowers/checks/backlog_leak_check.py` now
+  scans every commit in a range before any push.
 
 - 2026-09-20 · the app now SHOWS the shop's laser names — "Laser 1 (LTS)",
   "Laser 2 (DLTS)", "Laser 3 (LTS3)" — on the company trend chart (legend in

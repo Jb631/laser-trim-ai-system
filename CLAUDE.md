@@ -92,6 +92,25 @@ src/laser_trim_analyzer/
    pinned venv (run_v6.bat). Single user; an EXE would need IT whitelisting.
    Do not re-suggest PyInstaller packaging.
 
+### The test suite is the gate (2026-09-20)
+
+    python scripts/run_test_gate.py          # every tests/test_*.py, one file per process, ~3-5 min
+
+**The suite was never slow — it HUNG**, at >100% CPU, which looks identical to slow. The cause was a
+session-scoped `tk_root` fixture leaving two or three live CTk roots in one process, so `update()`
+never returned. Fixed 2026-09-20 (`7d8a91e`); `tk_root` is function-scoped and must stay that way.
+The whole suite is now ~1,800 tests in about three minutes, so **run all of it** — a hand-picked file
+list is what let two broken tests reach `main` on 2026-09-20. `run_test_gate.py` runs one file per
+process with a hard time limit (a hang is killed and named), reads counts from junit, and treats a
+file that collected nothing as a FAILURE.
+
+Two more traps this repo has fallen into, both now fixed but worth knowing:
+* `pytest -q` used to print NO pass count at all (`addopts` already carried `-q`, so `-q` again meant
+  verbosity -2). Read counts from the junit `<testsuite>` element, never from a piped tail.
+* `tests/test_parse_all_models.py` (645 real files) compared only whether each file parsed, not the
+  numbers, while two documents described it as a full diff. It compares every frozen value now; if it
+  fails, refresh only the entry that moved and say why in the commit.
+
 ### QA Sweeps (mandatory before calling any change done)
 Two standing harnesses exercise the whole app against a COPY of the real DB —
 run BOTH after any change to charts, queries, exports, or page data-loaders.
@@ -125,6 +144,23 @@ green once). New features get a sweep entry in the same commit.
    ignore those cells." Blank cells are ungraded, never 0.0. One grading body,
    `core/ft_regrade.grade_ft_track`, shared by the processor and the re-grade
    repair pass.
+
+### What must never be stored (hard-won, 2026-09-20)
+- **A blank measurement is ungraded, never 0.0** — dead centre of the band is the most flattering
+  value a zero-tolerance metric can hold.
+- **A file with no cut is not a trimmed unit.** Lasers 1 and 3 write a `Lin Error` sheet even when no
+  cut was made (the blank template: measured == theory). 1,182 tracks were stored as flawless
+  linearity PASSes that way. They take the UNTRIMMED path, and carry no laser pass.
+- **A record that failed processing is not a measurement.** ERROR rows carry the analyser's `999.999`
+  marker; `core/model_stats.failed_processing_statuses()` is the ONE definition — filter with it
+  before averaging anything.
+- **A failure must never look like a result.** An analyzer that crashes is named in `facts["errors"]`;
+  a loader that fails is named in a banner, never rendered as "no data"; a long run that half-worked
+  says how many models failed.
+- **A pass rate is a verdict against a TEST.** 17 (model, track, laser) groups are graded against two
+  or more limit tables inside one year, so never compare pass rates across a table change — the
+  `limit_tables` analyzer reports them, and `ink_target` holds the table (and the station's
+  final-resistance window) constant.
 
 ### Code Style
 - Type hints where practical
