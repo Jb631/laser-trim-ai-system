@@ -67,3 +67,32 @@ def ink_tracks(n: int, start: datetime, cuts, p_of_r, first_id: int = 0, r_lo: f
         ps = tuple((0.8 if (good and j == len(cuts) - 1) else 1.5, c) for j, c in enumerate(cuts))
         out.append(make_track(first_id + k, date=d, passes=ps, r_in=r))
     return out
+
+
+def table(n_points: int = 12, half: float = BAND, span=(-10.0, 10.0), end_half=None):
+    """A limit table as (positions, upper, lower): `n_points` evenly spaced across `span`, half-width
+    `half` everywhere (or `end_half` on the first and last point -- a bowtie's wide ends)."""
+    lo, hi = span
+    pos = tuple(lo + (hi - lo) * i / (n_points - 1) for i in range(n_points))
+    halves = [half] * n_points
+    if end_half is not None:
+        halves[0] = halves[-1] = end_half
+    return pos, tuple(halves), tuple(-h for h in halves)
+
+
+def on_table(track: TrackView, tab, name: str = "Track A") -> TrackView:
+    """The same track, graded against `tab` (from `table()`), on track `name`."""
+    from dataclasses import replace
+    pos, up, lo = tab
+    return replace(track, final_positions=pos, final_upper=up, final_lower=lo, track_name=name)
+
+
+def table_era(first_id: int, start: datetime, n: int, tab, good_share: float, *, system: str = "B",
+              name: str = "Track A", step_days: float = 1.0, cuts=(1.0,), r_in: float = 4500.0):
+    """`n` tracks graded against `tab`, one every `step_days`, `good_share` of them passing."""
+    out = []
+    for k, d in enumerate(days(start, n, step_days)):
+        good = (k % 100) < good_share * 100
+        ps = tuple((0.8 if (good and j == len(cuts) - 1) else 1.5, c) for j, c in enumerate(cuts))
+        out.append(on_table(make_track(first_id + k, date=d, passes=ps, system=system, r_in=r_in), tab, name))
+    return out

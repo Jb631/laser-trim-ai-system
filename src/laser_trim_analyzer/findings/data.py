@@ -1,6 +1,8 @@
 """One read of a model's tracks, shaped for the analyzers. No analyzer writes SQL."""
+import hashlib
 import json
 from dataclasses import dataclass
+from functools import cached_property
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +22,54 @@ class PassView:
 
 
 @dataclass(frozen=True)
+class LimitTable:
+    """The per-point limits a track was graded against -- the TEST it was held to.
+
+    Two tracks of one model on one laser are only comparable when `key` matches: the fleet survey
+    of 2026-09-20 found 17 (model, track, laser) groups graded against two or more tables inside
+    one year -- 8232-1 on laser 1 at 89 points AND at 45, 8506A/B with every band loosened 3.75x
+    in July 2025. A yield compared across two tables is a comparison of two tests.
+    """
+    key: str                                   # fingerprint of the exact (upper, lower) content
+    rows: int
+    graded: int                                # rows carrying a usable limit pair
+    band: Tuple[Tuple[float, float], ...]      # (position, half-width) for graded rows, by position
+
+
+def limit_table_of(positions, upper, lower) -> Optional[LimitTable]:
+    """The table behind one sweep's limits, or None when there is no usable one."""
+    if not upper or not lower or len(upper) != len(lower):
+        return None
+    pts = [(None if not _real(u) else round(u, 5), None if not _real(l) else round(l, 5))
+           for u, l in zip(upper, lower)]
+    graded = [i for i, (u, l) in enumerate(pts) if u is not None and l is not None and u > l]
+    if len(graded) < 3:
+        return None
+    band = []
+    if positions and len(positions) == len(pts):
+        band = sorted((round(positions[i], 3), round((pts[i][0] - pts[i][1]) / 2.0, 5))
+                      for i in graded if _real(positions[i]))
+    return LimitTable(key=hashlib.md5(json.dumps(pts).encode()).hexdigest()[:10],
+                      rows=len(pts), graded=len(graded), band=tuple(band))
+
+
+def _real(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x
+
+
+def _is_blank_template(errors) -> bool:
+    """A final sweep whose every reading is EXACTLY 0.0 is not a measurement.
+
+    Lasers 1 and 3 write a template `Lin Error` sheet (measured == theory) when no cut is made.
+    The parser stopped taking it for a final sweep on 2026-09-20, but a database ingested before
+    that still holds 1,182 such tracks as flawless linearity PASSes -- so the loader refuses them
+    too. No real sweep has zero noise at every point.
+    """
+    real = [e for e in (errors or ()) if _real(e)]
+    return len(real) >= 10 and all(e == 0.0 for e in real)
+
+
+@dataclass(frozen=True)
 class TrackView:
     track_id: int
     file_date: datetime
@@ -36,6 +86,12 @@ class TrackView:
     final_r_low: Optional[float]
     final_r_high: Optional[float]
     passes: Tuple[PassView, ...]      # REAL cuts only, in order
+    track_name: str = "default"       # "Track A", "TRK1" ... a model's tracks may carry different limits
+    final_positions: Optional[Tuple] = None
+
+    @cached_property
+    def limit_table(self) -> Optional[LimitTable]:
+        return limit_table_of(self.final_positions, self.final_upper, self.final_lower)
 
     @property
     def recipe(self) -> Tuple:
@@ -82,7 +138,7 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
             "SELECT t.id, a.file_date, a.system, t.untrimmed_errors, t.untrimmed_resistance, "
             "       t.trimmed_resistance, t.error_data, t.upper_limits, t.lower_limits, t.linearity_pass, "
             "       s.initial_resistance_low, s.initial_resistance_high, "
-            "       s.final_resistance_low, s.final_resistance_high "
+            "       s.final_resistance_low, s.final_resistance_high, t.track_id, t.position_data "
             "FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
             "LEFT JOIN trim_setup s ON s.analysis_id = a.id "
             "WHERE a.model = :m AND a.system IN ('A','B','C') "
@@ -100,13 +156,18 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
         d = _date(r[1])
         if d is None:
             continue
+        final_errors = _arr(r[6])
+        verdict = None if r[9] is None else bool(r[9])
+        if _is_blank_template(final_errors):
+            final_errors, verdict = None, None        # the limits stay: they ARE the table in service
         out.append(TrackView(
             track_id=r[0], file_date=d, system=str(r[2]),
             untrimmed_errors=_arr(r[3]), untrimmed_resistance=r[4], trimmed_resistance=r[5],
-            final_errors=_arr(r[6]), final_upper=_arr(r[7]), final_lower=_arr(r[8]),
-            linearity_pass=None if r[9] is None else bool(r[9]),
+            final_errors=final_errors, final_upper=_arr(r[7]), final_lower=_arr(r[8]),
+            linearity_pass=verdict,
             initial_r_low=r[10], initial_r_high=r[11], final_r_low=r[12], final_r_high=r[13],
-            passes=tuple(passes.get(r[0], ()))))
+            passes=tuple(passes.get(r[0], ())),
+            track_name=str(r[14]) if r[14] else "default", final_positions=_arr(r[15])))
     return out
 
 

@@ -78,3 +78,40 @@ def test_one_corrupt_stored_array_costs_that_track_not_the_whole_model():
     assert _arr("[1, 2, 3]") == (1, 2, 3)
     assert _arr("[1, 2, ") is None and _arr("not json") is None and _arr(b"\xff\xfe") is None
     assert _arr(None) is None and _arr('{"a": 1}') is None and _arr([4, 5]) == (4, 5)
+
+
+def test_the_loader_carries_the_track_name_the_positions_and_so_the_limit_table(fixture_db):
+    from laser_trim_analyzer.findings.data import load_model_tracks
+    tracks = load_model_tracks(fixture_db, "8232-1")
+    # laser 2 names its tracks in the sheet ("TRK1"); laser 1 takes the letter from a `_TA_` in the FILE
+    # name, which these renamed fixtures do not have -- real files do ("Track A").
+    assert {(t.system, t.track_name) for t in tracks} == {("A", "TRK1"), ("B", "default")}
+    for t in tracks:
+        assert t.final_positions is not None and len(t.final_positions) == len(t.final_upper)
+        tab = t.limit_table
+        assert tab is not None and tab.rows == len(t.final_upper) and 3 <= tab.graded <= tab.rows
+        assert len(tab.band) == tab.graded                      # every graded row has a position
+    # the two lasers' fixtures were graded against different tables; each laser against ONE
+    assert len({t.limit_table.key for t in tracks if t.system == "A"}) == 1
+    assert len({t.limit_table.key for t in tracks if t.system == "B"}) == 1
+
+
+def test_a_stored_final_sweep_of_exact_zeros_loses_its_verdict_but_keeps_its_limits(fixture_db):
+    """A database ingested before 2026-09-20 holds ~1,182 no-cut files whose 'final sweep' is the blank
+    template: every reading exactly 0.0, stored as a flawless linearity PASS. The loader must not hand
+    that to the analyzers as a pass -- but the limits on it ARE the table that was in service."""
+    import json
+    from sqlalchemy import text
+    from laser_trim_analyzer.findings.data import _is_blank_template, load_model_tracks
+    before = {t.track_id: t for t in load_model_tracks(fixture_db, "8232-1")}
+    victim = next(t for t in before.values() if t.system == "B")
+    zeros = json.dumps([None] * 6 + [0.0] * (len(victim.final_errors) - 6))
+    with fixture_db.session() as s:
+        s.execute(text("UPDATE track_results SET error_data = :e, linearity_pass = 1 WHERE id = :i"),
+                  {"e": zeros, "i": victim.track_id})
+    after = {t.track_id: t for t in load_model_tracks(fixture_db, "8232-1")}[victim.track_id]
+    assert after.final_errors is None and after.linearity_pass is None
+    assert after.limit_table is not None and after.limit_table.key == victim.limit_table.key
+    assert _is_blank_template([None] * 6 + [0.0] * 105)
+    assert not _is_blank_template([0.0] * 9)                     # too few readings to call
+    assert not _is_blank_template([0.0] * 50 + [1e-9]) and not _is_blank_template(None)
