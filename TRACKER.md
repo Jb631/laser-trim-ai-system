@@ -86,11 +86,28 @@ screens parts.
       A1. It also re-grades every final-test record — **98.5% of them (148,776
       of 151,111) are still on the old grading** — so do NOT start the separate
       15-hour re-grade; the rebuild replaces it.
+- [x] **B2a · Working from home without the rebuild** (2026-09-20).
+      `scripts/pull_model_slice.ps1` copies a few models' folders down the VPN
+      (default 8232-1 and 8340-1, ~3 years); `scripts/build_dev_db.py` turns any
+      folder into a throwaway development database with the new tables filled
+      (refuses the real database by name). A 1,294-file sample database already
+      exists on the Mac: `Work Files/dev_db/sample.db`, built in 69 s, 0 errors,
+      839 captured trim passes. **8232-1 is the model to go deep on: 86% of its
+      tracks need a second pass.**
 - [ ] **B3 · Re-derive every number that rests on a final-test verdict.** After
       B2. The resistance-target figures (8232-1 correlation −0.63, yield
       10% → 73%) were computed on the old grading. **Do not set ink targets off
       them until this is done.**
-- [ ] **B4 · Four cheap questions about the trim passes, before any model:**
+- [ ] **B4 · Four cheap questions about the trim passes, before any model.**
+      *First look at question 1, 2026-09-20 — sample database, laser 1 only,
+      482 tracks pooled across ~240 models, measured as error spread (max − min,
+      immune to offset shifts):* **the first pass does NOT generally make
+      linearity worse** — it did in only 10% of tracks; the median spread falls
+      0.15 → 0.048. The one file seen on 09-17 (0.163 → 0.191 → 0.063) was the
+      exception. What does stand out: tracks that end up needing 2+ passes START
+      worse (0.174 vs 0.143) and the first pass leaves them at 0.065 where
+      one-pass tracks reach 0.039. Thin and pooled — redo per model on the
+      8232-1 slice. The questions:
       does the first pass make linearity worse (one file: 0.163 → 0.191 →
       0.063)? · which cut lengths pass first time? · was there a cut that
       avoids the second pass (2nd and 3rd passes are 23% of tracks)? · do the
