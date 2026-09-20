@@ -40,13 +40,22 @@ problem — per-file conversations with the share were. Same code, same laptop:
       share — `74924ae`. Together: 1907 → 976 ms/file, measured on the laptop.
 - [x] **Speed probe** — `scripts/ingest_speed_probe.py`, times each layer
       separately, writes only to a throwaway database.
+- [x] **Ping through the tunnel: 54 ms, no loss** (2026-09-20). A file lookup
+      costs 113 ms = **two round trips + ~5 ms of server time**. So the server
+      and SentinelOne are NOT the slow part; distance is. The VPN is not narrow,
+      it is 54 ms away, and the app made ~45 round trips per file (now ~17).
+      Claude's earlier "20 Mbps bandwidth ceiling" is withdrawn as unproven —
+      robocopy's 2.5 MB/s may be a one-connection limit, not the pipe.
 - [ ] **A1 · Run the probe AT WORK, on the office network.** *James · 1 minute.*
+      **Prediction, now strong:** round trips at work are under 1 ms, so lookups
+      should read ~1–2 ms and the app should run near 14 files/sec.
       `.venv\Scripts\python scripts\ingest_speed_probe.py "\\192.168.66.9\BTXData\Departments\System Data\TEST_DATA\DLTS" 25`
       Read the `stat` figure on the first line:
       **~1 ms** → the VPN was the limit; rebuild at work, expect 5–6 hours.
       **~113 ms** → the file server (or SentinelOne's handling of the share) is
       slow even on the LAN; raise it with IT and go to A2.
-- [ ] **A2 · Local mirror of the share** — only if A1 says the server is slow.
+- [ ] **A2 · Local mirror of the share** — now UNLIKELY to be needed (the ping
+      cleared the server); only if A1 still shows slow lookups on the LAN.
       One `robocopy /MT:32 /Z` copy, restartable, then point the app at the
       copy and rebuild at local speed. *Claude writes the script.*
 - [ ] **A3 · Processes instead of threads.** *After the rebuild.* Measured on 96
