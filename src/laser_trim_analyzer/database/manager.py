@@ -1824,11 +1824,11 @@ class DatabaseManager:
         # One stat for existence, size and mtime: on the work share each
         # separate stat is a ~113 ms network conversation (2026-09-20).
         try:
-            file_stat = stat_once(file_path)
+            file_stat = stat_once(file_path)     # outside a parse: a REAL stat
         except OSError:
             return
 
-        file_hash = calculate_file_hash(file_path)
+        file_hash = calculate_file_hash(file_path, known_stat=file_stat)
 
         # Check if already recorded before inserting (avoids IntegrityError
         # which would rollback the entire transaction including parent analysis)

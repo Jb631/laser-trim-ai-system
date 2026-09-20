@@ -17,7 +17,7 @@ from collections import OrderedDict
 import pandas as pd
 import numpy as np
 
-from laser_trim_analyzer.utils.hashing import hash_bytes_for, stat_once
+from laser_trim_analyzer.utils.hashing import hash_bytes_for, shares_one_stat, stat_once
 from laser_trim_analyzer.core.models import SystemType, FileMetadata
 from laser_trim_analyzer.core import trim_passes as _tp
 from laser_trim_analyzer.core import trim_setup as _ts
@@ -104,6 +104,7 @@ class ExcelParser:
     def __init__(self):
         pass  # No cache needed - file opened once per parse
 
+    @shares_one_stat
     def parse_file(self, file_path: Path) -> Dict[str, Any]:
         """
         Parse an Excel file and extract all data.
@@ -1766,6 +1767,7 @@ class ExcelParser:
 # File Type Detection - Distinguish Trim files from Final Test files
 # =============================================================================
 
+@shares_one_stat
 def detect_file_type(file_path: Path) -> str:
     """
     Detect whether a file is a 'trim', 'final_test', or 'non_trim' file.
@@ -1929,8 +1931,11 @@ def detect_file_type(file_path: Path) -> str:
                 # Kept at WARNING: a whole MODEL landing here would mean a sheet
                 # layout the parser does not know, and that must stay visible.
                 logger.warning(
-                    f"Skipping {filename}: no sweep sheets (no '{SYSTEM_A_IDENTIFIER}...' "
-                    f"or System B data sheet), only {sheet_names}. Usually a "
+                    # "unrecognized sheet structure" is a STABLE phrase: log searches
+                    # and tests/test_unknown_system_guard.py both look for it.
+                    f"Skipping {filename}: unrecognized sheet structure -- no sweep sheets "
+                    f"(no '{SYSTEM_A_IDENTIFIER}...' or System B data sheet), only "
+                    f"{sheet_names}. Usually a "
                     f"parameter-only workbook from an aborted or setup run. Recorded "
                     f"as skipped, NOT parsed. If MOST files of one model land here, "
                     f"that model has a sheet layout the parser does not recognise."

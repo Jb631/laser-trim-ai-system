@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 
 from laser_trim_analyzer.core.parser import _read_once, _workbook
-from laser_trim_analyzer.utils.hashing import hash_bytes_for
+from laser_trim_analyzer.utils.hashing import hash_bytes_for, shares_one_stat
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,7 @@ def is_smoothness_file(filename: str) -> bool:
 class SmoothnessParser:
     """Parser for Output Smoothness Excel files."""
 
+    @shares_one_stat
     def parse_file(self, file_path: Path) -> Dict[str, Any]:
         """Parse an Output Smoothness Excel file."""
         file_path = Path(file_path)
