@@ -4,7 +4,11 @@
 
 **Before starting work:**
 1. **Set up Git credentials** - Run: `source .env 2>/dev/null && git remote set-url origin https://${GITHUB_TOKEN}@github.com/Jb631/laser-trim-ai-system.git 2>/dev/null` (silent if no token)
-2. Read `BRING_TO_WORK.md` for current state and next tasks. Session notes,
+2. Read `TRACKER.md` FIRST — what is open, in what order, and whose move it
+   is. Update it in the same commit as any work that changes an item; a
+   finished item is ticked and moved to "Done recently", a new one is added
+   under its workstream. Then read `BRING_TO_WORK.md` for the step-by-step
+   instructions at the work machine. Session notes,
    plans, and specs were purged from the tree on 2026-08-28; they remain in git
    history — recover any with `git show 4c6ebd8:docs/SESSION_2026-07-13B.md`
 3. Continue from where we left off - don't start new work without checking progress
