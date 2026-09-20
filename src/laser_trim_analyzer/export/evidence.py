@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS, metric_label
+from laser_trim_analyzer.core.model_stats import failed_processing_statuses
 
 # "Recent" window length (days of DATA, anchored to the model's latest file_date).
 RECENT_DAYS = 30
@@ -365,7 +366,11 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
                     func.avg(DBTR.untrimmed_resistance), func.avg(DBTR.trimmed_resistance),
                   )
                   .join(DBTR, DBTR.analysis_id == DBAR.id)
-                  .filter(DBAR.model == model)
+                  # A record that FAILED PROCESSING is not a measurement: its columns hold the
+                  # analyser's 999.999 marker. Averaged in, 8856's "Mean sigma gradient" for
+                  # 2024-07 read 432.99 against a true 0.0012 (core/model_stats has the rule).
+                  .filter(DBAR.model == model,
+                          DBAR.overall_status.notin_(failed_processing_statuses()))
                   .group_by(month).all())
         means_by_month = {r[0]: r[1:] for r in mean_q}
 

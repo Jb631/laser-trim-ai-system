@@ -255,6 +255,18 @@ def failed_processing(status) -> bool:
     return _status_name(status) in _FAILED_PROCESSING
 
 
+def failed_processing_statuses() -> list:
+    """The same set as `failed_processing`, as enum members for a SQL `notin_`.
+
+    ONE definition, two spellings: a Python predicate for rows already in memory, and
+    this for queries that average in the database. The evidence pack's monthly means and
+    the drift detector's sample loader each averaged the 999.999 marker until 2026-09-20
+    because they had no way to ask for this rule without re-typing it.
+    """
+    from laser_trim_analyzer.database.models import StatusType
+    return [StatusType[name] for name in _FAILED_PROCESSING]
+
+
 # ---- the pure computation --------------------------------------------------
 
 def _usable(value) -> Optional[float]:

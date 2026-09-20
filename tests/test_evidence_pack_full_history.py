@@ -100,3 +100,45 @@ def test_summary_text_uses_honest_sigma_shift(tmp_path):
     text = build_summary_text("TXT", status, recent_means=compute_recent_means(db, "TXT"))
     assert "shift" in text  # honest σ-shift wording, not the alert-scaled 'Δ'
     assert "Drift summary — model TXT" in text
+
+
+def _seed_sentinel_month(db, model):
+    """Three real units and one that FAILED PROCESSING, all in 2024-07. The failed one carries the
+    analyser's 999.999 saturation marker in its numeric columns, as all 94 ERROR rows in the work
+    database do. It is not a measurement and must not be averaged."""
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, SystemType, StatusType)
+    with db.session() as s:
+        for i, (status, sigma, lin) in enumerate([(StatusType.PASS, 0.0010, 0.004), (StatusType.PASS, 0.0012, 0.005),
+                                                  (StatusType.WARNING, 0.0014, 0.006), (StatusType.ERROR, 999.999, 999.999)]):
+            when = datetime(2024, 7, 3 + i)
+            ar = DBAR(filename=f"{model}-{i}.xls", file_path=f"/f/{model}/{i}", file_hash=f"{model}s{i}".ljust(64, "0"),
+                      model=model, serial=f"sn{i}", system=SystemType.B, file_date=when, timestamp=when,
+                      overall_status=status, has_multi_tracks=False, processing_time=0.1)
+            s.add(ar); s.flush()
+            s.add(DBTR(analysis_id=ar.id, track_id="T1", status=status, sigma_gradient=sigma,
+                       final_linearity_error_shifted=lin, sigma_pass=True, linearity_pass=True))
+        s.commit()
+
+
+def test_a_record_that_failed_processing_is_not_averaged_into_the_monthly_means(tmp_path):
+    import pandas as pd
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.export.evidence import export_evidence_pack
+    db = DatabaseManager(tmp_path / "sentinel.db")
+    _seed_sentinel_month(db, "SENT-1")
+    out = export_evidence_pack(db, "SENT-1", tmp_path / "sentinel.xlsx")
+    monthly = pd.read_excel(out, sheet_name="Monthly summary")
+    row = monthly[monthly.iloc[:, 0].astype(str) == "2024-07"].iloc[0]
+    assert abs(row["Mean sigma gradient"] - 0.0012) < 1e-9           # (0.0010+0.0012+0.0014)/3, NOT ~250
+    assert abs(row["Mean linearity error"] - 0.005) < 1e-9
+
+
+def test_the_drift_detector_is_never_fed_the_failed_processing_marker(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.ml.drift_training import _load_samples_with_dates
+    db = DatabaseManager(tmp_path / "sentinel2.db")
+    _seed_sentinel_month(db, "SENT-2")
+    for metric, want in (("sigma_gradient", [0.0010, 0.0012, 0.0014]), ("linearity_error", [0.004, 0.005, 0.006])):
+        got = [v for _d, v, _rid in _load_samples_with_dates(db, "SENT-2", metric)]
+        assert got == want, (metric, got)

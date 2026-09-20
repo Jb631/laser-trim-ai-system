@@ -451,9 +451,14 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
     if col is None:
         return out
     with db.session() as s:
+        # A record that failed processing carries the analyser's 999.999 marker in these
+        # columns, not a reading. A lot median usually shrugs one off -- but 8856's lot of
+        # 2024-08-06 is 4 markers out of 7 tracks, so its median WAS 999.999.
+        from laser_trim_analyzer.core.model_stats import failed_processing_statuses
         q = (s.query(DBAR.file_date, col, DBTR.id)
              .join(DBTR, DBTR.analysis_id == DBAR.id)
-             .filter(DBAR.model == model, col.isnot(None)))
+             .filter(DBAR.model == model, col.isnot(None),
+                     DBAR.overall_status.notin_(failed_processing_statuses())))
         if after_row_id is not None:
             q = q.filter(DBTR.id > after_row_id)
         elif after is not None:
