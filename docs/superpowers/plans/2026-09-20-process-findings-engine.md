@@ -1508,6 +1508,8 @@ The hook calls `engine.refresh_findings` through the module (`_findings.refresh_
 
 - [ ] **Step 1: Write the failing test** — `tests/test_findings_ingest_hook.py`
 
+> **SUPERSEDED during execution (2026-09-20) — do not copy this test.** It puts the REAL production path in a subprocess argv: the refusal is the code under test, so a regression would open the owner's work database before going red. The shipped test (`tests/test_findings_ingest_hook.py`) uses nonexistent decoy paths and a decoy checkout; see commit `cc133c2`.
+
 ```python
 def _db(tmp_path):
     from laser_trim_analyzer.database.manager import DatabaseManager
@@ -1578,6 +1580,8 @@ def test_the_command_line_tool_refuses_the_production_database():
 ```
 
 - [ ] **Step 4: Create the command-line tool** — `scripts/refresh_findings.py`
+
+> **SUPERSEDED during execution (2026-09-20) — do not copy this refusal.** It compares path TEXT, which `data/Analysis.db` (same file on a case-insensitive volume) or a hard link walks past. The shipped guard compares the FILE: `scripts/_db_guard.is_production_db` (commits `cc133c2`, `4cbcfac`).
 
 ```python
 """Work out process findings for a database and print them, ranked.
