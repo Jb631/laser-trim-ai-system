@@ -15,6 +15,8 @@ import logging
 import pandas as pd
 import numpy as np
 
+from laser_trim_analyzer.core.parser import _read_once, _workbook
+from laser_trim_analyzer.utils.hashing import hash_bytes_for
 from laser_trim_analyzer.core.analyzer import max_abs_measured
 from laser_trim_analyzer.utils.constants import (
     FINAL_TEST_FORMAT1_COLUMNS,
@@ -72,7 +74,7 @@ class FinalTestParser:
         file_hash = self._calculate_hash(file_path)
 
         # Single file open for all Excel operations - prevents file handle leaks
-        with pd.ExcelFile(file_path) as xl:
+        with _workbook(file_path) as xl:
             # Detect format from sheet names
             format_type = self._detect_format_from_sheets(file_path.name, xl.sheet_names)
             logger.debug(f"Detected Final Test format: {format_type}")
@@ -372,12 +374,12 @@ class FinalTestParser:
         }
 
     def _calculate_hash(self, file_path: Path) -> str:
-        """Calculate SHA256 hash of file."""
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()
+        """SHA256 via the one cached read (see parser._read_once).
+
+        This parser used to read the file once to hash it and again to
+        parse it; on the work share each read is a network transfer.
+        """
+        return hash_bytes_for(file_path, _read_once(file_path))
 
     def _detect_format_from_sheets(self, filename: str, sheet_names: List[str]) -> str:
         """

@@ -77,6 +77,28 @@ def calculate_file_hash(file_path: Union[str, Path], use_cache: bool = True) -> 
     return file_hash
 
 
+def hash_bytes_for(file_path: Union[str, Path], data: bytes) -> str:
+    """SHA256 of bytes ALREADY in memory, recorded under the file's cache key.
+
+    For a caller that has read the file for its own reasons and would
+    otherwise pay for a second read just to hash it. The result is stored
+    under the same key `calculate_file_hash` uses, so a later call for this
+    path -- `save_analysis` makes one -- is a dictionary lookup, not I/O.
+    """
+    path = Path(file_path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0
+    cache_key = f"{path.resolve()}:{mtime}"
+    file_hash = hashlib.sha256(data).hexdigest()
+    if len(_hash_cache) >= _cache_max_size:
+        for key in list(_hash_cache.keys())[:_cache_max_size // 2]:
+            del _hash_cache[key]
+    _hash_cache[cache_key] = file_hash
+    return file_hash
+
+
 def clear_hash_cache():
     """Clear the hash cache (useful after processing batches)."""
     global _hash_cache

@@ -6,16 +6,18 @@ Handles both System A and System B file formats.
 """
 
 import re
-import hashlib
 from collections import Counter
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple, Final
 import logging
+from io import BytesIO
+from collections import OrderedDict
 
 import pandas as pd
 import numpy as np
 
+from laser_trim_analyzer.utils.hashing import hash_bytes_for
 from laser_trim_analyzer.core.models import SystemType, FileMetadata
 from laser_trim_analyzer.core import trim_passes as _tp
 from laser_trim_analyzer.core import trim_setup as _ts
@@ -30,6 +32,54 @@ from laser_trim_analyzer.utils.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+
+
+# --- one network read per file -------------------------------------------
+# A trim file used to be pulled off disk FOUR times per analysis: once by
+# detect_file_type (which only wants the sheet names), once to hash it, once
+# by the real parse, and once more by save_analysis. On a local SSD that is
+# a few milliseconds. On the work share -- a 20 Mbps VPN link, 151,000 files
+# -- it multiplied a 5 hour rebuild into 158 (measured 2026-09-20).
+#
+# xlrd reads the whole workbook into memory anyway, so holding the bytes
+# costs nothing we were not already paying. The cache is deliberately tiny:
+# it exists to serve the several reads of ONE file during ONE analysis, not
+# to accumulate a corpus. Keyed on size and mtime so a file rewritten on the
+# share is never served stale.
+_BYTES_CACHE: "OrderedDict[tuple, bytes]" = OrderedDict()
+_BYTES_CACHE_MAX = 8  # ~8 MB with 1 MB files; workers share it
+
+
+def _read_once(file_path: Path) -> bytes:
+    """The file's bytes, reading from disk at most once per (size, mtime)."""
+    try:
+        st = file_path.stat()
+        key = (str(file_path), st.st_size, st.st_mtime)
+    except OSError:
+        return file_path.read_bytes()          # unstattable: just read it
+    hit = _BYTES_CACHE.get(key)
+    if hit is not None:
+        _BYTES_CACHE.move_to_end(key)
+        return hit
+    data = file_path.read_bytes()
+    _BYTES_CACHE[key] = data
+    while len(_BYTES_CACHE) > _BYTES_CACHE_MAX:
+        _BYTES_CACHE.popitem(last=False)
+    return data
+
+
+def _workbook(file_path: Path) -> pd.ExcelFile:
+    """pd.ExcelFile for this path, served from the one cached read."""
+    return pd.ExcelFile(BytesIO(_read_once(file_path)))
+
+
+def drop_cached_bytes(file_path: Path) -> None:
+    """Forget a file's bytes once its analysis is done."""
+    prefix = str(file_path)
+    for key in [k for k in _BYTES_CACHE if k[0] == prefix]:
+        _BYTES_CACHE.pop(key, None)
 
 
 class NonTrimWorkbookError(Exception):
@@ -81,7 +131,7 @@ class ExcelParser:
         file_hash = self._calculate_hash(file_path)
 
         # Single file open for all Excel operations - prevents file handle leaks
-        with pd.ExcelFile(file_path) as xl:
+        with _workbook(file_path) as xl:
             sheet_names = xl.sheet_names
 
             # FORMAT comes from the sheet structure and drives all extraction.
@@ -145,14 +195,17 @@ class ExcelParser:
         }
 
     def _calculate_hash(self, file_path: Path) -> str:
-        """Calculate SHA256 hash of file."""
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            # 1 MB chunks — 8 KB chunks meant thousands of round-trips per
-            # file on network shares (same fix as utils/hashing.py).
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()
+        """SHA256 of the file, through the SHARED cache.
+
+        This used to hash the file itself. The bytes were identical, but the
+        result never reached `utils.hashing`'s cache, so `save_analysis` hashed
+        the very same file again a moment later. On a local disk that was a few
+        milliseconds nobody noticed. On the work share it was a second full
+        file read per file, over a 20 Mbps VPN, 151,000 times (2026-09-20).
+        Hashing the bytes we already hold, and recording the result in the
+        shared cache, makes that second hash a dictionary lookup.
+        """
+        return hash_bytes_for(file_path, _read_once(file_path))
 
     @staticmethod
     def _resolve_system_identity(file_path: Path, format_type: SystemType) -> SystemType:
@@ -1784,7 +1837,7 @@ def detect_file_type(file_path: Path) -> str:
 
     # --- Sheet-based checks (requires opening the Excel file) ---
     try:
-        with pd.ExcelFile(file_path) as xl:
+        with _workbook(file_path) as xl:
             sheet_names = xl.sheet_names
             sheet_names_lower = [s.lower() for s in sheet_names]
 

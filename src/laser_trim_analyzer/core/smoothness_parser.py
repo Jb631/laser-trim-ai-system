@@ -16,6 +16,9 @@ import logging
 import pandas as pd
 import numpy as np
 
+from laser_trim_analyzer.core.parser import _read_once, _workbook
+from laser_trim_analyzer.utils.hashing import hash_bytes_for
+
 logger = logging.getLogger(__name__)
 
 OS_EXTENSIONS = {'.xlsx', '.xls'}
@@ -159,7 +162,7 @@ class SmoothnessParser:
 
         tracks = []
         try:
-            with pd.ExcelFile(file_path) as xl:
+            with _workbook(file_path) as xl:
                 sheet_names = xl.sheet_names
 
                 if "Test Data" in sheet_names:
@@ -488,9 +491,9 @@ class SmoothnessParser:
 
     @staticmethod
     def _calculate_hash(file_path: Path) -> str:
-        """Calculate SHA-256 hash of a file."""
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()
+        """SHA256 via the one cached read (see parser._read_once).
+
+        This parser used to read the file once to hash it and again to
+        parse it; on the work share each read is a network transfer.
+        """
+        return hash_bytes_for(file_path, _read_once(file_path))
