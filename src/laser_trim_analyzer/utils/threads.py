@@ -196,3 +196,37 @@ def background_thread(name: Optional[str] = None):
             )
         return wrapper
     return decorator
+
+
+def guard_tk_font_finalizer() -> None:
+    """Keep the garbage collector from calling into Tk on a worker thread.
+
+    `tkinter.font.Font.__del__` issues `font delete <name>`. Finalizers run on
+    WHICHEVER thread drops the last reference, so a `CTkFont` orphaned by a
+    page rebuild can be finalised inside an ingest worker -- a Tk call off the
+    UI thread, which this app forbids outright.
+
+    It is not a theoretical cost. Measured on this machine (see
+    `.superpowers/sdd/prebuild-fixes/H5-report.md`): dropping a Font on a
+    worker blocks that worker for 1.07 s inside `_tkinter`'s WaitForMainloop,
+    then raises `RuntimeError: main thread is not in main loop`, which
+    `__del__` swallows -- and the font is left registered in Tcl anyway. So the
+    unguarded path costs a full second of a worker's time and deletes nothing.
+
+    Off the main thread we skip the Tcl call: the same font leaks, without the
+    stall. On the main thread nothing changes. Idempotent, because every app
+    window calls this on construction.
+    """
+    import tkinter.font as tkfont
+    if getattr(tkfont.Font, "_lta_finalizer_guarded", False):
+        return
+    original = tkfont.Font.__del__
+    main = threading.main_thread()
+
+    def __del__(self):
+        if threading.current_thread() is not main:
+            return
+        original(self)
+
+    tkfont.Font.__del__ = __del__
+    tkfont.Font._lta_finalizer_guarded = True

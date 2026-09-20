@@ -102,9 +102,31 @@ def _never_touch_the_real_database(tmp_path, monkeypatch):
     _mgr._db_manager = previous
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def tk_root():
-    """One headless CTk root for all widget-construction tests (no mainloop)."""
+    """One headless CTk root for THIS test only (no mainloop).
+
+    FUNCTION-scoped on purpose, and it must stay that way. This was
+    `scope="session"`, and that is what made the suite "take 2.5 hours" --
+    it never did: it HUNG, at >100% CPU, which from the outside looks exactly
+    like slow. A session root outlives every test, so in any process that also
+    builds `V6App`s through `make_app` there are two or three live CTk roots at
+    once. With more than one alive, `Misc.update()` inside a test's pump/settle
+    helper stops returning: Tk's macOS idle handler keeps pumping the Cocoa
+    event loop, the self-rearming `after` loops (CustomTkinter's appearance and
+    scaling trackers, this app's UiDispatcher) keep firing there, and so Tcl's
+    `update` never sees an empty queue. Measured during the hang: ~94 timer
+    callbacks a second, forever, all on the main thread.
+
+    That is why targets pass one file at a time and wedge when combined --
+    which is exactly what a hand-picked gate file list can never catch.
+    `tests/test_tk_thread_safety.py` holds the regression guard (in a
+    subprocess, so a regression fails instead of hanging the suite).
+
+    The cost of function scope is a fresh root per test (~0.03 s), plus a
+    larger Tk teardown bill in files that build heavy pages -- see
+    `.superpowers/sdd/prebuild-fixes/H5-report.md`.
+    """
     import customtkinter as ctk
     try:
         ctk.deactivate_automatic_dpi_awareness()

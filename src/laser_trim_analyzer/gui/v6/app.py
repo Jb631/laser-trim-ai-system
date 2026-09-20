@@ -12,6 +12,7 @@ from laser_trim_analyzer.gui.v6.page_container import PageContainer
 from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import UiDispatcher
+from laser_trim_analyzer.utils.threads import guard_tk_font_finalizer
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,11 @@ CLOSE_GRACE_SECONDS = 2.0
 
 class V6App(ctk.CTk):
     def __init__(self, config: Config, db=None, auto_train_on_first_run: bool = True):
+        # FIRST, before any Tk object can exist: stop the garbage collector
+        # running `tkinter.font.Font.__del__` (a `font delete` Tcl call) on an
+        # ingest worker. Workers never call Tk. See the function's docstring
+        # for the measured cost of leaving it unguarded.
+        guard_tk_font_finalizer()
         super().__init__()
         # Appearance set HERE (not at import) so importing this module never mutates
         # global CTk state for V5 or test runs.

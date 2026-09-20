@@ -11,7 +11,7 @@ from pathlib import Path
 
 from laser_trim_analyzer import __version__
 from laser_trim_analyzer.config import Config
-from laser_trim_analyzer.utils.threads import get_thread_manager
+from laser_trim_analyzer.utils.threads import get_thread_manager, guard_tk_font_finalizer
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,8 @@ class LaserTrimApp(ctk.CTk):
     """
 
     def __init__(self, config: Config):
+        # FIRST, before any Tk object can exist — see guard_tk_font_finalizer().
+        guard_tk_font_finalizer()
         super().__init__()
 
         self.config = config
