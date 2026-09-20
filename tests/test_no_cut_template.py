@@ -490,14 +490,13 @@ def test_lone_real_lin_error_still_captures_its_pass(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_per_point_arrays_end_together_on_a_ragged_sweep(tmp_path, caplog):
-    """The spec band has to line up with the sweep it grades.
+    """The spec band has to line up with the sweep it grades -- and the sweep has to survive.
 
-    After rerouting, `upper_limits` / `lower_limits` / `theory_volts` are sized
-    by the trimmed reader (`len(positions)`) while `untrimmed_positions` is
-    truncated independently to `len(untrimmed_errors)` by the pre-trim reader.
-    On a sweep whose columns do not all end together they diverge, and
-    downstream code zips them -- silently pairing each error with some other
-    position's limit."""
+    Originally this asserted that a ragged sweep was TRUNCATED to its shortest array. A final review
+    showed what that cost: the pre-trim reader stops at the first blank, so one dropped cell cut a
+    40-point sweep to 5, and the arrays it was being aligned with (the limits) are not even stored on
+    this path. The sheet is read twice; the longer read is kept, so the arrays line up at FULL length.
+    """
     path = _make_workbook(_name(tmp_path), lin_error="template", measured_short=5)
     with caplog.at_level(logging.WARNING, logger="laser_trim_analyzer.core.parser"):
         track = _parse_one_track(path)
@@ -507,17 +506,8 @@ def test_per_point_arrays_end_together_on_a_ragged_sweep(tmp_path, caplog):
                  "lower_limits", "theory_volts")
     lengths = {k: len(track[k]) for k in per_point if track.get(k) is not None}
     assert len(lengths) == len(per_point), f"an array went missing: {lengths}"
-    assert len(set(lengths.values())) == 1, (
-        f"per-point arrays disagree in length: {lengths}")
-
-    hits = [r for r in caplog.records
-            if "per-point arrays disagree" in r.message and path.name in r.message]
-    assert len(hits) == 1, (
-        f"the truncation must be announced exactly once, naming the file and "
-        f"both lengths (got {len(hits)})")
-    assert "56" in hits[0].message and "61" in hits[0].message, (
-        f"the warning must name both lengths: {hits[0].message}")
-
+    assert set(lengths.values()) == {_N_POINTS}, f"the sweep was cut short: {lengths}"
+    assert not [r for r in caplog.records if "truncating every one" in r.message]
 
 def test_a_well_formed_sweep_is_not_warned_about(tmp_path, caplog):
     """The warning must mean something: an ordinary no-cut file must not emit it."""
@@ -682,16 +672,26 @@ def test_an_empty_per_point_array_does_not_delete_the_sweep(caplog):
         assert said == [], said                              # ...and nothing is truncated over it
 
 
-def test_a_genuinely_ragged_sweep_is_still_truncated_and_says_so(tmp_path, caplog):
-    """The guard must not disarm the alignment it was added for: arrays that all carry data but end at
-    different rows are still cut to the shortest, with one warning naming every length."""
+def test_one_dropped_cell_does_not_cut_the_sweep_short(tmp_path, caplog):
+    """Final review, demonstrated: the pre-trim reader stops at the first blank in the measured or
+    theory column, so a single dropout turned a 40-point sweep into 5 points. The sheet is read twice;
+    keep the longer read, and say so."""
     import logging
     path = _name(tmp_path)
     _make_workbook(path, lin_error="template", measured_short=5)
     with caplog.at_level(logging.WARNING):
         track = _parse_one_track(path)
-    lens = {k: len(track[k]) for k in ("untrimmed_positions", "untrimmed_errors", "upper_limits",
-                                       "lower_limits", "theory_volts") if track.get(k)}
-    assert len(set(lens.values())) == 1 and 0 < min(lens.values()) < _N_POINTS, lens
-    said = [r.getMessage() for r in caplog.records if "truncating every one to the shortest" in r.getMessage()]
-    assert len(said) == 1 and "theory_volts=" in said[0] and "shortest (0)" not in said[0]
+    assert len(track["untrimmed_errors"]) == _N_POINTS, "a dropped cell truncated the stored sweep"
+    assert len(track["untrimmed_positions"]) == _N_POINTS
+    said = [r.getMessage() for r in caplog.records if "recovered pre-trim sweep stops at" in r.getMessage()]
+    assert len(said) == 1 and f"of {_N_POINTS} points" in said[0]
+
+
+def test_a_no_cut_file_still_keeps_the_recovered_sweep_over_its_column_of_zeros(tmp_path):
+    """The tie case, which is why the sheet is read twice at all: the test sheet's own error column is
+    a full-length run of literal zeros, and the recovered one is the same length and real."""
+    path = _name(tmp_path)
+    _make_workbook(path, lin_error="template", test_error="zeros")
+    track = _parse_one_track(path)
+    real = [e for e in track["untrimmed_errors"] if isinstance(e, float) and e == e and e != 0.0]
+    assert len(track["untrimmed_errors"]) == _N_POINTS and len(real) > _N_POINTS // 2

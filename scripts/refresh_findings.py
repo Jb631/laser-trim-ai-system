@@ -48,8 +48,8 @@ def main() -> int:
     ranked = db.get_process_findings()
     print(f"{stored} findings stored; {len(ranked)} in the ranked list\n")
     for i, f in enumerate(ranked, 1):
-        upy = f.get("units_per_year")
-        gain = f"{upy:,.0f} units a year" if upy is not None else "no gain claimed"
+        upy = f.get("tracks_per_year")
+        gain = f"{upy:,.0f} tracks a year" if upy is not None else "no rate claimed"
         print(f"{i:>3}. {f['model']}  ·  {f['title']}")
         print(f"     {f['category']}  ·  lever: {f['lever_label']} ({f['lead_time']})  ·  {gain}")
         print(textwrap.fill(f["summary"], 100, initial_indent="     ", subsequent_indent="     "))

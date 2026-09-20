@@ -1,12 +1,12 @@
 import customtkinter as ctk
 
 
-def _finding(model, title, units_per_year, volume=100):
+def _finding(model, title, tracks_per_year, size=100):
     return {"model": model, "analyzer": "a", "category": "Ink target", "lever": "ink",
             "lever_label": "Ink formulation (incoming resistance)", "lead_time": "next lot",
             "title": title, "summary": "s",
-            "expected_gain_points": None if units_per_year is None else 5.0,
-            "units_per_year": units_per_year, "annual_volume": volume, "n_units": 300, "evidence": {}}
+            "expected_gain_points": None if tracks_per_year is None else 5.0,
+            "tracks_per_year": tracks_per_year, "annual_volume": size, "n_units": size, "evidence": {}}
 
 
 def _buttons(widget):
@@ -27,14 +27,14 @@ def test_findings_is_in_the_sidebar_right_after_investigate():
 
 def test_the_list_is_ranked_and_a_row_opens_the_model(make_app, monkeypatch):
     app = make_app()
-    app.db.replace_process_findings("SMALL", {"tracks": 1}, [_finding("SMALL", "no gain here", None, volume=9000)])
+    app.db.replace_process_findings("SMALL", {"tracks": 1}, [_finding("SMALL", "no rate here", None, size=9000)])
     app.db.replace_process_findings("BIG", {"tracks": 1}, [_finding("BIG", "the big one", 500.0)])
     page = app.page_container.get_page("findings")
     page.reload_now()
     rows = _buttons(page)
     assert len(rows) == 2
-    assert rows[0].startswith("BIG") and "500 units a year" in rows[0]        # a stated gain outranks volume
-    assert rows[1].startswith("SMALL") and "no gain claimed" in rows[1]
+    assert rows[0].startswith("BIG") and "500 tracks a year" in rows[0]        # a stated rate outranks sample size
+    assert rows[1].startswith("SMALL") and "no rate claimed" in rows[1]
     shown = []
     monkeypatch.setattr(app, "show_page", lambda name: shown.append(name))
     page._open("BIG")

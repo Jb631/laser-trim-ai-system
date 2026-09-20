@@ -434,7 +434,9 @@ class DatabaseManager:
                     model=model, analyzer=d["analyzer"], category=d["category"], lever=d["lever"],
                     title=d["title"], summary=d["summary"],
                     expected_gain_points=d.get("expected_gain_points"),
-                    units_per_year=d.get("units_per_year"),
+                    # the column keeps its old name; the VALUE is now tracks a year over the
+                    # population the gain was measured on (see findings/model.Finding)
+                    units_per_year=d.get("tracks_per_year"),
                     annual_volume=int(d.get("annual_volume") or 0), n_units=int(d.get("n_units") or 0),
                     payload=d, computed_at=now))
             row = s.get(ModelProcessFacts, model)

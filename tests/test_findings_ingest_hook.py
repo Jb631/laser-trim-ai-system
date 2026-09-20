@@ -17,7 +17,8 @@ def test_findings_refresh_runs_after_a_batch_that_saved_trims(tmp_path, monkeypa
     from laser_trim_analyzer.core import ingest_run
     from laser_trim_analyzer.findings import engine
     seen = []
-    monkeypatch.setattr(engine, "refresh_findings", lambda _db, models: seen.append(list(models)) or 0)
+    monkeypatch.setattr(engine, "refresh_findings",
+                        lambda _db, models, report=None: seen.append(list(models)) or 0)
     phases = {}
     ingest_run._post_batch(_db(tmp_path), {"M2", "M1"}, 3, phases, None)
     assert seen == [["M1", "M2"]]
@@ -28,7 +29,8 @@ def test_a_final_test_only_batch_does_not_recompute_findings(tmp_path, monkeypat
     from laser_trim_analyzer.core import ingest_run
     from laser_trim_analyzer.findings import engine
     seen = []
-    monkeypatch.setattr(engine, "refresh_findings", lambda _db, models: seen.append(list(models)) or 0)
+    monkeypatch.setattr(engine, "refresh_findings",
+                        lambda _db, models, report=None: seen.append(list(models)) or 0)
     phases = {}
     ingest_run._post_batch(_db(tmp_path), {"M1"}, 0, phases, None)
     assert seen == [] and "findings" not in phases
@@ -110,3 +112,49 @@ def test_the_batch_phase_line_names_what_findings_cost(caplog):
 
     assert "findings 12.3s" in line({"walk": 0.1, "process": 1.0, "findings": 12.3})
     assert "findings" not in line({"walk": 0.1, "process": 1.0})     # a batch with no new trims
+
+
+def test_a_findings_phase_that_failed_for_every_model_does_not_log_as_success(tmp_path, monkeypatch, caplog):
+    """Final review: refresh_findings catches per-model failures itself and returns a count, so the
+    guard around it almost never fires. Without the report, every model failing logged as
+    'refreshed for N models (0 findings)' -- indistinguishable from 'nothing to report'."""
+    import logging
+    from laser_trim_analyzer.core import ingest_run
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.findings import engine
+
+    db = DatabaseManager(tmp_path / "hook.db")
+
+    def all_fail(_db, models=None, report=None):
+        if report is not None:
+            report.update({"models": len(models or []), "stored": 0,
+                           "failed_models": {m: "RuntimeError: boom" for m in (models or [])},
+                           "analyzer_errors": {}})
+        return 0
+    monkeypatch.setattr(engine, "refresh_findings", all_fail)
+    said = []
+    phases = {}
+    with caplog.at_level(logging.INFO):
+        ingest_run._post_batch(db, {"A", "B"}, new_trims=3, phases=phases, on_phase=said.append)
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR
+              and "could not be worked out" in r.getMessage()]
+    assert len(errors) == 1 and "2 of 2 models" in errors[0], errors
+    assert any("could not be worked out" in s for s in said), said
+    assert not [r for r in caplog.records if "Process findings refreshed for" in r.getMessage()]
+    assert "findings" in phases
+
+
+def test_a_healthy_findings_phase_still_logs_one_quiet_line(tmp_path, monkeypatch, caplog):
+    import logging
+    from laser_trim_analyzer.core import ingest_run
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.findings import engine
+
+    db = DatabaseManager(tmp_path / "hook2.db")
+    monkeypatch.setattr(engine, "refresh_findings",
+                        lambda _db, models=None, report=None: (report or {}).update(
+                            {"models": 2, "stored": 4, "failed_models": {}, "analyzer_errors": {}}) or 4)
+    with caplog.at_level(logging.INFO):
+        ingest_run._post_batch(db, {"A", "B"}, new_trims=3, phases={}, on_phase=lambda _s: None)
+    assert [r.getMessage() for r in caplog.records if "Process findings refreshed for" in r.getMessage()]
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR and "findings" in r.getMessage().lower()]

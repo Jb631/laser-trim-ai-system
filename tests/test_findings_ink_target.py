@@ -102,3 +102,86 @@ def test_the_window_that_is_held_constant_travels_with_the_finding():
     assert f.evidence["final_resistance_window"] == [5000.0, 5500.0]
     assert "final-resistance window are held constant" in f.summary
     assert "Period, operator and lot are not." in f.summary
+
+
+def test_noise_almost_never_produces_a_finding_at_the_minimum_sample():
+    """Final review, measured: the recommended window is a maximum over seven overlapping candidates,
+    so with no out-of-sample test the analyzer spoke about PURE NOISE 14% of the time at n=200 (median
+    claimed gain 7 points) and 2% at n=600. With the two-fold test it is 1% at 600 and 0% at 900.
+    60 draws at the floor; the bound is deliberately loose (5%) so this test measures the guard rather
+    than the seed -- remove the guard and lower the floor and it fails by a mile."""
+    import random
+    from laser_trim_analyzer.findings.analyzers import ink_target
+    from findings_helpers import make_track, days
+    spoke = 0
+    for seed in range(60):
+        rnd = random.Random(seed * 7919)
+        tracks = [make_track(k, date=d, passes=((0.8 if rnd.random() < 0.5 else 1.5, 1.0),),
+                             r_in=rnd.uniform(4000.0, 5000.0))
+                  for k, d in enumerate(days(START, ink_target.MIN_N, 0.5))]
+        spoke += bool(ink_target.analyze("M", tracks, label))
+    assert spoke <= 3, f"{spoke} of 60 pure-noise draws produced a finding"
+
+
+def test_a_window_that_only_works_in_the_period_it_was_chosen_from_is_not_reported():
+    """The gate that makes the noise rate what it is, pinned on its own: a relationship that exists in
+    the first half of the period and NOT in the second must not be reported, however strong it looks
+    over the whole group."""
+    from datetime import datetime
+    from laser_trim_analyzer.findings.analyzers import ink_target
+    from findings_helpers import ink_tracks
+    real = ink_tracks(400, START, (1.0, 2.0), lambda r: 0.9 if r < 4400 else 0.1)
+    gone = ink_tracks(400, datetime(2025, 1, 1), (1.0, 2.0), lambda r: 0.5, first_id=5000)
+    assert ink_target.analyze("M", real + gone, label) == []
+    # ...while the same strength present THROUGHOUT is reported, and the number is the out-of-sample one
+    lasting = ink_tracks(800, START, (1.0, 2.0), lambda r: 0.9 if r < 4400 else 0.1)
+    (f,) = ink_target.analyze("M", lasting, label)
+    folds = f.evidence["out_of_sample_gain_each_fold"]
+    assert len(folds) == 2 and min(folds) >= ink_target.MIN_GAIN_POINTS * ink_target.OUT_OF_SAMPLE
+    assert f.expected_gain_points == round(sum(folds) / 2, 1)
+    assert "measured OUT OF SAMPLE" in f.summary
+
+
+def test_a_resistance_that_is_not_a_resistance_is_not_a_measurement():
+    """The work database holds 1e12 Ω readings. One of them drags the quantile edges, so it does not
+    merely add a row -- it can put a trillion ohms in the recommended window."""
+    from laser_trim_analyzer.findings.analyzers import ink_target
+    from findings_helpers import ink_tracks, make_track, days
+    hot = ink_tracks(700, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25)
+    junk = [make_track(9000 + k, date=d, passes=((0.8, 1.0),), r_in=1e12)
+            for k, d in enumerate(days(START, 120, 0.5))]
+    (clean,) = ink_target.analyze("M", hot, label)
+    (with_junk,) = ink_target.analyze("M", hot + junk, label)
+    assert with_junk.title == clean.title                   # the junk changed nothing at all
+    assert with_junk.n_units == clean.n_units == 700
+    assert "1,000,000,000,000" not in with_junk.title and "1e+12" not in with_junk.title
+
+
+def test_the_rate_is_scaled_by_the_finding_s_own_group_not_the_whole_model():
+    from datetime import datetime
+    from laser_trim_analyzer.findings.analyzers import ink_target
+    from findings_helpers import ink_tracks, table, on_table
+    other = table(31, 0.10)
+    hot = ink_tracks(700, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25)
+    elsewhere = [on_table(t, other) for t in
+                 ink_tracks(3000, datetime(2020, 1, 1), (1.0,), lambda r: 0.5, first_id=50000)]
+    (f,) = ink_target.analyze("M", hot + elsewhere, label)
+    assert f.n_units == 700 and f.scope_annual_tracks <= 700          # never the other 3,000
+    assert f.tracks_per_year == f.expected_gain_points / 100.0 * f.scope_annual_tracks
+    assert "which is what the rate is scaled by" in f.summary
+
+
+def test_advice_drawn_from_a_setup_the_model_no_longer_runs_says_so():
+    """With MIN_N at 600 the biggest eligible group can be an older recipe, while the model has since
+    moved on to one too thin to judge. The finding must not read as current advice."""
+    from datetime import datetime
+    from laser_trim_analyzer.findings.analyzers import ink_target
+    from findings_helpers import ink_tracks
+    old_era = ink_tracks(800, START, (1.0,), lambda r: 0.9 if r < 4400 else 0.1)
+    now = ink_tracks(200, datetime(2026, 1, 1), (1.0, 2.0), lambda r: 0.5, first_id=9000)   # < MIN_N
+    (f,) = ink_target.analyze("M", old_era + now, label)
+    assert f.evidence["superseded"] is True
+    assert "NOT the setup the model runs today" in f.summary and "Treat it as history" in f.summary
+    # ...and when the eligible group IS the current one, that sentence is absent
+    (g,) = ink_target.analyze("M", old_era, label)
+    assert g.evidence["superseded"] is False and "NOT the setup" not in g.summary

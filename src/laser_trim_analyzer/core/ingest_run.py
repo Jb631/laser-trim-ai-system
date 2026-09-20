@@ -833,10 +833,25 @@ def _post_batch(db, models_in_batch: Set[str], new_trims: int, phases: dict,
         t = time.monotonic()
         try:
             from laser_trim_analyzer.findings import engine as _findings
-            _say(on_phase, "Working out process findings…")
-            stored = _findings.refresh_findings(db, sorted(models_in_batch))
-            logger.info("Process findings refreshed for %d models (%d findings)",
-                        len(models_in_batch), stored)
+            _say(on_phase, f"Working out process findings for {len(models_in_batch):,} models… "
+                           f"(a few minutes; the ingest itself is finished)")
+            report: dict = {}
+            stored = _findings.refresh_findings(db, sorted(models_in_batch), report)
+            # refresh_findings catches per-model failures itself and returns a count, so the guard
+            # below would almost never fire: without this, 446 models ALL failing logs as
+            # "refreshed for 446 models (0 findings)" -- indistinguishable from nothing to report.
+            failed, partial = report.get("failed_models") or {}, report.get("analyzer_errors") or {}
+            if failed or partial:
+                names = sorted(set(failed) | set(partial))
+                logger.error("Process findings: %d of %d models could not be worked out at all and %d "
+                             "had an analyzer fail (%s%s). Each model's Findings tab names what failed.",
+                             len(failed), len(models_in_batch), len(partial), ", ".join(names[:8]),
+                             " …" if len(names) > 8 else "")
+                _say(on_phase, f"Process findings: {len(failed):,} model(s) could not be worked out, "
+                               f"{len(partial):,} had an analyzer fail — see the log")
+            else:
+                logger.info("Process findings refreshed for %d models (%d findings)",
+                            len(models_in_batch), stored)
         except Exception:
             logger.exception("Process findings refresh after batch failed")
         phases["findings"] = time.monotonic() - t

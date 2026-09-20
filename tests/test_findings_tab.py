@@ -11,7 +11,7 @@ FACTS = {"tracks": 2351, "yardstick": {"n": 2351, "agreement": 1.0, "faithful": 
                              "median_incoming_r": 4601.0}]}
 FINDING = {"model": "HOT", "analyzer": "ink_target", "title": "Incoming resistance: aim lower",
            "category": "Ink target", "lever": "ink", "lever_label": "Ink formulation (incoming resistance)",
-           "lead_time": "next lot", "expected_gain_points": 3.9, "units_per_year": 34.0,
+           "lead_time": "next lot", "expected_gain_points": 3.9, "tracks_per_year": 34.0,
            "annual_volume": 873, "summary": "Within Laser 1 (LTS) running 2 cuts…",
            "strength_name": "Spearman", "strength_value": -0.15, "n_units": 346, "evidence": {}}
 
@@ -48,11 +48,11 @@ def test_no_findings_reads_as_nothing_to_act_on_not_as_a_gap(tk_root):
 def test_a_finding_shows_its_lever_lead_time_and_gain(tk_root):
     tab = _tab(tk_root)
     tab.set_data({"facts": FACTS, "findings": [FINDING, {**FINDING, "title": "Recipe changed",
-                                                         "units_per_year": None,
+                                                         "tracks_per_year": None,
                                                          "expected_gain_points": None}]})
     text = " | ".join(_texts(tab))
     assert "Nothing to act on" not in text
-    assert "34 units a year" in text and "no gain claimed" in text and "next lot" in text
+    assert "34 tracks a year" in text and "no rate claimed" in text and "next lot" in text
 
 
 def test_a_model_the_yardstick_cannot_vouch_for_says_why(tk_root):
@@ -136,7 +136,7 @@ def test_a_value_that_is_not_there_reads_as_a_dash_never_as_zero_and_never_crash
     assert "RECIPE HISTORY" in text                     # it rendered all the way to the last section
     assert "median incoming — Ω" in text and "0 Ω" not in text
     assert "— tracks cut" in text and "()" not in text
-    assert "rests on — tracks" in text and "no gain claimed" in text
+    assert "rests on — tracks" in text and "no rate claimed" in text
     assert "None" not in text
 
 

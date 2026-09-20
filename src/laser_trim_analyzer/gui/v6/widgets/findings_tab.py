@@ -133,9 +133,9 @@ class FindingsTab(ctk.CTkFrame):
         ctk.CTkLabel(card, text=f.get("title", ""), font=t.font(t.SIZE_BODY, "bold"), anchor="w",
                      justify="left", wraplength=880, text_color=t.TEXT_PRIMARY
                      ).pack(fill="x", padx=t.SPACE_MD, pady=(t.SPACE_SM, 0))
-        upy, points = f.get("units_per_year"), f.get("expected_gain_points")
-        gain = (f"{points:+.1f} yield points ≈ {upy:,.0f} units a year"
-                if upy is not None and points is not None else "no gain claimed")
+        tpy, points = f.get("tracks_per_year"), f.get("expected_gain_points")
+        gain = (f"{points:+.1f} yield points ≈ {tpy:,.0f} tracks a year"
+                if tpy is not None and points is not None else "no rate claimed")
         ctk.CTkLabel(card, text=f"{f.get('category', '')}  ·  lever: {f.get('lever_label', '')} "
                                 f"({f.get('lead_time', '')})  ·  {gain}",
                      font=t.font(t.SIZE_CAPTION), anchor="w", text_color=t.ACCENT

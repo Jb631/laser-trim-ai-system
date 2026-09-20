@@ -30,7 +30,7 @@ def test_refresh_stores_ranked_findings_and_always_stores_facts(tmp_path, monkey
     assert [d["model"] for d in ranked] == ["HOT"]
     hot = ranked[0]
     assert hot["lever"] == "ink" and hot["lever_label"].startswith("Ink") and hot["lead_time"] == "next lot"
-    assert hot["units_per_year"] > 0
+    assert hot["tracks_per_year"] > 0
     assert len(hot["evidence"]["bins"]) == 5           # the evidence survived JSON, not a silent "null"
     assert db.get_process_findings("QUIET") == []
     quiet = db.get_process_facts("QUIET")              # silence still leaves the measurements
@@ -77,7 +77,7 @@ def test_a_date_in_the_evidence_is_flattened_not_silently_nulled(tmp_path):
     from datetime import datetime
     db = _db(tmp_path)
     finding = {"model": "X", "analyzer": "a", "category": "c", "lever": "ink", "title": "t", "summary": "s",
-               "expected_gain_points": None, "units_per_year": None, "annual_volume": 5, "n_units": 5,
+               "expected_gain_points": None, "tracks_per_year": None, "annual_volume": 5, "n_units": 5,
                "evidence": {"when": datetime(2026, 1, 6)}}
     db.replace_process_findings("X", {"tracks": 1, "when": datetime(2026, 1, 6)}, [finding])
     assert db.get_process_findings("X")[0]["evidence"]["when"].startswith("2026-01-06")
@@ -153,10 +153,12 @@ def test_refresh_reports_what_did_not_get_done(tmp_path, monkeypatch):
     assert db.get_process_facts("BROKEN") is None
 
 
-def _row(model, upy, volume, title="t"):
+def _row(model, tpy, size, title="t"):
+    """`tpy` = tracks a year the gain is worth (None = the finding claims no rate); `size` = its own sample."""
     return {"model": model, "analyzer": "a", "category": "c", "lever": "ink", "title": title, "summary": "s",
-            "expected_gain_points": None if upy is None else 1.0, "units_per_year": upy,
-            "annual_volume": volume, "n_units": 5, "evidence": {}}
+            "expected_gain_points": None if tpy is None else 1.0, "tracks_per_year": tpy,
+            "scope_annual_tracks": 0 if tpy is None else int(tpy * 100), "annual_volume": size,
+            "n_units": size, "evidence": {}}
 
 
 def test_findings_come_back_ranked_across_models(tmp_path):
@@ -166,7 +168,7 @@ def test_findings_come_back_ranked_across_models(tmp_path):
                                                            _row("NOGAIN", None, 10, "second")])
     db.replace_process_findings("BIG", {"tracks": 1}, [_row("BIG", 400.0, 50)])
     ranked = db.get_process_findings()
-    # recoverable units a year first (NOT volume); findings that claim no gain last, by volume
+    # recoverable tracks a year first (NOT sample size); findings that claim no rate last, by size
     assert [(d["model"], d["title"]) for d in ranked] == [("BIG", "t"), ("SMALL", "t"),
                                                           ("NOGAIN", "t"), ("NOGAIN", "second")]
 
@@ -207,7 +209,7 @@ def test_the_limit_table_analyzer_runs_inside_the_engine_and_its_history_is_cach
     assert engine.refresh_findings(db, ["TWO"]) == 1
     (found,) = db.get_process_findings("TWO")
     assert found["analyzer"] == "limit_tables" and found["lever"] == "laser_limit_table"
-    assert found["units_per_year"] is None and found["evidence"]["comparison"]["kind"] == "same_band_other_density"
+    assert found["tracks_per_year"] is None and found["evidence"]["comparison"]["kind"] == "same_band_other_density"
     cached = db.get_process_facts("TWO")["limit_tables"]
     assert [(h["graded"], h["n"]) for h in cached] == [(12, 200), (23, 200)] and db.get_process_errors() == {}
 

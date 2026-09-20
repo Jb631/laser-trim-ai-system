@@ -24,7 +24,7 @@ def test_two_tables_at_once_same_band_other_density():
     assert len(history) == 2 and len(findings) == 1
     f = findings[0]
     assert f.lever == "laser_limit_table" and f.lead_time == "same day" and f.category == "Limit table"
-    assert f.expected_gain_points is None and f.units_per_year is None      # a different test is not more yield
+    assert f.expected_gain_points is None and f.tracks_per_year is None      # a different test is not more yield
     assert "in service at once" in f.title and "Laser 1 (LTS)" in f.title and "System B" not in f.summary
     assert f.evidence["concurrent"] is True and f.evidence["comparison"]["kind"] == "same_band_other_density"
     assert "12 points and the other 23" in f.summary and "stricter test" in f.summary

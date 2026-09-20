@@ -681,7 +681,9 @@ class ProcessFinding(Base):
     title = Column(Text, nullable=False)
     summary = Column(Text, nullable=False)
     expected_gain_points = Column(Float)        # NULL = the analyzer could not state a gain honestly
-    units_per_year = Column(Float)              # gain x annual volume; the ranking key
+    units_per_year = Column(Float)              # the ranking key: TRACKS a year the gain is worth,
+                                                # over the population it was measured on (the column
+                                                # name predates the correction of 2026-09-20)
     annual_volume = Column(Integer, default=0)
     n_units = Column(Integer, default=0)
     payload = Column(SafeJSON)                  # Finding.to_dict(), evidence included

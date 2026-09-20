@@ -1551,10 +1551,27 @@ class ExcelParser:
         # the spec band as a reference. Pass/fail logic is skipped for
         # untrimmed-only tracks via the is_untrimmed_only flag, so retaining
         # the limits has no effect on judgment.
-        if raw.get("untrimmed_positions") is None:
+        # WHICH of the two reads to keep. The sheet was read twice (see above): the trimmed reader
+        # tolerates blanks and keeps every row, but takes a literal 0.0 at face value; the pre-trim
+        # reader recovers the error from measured - theory, but STOPS at the first blank in either
+        # column, so one dropped cell can cut a 40-point sweep to 5 (demonstrated, final review
+        # 2026-09-20). Keep the LONGER array -- more of the part measured -- and on a tie keep the
+        # recovered one, which is what makes a no-cut file's real sweep survive its column of zeros.
+        pre_n = len(raw.get("untrimmed_errors") or ())
+        trimmed_n = len(raw.get("errors") or ())
+        if trimmed_n > pre_n:
+            if pre_n:
+                logger.warning(
+                    "SANITY: %s [%s] track %s: the recovered pre-trim sweep stops at %d of %d points "
+                    "(a dropped cell in the measured or theory column) — keeping the full-length read",
+                    file_path.name, untrimmed_sheet, track_id, pre_n, trimmed_n)
             raw["untrimmed_positions"] = raw.get("positions")
-        if raw.get("untrimmed_errors") is None:
             raw["untrimmed_errors"] = raw.get("errors")
+        else:
+            if raw.get("untrimmed_positions") is None:
+                raw["untrimmed_positions"] = raw.get("positions")
+            if raw.get("untrimmed_errors") is None:
+                raw["untrimmed_errors"] = raw.get("errors")
         raw["positions"] = None
         raw["errors"] = None
 
@@ -1569,9 +1586,10 @@ class ExcelParser:
         # Every corpus track happens to be aligned today, so this is structural
         # rather than observed; a mismatch that reached the chart would pair
         # each error with some other position's spec band.
-        per_point = ("untrimmed_positions", "untrimmed_errors",
-                     "upper_limits", "lower_limits",
-                     "upper_limits_wide", "lower_limits_wide", "theory_volts")
+        # The limits are NOT in this tuple: `Processor` builds the untrimmed-only TrackData without
+        # them, so they never reach the database on this path, and letting a limit array shorten the
+        # stored sweep would trade a real measurement for the alignment of something discarded.
+        per_point = ("untrimmed_positions", "untrimmed_errors", "theory_volts")
         # `if raw.get(k)`, not `is not None`: an EMPTY array carries no alignment information, and
         # letting one in made it the shortest, so every other array was cut to nothing. `theory_volts`
         # is the one that can legitimately be empty (a theory column that reads as no numbers at all) --

@@ -1,7 +1,8 @@
 """Findings -- every model's process findings in one ranked list (the front door).
 
-Recoverable units a year first; findings that cannot state a gain after them,
-by volume. Reads the cache only: nothing here computes anything.
+Recoverable TRACKS a year first (tracks, not units: a unit trimmed twice is two of them),
+then findings that claim no rate, by their own sample size. Reads the cache only:
+nothing here computes anything.
 """
 import logging
 import threading
@@ -23,7 +24,7 @@ class FindingsPage(PageBase):
 
     def build_content(self, parent):
         self._zone_header(parent, "WHAT TO CHANGE, BIGGEST FIRST",
-                          "units a year recoverable, then by volume — click a row to open the model")
+                          "tracks a year recoverable, then by sample size — click a row to open the model")
         self._list = ctk.CTkScrollableFrame(parent, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
 
@@ -87,8 +88,8 @@ class FindingsPage(PageBase):
                          ).pack(fill="x", pady=t.SPACE_SM)
         else:
             for f in rows:
-                upy = f.get("units_per_year")
-                gain = f"{upy:,.0f} units a year" if upy is not None else "no gain claimed"
+                tpy = f.get("tracks_per_year")
+                gain = f"{tpy:,.0f} tracks a year" if tpy is not None else "no rate claimed"
                 ctk.CTkButton(
                     self._list, anchor="w", fg_color=t.CARD, hover_color=t.ACCENT_HOVER,
                     text_color=t.TEXT_PRIMARY, font=t.font(t.SIZE_BODY), corner_radius=8,
