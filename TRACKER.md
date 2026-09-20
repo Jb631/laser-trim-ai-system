@@ -149,6 +149,29 @@ screens parts.
       - Even with two cuts about half the tracks leave the laser outside the trim
         limits (median lands AT the limit, 0.99) — that gap is the cut-length model's target.
       - Pending: whether two cuts improve FINAL-TEST yield (needs the Test Station files).
+- [x] **The company goal, in James's words (2026-09-20):** "the goal of the company is to not
+      have to trim at all and if we do trim as little as possible to not overtrim and not
+      tie up capacity at the laser." Hand trim is a fallback and does not guarantee a pass;
+      **8232-1 and 8340-1 are hand-trimmed models** (ask for the full list). So the
+      cut-length model's objective is **the least trim that lands in spec** — fewest
+      passes, smallest cut — not FT yield on hand-trimmed models.
+- [x] **How close is "no trim at all"? Graded every UNTRIMMED curve** (same validated yardstick;
+      untrimmed sweep shares pass 1's position grid, 3,000/3,000):
+      - 8232-1: linearity already inside limits before any cut on **2%** (laser 2, 4,032
+        tracks) and **5%** (laser 1, 2,341). 8340-1: **1%** (2,320). Trimming on these
+        models is driven by LINEARITY, not by resistance.
+      - 8232-1's station settings: incoming 4,200–4,600 Ω, final 5,000–5,500 Ω — the
+        windows do not overlap, so every unit must gain ≥ 400 Ω. But the linearity trim
+        raises R by ~15–20% anyway (median +656 Ω on laser 1 vs +608 Ω needed to reach the
+        floor), so the incoming target looks SET so the linearity trim lands R in spec.
+        8340-1 is the opposite case: only 7% arrive below its 800 Ω floor.
+      - **One file misled me:** "pass 1 under-cuts, pass 2 goes longer" is FALSE in general
+        (under target after pass 1 on 54% of 3,861 tracks). 8232-1 ran a FIXED recipe on
+        laser 2 for nine years — cut length 0.75 then 0.88 — and the extra cut in pass 2
+        does not respond to where pass 1 landed (correlation +0.02). Nothing adapts to
+        the part. That is the opening for a cut-length model.
+      - New finding for the catalogue: **trim avoidance** — per model, the share of units
+        arriving already in spec. Needs the full rebuild to rank every model.
 - [ ] **B5 · Recommendation engine + the ink-target finding**, end to end, on
       both screens. Gets its own plan, written after B2 so it is designed
       against real data.
