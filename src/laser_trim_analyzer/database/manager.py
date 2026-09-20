@@ -425,7 +425,7 @@ class DatabaseManager:
         def clean(obj):
             return _json.loads(_json.dumps(obj, default=str))
 
-        now = datetime.utcnow()
+        now = utc_now()
         with self.session() as s:
             s.query(ProcessFinding).filter(ProcessFinding.model == model).delete(synchronize_session=False)
             for f in findings:
@@ -449,15 +449,18 @@ class DatabaseManager:
         """Cached findings, ranked: recoverable units per year first, then by volume."""
         from sqlalchemy import text as _text
         import json as _json
-        sql = ("SELECT payload FROM process_findings "
-               + ("WHERE model = :m " if model else "")
+        # `is not None`, not truthiness: an empty model name must match NOTHING, not every model.
+        one = model is not None
+        sql = ("SELECT payload, computed_at FROM process_findings "
+               + ("WHERE model = :m " if one else "")
                + "ORDER BY (units_per_year IS NULL), units_per_year DESC, annual_volume DESC, model, id")
         with self.session() as s:
-            rows = s.execute(_text(sql), {"m": model} if model else {}).fetchall()
+            rows = s.execute(_text(sql), {"m": model} if one else {}).fetchall()
         out = []
-        for (payload,) in rows:
+        for payload, computed_at in rows:
             d = _json.loads(payload) if isinstance(payload, (str, bytes)) else payload
             if isinstance(d, dict):
+                d["computed_at"] = str(computed_at)      # so a screen can say how old the cache is
                 out.append(d)
         return out
 

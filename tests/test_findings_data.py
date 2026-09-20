@@ -62,3 +62,10 @@ def test_yardstick_reproduces_the_apps_verdict_on_the_fixtures(fixture_db):
 def test_an_unknown_model_is_empty_not_an_error(fixture_db):
     from laser_trim_analyzer.findings.data import load_model_tracks
     assert load_model_tracks(fixture_db, "no-such-model") == []
+
+
+def test_the_yardstick_result_carries_the_bar_it_was_held_to():
+    from laser_trim_analyzer.findings import data
+    y = data.yardstick_fidelity([])
+    assert y == {"n": 0, "agreement": None, "faithful": False, "min_n": 30, "min_agreement": 0.99}
+    assert (data.YARDSTICK_MIN_N, data.YARDSTICK_MIN_AGREEMENT) == (30, 0.99)

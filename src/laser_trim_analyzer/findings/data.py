@@ -107,6 +107,13 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
     return out
 
 
+# The yardstick is only trusted on a model where it reproduces the app's own stored verdict.
+# The bar travels WITH the result, so a screen can say why a model is not graded without
+# keeping a second copy of these numbers.
+YARDSTICK_MIN_N = 30
+YARDSTICK_MIN_AGREEMENT = 0.99
+
+
 def yardstick_fidelity(tracks: List[TrackView]) -> Dict[str, Any]:
     """Does margin_ratio reproduce the app's stored verdict on THIS model's final sweeps?"""
     same = n = 0
@@ -119,4 +126,5 @@ def yardstick_fidelity(tracks: List[TrackView]) -> Dict[str, Any]:
         n += 1
         same += (g == t.linearity_pass)
     return {"n": n, "agreement": (same / n) if n else None,
-            "faithful": bool(n >= 30 and same / n >= 0.99)}
+            "faithful": bool(n >= YARDSTICK_MIN_N and same / n >= YARDSTICK_MIN_AGREEMENT),
+            "min_n": YARDSTICK_MIN_N, "min_agreement": YARDSTICK_MIN_AGREEMENT}

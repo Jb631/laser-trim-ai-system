@@ -91,3 +91,98 @@ def test_every_finding_carries_the_models_annual_volume(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
     _, findings = engine.compute_for_model(db, "HOT")
     assert findings and all(f.annual_volume == 600 for f in findings)
+
+
+# ---- fix round 1: a failure is never silence; the ranking is tested with more than one row ----
+
+def test_a_crashed_analyzer_is_named_not_shown_as_silence(tmp_path, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    hot = _hot()
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
+
+    def boom(*a, **k):
+        raise RuntimeError("analyzer exploded")
+    monkeypatch.setattr(engine.recipe_change, "analyze", boom)
+    monkeypatch.setattr(engine.trim_effort, "analyze", boom)
+    facts, findings = engine.compute_for_model(None, "HOT")
+    assert set(facts["errors"]) == {"recipe_change", "trim_effort"}
+    assert facts["errors"]["recipe_change"] == "RuntimeError: analyzer exploded"
+    assert facts["recipe_history"] is None and facts["trim_effort"] is None   # not computed...
+    assert facts["yardstick"]["faithful"] is True                             # ...and NOT because of the yardstick
+    assert [f.analyzer for f in findings] == ["ink_target"]                   # the survivor still reports
+
+
+def test_a_healthy_run_has_no_errors_and_an_explicit_history(tmp_path, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    hot = _hot()
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
+    facts, _ = engine.compute_for_model(None, "HOT")
+    assert facts["errors"] == {}
+    assert isinstance(facts["recipe_history"], list) and isinstance(facts["trim_effort"], dict)
+
+
+def test_every_documented_key_exists_even_for_a_model_with_no_tracks(monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: [])
+    facts, findings = engine.compute_for_model(None, "EMPTY")
+    assert findings == [] and facts["tracks"] == 0
+    assert set(facts) == {"model", "tracks", "annual_volume", "latest", "yardstick",
+                          "recipe_history", "trim_effort", "errors"}
+
+
+def test_refresh_reports_what_did_not_get_done(tmp_path, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    db = _db(tmp_path)
+    hot = _hot()
+
+    def loader(_db, model):
+        if model == "BROKEN":
+            raise RuntimeError("boom")
+        return hot
+    monkeypatch.setattr(engine, "load_model_tracks", loader)
+
+    def bad_effort(*a, **k):
+        raise ValueError("no sweeps")
+    monkeypatch.setattr(engine.trim_effort, "analyze", bad_effort)
+    report = {}
+    stored = engine.refresh_findings(db, ["BROKEN", "HOT"], report)
+    assert report == {"models": 2, "stored": stored,
+                      "failed_models": {"BROKEN": "RuntimeError: boom"},
+                      "analyzer_errors": {"HOT": {"trim_effort": "ValueError: no sweeps"}}}
+    assert db.get_process_facts("HOT")["errors"] == {"trim_effort": "ValueError: no sweeps"}   # and it is cached
+    assert db.get_process_facts("BROKEN") is None
+
+
+def _row(model, upy, volume, title="t"):
+    return {"model": model, "analyzer": "a", "category": "c", "lever": "ink", "title": title, "summary": "s",
+            "expected_gain_points": None if upy is None else 1.0, "units_per_year": upy,
+            "annual_volume": volume, "n_units": 5, "evidence": {}}
+
+
+def test_findings_come_back_ranked_across_models(tmp_path):
+    db = _db(tmp_path)
+    db.replace_process_findings("SMALL", {"tracks": 1}, [_row("SMALL", 5.0, 9000)])
+    db.replace_process_findings("NOGAIN", {"tracks": 1}, [_row("NOGAIN", None, 99999),
+                                                           _row("NOGAIN", None, 10, "second")])
+    db.replace_process_findings("BIG", {"tracks": 1}, [_row("BIG", 400.0, 50)])
+    ranked = db.get_process_findings()
+    # recoverable units a year first (NOT volume); findings that claim no gain last, by volume
+    assert [(d["model"], d["title"]) for d in ranked] == [("BIG", "t"), ("SMALL", "t"),
+                                                          ("NOGAIN", "t"), ("NOGAIN", "second")]
+
+
+def test_an_empty_model_name_matches_nothing_not_every_model(tmp_path):
+    db = _db(tmp_path)
+    db.replace_process_findings("X", {"tracks": 1}, [_row("X", 1.0, 5)])
+    assert db.get_process_findings("") == []
+    assert len(db.get_process_findings(None)) == 1
+
+
+def test_findings_say_when_they_were_computed_and_the_clock_is_not_deprecated(tmp_path):
+    import warnings
+    db = _db(tmp_path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)      # datetime.utcnow() is deprecated
+        db.replace_process_findings("X", {"tracks": 1}, [_row("X", 1.0, 5)])
+    got = db.get_process_findings("X")[0]
+    assert got["computed_at"][:2] == "20" and got["title"] == "t"
