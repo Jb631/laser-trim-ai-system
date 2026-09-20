@@ -36,6 +36,33 @@ GOLDEN = {
     "8232-1":  {"untr_sigma": 0.065373, "untr_n": 56, "post_sigma": 0.025829, "n_points": 56},
 }
 
+# Baseline-only bookkeeping keys: `status` is compared by RANK above (a model may get better),
+# `reason` is free text, `type`/`model` are how the entry is looked up, not parse output.
+_NOT_VALUES = {"status", "reason", "type", "model"}
+
+
+def _moved_fields(base: dict, now: dict) -> list:
+    """[(key, baseline value, value now)] for every frozen value that no longer matches.
+    Floats to 1e-6 (absolute and relative): tight enough that a moved sigma cannot hide,
+    loose enough for another platform's BLAS."""
+    import math
+    moved = []
+    for key, was in base.items():
+        if key in _NOT_VALUES:
+            continue
+        is_now = now.get(key)
+        if isinstance(was, float) or isinstance(is_now, float):
+            same = (was is not None and is_now is not None
+                    and not isinstance(was, bool) and not isinstance(is_now, bool)
+                    and math.isclose(was, is_now, rel_tol=1e-6, abs_tol=1e-6))
+            same = same or (was is None and is_now is None)
+        else:
+            same = was == is_now
+        if not same:
+            moved.append((key, was, is_now))
+    return moved
+
+
 # Current representatives, keyed by relpath for lookup against the baseline.
 _CURRENT = {rel: (ftype, model) for ftype, model, rel in discover_representatives()}
 
@@ -54,6 +81,23 @@ def test_no_parse_regression(relpath):
         f"{base['model']} ({ftype}) regressed: was '{base['status']}', "
         f"now '{now['status']}' ({now.get('reason', '')}) for {relpath}"
     )
+    # ... and every VALUE the baseline froze must still come out the same.
+    #
+    # Until 2026-09-20 this test stopped at the rank above, and was described (by its own
+    # readers, in two documents) as "diffs 645 real files". It did not: only the five GOLDEN
+    # models had numbers compared. A parser change that moved a sigma, a point count or a
+    # final-test verdict on any of the other 640 files stayed green -- found when a fix rerouted
+    # a whole class of files and this gate never blinked. An audit that day compared every
+    # stored field: 633 of 641 present files were identical and the other 8 were explained,
+    # deliberate changes, so the comparison was switched on and those 8 entries refreshed.
+    if base["status"] == "ok" and now["status"] == "ok":
+        moved = _moved_fields(base, now)
+        assert not moved, (
+            f"{base['model']} ({ftype}) parses to different VALUES than the baseline for {relpath}: "
+            + "; ".join(f"{k}: {b!r} -> {n!r}" for k, b, n in moved)
+            + ". If the change is intended, refresh THIS entry deliberately "
+              "(tests/gen_parse_baseline.py) and say why in the commit."
+        )
 
 
 @pytest.mark.parametrize("model", sorted(GOLDEN.keys()))

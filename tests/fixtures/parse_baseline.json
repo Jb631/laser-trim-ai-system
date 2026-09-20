@@ -1568,11 +1568,11 @@
   "model": "8652",
   "n_points": 335,
   "n_tracks": 1,
-  "post_sigma": 0.025827,
+  "post_sigma": 0.025823,
   "status": "ok",
   "type": "trim",
   "untr_n": 335,
-  "untr_sigma": 0.025827
+  "untr_sigma": 0.025823
  },
  "Work Files/Sample_Base_2026-04-10/DLTS/8656/8656_92_TEST DATA_4-1-2015_11-57 AM.xls": {
   "model": "8656",
@@ -3501,7 +3501,7 @@
   "type": "final_test"
  },
  "Work Files/Sample_Base_2026-04-10/Test Station/7539-2 (sweep)/7539-2 (sweep)-sn211 post dithertest_10-23-2010_1-10 PM.xls": {
-  "linearity_pass": true,
+  "linearity_pass": false,
   "model": "7539-2 (sweep)",
   "n_points": 180,
   "n_tracks": 1,
@@ -3509,7 +3509,7 @@
   "type": "final_test"
  },
  "Work Files/Sample_Base_2026-04-10/Test Station/7539-2/7539-2-sn23_1-22-2026_2-44 PM.xls": {
-  "linearity_pass": true,
+  "linearity_pass": false,
   "model": "7539-2",
   "n_points": 181,
   "n_tracks": 1,
@@ -3933,7 +3933,7 @@
   "type": "final_test"
  },
  "Work Files/Sample_Base_2026-04-10/Test Station/8084/8084-sn03751_7-31-2012_8-32 AM.xls": {
-  "linearity_pass": false,
+  "linearity_pass": true,
   "model": "8084",
   "n_points": 71,
   "n_tracks": 1,
@@ -3941,7 +3941,7 @@
   "type": "final_test"
  },
  "Work Files/Sample_Base_2026-04-10/Test Station/8084a/8084a-sn465s_4-30-2010_3-42 PM.xls": {
-  "linearity_pass": false,
+  "linearity_pass": true,
   "model": "8084a",
   "n_points": 71,
   "n_tracks": 1,
@@ -4109,7 +4109,7 @@
   "type": "final_test"
  },
  "Work Files/Sample_Base_2026-04-10/Test Station/8232-1 5V current/8232-1 5V current-sn360-pre_10-5-2010_7-55 AM.xls": {
-  "linearity_pass": false,
+  "linearity_pass": true,
   "model": "8232-1 5V current",
   "n_points": 56,
   "n_tracks": 1,
@@ -4845,7 +4845,7 @@
   "type": "final_test"
  },
  "Work Files/Sample_Base_2026-04-10/Test Station/8555/8555-sn2075_Inner_7-28-2025_12-16 PM.xls": {
-  "linearity_pass": false,
+  "linearity_pass": true,
   "model": "8555",
   "n_points": 343,
   "n_tracks": 1,
@@ -5050,7 +5050,7 @@
   "type": "final_test"
  },
  "Work Files/Sample_Base_2026-04-10/Test Station/8638/8638-sn1A_10-4-2013_3-41 PM.xls": {
-  "linearity_pass": false,
+  "linearity_pass": true,
   "model": "8638",
   "n_points": 21,
   "n_tracks": 1,
