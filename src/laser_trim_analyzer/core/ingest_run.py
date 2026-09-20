@@ -823,6 +823,22 @@ def _post_batch(db, models_in_batch: Set[str], new_trims: int, phases: dict,
         logger.exception("Drift advance after batch failed")
     phases["advance"] = time.monotonic() - t
 
+    # Process findings read trim verdicts and captured passes only, so a batch
+    # that saved no trims changes nothing they depend on -- the same gate the
+    # rematch above uses. Guarded like every other phase here: findings are an
+    # aid, and an aid must never be able to fail an ingest.
+    if new_trims:
+        t = time.monotonic()
+        try:
+            from laser_trim_analyzer.findings import engine as _findings
+            _say(on_phase, "Working out process findings…")
+            stored = _findings.refresh_findings(db, sorted(models_in_batch))
+            logger.info("Process findings refreshed for %d models (%d findings)",
+                        len(models_in_batch), stored)
+        except Exception:
+            logger.exception("Process findings refresh after batch failed")
+        phases["findings"] = time.monotonic() - t
+
 
 @_with_ingest_switch_interval
 def run_folder(folder: str, *, db, config, incremental: bool = True,
