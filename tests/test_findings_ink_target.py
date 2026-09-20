@@ -67,4 +67,38 @@ def test_a_change_of_limit_table_is_not_credited_to_resistance():
     hot = [on_table(t, lax) for t in ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25)]
     f = ink_target.analyze("M", hot, label)[0]
     assert f.evidence["limit_table"] == {"rows": 12, "graded": 12}
-    assert "Laser, recipe and limit table are held constant" in f.summary
+    assert "Laser, recipe, limit table and the station's final-resistance window are held constant" in f.summary
+
+
+def test_a_change_of_final_resistance_window_is_not_credited_to_resistance_either():
+    """Second review finding. `_success` also asks whether the trimmed resistance landed inside the
+    station's FINAL window -- so that window is part of the test. One laser, one recipe, one limit table;
+    resistance does nothing inside either era; only the final window moved. Pooled, the analyzer used to
+    answer "aim lower" with rho about -0.87 and a claimed gain of 50 yield points."""
+    from dataclasses import replace
+    from datetime import datetime
+    from findings_helpers import ink_tracks
+    from laser_trim_analyzer.findings.analyzers import ink_target
+    from laser_trim_analyzer.findings.stats import spearman
+    # Era A: a NARROW final window that the trimmed resistance misses, on low incoming stock.
+    a = [replace(t, final_r_low=9000.0, final_r_high=9100.0)
+         for t in ink_tracks(400, START, (1.0, 2.0), lambda r: 1.0, r_lo=4000.0, r_hi=4400.0)]
+    # Era B: the window widened to include it, on high incoming stock. Same recipe, same table.
+    b = [replace(t, final_r_low=4000.0, final_r_high=9000.0)
+         for t in ink_tracks(400, datetime(2025, 1, 1), (1.0, 2.0), lambda r: 1.0,
+                             first_id=1000, r_lo=4400.0, r_hi=5000.0)]
+    ok = lambda ts: [1.0 if ink_target._success(t) else 0.0 for t in ts]        # noqa: E731
+    assert sum(ok(a)) == 0 and sum(ok(b)) == len(b)          # the window alone decides the verdict
+    pooled = spearman([t.untrimmed_resistance for t in a + b], ok(a + b))
+    assert pooled > 0.8                                       # the trap: resistance "explains" everything
+    assert ink_target.analyze("M", a + b, label) == []         # held constant, there is nothing to say
+
+
+def test_the_window_that_is_held_constant_travels_with_the_finding():
+    from findings_helpers import ink_tracks
+    from laser_trim_analyzer.findings.analyzers import ink_target
+    hot = ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25)
+    (f,) = ink_target.analyze("M", hot, label)
+    assert f.evidence["final_resistance_window"] == [5000.0, 5500.0]
+    assert "final-resistance window are held constant" in f.summary
+    assert "Period, operator and lot are not." in f.summary

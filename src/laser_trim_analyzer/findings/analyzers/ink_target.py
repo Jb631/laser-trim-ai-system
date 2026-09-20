@@ -6,11 +6,19 @@ one cut to two. So this analyzer never pools. It works inside ONE laser, ONE
 recipe and ONE limit table -- the most recent such group with enough units --
 and only there asks whether incoming resistance separates good from bad.
 
-The limit table is the third thing held still because it IS the test: the
-same model on laser 1 was graded at 89 points until 2025 and at 45 since, and
-a laxer table passes more units whatever their resistance. If the incoming
-target drifted over the same months, pooling the two tables would credit the
-resistance with a change that was really a change of test.
+The limit table is held still because it IS the test: the same model on laser 1
+was graded at 89 points until 2025 and at 45 since, and a laxer table passes
+more units whatever their resistance. If the incoming target drifted over the
+same months, pooling the two tables would credit the resistance with a change
+that was really a change of test.
+
+The station's FINAL-RESISTANCE window is held still for exactly the same reason,
+and it took a second review to see it: `_success` below asks whether the trimmed
+resistance landed inside that window, so the window is part of the test too. With
+it left out, a group in which only the window moved produced "aim lower", a
+correlation of -0.87 and a claimed gain of 50 yield points -- under a sentence
+saying nothing else explained it. Anything a verdict is measured AGAINST belongs
+in the group key.
 
 Success is the app's stored trim verdict AND the final resistance landing
 inside the station's own final limits (when the file carries them). Final-
@@ -43,11 +51,13 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
     for t in tracks:
         if t.passes and t.untrimmed_resistance and _success(t) is not None:
             table = t.limit_table
-            groups.setdefault((t.system, t.recipe, table.key if table else None), []).append(t)
+            groups.setdefault((t.system, t.recipe, table.key if table else None,
+                               t.final_r_low, t.final_r_high), []).append(t)
     eligible = [(k, v) for k, v in groups.items() if len(v) >= MIN_N]
     if not eligible:
         return []                                       # thin sample: say nothing
-    (system, recipe, _table_key), ts = max(eligible, key=lambda kv: max(t.file_date for t in kv[1]))
+    (system, recipe, _table_key, final_r_low, final_r_high), ts = max(
+        eligible, key=lambda kv: max(t.file_date for t in kv[1]))
     table = ts[0].limit_table
     ts = sorted(ts, key=lambda t: t.untrimmed_resistance)
     rs = [t.untrimmed_resistance for t in ts]
@@ -98,7 +108,8 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
                  + (f"The station is set to accept {configured[0]:,.0f} to {configured[1]:,.0f} Ω incoming. "
                     if configured else "These files carry no configured incoming window, so this is a computed "
                     "target, not a comparison with a setting. ")
-                 + "Laser, recipe and limit table are held constant, so none of them explains the difference."),
+                 + "Laser, recipe, limit table and the station's final-resistance window are held constant, "
+                   "so none of them explains the difference. Period, operator and lot are not."),
         n_units=n, strength_name="Spearman correlation, incoming resistance vs good-at-laser",
         strength_value=rho, expected_gain_points=gain,
         gain_definition=("good-at-laser rate inside the recommended window minus the rate over the whole group; "
@@ -106,4 +117,5 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
                          "final limits"),
         evidence={"bins": bins, "window": best, "overall_pct": overall, "recipe": describe(recipe),
                   "configured_incoming": configured, "period": [first.isoformat(), last.isoformat()],
-                  "limit_table": None if table is None else {"rows": table.rows, "graded": table.graded}})]
+                  "limit_table": None if table is None else {"rows": table.rows, "graded": table.graded},
+                  "final_resistance_window": [final_r_low, final_r_high]})]

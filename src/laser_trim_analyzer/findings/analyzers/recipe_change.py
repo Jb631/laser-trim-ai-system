@@ -10,9 +10,16 @@ either side is disclosed beside it, because the two often move together.
 So is the LIMIT TABLE. A pass rate is a verdict against a test, and the test can
 change in the same months as the recipe: 8232-1 on laser 1 went from one cut to
 two during 2024 and from an 89-point table to a 45-point one during 2025. When
-the busiest table differs either side of a change the finding says so, and --
-where both sides have enough tracks on ONE common table -- gives the move on
-that table alone, which is the only like-for-like number there is.
+more than one table is materially present on either side the finding says so,
+and -- where both sides have enough tracks on ONE common table -- gives the move
+on that table alone, WITH the dates of each slice: the after-side tracks still on
+the old table are whatever part of the after-period had not switched yet, so the
+figure is like-for-like in the test but not in time, and it must say so.
+
+(An independent review broke the first version of this: it disclosed only when
+the BUSIEST table differed. A before-side graded 60% on a lax table and 40% on a
+strict one, against an after-side 100% lax, reported "+15 points" with no
+disclosure at all -- and the like-for-like move on the lax table was zero.)
 """
 from collections import Counter
 from statistics import median
@@ -26,6 +33,7 @@ DOMINANT = 0.80        # share one recipe needs for the quarter to count as stab
 MIN_SIDE = 100         # graded tracks needed on EACH side before a change is a finding
 MIN_MOVE_POINTS = 10.0 # a change that moved the result less than this is history, not a finding
 MAX_EVENTS = 3         # per laser, most recent first
+MATERIAL = 0.10        # a limit table carrying this share of a side is part of how that side was graded
 
 
 def _quarter(d) -> str:
@@ -47,16 +55,18 @@ def _side(tracks) -> dict:
     graded = [t.linearity_pass for t in tracks if t.linearity_pass is not None]
     rs = [t.untrimmed_resistance for t in tracks if t.untrimmed_resistance]
     tables = Counter(_table_key(t) for t in tracks if t.limit_table is not None)
+    with_table = sum(tables.values())
     busiest = None
     if tables:
         key, n = tables.most_common(1)[0]
         tab = next(t.limit_table for t in tracks if _table_key(t) == key)
-        busiest = {"key": key, "rows": tab.rows, "graded": tab.graded, "share": round(n / len(tracks), 3)}
+        busiest = {"key": key, "rows": tab.rows, "graded": tab.graded, "share": round(n / with_table, 3)}
+    material = sorted(k for k, n in tables.items() if n / with_table >= MATERIAL)
     return {"n": len(tracks), "trim_pass_pct": pct(graded), "graded_n": len(graded),
             "median_incoming_r": median(rs) if rs else None,
             "first": min(t.file_date for t in tracks).date().isoformat(),
             "last": max(t.file_date for t in tracks).date().isoformat(),
-            "limit_table": busiest}
+            "limit_table": busiest, "limit_tables_material": material}
 
 
 def _like_for_like(before_tracks, after_tracks):
@@ -69,8 +79,13 @@ def _like_for_like(before_tracks, after_tracks):
         a = [t.linearity_pass for t in after_tracks if _table_key(t) == key and t.linearity_pass is not None]
         if min(len(b), len(a)) >= MIN_SIDE and (best is None or len(b) + len(a) > best["n"]):
             tab = next(t.limit_table for t in before_tracks if _table_key(t) == key)
+            bd = [t.file_date for t in before_tracks if _table_key(t) == key and t.linearity_pass is not None]
+            ad = [t.file_date for t in after_tracks if _table_key(t) == key and t.linearity_pass is not None]
             best = {"graded": tab.graded, "rows": tab.rows, "before_pct": pct(b), "after_pct": pct(a),
-                    "before_n": len(b), "after_n": len(a), "n": len(b) + len(a)}
+                    "before_n": len(b), "after_n": len(a), "n": len(b) + len(a),
+                    "before_first": min(bd).date().isoformat(), "before_last": max(bd).date().isoformat(),
+                    "after_first": min(ad).date().isoformat(), "after_last": max(ad).date().isoformat(),
+                    "after_share": round(len(a) / max(1, sum(1 for t in after_tracks if t.linearity_pass is not None)), 3)}
     return best
 
 
@@ -114,17 +129,32 @@ def analyze(model: str, tracks, laser_label) -> Tuple[List[Dict[str, Any]], List
             moved = a["trim_pass_pct"] - b["trim_pass_pct"]
             tb, ta = b["limit_table"], a["limit_table"]
             table_changed = bool(tb and ta and tb["key"] != ta["key"])
-            same_table = _like_for_like(before["tracks"], after["tracks"]) if table_changed else None
+            # More than one test on EITHER side makes the pooled figures a blend of tests, whether or not
+            # the busiest one moved: the mix is what changed in the review's 60/40 -> 100/0 case.
+            mixed = (table_changed or len(b["limit_tables_material"]) > 1 or len(a["limit_tables_material"]) > 1
+                     or b["limit_tables_material"] != a["limit_tables_material"])
+            same_table = _like_for_like(before["tracks"], after["tracks"]) if mixed else None
             table_note = ""
-            if table_changed:
-                table_note = (f" The limit table changed too: most tracks were graded at {tb['graded']} points "
-                              f"before and {ta['graded']} after, and a pass rate is a verdict against a test -- "
-                              f"so these two figures were not measured the same way.")
-                table_note += (f" On the {same_table['graded']}-point table alone the move was "
-                               f"{same_table['before_pct']:.0f}% ({same_table['before_n']:,} tracks) to "
-                               f"{same_table['after_pct']:.0f}% ({same_table['after_n']:,})."
-                               if same_table else
-                               " Neither table has enough tracks on both sides for a like-for-like figure.")
+            if mixed:
+                if table_changed:
+                    table_note = (f" The limit table changed too: most tracks were graded at {tb['graded']} points "
+                                  f"before and {ta['graded']} after.")
+                else:
+                    table_note = (f" More than one limit table was in use ({len(b['limit_tables_material'])} before, "
+                                  f"{len(a['limit_tables_material'])} after).")
+                table_note += (" A pass rate is a verdict against a test, so part of this move may be a change in "
+                               "which test was applied, not in the parts.")
+                if same_table:
+                    table_note += (f" On the {same_table['graded']}-point table alone the move was "
+                                   f"{same_table['before_pct']:.0f}% ({same_table['before_n']:,} tracks, "
+                                   f"{same_table['before_first']} to {same_table['before_last']}) to "
+                                   f"{same_table['after_pct']:.0f}% ({same_table['after_n']:,} tracks, "
+                                   f"{same_table['after_first']} to {same_table['after_last']})")
+                    table_note += (" -- the tracks still graded that way, not the whole after-period."
+                                   if same_table["after_share"] < 0.9 else ".")
+                else:
+                    table_note += (f" No single table has {MIN_SIDE} graded tracks on both sides, so there is no "
+                                   f"like-for-like figure.")
             findings.append(Finding(
                 model=model, analyzer="recipe_change", category="Setting change",
                 lever="laser_settings", systems=(system,),
@@ -147,5 +177,5 @@ def analyze(model: str, tracks, laser_label) -> Tuple[List[Dict[str, Any]], List
                 evidence={"before": {**b, "recipe": describe(before["recipe"]), "quarters": before["quarters"]},
                           "after": {**a, "recipe": describe(after["recipe"]), "quarters": after["quarters"]},
                           "moved_points": moved, "limit_table_changed": table_changed,
-                          "same_table": same_table}))
+                          "limit_tables_mixed": mixed, "same_table": same_table}))
     return history, findings
