@@ -412,6 +412,69 @@ class DatabaseManager:
                 {"m": model}).fetchone()
         return (row[0], row[1], row[2]) if row else None
 
+    def replace_process_findings(self, model: str, facts: dict, findings: list) -> int:
+        """Replace everything cached for one model. `findings` are Finding.to_dict() dicts.
+
+        Everything is passed through json first: SafeJSON answers an unserialisable
+        value by silently storing "null" (that cost 7% of the trim_setup blocks in
+        2026-09), so dates and tuples are flattened HERE, loudly, not there, quietly.
+        """
+        import json as _json
+        from laser_trim_analyzer.database.models import ProcessFinding, ModelProcessFacts
+
+        def clean(obj):
+            return _json.loads(_json.dumps(obj, default=str))
+
+        now = datetime.utcnow()
+        with self.session() as s:
+            s.query(ProcessFinding).filter(ProcessFinding.model == model).delete(synchronize_session=False)
+            for f in findings:
+                d = clean(f)
+                s.add(ProcessFinding(
+                    model=model, analyzer=d["analyzer"], category=d["category"], lever=d["lever"],
+                    title=d["title"], summary=d["summary"],
+                    expected_gain_points=d.get("expected_gain_points"),
+                    units_per_year=d.get("units_per_year"),
+                    annual_volume=int(d.get("annual_volume") or 0), n_units=int(d.get("n_units") or 0),
+                    payload=d, computed_at=now))
+            row = s.get(ModelProcessFacts, model)
+            if row is None:
+                s.add(ModelProcessFacts(model=model, facts=clean(facts), computed_at=now))
+            else:
+                row.facts = clean(facts)
+                row.computed_at = now
+        return len(findings)
+
+    def get_process_findings(self, model: Optional[str] = None) -> list:
+        """Cached findings, ranked: recoverable units per year first, then by volume."""
+        from sqlalchemy import text as _text
+        import json as _json
+        sql = ("SELECT payload FROM process_findings "
+               + ("WHERE model = :m " if model else "")
+               + "ORDER BY (units_per_year IS NULL), units_per_year DESC, annual_volume DESC, model, id")
+        with self.session() as s:
+            rows = s.execute(_text(sql), {"m": model} if model else {}).fetchall()
+        out = []
+        for (payload,) in rows:
+            d = _json.loads(payload) if isinstance(payload, (str, bytes)) else payload
+            if isinstance(d, dict):
+                out.append(d)
+        return out
+
+    def get_process_facts(self, model: str) -> Optional[dict]:
+        from sqlalchemy import text as _text
+        import json as _json
+        with self.session() as s:
+            row = s.execute(_text("SELECT facts, computed_at FROM model_process_facts WHERE model = :m"),
+                            {"m": model}).fetchone()
+        if not row:
+            return None
+        facts = _json.loads(row[0]) if isinstance(row[0], (str, bytes)) else row[0]
+        if not isinstance(facts, dict):
+            return None
+        facts["computed_at"] = str(row[1])
+        return facts
+
     @staticmethod
     def _meta_get(session, key: str) -> Optional[str]:
         """Read an app_meta value, or None if unset.

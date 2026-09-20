@@ -668,6 +668,35 @@ class TrimSetup(Base):
     )
 
 
+class ProcessFinding(Base):
+    """One cached process finding (see laser_trim_analyzer/findings). Recomputed
+    per model after an ingest; the screens only ever read this table."""
+    __tablename__ = 'process_findings'
+
+    id = Column(Integer, primary_key=True)
+    model = Column(String(64), nullable=False, index=True)
+    analyzer = Column(String(48), nullable=False)
+    category = Column(String(64), nullable=False)
+    lever = Column(String(32), nullable=False)
+    title = Column(Text, nullable=False)
+    summary = Column(Text, nullable=False)
+    expected_gain_points = Column(Float)        # NULL = the analyzer could not state a gain honestly
+    units_per_year = Column(Float)              # gain x annual volume; the ranking key
+    annual_volume = Column(Integer, default=0)
+    n_units = Column(Integer, default=0)
+    payload = Column(SafeJSON)                  # Finding.to_dict(), evidence included
+    computed_at = Column(DateTime, nullable=False)
+
+
+class ModelProcessFacts(Base):
+    """Per-model measured facts shown above the findings, finding or no finding."""
+    __tablename__ = 'model_process_facts'
+
+    model = Column(String(64), primary_key=True)
+    facts = Column(SafeJSON)
+    computed_at = Column(DateTime, nullable=False)
+
+
 class QAAlert(Base):
     """
     Quality assurance alerts and maintenance notifications.
