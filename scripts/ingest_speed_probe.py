@@ -135,7 +135,10 @@ def main() -> int:
         whole = raw + tot
         for name, v in (("raw read", raw), ("parse", parse), ("save", save)):
             print(f"  {name:<10} {v/whole*100:5.1f}%")
-        print(f"\n  one worker would manage {len(files)/whole:.1f} files/sec here.")
+        # The app never does layer 1's separate read -- that pass exists only
+        # to price the link -- so the app's own rate is parse+save alone.
+        print(f"\n  one worker would manage {len(files)/tot:.1f} files/sec here"
+              f" (parse+save; the raw-read pass above is the probe's, not the app's).")
         if raw / len(files) > 0.3:
             print("  >> RAW READ IS THE BOTTLENECK. Not the app: that is the")
             print("     disk, the network share, or endpoint security scanning")

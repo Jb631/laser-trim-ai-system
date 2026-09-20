@@ -260,8 +260,9 @@ class ExcelParser:
         raise ValueError(
             "Unrecognized trim file layout: sheets match neither System A "
             f"('{SYSTEM_A_IDENTIFIER}') nor System B {SYSTEM_B_IDENTIFIERS}. "
-            "If this file comes from the NEW (third) trim system, its format "
-            f"is not supported yet. Sheets: {sheet_names}"
+            "All three lasers are supported (LTS3 is format-identical to System "
+            "B), so this is a layout the parser has never seen -- send the file. "
+            f"Sheets: {sheet_names}"
         )
 
     def _build_metadata(
@@ -1916,15 +1917,23 @@ def detect_file_type(file_path: Path) -> str:
                 for ident in SYSTEM_B_IDENTIFIERS
             )
             if not has_system_a and not has_system_b:
-                # WARNING (not info): files from the new third trim system land
-                # here and get marked skipped-forever. Make that visible in the
-                # logs until System C support exists; Settings → "Reset skipped
-                # files" reprocesses them once it does.
+                # A workbook named like test data that holds NO sweep sheets --
+                # typically a DLTS file where the station wrote its parameter
+                # and report template but no trim was recorded (aborted or
+                # setup run). About 1% of DLTS files on the work share (607 of
+                # 62k, spread thinly across models that otherwise parse in the
+                # thousands; measured 2026-09-20). Nothing to grade, so skipping
+                # is correct. This used to blame "the NEW third trim system, not
+                # supported yet" -- stale since System C (LTS3) support shipped,
+                # and LTS3 files are format-identical to System B anyway.
+                # Kept at WARNING: a whole MODEL landing here would mean a sheet
+                # layout the parser does not know, and that must stay visible.
                 logger.warning(
-                    f"Skipping file with unrecognized sheet structure (not System A/B): "
-                    f"{filename} sheets={sheet_names}. If this is from the NEW (third) "
-                    f"trim system, its format is not supported yet — the file is being "
-                    f"recorded as skipped, NOT parsed."
+                    f"Skipping {filename}: no sweep sheets (no '{SYSTEM_A_IDENTIFIER}...' "
+                    f"or System B data sheet), only {sheet_names}. Usually a "
+                    f"parameter-only workbook from an aborted or setup run. Recorded "
+                    f"as skipped, NOT parsed. If MOST files of one model land here, "
+                    f"that model has a sheet layout the parser does not recognise."
                 )
                 return "non_trim"
 
