@@ -2,9 +2,15 @@
 
 8232-1's yield history looked like a resistance story (corr -0.63) until two
 other changes turned up inside it: a move between lasers and a change from
-one cut to two. So this analyzer never pools. It works inside ONE laser and
-ONE recipe -- the most recent such group with enough units -- and only there
-asks whether incoming resistance separates good from bad.
+one cut to two. So this analyzer never pools. It works inside ONE laser, ONE
+recipe and ONE limit table -- the most recent such group with enough units --
+and only there asks whether incoming resistance separates good from bad.
+
+The limit table is the third thing held still because it IS the test: the
+same model on laser 1 was graded at 89 points until 2025 and at 45 since, and
+a laxer table passes more units whatever their resistance. If the incoming
+target drifted over the same months, pooling the two tables would credit the
+resistance with a change that was really a change of test.
 
 Success is the app's stored trim verdict AND the final resistance landing
 inside the station's own final limits (when the file carries them). Final-
@@ -36,11 +42,13 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
     groups = {}
     for t in tracks:
         if t.passes and t.untrimmed_resistance and _success(t) is not None:
-            groups.setdefault((t.system, t.recipe), []).append(t)
+            table = t.limit_table
+            groups.setdefault((t.system, t.recipe, table.key if table else None), []).append(t)
     eligible = [(k, v) for k, v in groups.items() if len(v) >= MIN_N]
     if not eligible:
         return []                                       # thin sample: say nothing
-    (system, recipe), ts = max(eligible, key=lambda kv: max(t.file_date for t in kv[1]))
+    (system, recipe, _table_key), ts = max(eligible, key=lambda kv: max(t.file_date for t in kv[1]))
+    table = ts[0].limit_table
     ts = sorted(ts, key=lambda t: t.untrimmed_resistance)
     rs = [t.untrimmed_resistance for t in ts]
     ok = [1.0 if _success(t) else 0.0 for t in ts]
@@ -90,11 +98,12 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
                  + (f"The station is set to accept {configured[0]:,.0f} to {configured[1]:,.0f} Ω incoming. "
                     if configured else "These files carry no configured incoming window, so this is a computed "
                     "target, not a comparison with a setting. ")
-                 + "Laser and recipe are held constant, so neither explains the difference."),
+                 + "Laser, recipe and limit table are held constant, so none of them explains the difference."),
         n_units=n, strength_name="Spearman correlation, incoming resistance vs good-at-laser",
         strength_value=rho, expected_gain_points=gain,
         gain_definition=("good-at-laser rate inside the recommended window minus the rate over the whole group; "
                          "good = the app's trim linearity verdict AND final resistance inside the station's "
                          "final limits"),
         evidence={"bins": bins, "window": best, "overall_pct": overall, "recipe": describe(recipe),
-                  "configured_incoming": configured, "period": [first.isoformat(), last.isoformat()]})]
+                  "configured_incoming": configured, "period": [first.isoformat(), last.isoformat()],
+                  "limit_table": None if table is None else {"rows": table.rows, "graded": table.graded}})]

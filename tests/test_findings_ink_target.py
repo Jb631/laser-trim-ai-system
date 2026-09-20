@@ -45,3 +45,26 @@ def test_no_configured_window_is_said_plainly():
     (f,) = ink_target.analyze("M", ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25), label)
     assert f.evidence["configured_incoming"] is None
     assert "no configured incoming window" in f.summary
+
+
+def test_a_change_of_limit_table_is_not_credited_to_resistance():
+    """Two tables, two eras. The LAX table passes 80% and happens to run on low-resistance stock; the
+    STRICT one passes 20% on high-resistance stock. Inside each table resistance does nothing at all.
+    Pooled, resistance 'explains' a 60-point swing (rho about -0.6) -- which is the limit table talking."""
+    from dataclasses import replace
+    from datetime import datetime
+    from findings_helpers import ink_tracks, on_table, table
+    from laser_trim_analyzer.findings.analyzers import ink_target
+    from laser_trim_analyzer.findings.stats import spearman
+    strict, lax = table(23, 0.10), table(12, 0.10)
+    a = [on_table(t, strict) for t in ink_tracks(400, START, (1.0, 2.0), lambda r: 0.2, r_lo=4500.0, r_hi=5000.0)]
+    b = [on_table(t, lax) for t in ink_tracks(400, datetime(2025, 1, 1), (1.0, 2.0), lambda r: 0.8,
+                                              first_id=1000, r_lo=4000.0, r_hi=4500.0)]
+    pooled_rho = spearman([t.untrimmed_resistance for t in a + b], [1.0 if t.linearity_pass else 0.0 for t in a + b])
+    assert pooled_rho < -0.4                                # the trap is real: pooled, it looks like a strong lever
+    assert ink_target.analyze("M", a + b, label) == []      # held constant, there is nothing to say
+    # ...and the table travels with a finding when there is one
+    hot = [on_table(t, lax) for t in ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25)]
+    f = ink_target.analyze("M", hot, label)[0]
+    assert f.evidence["limit_table"] == {"rows": 12, "graded": 12}
+    assert "Laser, recipe and limit table are held constant" in f.summary
