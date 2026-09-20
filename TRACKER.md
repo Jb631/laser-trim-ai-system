@@ -129,6 +129,26 @@ screens parts.
       0.063)? · which cut lengths pass first time? · was there a cut that
       avoids the second pass (2nd and 3rd passes are 23% of tracks)? · do the
       three lasers differ?
+- [x] **B4 on 8232-1, first answers** (2026-09-20, home slice `Work Files/dev_db/slice.db`:
+      9,862 files, 19,903 captured passes, 0 errors). Yardstick = best-offset worst
+      point against the per-point limits; it matches the app's stored verdict on
+      **2,472 of 2,472 tracks**, so it can be trusted on intermediate passes.
+      - **"86% need a second pass" is a RECIPE CHANGE, not parts failing.** On laser 1
+        (LTS) 8232-1 ran a one-cut recipe until mid-2024 (98% one cut in 2023 H2) and a
+        two-cut recipe since (94–98% two cuts from 2025 H1). On laser 2 (DLTS, 2013–22)
+        it was always two: 77% exactly two cuts, 15% three.
+      - **The second cut is what buys the yield.** Same units, before and after: 18%
+        inside limits after cut 1 → **52% after cut 2**. One-cut recipe ended at 23%
+        trim PASS; two-cut at 53%. The first cut rarely makes things worse (4–8%).
+      - **Incoming resistance still matters with the recipe held constant:** inside the
+        two-cut era trim PASS fell 67% → 41% while median incoming R rose 4,136 → 4,660.
+        Four half-year points, the first only 82 tracks — suggestive, not proven.
+      - **So the 10% → 73% yield history credited to the resistance target has three
+        changes tangled in it:** the move from laser 2 to laser 1 (2022–23), the recipe
+        change (2024), and the target moves. Untangling them is B3 + finding #9.
+      - Even with two cuts about half the tracks leave the laser outside the trim
+        limits (median lands AT the limit, 0.99) — that gap is the cut-length model's target.
+      - Pending: whether two cuts improve FINAL-TEST yield (needs the Test Station files).
 - [ ] **B5 · Recommendation engine + the ink-target finding**, end to end, on
       both screens. Gets its own plan, written after B2 so it is designed
       against real data.
