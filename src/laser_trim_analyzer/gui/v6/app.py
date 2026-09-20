@@ -162,6 +162,7 @@ class V6App(ctk.CTk):
         from laser_trim_analyzer.gui.v6.pages.dashboard_page import DashboardPage
         from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
         from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
+        from laser_trim_analyzer.gui.v6.pages.findings_page import FindingsPage
         from laser_trim_analyzer.gui.v6.pages.settings_page import SettingsPage
         from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage
         self.page_container.add_page(
@@ -182,6 +183,10 @@ class V6App(ctk.CTk):
             # it); only what the user reads says "Investigate", matching the nav.
             ModelPage(self.page_container, theme=self.theme, app=self,
                       page_title="Investigate"),
+        )
+        self.page_container.add_page(
+            "findings",
+            FindingsPage(self.page_container, theme=self.theme, app=self, page_title="Findings"),
         )
         self.page_container.add_page(
             "settings",

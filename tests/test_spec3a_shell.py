@@ -72,9 +72,10 @@ def test_theme_font_returns_ctkfont(tk_root):
 def test_sidebar_items_in_order():
     """Reordered 2026-08-31 (app-shape spec): Home · Investigate · Settings
     lead, the older views follow behind a separator. Keys are unchanged —
-    "model" is still "model" and only its LABEL reads "Investigate"."""
+    "model" is still "model" and only its LABEL reads "Investigate".
+    Findings added 2026-09-20 (process-findings engine), deliberately, after Investigate."""
     from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-    assert Sidebar.ITEMS == [("home", "Home"), ("model", "Investigate"),
+    assert Sidebar.ITEMS == [("home", "Home"), ("model", "Investigate"), ("findings", "Findings"),
                              ("settings", "Settings"), ("dashboard", "Dashboard"),
                              ("triage", "Triage"), ("process", "Process")]
 
@@ -203,9 +204,10 @@ def test_v6app_show_unknown_no_op(make_app):
 
 
 def test_v6app_has_all_pages(make_app):
+    """Findings added 2026-09-20 (process-findings engine), deliberately, after Investigate."""
     app = make_app()
     assert set(app.page_container._pages) == {"home", "dashboard", "triage",
-                                              "process", "model", "settings"}
+                                              "process", "model", "settings", "findings"}
 
 
 def test_v6app_auto_train_off_does_not_offer(make_app):

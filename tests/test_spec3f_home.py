@@ -94,10 +94,11 @@ def _no_threads(monkeypatch):
 
 def test_sidebar_order_and_labels():
     """Home · Investigate · Settings, then the de-emphasized three.
-    "model" keeps its key — only the label reads "Investigate"."""
+    "model" keeps its key — only the label reads "Investigate".
+    Findings added 2026-09-20 (process-findings engine), deliberately, after Investigate."""
     from laser_trim_analyzer.gui.v6.sidebar import Sidebar
     assert Sidebar.ITEMS == [
-        ("home", "Home"), ("model", "Investigate"), ("settings", "Settings"),
+        ("home", "Home"), ("model", "Investigate"), ("findings", "Findings"), ("settings", "Settings"),
         ("dashboard", "Dashboard"), ("triage", "Triage"), ("process", "Process"),
     ]
 

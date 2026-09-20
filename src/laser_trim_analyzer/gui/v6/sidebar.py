@@ -22,7 +22,7 @@ class Sidebar(ctk.CTkFrame):
     click-through silently.
     """
     ITEMS: List[Tuple[str, str]] = [
-        ("home", "Home"), ("model", "Investigate"), ("settings", "Settings"),
+        ("home", "Home"), ("model", "Investigate"), ("findings", "Findings"), ("settings", "Settings"),
         ("dashboard", "Dashboard"), ("triage", "Triage"), ("process", "Process"),
     ]
     SEPARATOR_AFTER = "settings"
