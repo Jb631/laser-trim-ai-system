@@ -7,6 +7,8 @@ across parser, processor, and database manager.
 
 import hashlib
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Union, Optional
 
@@ -15,6 +17,51 @@ logger = logging.getLogger(__name__)
 # Cache for file hashes to avoid recalculating
 _hash_cache: dict[str, str] = {}
 _cache_max_size = 1000  # Limit cache size to prevent memory issues
+
+
+# --- one stat per file ------------------------------------------------------
+# On the work share every os.stat() opens a handle over SMB: measured at
+# 113 ms per call on the owner's link (2026-09-20), never cached by Windows,
+# while the app made ~8 of them per file -- more time than the file read.
+# One analysis of one file takes a second or two, so a short memo lets every
+# caller on that path share the first answer. Staleness is safe by direction:
+# a file rewritten inside the window records its OLD size/mtime, so the next
+# scan sees a mismatch and re-offers it -- a changed file is never skipped.
+_STAT_MEMO: dict = {}
+_RESOLVE_MEMO: dict = {}
+_STAT_TTL = 10.0  # seconds
+
+
+def stat_once(file_path: Union[str, Path]) -> os.stat_result:
+    """os.stat, answered from memory if asked again within a few seconds.
+
+    Raises FileNotFoundError exactly as os.stat does; failures are not cached.
+    """
+    key = str(file_path)
+    now = time.monotonic()
+    hit = _STAT_MEMO.get(key)
+    if hit is not None and now - hit[0] < _STAT_TTL:
+        return hit[1]
+    st = os.stat(key)
+    if len(_STAT_MEMO) > 512:
+        _STAT_MEMO.clear()
+        _RESOLVE_MEMO.clear()
+    _STAT_MEMO[key] = (now, st)
+    return st
+
+
+def _cache_key(path: Path) -> str:
+    """The hash cache's key for a path: resolved path + mtime, each fetched once."""
+    raw = str(path)
+    resolved = _RESOLVE_MEMO.get(raw)
+    if resolved is None:
+        resolved = str(path.resolve())
+        _RESOLVE_MEMO[raw] = resolved
+    try:
+        mtime = stat_once(path).st_mtime
+    except OSError:
+        mtime = 0  # File doesn't exist yet, will fail in hash calculation
+    return f"{resolved}:{mtime}"
 
 
 def calculate_file_hash(file_path: Union[str, Path], use_cache: bool = True) -> str:
@@ -33,14 +80,8 @@ def calculate_file_hash(file_path: Union[str, Path], use_cache: bool = True) -> 
         PermissionError: If file can't be read
     """
     path = Path(file_path)
-    path_str = str(path.resolve())
-
-    # Include modification time in cache key to detect file changes
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        mtime = 0  # File doesn't exist yet, will fail in hash calculation
-    cache_key = f"{path_str}:{mtime}"
+    # Resolved path + mtime (mtime detects file changes); one stat, memoized.
+    cache_key = _cache_key(path)
 
     # Check cache first
     if use_cache and cache_key in _hash_cache:
@@ -86,11 +127,7 @@ def hash_bytes_for(file_path: Union[str, Path], data: bytes) -> str:
     path -- `save_analysis` makes one -- is a dictionary lookup, not I/O.
     """
     path = Path(file_path)
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        mtime = 0
-    cache_key = f"{path.resolve()}:{mtime}"
+    cache_key = _cache_key(path)
     file_hash = hashlib.sha256(data).hexdigest()
     if len(_hash_cache) >= _cache_max_size:
         for key in list(_hash_cache.keys())[:_cache_max_size // 2]:

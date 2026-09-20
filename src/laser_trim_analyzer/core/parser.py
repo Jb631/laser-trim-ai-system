@@ -17,7 +17,7 @@ from collections import OrderedDict
 import pandas as pd
 import numpy as np
 
-from laser_trim_analyzer.utils.hashing import hash_bytes_for
+from laser_trim_analyzer.utils.hashing import hash_bytes_for, stat_once
 from laser_trim_analyzer.core.models import SystemType, FileMetadata
 from laser_trim_analyzer.core import trim_passes as _tp
 from laser_trim_analyzer.core import trim_setup as _ts
@@ -55,7 +55,7 @@ _BYTES_CACHE_MAX = 8  # ~8 MB with 1 MB files; workers share it
 def _read_once(file_path: Path) -> bytes:
     """The file's bytes, reading from disk at most once per (size, mtime)."""
     try:
-        st = file_path.stat()
+        st = stat_once(file_path)
         key = (str(file_path), st.st_size, st.st_mtime)
     except OSError:
         return file_path.read_bytes()          # unstattable: just read it
@@ -119,7 +119,9 @@ class ExcelParser:
         """
         file_path = Path(file_path)
 
-        if not file_path.exists():
+        try:
+            stat_once(file_path)  # existence check that the later stats reuse
+        except OSError:
             raise FileNotFoundError(f"File not found: {file_path}")
 
         if file_path.suffix.lower() not in EXCEL_EXTENSIONS:
@@ -271,7 +273,7 @@ class ExcelParser:
         model, serial = self._parse_filename(file_path.name)
 
         # Get file modification time as fallback
-        file_stat = file_path.stat()
+        file_stat = stat_once(file_path)
         file_mod_date = datetime.fromtimestamp(file_stat.st_mtime)
 
         # Use test_date as primary file_date, fall back to file modification date

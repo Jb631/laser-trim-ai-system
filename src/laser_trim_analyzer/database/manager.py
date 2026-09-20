@@ -50,7 +50,7 @@ from laser_trim_analyzer.core.models import (
     RiskCategory,
 )
 from laser_trim_analyzer.config import get_config
-from laser_trim_analyzer.utils.hashing import calculate_file_hash
+from laser_trim_analyzer.utils.hashing import calculate_file_hash, stat_once
 
 logger = logging.getLogger(__name__)
 
@@ -1821,7 +1821,11 @@ class DatabaseManager:
         """
         file_path = Path(file_path)
 
-        if not file_path.exists():
+        # One stat for existence, size and mtime: on the work share each
+        # separate stat is a ~113 ms network conversation (2026-09-20).
+        try:
+            file_stat = stat_once(file_path)
+        except OSError:
             return
 
         file_hash = calculate_file_hash(file_path)
@@ -1836,8 +1840,8 @@ class DatabaseManager:
                 filename=file_path.name,
                 file_path=str(file_path),
                 file_hash=file_hash,
-                file_size=file_path.stat().st_size,
-                file_modified_date=datetime.fromtimestamp(file_path.stat().st_mtime),
+                file_size=file_stat.st_size,
+                file_modified_date=datetime.fromtimestamp(file_stat.st_mtime),
                 analysis_id=analysis_id,
                 success=success,
             )
