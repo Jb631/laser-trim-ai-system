@@ -119,6 +119,16 @@ class ActiveModelsConfig:
     # without removing the underlying data. See
     # docs/superpowers/specs/2026-05-08-unit-level-yield-design.md.
     enable_unit_yield_view: bool = True
+    # Settings "Backlog" section (2026-09-20): one open-order upload replaces the
+    # old separate Active Models + Pricing inputs. mps_models above stays the ONE
+    # list every other screen reads; it is maintained as
+    # sorted(set(backlog_models) | set(pinned_models)) by rebuild_active_list()
+    # in gui/v6/sections/backlog.py, called from both the upload path and the
+    # pin-save path. See task-E1-brief.md for the full design.
+    pinned_models: List[str] = field(default_factory=list)     # manual exceptions (the textbox)
+    backlog_models: List[str] = field(default_factory=list)    # from the last backlog upload; REPLACED each upload
+    backlog_open_qty: Dict[str, int] = field(default_factory=dict)  # model -> open units on that backlog
+    backlog_source: str = ""                                    # e.g. "Backlog 09-18-26.xls · uploaded 2026-09-20"
 
 
 def normalize_ingest_path(path: str) -> str:
@@ -356,6 +366,10 @@ class Config:
                 "model_prices": self.active_models.model_prices,
                 "cost_ratio": self.active_models.cost_ratio,
                 "enable_unit_yield_view": self.active_models.enable_unit_yield_view,
+                "pinned_models": self.active_models.pinned_models,
+                "backlog_models": self.active_models.backlog_models,
+                "backlog_open_qty": self.active_models.backlog_open_qty,
+                "backlog_source": self.active_models.backlog_source,
             },
             "ingest": {
                 "folders": list(self.ingest.folders),

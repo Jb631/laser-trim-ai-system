@@ -475,6 +475,21 @@ class DatabaseManager:
         facts["computed_at"] = str(row[1])
         return facts
 
+    def get_known_models(self) -> set:
+        """Every model name the app has ever seen: DISTINCT model from analysis_results
+        (trim data) union'd with Final Test results, NULLs dropped. Read-only. Used by
+        the Settings backlog upload to decide which backlog Item IDs are models the
+        app knows (see core/backlog.py / gui/v6/sections/backlog.py)."""
+        from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
+        with self.session() as session:
+            trim = (session.query(DBAnalysisResult.model)
+                    .filter(DBAnalysisResult.model.isnot(None))
+                    .distinct().all())
+            ft = (session.query(DBFinalTestResult.model)
+                  .filter(DBFinalTestResult.model.isnot(None))
+                  .distinct().all())
+        return {m[0] for m in trim if m[0]} | {m[0] for m in ft if m[0]}
+
     @staticmethod
     def _meta_get(session, key: str) -> Optional[str]:
         """Read an app_meta value, or None if unset.

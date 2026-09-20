@@ -2,13 +2,12 @@
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.page_base import PageBase
-from laser_trim_analyzer.gui.v6.sections.active_models import build_active_models_section
 from laser_trim_analyzer.gui.v6.sections.alert_thresholds import build_alert_thresholds_section
+from laser_trim_analyzer.gui.v6.sections.backlog import build_backlog_section
 from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_database_cleanup_section
 from laser_trim_analyzer.gui.v6.sections.ingest_folders import build_ingest_folders_section
 from laser_trim_analyzer.gui.v6.sections.ml_training import build_ml_training_section
 from laser_trim_analyzer.gui.v6.sections.per_model_specs import build_per_model_specs_section
-from laser_trim_analyzer.gui.v6.sections.pricing import build_pricing_section
 from laser_trim_analyzer.gui.v6.widgets.settings_card import SettingsCard
 
 
@@ -29,10 +28,9 @@ class SettingsPage(PageBase):
             ("Ingest Folders (Home's “Process everything new”)", True,
              build_ingest_folders_section),
             ("Alert Thresholds", True, build_alert_thresholds_section),
-            ("Active Models (MPS — your production schedule)", False, build_active_models_section),
+            ("Backlog — active models and pricing", False, build_backlog_section),
             ("Per-model Specs", False, build_per_model_specs_section),
             ("ML Training", False, build_ml_training_section),
-            ("Pricing", False, build_pricing_section),
             ("Database Cleanup", False, build_database_cleanup_section),
         ):
             card = SettingsCard(scroll, theme=self.theme, title=title, expanded=expanded)

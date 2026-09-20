@@ -194,13 +194,18 @@ def test_build_cleanup_options():
 
 # ---- Task 10: SettingsPage + auto-train ------------------------------------
 
-def test_settings_page_has_seven_cards(make_app):
-    """Ingest Folders, Thresholds, Active Models, Per-model Specs, ML Training,
-    Pricing, Database Cleanup (stale '5' predated the Per-model Specs card;
-    Ingest Folders arrived with Home's one-click batch)."""
+def test_settings_page_has_six_cards(make_app):
+    """Ingest Folders, Thresholds, Backlog, Per-model Specs, ML Training,
+    Database Cleanup. The former Active Models (MPS) and Pricing cards merged
+    into one Backlog section (2026-09-20, E1): one open-order upload now sets
+    both the active-models list and each model's price."""
     app = make_app()
     page = app.page_container.get_page("settings")
-    assert len(page._cards) == 7
+    assert len(page._cards) == 6
+    titles = [c._title.cget("text") for c in page._cards]
+    assert "Backlog — active models and pricing" in titles
+    assert not any("Active Models (MPS" in t for t in titles)
+    assert "Pricing" not in titles
 
 
 def test_should_offer_first_startup_train_is_data_gated(make_app):
