@@ -69,3 +69,12 @@ def test_the_yardstick_result_carries_the_bar_it_was_held_to():
     y = data.yardstick_fidelity([])
     assert y == {"n": 0, "agreement": None, "faithful": False, "min_n": 30, "min_agreement": 0.99}
     assert (data.YARDSTICK_MIN_N, data.YARDSTICK_MIN_AGREEMENT) == (30, 0.99)
+
+
+def test_one_corrupt_stored_array_costs_that_track_not_the_whole_model():
+    """`_arr` used to let json.JSONDecodeError escape, which aborted load_model_tracks -- so ONE bad
+    row among four thousand cost the model every finding. A corrupt array is an ungradeable track."""
+    from laser_trim_analyzer.findings.data import _arr
+    assert _arr("[1, 2, 3]") == (1, 2, 3)
+    assert _arr("[1, 2, ") is None and _arr("not json") is None and _arr(b"\xff\xfe") is None
+    assert _arr(None) is None and _arr('{"a": 1}') is None and _arr([4, 5]) == (4, 5)

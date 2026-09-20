@@ -50,3 +50,15 @@ def test_spearman_basics():
     assert spearman([1, 2, 3, 4], [4, 3, 2, 1]) == pytest.approx(-1.0)
     assert spearman([1, 2, 3, 4], [1, 1, 1, 1]) is None   # no variation: nothing to report
     assert pct([]) is None and pct([True, False]) == 50.0
+
+
+def test_arrays_that_do_not_line_up_are_ungradeable_not_quietly_truncated():
+    """zip() stops at the shortest input. A limit array shorter than its error array would drop the
+    tail of the sweep without a word -- and the tail is where a bowtie band is widest and the verdict
+    is usually decided. 28,887 real sweeps were checked 2026-09-20: every one lines up, so a
+    mismatch is corrupt data, and corrupt data is ungradeable, never "graded on what was left"."""
+    from laser_trim_analyzer.findings.grading import in_limits, margin_ratio
+    e, u, l = [0.0, 0.0, 0.0, 0.0, 9.9], [1.0] * 4, [-1.0] * 4      # the out-of-limits point has no limit
+    assert margin_ratio(e, u, l) is None and in_limits(e, u, l) is None
+    assert margin_ratio([0.0] * 4, [1.0] * 5, [-1.0] * 5) is None
+    assert margin_ratio([0.0] * 4, [1.0] * 4, [-1.0] * 4) == 0.0          # aligned still grades

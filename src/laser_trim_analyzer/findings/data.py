@@ -48,7 +48,10 @@ class TrackView:
 def _arr(js) -> Optional[Tuple]:
     if js is None:
         return None
-    v = json.loads(js) if isinstance(js, (str, bytes)) else js
+    try:
+        v = json.loads(js) if isinstance(js, (str, bytes)) else js
+    except ValueError:          # JSONDecodeError and UnicodeDecodeError both: a corrupt array is an
+        return None             # ungradeable TRACK -- it must not abort the whole model's load
     return tuple(v) if isinstance(v, list) else None
 
 

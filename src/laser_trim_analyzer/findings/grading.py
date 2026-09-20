@@ -20,8 +20,11 @@ def _num(x) -> bool:
 
 def margin_ratio(errors: Sequence, upper: Sequence, lower: Sequence,
                  min_points: int = 3) -> Optional[float]:
+    errors, upper, lower = errors or (), upper or (), lower or ()
+    if not (len(errors) == len(upper) == len(lower)):
+        return None     # zip() would drop the tail without a word; misaligned arrays are ungradeable
     pts = [(e - (u + l) / 2.0, (u - l) / 2.0)
-           for e, u, l in zip(errors or (), upper or (), lower or ())
+           for e, u, l in zip(errors, upper, lower)
            if _num(e) and _num(u) and _num(l) and u > l]
     if len(pts) < min_points:
         return None
