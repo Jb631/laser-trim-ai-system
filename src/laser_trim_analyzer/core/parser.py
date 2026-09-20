@@ -771,6 +771,41 @@ class ExcelParser:
 
         return tracks
 
+    @staticmethod
+    def _lin_error_is_template(df: pd.DataFrame) -> bool:
+        """True when a "Lin Error" sheet is the station's blank template.
+
+        When a sweep is taken but NO cut is made, laser 1 (LTS, System B) and
+        laser 3 (LTS3, System C) still write a "Lin Error" sheet: the template,
+        whose measured column is a verbatim copy of the theory column, leaving
+        the error column identically zero. A genuine sweep never matches its
+        own theory column to 1e-9 — that is four orders of magnitude below the
+        tightest linearity spec, far under any real measurement's noise floor.
+
+        Conservative by design: anything that is not unmistakably the template
+        — too few comparable rows, a blank measured column, a layout with no
+        theory column, a non-numeric sheet — returns False so the caller keeps
+        its existing behaviour. The column indices come from the parser's own
+        System B map rather than being hard-coded here.
+        """
+        measured_col = SYSTEM_B_COLUMNS["measured_volts"]
+        theory_col = SYSTEM_B_COLUMNS["theory_volts"]
+        try:
+            measured = pd.to_numeric(df.iloc[:, measured_col], errors="coerce")
+            theory = pd.to_numeric(df.iloc[:, theory_col], errors="coerce")
+        except (IndexError, ValueError, TypeError):
+            return False  # not the System B layout — make no claim
+
+        both_present = np.isfinite(measured) & np.isfinite(theory)
+        # Enough of a sweep to be sure. A handful of matching rows happens by
+        # coincidence (a flat start, a couple of exact hits); a whole column
+        # does not.
+        if int(both_present.sum()) < 10:
+            return False
+
+        return bool(np.allclose(
+            measured[both_present], theory[both_present], rtol=0, atol=1e-9))
+
     def _extract_system_b_tracks(self, xl: pd.ExcelFile, file_path: Path) -> List[Dict[str, Any]]:
         """Extract tracks from System B file."""
         tracks = []
@@ -799,6 +834,55 @@ class ExcelParser:
             # "Trim 1", "Trim 2", etc. are intermediate trim passes (fallback only)
             elif sheet_lower.startswith("trim ") and sheet_lower[5:].isdigit():
                 trim_sheets.append(sheet)
+
+        # A "Lin Error" sheet whose measured column IS its theory column is the
+        # blank TEMPLATE the station writes when a sweep was taken but NO cut
+        # was made — an operator check before, between or after trimming
+        # sessions. It is not a final sweep: measured == theory means the error
+        # column is identically zero, and no real sweep has zero noise. Such
+        # files have no "Trim N" sheet at all; their only real measurement is
+        # the "test" sweep, so they belong on the untrimmed-only path with
+        # trim_pass_count = 0 — the app's existing concept for "a test sweep
+        # with no laser-trim run".
+        #
+        # Before this check the reasoning below ("a lone Lin Error implies a
+        # single trim pass") took the template as the final sweep, and the unit
+        # was stored as a finished trim with zero error at every point, zero
+        # fail points and linearity PASS: 1,182 tracks in the work database,
+        # 1,181 of them "PASS", nearly all on laser 1 (LTS) since 2023, sitting
+        # inside every yield, median and drift baseline.
+        #
+        # Deliberately NARROW — all three conditions are required:
+        #   * no "Trim N" sheet, so no cut is evidenced anywhere in the file;
+        #   * "Lin Error" measured == theory (see _lin_error_is_template);
+        #   * a "test" sweep to fall back on, so rerouting preserves the real
+        #     measurement instead of dropping the track entirely.
+        # A lone "Lin Error" carrying REAL data keeps its old behaviour, and a
+        # file that has "Trim N" sheets is never touched whatever its
+        # "Lin Error" looks like.
+        if lin_error_sheet and not trim_sheets and untrimmed_sheet:
+            try:
+                lin_error_df = pd.read_excel(
+                    xl, sheet_name=lin_error_sheet, header=None)
+            except Exception as exc:
+                # Unreadable → no claim; leave the old behaviour alone.
+                logger.debug(
+                    "Could not read %s to check for the no-cut template in "
+                    "%s (%s: %s)", lin_error_sheet, file_path.name,
+                    type(exc).__name__, exc)
+                lin_error_df = None
+            if lin_error_df is not None:
+                is_template = self._lin_error_is_template(lin_error_df)
+                del lin_error_df
+                if is_template:
+                    # ONE line, at INFO, so a rebuild log shows how often this
+                    # happened. "blank template" is a STABLE phrase — log
+                    # searches and tests/test_no_cut_template.py look for it.
+                    logger.info(
+                        "%s: Lin Error is the blank template — no cut was "
+                        "made; recording the test sweep only",
+                        file_path.name)
+                    lin_error_sheet = None
 
         # Priority: Lin Error > highest Trim N > Trim 1
         if lin_error_sheet:
@@ -1383,8 +1467,20 @@ class ExcelParser:
         # the resulting fields from trimmed_* → untrimmed_*. This keeps the
         # extraction logic in one place (_extract_track_data) and avoids
         # duplicating ~200 lines of pandas reads / sanity checks.
+        #
+        # The sheet is passed as BOTH arguments on purpose. As the trimmed
+        # argument it supplies the limits, spec and metadata; as the untrimmed
+        # argument it goes through _extract_track_data's pre-trim reader, which
+        # is the only one that RECOVERS the error column from measured - theory.
+        # That matters because a station that made no cut writes a literal 0.0
+        # down the whole error column of the test sweep as well (75 of the 136
+        # no-cut files in the LTS development slice), while the true
+        # measured - theory difference on those same files reaches 0.19 V.
+        # Reading the sheet only as a trimmed sheet takes the zeros at face
+        # value and hands the app a flawless-looking pre-trim sweep — the same
+        # class of silent falsehood this path exists to prevent.
         raw = self._extract_track_data(
-            xl, file_path, untrimmed_sheet, None, system_type, track_id
+            xl, file_path, untrimmed_sheet, untrimmed_sheet, system_type, track_id
         )
         if raw is None:
             return None
