@@ -91,6 +91,19 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
                 row.pack(side="top", fill="x", pady=1)
                 self._rows[m] = row
 
+    def clear(self) -> None:
+        """Back to the just-constructed look: no rows, no group headers —
+        only the column header and the baseline footer remain. Called when
+        this model's drift status failed to load, so the PREVIOUS model's
+        rows never sit on screen under this model's name."""
+        for r in self._rows.values():
+            r.destroy()
+        # __dict__.get, not getattr: see set_status() above for why.
+        for h in (self.__dict__.get("_group_headers") or []):
+            h.destroy()
+        self._rows.clear()
+        self._group_headers = []
+
 
 class _MetricRow(ctk.CTkFrame):
     def __init__(self, master, ms, theme: ThemeManager, on_click, recent_override=None):

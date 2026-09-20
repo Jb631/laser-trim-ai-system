@@ -175,6 +175,16 @@ class ModelPage(PageBase):
                                          justify="left", wraplength=1200,
                                          font=t.font(t.SIZE_CAPTION),
                                          text_color=t.TIER_WARNING)
+        # A loader that raised must never read as "this model has no data"
+        # (code review 2026-09-20): each _reload loader is independently
+        # guarded, and a failure used to fall through to an empty default
+        # that the tabs render as a plain statement of fact. This banner
+        # names exactly which parts of the page could not be loaded this
+        # pass, so a crash and a genuine absence never look identical.
+        self._load_banner = ctk.CTkLabel(self._body, text="", anchor="w",
+                                         justify="left", wraplength=1200,
+                                         font=t.font(t.SIZE_CAPTION),
+                                         text_color=t.TIER_WARNING)
         self._pill_row = MetricPillRow(self._body, theme=t, on_pill_click=self._on_pill_click)
         self._pill_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
         # Plain-language key for the pill numbers: σ was shown with no
@@ -299,6 +309,12 @@ class ModelPage(PageBase):
             # Each loader is independently guarded: one failure must not blank
             # the whole page (the old single try/except silently zeroed every
             # tab when any loader threw). Failures are logged, not swallowed.
+            # `failed` names every loader that raised, in human words a
+            # process engineer would recognise — built here on the worker and
+            # only READ in apply() below, never a Tk call itself, so the
+            # load banner can say "this failed" instead of the empty default
+            # reading as a silent, factual "there is nothing here".
+            failed: list = []
             status, chosen = None, metric
             dates, values, baseline = [], [], (None, None)
             spc = None
@@ -316,10 +332,12 @@ class ModelPage(PageBase):
                 requal = self.app.db.get_baseline_requalification(model)
             except Exception:
                 logger.exception("Model %s: drift status failed", model)
+                failed.append("drift status")
             try:
                 dates, values, baseline = self._load_focus_series(model, chosen)
             except Exception:
                 logger.exception("Model %s: focus series failed", model)
+                failed.append("focus chart")
             try:
                 # The headline LOT chart. Built here, off the Tk thread, and
                 # cached by the apply below so the Lots/Units toggle never
@@ -331,36 +349,44 @@ class ModelPage(PageBase):
                 spc = compute_spc_series(self.app.db, model, chosen)
             except Exception:
                 logger.exception("Model %s: SPC lot series failed", model)
+                failed.append("lot chart")
             try:
                 units = self._load_units(model)
             except Exception:
                 logger.exception("Model %s: units failed", model)
+                failed.append("unit list")
             try:
                 smoothness = self._load_smoothness(model)
             except Exception:
                 logger.exception("Model %s: smoothness failed", model)
+                failed.append("smoothness")
             try:
                 recent = self._recent_means(model)
             except Exception:
                 logger.exception("Model %s: recent means failed", model)
+                failed.append("recent means")
             try:
                 trim_ft = self.app.db.get_model_trim_ft_agreement(model, cutoff_date=cutoff)
             except Exception:
                 logger.exception("Model %s: trim-vs-FT failed", model)
+                failed.append("trim vs final test")
             try:
                 history = self.app.db.get_model_measurement_history(model, cutoff_date=cutoff)
             except Exception:
                 logger.exception("Model %s: history failed", model)
+                failed.append("measurement history")
             ft_units = []
             try:
                 ft_units = self._load_ft_units(model, cutoff)
             except Exception:
                 logger.exception("Model %s: final-test units failed", model)
+                failed.append("final-test units")
             verdict = None
             try:
                 verdict = self._compute_verdict(model, cutoff, status, recent)
             except Exception:
                 logger.exception("Model %s: verdict failed", model)
+                failed.append("verdict")
             spec = None
             try:
                 # Two small sampling queries, memoized per model — cheap, but
@@ -369,6 +395,7 @@ class ModelPage(PageBase):
                 spec = compare_station_specs(self.app.db, model)
             except Exception:
                 logger.exception("Model %s: spec alignment failed", model)
+                failed.append("station spec comparison")
             smooth_models = []
             try:
                 from sqlalchemy import func as _f
@@ -388,6 +415,7 @@ class ModelPage(PageBase):
                 stats = compute_model_stats(self.app.db, model, cutoff=cutoff)
             except Exception:
                 logger.exception("Model %s: stats table failed", model)
+                failed.append("stats table")
             try:
                 lots = model_lots(self.app.db, model)
                 chosen_lot = self._resolve_lot(model, lots)
@@ -399,6 +427,7 @@ class ModelPage(PageBase):
                                                     chosen_lot.window)
             except Exception:
                 logger.exception("Model %s: lot stats failed", model)
+                failed.append("lot stats")
             try:
                 process_facts = self.app.db.get_process_facts(model)
                 if process_facts:
@@ -406,6 +435,7 @@ class ModelPage(PageBase):
                                      "findings": self.app.db.get_process_findings(model)}
             except Exception:
                 logger.exception("Model %s: process findings failed", model)
+                failed.append("process findings")
 
             def apply():
                 if gen != self._reload_gen:
@@ -423,12 +453,26 @@ class ModelPage(PageBase):
                 if status:
                     _try("pills", lambda: self._pill_row.set_status(status, recent_means=recent))
                     _try("drift tab", lambda: self._drift_tab.set_status(status, recent_means=recent))
+                else:
+                    # The drift-status loader failed (or genuinely has nothing
+                    # yet) — reset to the just-constructed look rather than
+                    # skipping the update, or the PREVIOUS model's pills and
+                    # drift rows would keep showing under this model's name.
+                    _try("pills", lambda: self._pill_row.clear())
+                    _try("drift tab", lambda: self._drift_tab.clear())
                 _try("baseline info", lambda: self._drift_tab.set_baseline_info(requal))
                 _try("pill select", lambda: self._pill_row.set_selected(chosen))
-                if verdict:
-                    _try("verdict", lambda: self._verdict.configure(
-                        text=verdict[0], text_color=verdict[1]))
+                # Always configured — never left showing a PREVIOUS model's
+                # verdict when this model's verdict failed to compute.
+                _try("verdict", lambda: self._verdict.configure(
+                    text=verdict[0] if verdict else "—",
+                    text_color=verdict[1] if verdict else self.theme.TEXT_SECONDARY))
+                # Spec banner first, load banner second: both pack with
+                # after=self._verdict, and the LAST one packed lands directly
+                # under the verdict — so when both have something to say, the
+                # load banner (an error) leads and the spec banner follows.
                 _try("spec banner", lambda: self._set_spec_banner(spec))
+                _try("load banner", lambda: self._set_load_banner(failed))
                 _try("lot selector", lambda: self._set_lot_choices(lots, lot_label))
                 _try("stats table", lambda: self._stats_table.set_stats(
                     stats, lot_stats=lot_stats, verdicts=verdicts,
@@ -508,6 +552,27 @@ class ModelPage(PageBase):
                   "(escapes, Gap) compare different requirements at those "
                   "positions."))
         self._spec_banner.pack(side="top", fill="x",
+                               pady=(0, self.theme.SPACE_SM),
+                               after=self._verdict)
+
+    def _set_load_banner(self, failed) -> None:
+        """Name every loader that raised this pass, so a crash never reads as
+        an empty-but-healthy page (the hazard this page exists to remove —
+        see the module docstring / code review 2026-09-20). `failed` is a
+        plain list built on the worker thread; this method only reads it.
+
+        `after=self._verdict`, same reason as `_set_spec_banner`: pack()
+        would otherwise re-append the label at the bottom of the body every
+        time it is shown again.
+        """
+        if not failed:
+            self._load_banner.pack_forget()
+            return
+        self._load_banner.configure(
+            text=("⚠ Could not load: " + ", ".join(failed) + ". Those parts "
+                  "of this page may be empty or out of date — this is an "
+                  "error, not an absence of data. The log has the details."))
+        self._load_banner.pack(side="top", fill="x",
                                pady=(0, self.theme.SPACE_SM),
                                after=self._verdict)
 

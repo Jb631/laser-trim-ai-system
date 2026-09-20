@@ -60,6 +60,14 @@ class MetricPillRow(ctk.CTkFrame):
             self._pills[metric].set_selected(True)
             self._selected_metric = metric
 
+    def clear(self) -> None:
+        """Back to every pill's just-constructed look. Called when this
+        model's drift status failed to load — a stale reading carried over
+        from the PREVIOUS model would be a plausible number attributed to
+        the wrong model, not merely a blank."""
+        for pill in self._pills.values():
+            pill.clear()
+
 
 class _Pill(ctk.CTkFrame):
     def __init__(self, master, metric, theme: ThemeManager, on_click):
@@ -103,6 +111,14 @@ class _Pill(ctk.CTkFrame):
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
         self.configure(border_color=self.theme.ACCENT if selected else self.cget("fg_color"))
+
+    def clear(self) -> None:
+        """Back to exactly what the constructor leaves: CARD fg/border and a
+        dashed, secondary-colored summary — no tier, no shift, no value."""
+        self.configure(fg_color=self.theme.CARD)
+        if not self._selected:
+            self.configure(border_color=self.theme.CARD)
+        self._summary_label.configure(text="—", text_color=self.theme.TEXT_SECONDARY)
 
     def _on_click(self):
         self._cb(self.metric)
