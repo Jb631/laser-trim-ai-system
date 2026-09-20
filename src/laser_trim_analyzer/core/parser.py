@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple, Final
 import logging
+import threading
 from io import BytesIO
 from collections import OrderedDict
 
@@ -50,6 +51,14 @@ logger = logging.getLogger(__name__)
 # share is never served stale.
 _BYTES_CACHE: "OrderedDict[tuple, bytes]" = OrderedDict()
 _BYTES_CACHE_MAX = 8  # ~8 MB with 1 MB files; workers share it
+# The ingest workers are threads and they all use this one dict. `get` then
+# `move_to_end`, and insert then evict, are each TWO steps: a worker evicting
+# between another worker's two steps raised KeyError, and process_file turns
+# any exception into an ERROR row -- a good file lost, silently, mid-rebuild
+# (reproduced 2026-09-20: 325 exceptions in 6 s under a forced-switch loop).
+# The lock covers the dictionary bookkeeping ONLY. It is never held across
+# read_bytes(): that is the slow network read the workers exist to overlap.
+_BYTES_LOCK = threading.Lock()
 
 
 def _read_once(file_path: Path) -> bytes:
@@ -59,14 +68,16 @@ def _read_once(file_path: Path) -> bytes:
         key = (str(file_path), st.st_size, st.st_mtime)
     except OSError:
         return file_path.read_bytes()          # unstattable: just read it
-    hit = _BYTES_CACHE.get(key)
-    if hit is not None:
-        _BYTES_CACHE.move_to_end(key)
-        return hit
-    data = file_path.read_bytes()
-    _BYTES_CACHE[key] = data
-    while len(_BYTES_CACHE) > _BYTES_CACHE_MAX:
-        _BYTES_CACHE.popitem(last=False)
+    with _BYTES_LOCK:
+        hit = _BYTES_CACHE.get(key)
+        if hit is not None:
+            _BYTES_CACHE.move_to_end(key)
+            return hit
+    data = file_path.read_bytes()              # outside the lock -- see _BYTES_LOCK
+    with _BYTES_LOCK:
+        _BYTES_CACHE[key] = data
+        while len(_BYTES_CACHE) > _BYTES_CACHE_MAX:
+            _BYTES_CACHE.popitem(last=False)
     return data
 
 
@@ -78,8 +89,9 @@ def _workbook(file_path: Path) -> pd.ExcelFile:
 def drop_cached_bytes(file_path: Path) -> None:
     """Forget a file's bytes once its analysis is done."""
     prefix = str(file_path)
-    for key in [k for k in _BYTES_CACHE if k[0] == prefix]:
-        _BYTES_CACHE.pop(key, None)
+    with _BYTES_LOCK:
+        for key in [k for k in _BYTES_CACHE if k[0] == prefix]:
+            _BYTES_CACHE.pop(key, None)
 
 
 class NonTrimWorkbookError(Exception):

@@ -18,6 +18,20 @@ logger = logging.getLogger(__name__)
 # Cache for file hashes to avoid recalculating
 _hash_cache: dict[str, str] = {}
 _cache_max_size = 1000  # Limit cache size to prevent memory issues
+# Every ingest worker thread shares this dict. `in` then `[]`, and
+# `list(keys)` then `del`, are each two steps; a worker evicting between
+# another worker's two steps raised KeyError, which process_file records as an
+# ERROR row for a perfectly good file. Hashing itself stays OUTSIDE the lock.
+_hash_lock = threading.Lock()
+
+
+def _remember(cache_key: str, file_hash: str) -> None:
+    """Store one hash, evicting the oldest half first when full (FIFO: dicts keep insertion order)."""
+    with _hash_lock:
+        if len(_hash_cache) >= _cache_max_size:
+            for key in list(_hash_cache.keys())[:_cache_max_size // 2]:
+                _hash_cache.pop(key, None)
+        _hash_cache[cache_key] = file_hash
 
 
 # --- one stat per PARSE -------------------------------------------------------
@@ -108,8 +122,11 @@ def calculate_file_hash(file_path: Union[str, Path], use_cache: bool = True,
     cache_key = _cache_key(path, known_stat)
 
     # Check cache first
-    if use_cache and cache_key in _hash_cache:
-        return _hash_cache[cache_key]
+    if use_cache:
+        with _hash_lock:
+            cached = _hash_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     # Calculate hash
     sha256 = hashlib.sha256()
@@ -132,12 +149,7 @@ def calculate_file_hash(file_path: Union[str, Path], use_cache: bool = True,
 
     # Update cache (with size limit)
     if use_cache:
-        if len(_hash_cache) >= _cache_max_size:
-            # Remove oldest entries (simple FIFO - dict maintains insertion order in Python 3.7+)
-            keys_to_remove = list(_hash_cache.keys())[:_cache_max_size // 2]
-            for key in keys_to_remove:
-                del _hash_cache[key]
-        _hash_cache[cache_key] = file_hash
+        _remember(cache_key, file_hash)
 
     return file_hash
 
@@ -153,17 +165,16 @@ def hash_bytes_for(file_path: Union[str, Path], data: bytes) -> str:
     path = Path(file_path)
     cache_key = _cache_key(path)
     file_hash = hashlib.sha256(data).hexdigest()
-    if len(_hash_cache) >= _cache_max_size:
-        for key in list(_hash_cache.keys())[:_cache_max_size // 2]:
-            del _hash_cache[key]
-    _hash_cache[cache_key] = file_hash
+    _remember(cache_key, file_hash)
     return file_hash
 
 
 def clear_hash_cache():
     """Clear the hash cache (useful after processing batches)."""
-    global _hash_cache
-    _hash_cache = {}
+    # Cleared IN PLACE: rebinding the name would leave a worker that is midway
+    # through _remember() writing into a dict nobody reads any more.
+    with _hash_lock:
+        _hash_cache.clear()
     logger.debug("Hash cache cleared")
 
 
