@@ -13,8 +13,14 @@ problem found on 2026-09-13:
                  0 V against a theory of -0.045 V; grading it manufactured a
                  0.047 error against a +/-0.010 band and failed the file.
   8232-1 sn176   FAILED, flags on exactly eleven rows inside that window.
-  7539-2 sn23    FAILED with 149 flags. The app's offset correction rescues it
-                 — a REAL and expected disagreement, pinned as such.
+  7539-2 sn23    FAILED with 149 flags, and the app FAILS it too (11 points out
+                 after offset correction). Until 2026-09-20 the app PASSED it,
+                 and that was recorded here as "the offset correction rescues
+                 it — a real and expected disagreement". It was not: column D is
+                 88.95% populated, so the parser recomputed the errors and
+                 divided them by full scale while the limits stayed in volts
+                 (see tests/test_ft_recompute_units.py). The disagreement was a
+                 units bug wearing the offset correction's clothes.
   7458 sn7       FAILED although column D sits inside G/H: this template grades
                  against limits in another unit, and writes a literal 0 flag on
                  rows it never measured.
@@ -136,13 +142,14 @@ def test_7539_2_sn23_station_failed_with_149_flags(parser):
 
 
 def test_7539_2_sn23_app_grade_is_computed_only_from_in_window_points(parser):
-    """The app may legitimately PASS this file — and here it does.
+    """The app may legitimately disagree with the station — but not on this file.
 
-    The station rejected it; the analyzer's offset correction brings the
-    in-window points inside the limits. That disagreement is the app working
-    as the owner asked ("grade the error and correct the offset"), so what is
-    pinned is not the verdict but its INPUT: no point outside the station's
-    window may take part.
+    The owner's rule is "grade the error and correct the offset", so an app PASS
+    against a station FAIL can be real. Here it is not: in volts, the best offset
+    still leaves points outside the limits, and the app's old PASS came from
+    errors that had been divided by full scale (fixed 2026-09-20). Pinned: the
+    verdict's INPUT (no point outside the station's window may take part) AND,
+    now, the verdict itself.
     """
     track = _track(parser, SN23)
     result = grade_ft_track(Analyzer(), track, NO_SPEC, model="7539-2")
@@ -151,9 +158,9 @@ def test_7539_2_sn23_app_grade_is_computed_only_from_in_window_points(parser):
             len(track["errors"]), track["graded_window"])))
     assert excluded == {i for i in range(len(track["errors"]))
                         if i < 10 or i > 170}
-    assert result.linearity_pass is not None
-    # Whatever the verdict, its fail points can only come from inside.
-    assert track["linearity_fail_points"] <= (170 - 10 + 1)
+    assert result.linearity_pass is False
+    # Its fail points can only come from inside the window -- and there are some.
+    assert 0 < track["linearity_fail_points"] <= (170 - 10 + 1)
 
 
 # ---- format coverage -------------------------------------------------------
