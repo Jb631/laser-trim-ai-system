@@ -67,6 +67,7 @@ QA_OUTPUT = REPO / "qa_output"
 sys.path.insert(0, str(REPO / "src"))
 
 import sqlite3  # noqa: E402
+import time  # noqa: E402
 from sqlalchemy import text as sqlalchemy_text  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from laser_trim_analyzer.database.models import UNREADABLE_PREFIX  # noqa: E402
@@ -626,6 +627,118 @@ def check_ft_regrade_dry_run(db) -> None:
           all(o.before == o.after for o in report.outcomes
               if o.result == "missing_file"),
           f"{report.missing} unreachable")
+
+
+def check_findings_fixtures() -> None:
+    """Process findings on the four trim fixtures: real-cut counting, grading fidelity, lever
+    safety, and the cache round trip. Builds its own throwaway database (--only findings).
+
+    Falsify before trusting (2026-09-20): make findings/data.py `_is_real_cut` return True and the
+    real-cut check must go FAIL with ("B", 3) in its detail.
+    """
+    import shutil
+    import tempfile
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.findings.data import load_model_tracks, yardstick_fidelity
+    from laser_trim_analyzer.findings.engine import refresh_findings
+    from laser_trim_analyzer.findings.model import Finding, LEVERS
+
+    fixtures = sorted((REPO / "tests/fixtures/trim").glob("*.xls"))
+    check("findings: the four trim fixtures are present", len(fixtures) == 4,
+          f"{[f.name for f in fixtures]}")
+    if len(fixtures) == 4:
+        # _dbpkg (the package __init__) never defines _db_manager itself -- only manager.py does --
+        # so a fresh process (e.g. `--only findings` on its own) has no such attribute yet; reading
+        # it unguarded crashes this check before the try/except can turn a break into a FAIL. Same
+        # `raising=False` idea as the fixture_db in tests/test_findings_data.py.
+        saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None))
+        tmp = Path(tempfile.mkdtemp(prefix="findings_sweep_"))
+        try:
+            fdb = _mgr.DatabaseManager(tmp / "f.db")
+            _mgr._db_manager = fdb                 # BOTH globals: a Processor must never
+            _dbpkg._db_manager = fdb               # reach the configured database.
+            proc = Processor(use_ml=False)
+            for f in fixtures:
+                fdb.save_analysis(proc.process_file(f))
+            tracks = load_model_tracks(fdb, "8232-1")
+            cuts = sorted((t.system, len(t.passes)) for t in tracks)
+            check("findings: real cuts are counted, the duplicate Lin Error row is not",
+                  cuts == [("A", 2), ("A", 3), ("B", 2), ("B", 2)], f"{cuts}")
+            y = yardstick_fidelity(tracks)
+            check("findings: the yardstick reproduces the app's verdict on the fixtures",
+                  y["n"] == 4 and y["agreement"] == 1.0, f"{y}")
+            report = {}
+            stored = refresh_findings(fdb, ["8232-1"], report)
+            facts = fdb.get_process_facts("8232-1")
+            check("findings: four tracks find nothing, and the facts are cached anyway",
+                  stored == 0 and facts is not None and facts.get("tracks") == 4,
+                  f"stored={stored} tracks={None if facts is None else facts.get('tracks')}")
+            check("findings: no analyzer failed on the fixtures",
+                  report.get("failed_models") == {} and report.get("analyzer_errors") == {}
+                  and facts is not None and facts.get("errors") == {},
+                  f"report={report} errors={None if facts is None else facts.get('errors')}")
+            # Four tracks never reach the 30 a limit table needs to count as "in service": the history is
+            # COMPUTED and empty. None would mean the limit-table analyzer did not run.
+            check("findings: the limit-table history is computed (and empty on four tracks), never None",
+                  facts is not None and facts.get("limit_tables") == [],
+                  f"{None if facts is None else facts.get('limit_tables')!r}")
+        except Exception as e:                      # an exception is a FAIL, never a skip
+            check("findings: the engine runs on the fixtures", False, f"{type(e).__name__}: {e}")
+        finally:
+            _mgr._db_manager, _dbpkg._db_manager = saved
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    try:
+        Finding(model="m", analyzer="a", category="c", lever="atp_spec", title="t", summary="s",
+                systems=("A",), n_units=1, strength_name="n", strength_value=1.0)
+        check("findings: the ATP spec can never be named as a lever", False,
+              "Finding accepted lever='atp_spec'")
+    except ValueError:
+        check("findings: the ATP spec can never be named as a lever", True, f"levers={sorted(LEVERS)}")
+
+
+def check_findings_on_database(db) -> None:
+    """The engine against REAL models in the database under test (always a copy): it must run
+    every analyzer without one of them raising -- on a pre-rebuild database as much as on a rebuilt
+    one, because the ingest hook will run it on whichever the owner has."""
+    from laser_trim_analyzer.findings.data import load_model_tracks, yardstick_fidelity
+    from laser_trim_analyzer.findings.engine import refresh_findings
+
+    with db.session() as s:
+        models = [r[0] for r in s.execute(sqlalchemy_text(
+            "SELECT model FROM analysis_results WHERE system IN ('A','B','C') AND model IS NOT NULL "
+            "AND model <> 'Unknown' GROUP BY model ORDER BY COUNT(*) DESC LIMIT 5"))]
+    check("findings: the database has trim models to run the engine on", len(models) > 0, f"{models}")
+    if not models:
+        return
+    report = {}
+    t0 = time.monotonic()
+    try:
+        stored = refresh_findings(db, models, report)
+    except Exception as e:
+        check("findings: the engine runs on the busiest real models", False, f"{type(e).__name__}: {e}")
+        return
+    secs = time.monotonic() - t0
+    check("findings: the engine runs on the busiest real models -- no model failed, no analyzer raised",
+          report.get("models") == len(models) and report.get("failed_models") == {}
+          and report.get("analyzer_errors") == {},
+          f"{len(models)} models in {secs:.0f}s, {stored} findings; failed={report.get('failed_models')} "
+          f"analyzer_errors={report.get('analyzer_errors')}")
+    for m in models:
+        facts = db.get_process_facts(m)
+        check(f"findings: facts cached for {m}, with every documented key",
+              isinstance(facts, dict) and {"tracks", "yardstick", "recipe_history", "trim_effort",
+                                           "limit_tables", "errors"} <= set(facts)
+              and facts.get("tracks", 0) > 0, f"{None if facts is None else sorted(facts)}")
+        y = yardstick_fidelity(load_model_tracks(db, m))
+        # Low fidelity is NOT a defect: it is the designed branch where the engine goes silent
+        # about intermediate sweeps. Disclose it; do not fail the sweep for the data's sake.
+        if y["n"] == 0 or y["agreement"] is None:
+            warn(f"findings: {m} has no final sweep the yardstick can grade", f"{y}")
+        elif not y["faithful"]:
+            warn(f"findings: the yardstick cannot vouch for {m} -- trim-effort findings stay silent there", f"{y}")
 
 
 def check_ft_disposition_excludes_ungraded(db, raw) -> None:
@@ -2066,8 +2179,8 @@ def main() -> int:
         keys = [k for k, _ in Sidebar.ITEMS]
         check("shell: every sidebar row has a registered page",
               set(keys) == registered, f"sidebar={keys} registered={sorted(registered)}")
-        check("shell: Home leads, Investigate keeps the 'model' key",
-              keys[:3] == ["home", "model", "settings"]
+        check("shell: Home leads, Investigate keeps the 'model' key, Findings follows it",
+              keys[:4] == ["home", "model", "findings", "settings"]
               and dict(Sidebar.ITEMS)["model"] == "Investigate"
               and Sidebar.MUTED == {"dashboard", "triage", "process"},
               f"{Sidebar.ITEMS}")
@@ -2129,6 +2242,8 @@ def main() -> int:
     # a row with no disposition stays out of every rate built on one.
     check_ft_disposition_excludes_ungraded(db, raw)
     check_ft_regrade_dry_run(db)
+    check_findings_fixtures()
+    check_findings_on_database(db)
 
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with db.session() as s:
@@ -3174,7 +3289,8 @@ def _tally() -> int:
 STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
               "ft-silence": check_ft_parser_console_silence,
               "ft-window": check_ft_graded_window,
-              "ingest": check_ingest_group}
+              "ingest": check_ingest_group,
+              "findings": check_findings_fixtures}
 
 
 if __name__ == "__main__":
