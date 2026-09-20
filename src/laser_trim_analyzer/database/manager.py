@@ -478,6 +478,21 @@ class DatabaseManager:
         facts["computed_at"] = str(row[1])
         return facts
 
+    def get_process_errors(self) -> dict:
+        """{model: {analyzer: "ExcType: message"}} for every model whose last findings refresh had an
+        analyzer fail. Empty when every analyzer ran -- which is NOT the same as "no findings"."""
+        from sqlalchemy import text as _text
+        import json as _json
+        with self.session() as s:
+            rows = s.execute(_text("SELECT model, facts FROM model_process_facts ORDER BY model")).fetchall()
+        out = {}
+        for model, facts in rows:
+            d = _json.loads(facts) if isinstance(facts, (str, bytes)) else facts
+            errs = d.get("errors") if isinstance(d, dict) else None
+            if errs:
+                out[model] = dict(errs)
+        return out
+
     def get_known_models(self) -> set:
         """Every model name the app has ever seen: DISTINCT model from analysis_results
         (trim data) union'd with Final Test results, NULLs dropped. Read-only. Used by

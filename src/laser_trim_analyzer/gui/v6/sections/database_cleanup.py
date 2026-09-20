@@ -260,13 +260,27 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
         status.configure(text="Working out process findings for every "
                               "model… this can take a few minutes.")
 
+        # A registry KEY only. refresh_findings takes no cancel token, so this run cannot be
+        # stopped part-way; it is registered so that OTHER long runs refuse to start while it
+        # reads the database.
         cancel = threading.Event()
 
         def work():
             try:
-                stored = _findings.refresh_findings(db)
-                return (f"Process findings refreshed: {stored:,} findings. "
-                        f"Open Findings in the sidebar.")
+                report: dict = {}
+                stored = _findings.refresh_findings(db, None, report)
+                failed = report.get("failed_models") or {}
+                partial = report.get("analyzer_errors") or {}
+                msg = f"Process findings refreshed: {stored:,} findings"
+                if report.get("models") is not None:
+                    msg += f" across {report['models']:,} models"
+                if not failed and not partial:
+                    return msg + ". Open Findings in the sidebar."
+                names = sorted(set(failed) | set(partial))
+                shown = ", ".join(names[:8]) + (" …" if len(names) > 8 else "")
+                return (f"{msg} — but {len(failed):,} model(s) could not be worked out at all and "
+                        f"{len(partial):,} had an analyzer fail ({shown}). The log has the details; "
+                        f"each model's Findings tab names what failed.")
             finally:
                 # Posted, not called: the run registry is Tk-thread state
                 # and this `finally` runs on the worker -- mirrors the

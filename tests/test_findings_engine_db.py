@@ -188,3 +188,11 @@ def test_findings_say_when_they_were_computed_and_the_clock_is_not_deprecated(tm
         db.replace_process_findings("X", {"tracks": 1}, [_row("X", 1.0, 5)])
     got = db.get_process_findings("X")[0]
     assert got["computed_at"][:2] == "20" and got["title"] == "t"
+
+
+def test_models_whose_analyzers_failed_can_be_listed(tmp_path):
+    db = _db(tmp_path)
+    db.replace_process_findings("FINE", {"tracks": 5, "errors": {}}, [])
+    db.replace_process_findings("OLDROW", {"tracks": 5}, [])                       # a cache row from before "errors" existed
+    db.replace_process_findings("HURT", {"tracks": 5, "errors": {"trim_effort": "ValueError: no sweeps"}}, [])
+    assert db.get_process_errors() == {"HURT": {"trim_effort": "ValueError: no sweeps"}}

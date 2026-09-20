@@ -45,7 +45,7 @@ def test_the_button_refreshes_every_model_and_reports_the_count(make_app, monkey
     from laser_trim_analyzer.findings import engine
     app = make_app()
     calls = []
-    monkeypatch.setattr(engine, "refresh_findings", lambda db, models=None: calls.append(models) or 7)
+    monkeypatch.setattr(engine, "refresh_findings", lambda db, models=None, report=None: calls.append(models) or 7)
     frame, button, label = _section(app)
     try:
         assert button is not None
@@ -61,7 +61,7 @@ def test_the_button_refuses_while_another_run_is_in_flight(make_app, monkeypatch
     from laser_trim_analyzer.findings import engine
     app = make_app()
     calls = []
-    monkeypatch.setattr(engine, "refresh_findings", lambda db, models=None: calls.append(models) or 0)
+    monkeypatch.setattr(engine, "refresh_findings", lambda db, models=None, report=None: calls.append(models) or 0)
     frame, button, label = _section(app)
     cancel = threading.Event()
     thread = threading.Thread(target=cancel.wait, daemon=True)
@@ -83,7 +83,7 @@ def test_while_it_runs_the_app_reports_a_findings_refresh_in_flight(make_app, mo
     from laser_trim_analyzer.findings import engine
     app = make_app()
     release = threading.Event()
-    monkeypatch.setattr(engine, "refresh_findings", lambda db, models=None: release.wait(5) and 0 or 0)
+    monkeypatch.setattr(engine, "refresh_findings", lambda db, models=None, report=None: release.wait(5) and 0 or 0)
     frame, button, label = _section(app)
     try:
         button.invoke()
@@ -92,4 +92,40 @@ def test_while_it_runs_the_app_reports_a_findings_refresh_in_flight(make_app, mo
         assert _pump(app, lambda: app.active_run_name() is None)
     finally:
         release.set()
+        frame.destroy()
+
+
+def test_a_run_with_failures_does_not_just_say_refreshed(make_app, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    app = make_app()
+
+    def stub(db, models=None, report=None):
+        report.update({"models": 40, "stored": 3, "failed_models": {"BROKEN": "RuntimeError: boom"},
+                       "analyzer_errors": {"HURT": {"trim_effort": "ValueError: x"}}})
+        return 3
+    monkeypatch.setattr(engine, "refresh_findings", stub)
+    frame, button, label = _section(app)
+    try:
+        button.invoke()
+        assert _pump(app, lambda: "3 findings" in label.cget("text")), label.cget("text")
+        said = label.cget("text")
+        assert "across 40 models" in said and "1 model(s) could not be worked out at all" in said
+        assert "BROKEN" in said and "HURT" in said and "Open Findings in the sidebar" not in said
+    finally:
+        frame.destroy()
+
+
+def test_if_the_engine_raises_the_user_sees_an_error_and_the_run_is_released(make_app, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    app = make_app()
+
+    def stub(db, models=None, report=None):
+        raise RuntimeError("disk I/O error")
+    monkeypatch.setattr(engine, "refresh_findings", stub)
+    frame, button, label = _section(app)
+    try:
+        button.invoke()
+        assert _pump(app, lambda: "Error: disk I/O error" in label.cget("text")), label.cget("text")
+        assert _pump(app, lambda: app.active_run_name() is None)      # a failed run must not lock every other long run
+    finally:
         frame.destroy()

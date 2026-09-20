@@ -47,3 +47,39 @@ def test_an_empty_cache_says_so(make_app):
     page.reload_now()
     labels = [c.cget("text") for c in page._list.winfo_children() if isinstance(c, ctk.CTkLabel)]
     assert _buttons(page._list) == [] and any("No findings yet" in x for x in labels)
+
+
+def _labels(page):
+    return [c.cget("text") for c in page._list.winfo_children() if isinstance(c, ctk.CTkLabel)]
+
+
+def test_a_load_failure_is_an_error_not_an_empty_list(make_app, monkeypatch):
+    app = make_app()
+    page = app.page_container.get_page("findings")
+
+    def boom():
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(app.db, "get_process_findings", boom)
+    page.reload_now()
+    text = " | ".join(_labels(page))
+    assert "could not be loaded" in text and "RuntimeError: database is locked" in text
+    assert "No findings yet" not in text
+
+
+def test_models_whose_analyzers_failed_are_named_under_the_list(make_app):
+    app = make_app()
+    app.db.replace_process_findings("BIG", {"tracks": 1, "errors": {}}, [_finding("BIG", "the big one", 500.0)])
+    app.db.replace_process_findings("HURT", {"tracks": 9, "errors": {"trim_effort": "ValueError: x"}}, [])
+    page = app.page_container.get_page("findings")
+    page.reload_now()
+    assert len(_buttons(page)) == 1
+    text = " | ".join(_labels(page))
+    assert "1 model(s) could not be fully worked out" in text and "HURT" in text
+
+
+def test_a_healthy_cache_says_nothing_about_failures(make_app):
+    app = make_app()
+    app.db.replace_process_findings("BIG", {"tracks": 1, "errors": {}}, [_finding("BIG", "the big one", 500.0)])
+    page = app.page_container.get_page("findings")
+    page.reload_now()
+    assert not any("could not be" in x for x in _labels(page))
