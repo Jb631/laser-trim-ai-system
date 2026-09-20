@@ -8,13 +8,12 @@ Last updated: 2026-09-20
 
 ## ▶ Read this before you start the rebuild (Claude, night of 2026-09-20)
 
-**Nothing has been pushed.** Everything below is committed on this Mac's `V6` branch and tested.
-You pull `main` on the work laptop, so the rebuild only gets tonight's fixes if you push first:
+**Pushed to `main` on the night of 2026-09-20** (commit `22a91dc`, 50 commits). At work:
 
-    git push origin V6 && git push origin V6:main          # everything (recommended — see "What is new")
-    git push origin prebuild-fixes:main                    # ONLY the fixes that change what gets stored
+    git pull
 
-then on the work laptop: `git pull`.
+Then follow the rebuild checklist in `BRING_TO_WORK.md` as written. Optional, ~4 minutes, worth it
+once: `.venv\Scripts\python scripts\run_test_gate.py` — the whole test suite, every file OK.
 
 ### Four fixes that change what the rebuild stores — take these with you
 

@@ -5,9 +5,7 @@
 The rebuild below (2026-09-18 section) is unchanged. What changed is **what it will store**, because
 four bugs were found and fixed the night before. They only reach the work laptop if they are on `main`.
 
-**At home (the Mac), once you have read the top of `TRACKER.md`:**
-
-    git push origin V6 && git push origin V6:main
+Everything below is **already on `main`** (pushed 2026-09-20, commit `22a91dc`).
 
 **At work:**
 
