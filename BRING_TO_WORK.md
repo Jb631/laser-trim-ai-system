@@ -16,7 +16,7 @@ It now keeps:
 |---|---|---|
 | **Every intermediate trim pass** | the full sweep at each stage — positions, errors, limits, resistance at that moment — plus the recipe used for that pass | A, B and C |
 | **The laser parameter block** | incoming and final resistance limits, laser power, pulse duration, cut length, test voltage, indexing, ignored-point counts | A, B and C |
-| **Per-position process data** | at *every point*: the cut length applied, the trim current, what the machine **predicted** the correction would be, and what it **actually got** | System A (DLTS) only |
+| **Per-position process data** | at *every point*: the cut length applied, the trim current, the target output and the measured output after the pass | Laser 2 (DLTS) only |
 
 That last row is the one to care about. It is the before-and-after of every
 cut ever made, recorded for free, going back through your whole history —
@@ -28,8 +28,15 @@ forget.** With it, the question changes from "was that cut any good?" to
 which is what this run creates. Its entry criteria are written down in
 `docs/superpowers/specs/2026-09-17-process-recommendations-design.md`.
 
-"Predicted vs actual" is also, for free, the machine's own accuracy on every
-cut — and it is per-machine, so laser A and laser B can be compared directly.
+> **Correction, 2026-09-20.** An earlier draft said these files also record what
+> the machine "predicted" each correction would be versus what it "actually got" —
+> "the machine's own accuracy, for free". That was a guess from two column names
+> (`Pred Deltas`, `Used Deltas`) and it was wrong. Tested on ~4,000 tracks:
+> `pred_delta` is the ideal output step between neighbouring positions (it tracks
+> the target ramp's step at +0.91), one value per pass, and neither column follows
+> the resistance change. What IS recorded at every position, and is what the
+> cut-length work needs: the cut applied, the target output, and the measured
+> output before and after the pass.
 
 ### Why a FRESH database and not a reprocess over the old one
 

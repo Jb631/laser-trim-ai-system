@@ -13,7 +13,7 @@ The shop's numbers do NOT follow the code's letters (James, 2026-09-20):
 | Shop name | Folder | Code | Records |
 |---|---|---|---|
 | **Laser 1** | `LTS` | System B | each pass's sweep + that pass's settings |
-| **Laser 2** | `DLTS` | System A | the same, **plus cut length, trim current and predicted-vs-actual correction at every position** |
+| **Laser 2** | `DLTS` | System A | the same, **plus the cut applied, trim current, target output and measured output at every position** |
 | **Laser 3** | `LTS3` | System C | same format as laser 1 |
 
 ## The critical path — read this first
@@ -95,8 +95,8 @@ The app tells James what to change about the process to raise yield. It never
 screens parts.
 
 - [x] **B1 · Capture what the parser threw away** — every trim pass, the laser
-      settings, and on laser 2 (DLTS) the per-position cut length, trim current and
-      predicted-vs-actual correction. 17 commits, `adcc1ce..5f94dc4`. Proven to
+      settings, and on laser 2 (DLTS) the per-position cut length, trim current,
+      target output and measured output. 17 commits, `adcc1ce..5f94dc4`. Proven to
       change nothing that existed: 645 real files, 26 stored columns.
 - [ ] **B2 · Fresh-database rebuild, overnight.** *James.* Checklist: the
       2026-09-18 section of `BRING_TO_WORK.md`. Needs **12 GB free**. Blocked on
@@ -172,6 +172,16 @@ screens parts.
         the part. That is the opening for a cut-length model.
       - New finding for the catalogue: **trim avoidance** — per model, the share of units
         arriving already in spec. Needs the full rebuild to rank every model.
+- [x] **Two corrections from James, 2026-09-20.** (1) There is NO fixed list of hand-trim
+      models: "if things fail we will make a determination of whether to try hand trim
+      or not" — it is a per-failure decision; 8232-1 and 8340-1 are simply models where
+      it happens often. The data can estimate how often per model (laser FAIL → final
+      test PASS signature, finding #5). (2) `pred_deltas` / `used_deltas` are NOT "the
+      machine's predicted vs actual correction": `pred_delta` is the ideal output step
+      between neighbouring positions (+0.91 with the target ramp step, ~4,000 tracks),
+      one value per pass; neither follows the resistance change (James's guess, tested:
+      +0.01 / +0.07). The per-position data that matters is the cut applied plus the
+      output before and after.
 - [ ] **B5 · Recommendation engine + the ink-target finding**, end to end, on
       both screens. Gets its own plan, written after B2 so it is designed
       against real data.
