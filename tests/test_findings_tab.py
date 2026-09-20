@@ -85,3 +85,56 @@ def test_the_model_page_loads_the_tab_from_the_cache(make_app):
     del page._reload
     page.reload_now()                      # the synchronous path
     assert "Incoming resistance: aim lower" in " | ".join(_texts(page._findings_tab))
+
+
+# ---- appended by fix round 1: a value that is not there, and an analyzer that crashed ----
+
+def test_a_crashed_analyzer_is_named_and_the_yardstick_is_not_blamed(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": dict(FACTS, trim_effort=None, recipe_history=None,
+                                errors={"trim_effort": "RuntimeError: boom",
+                                        "recipe_change": "KeyError: 'x'"}),
+                  "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "Could not be worked out this time" in text
+    assert "what each cut buys" in text and "RuntimeError: boom" in text
+    assert "the recipe history" in text and "KeyError" in text
+    assert "not graded for this model" not in text      # the yardstick agreed 100% -- it is not the reason
+    assert "RECIPE HISTORY" not in text                 # None history: no heading, no crash
+
+
+def test_a_thin_model_is_told_the_bar_not_only_100_percent(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": dict(FACTS, trim_effort=None,
+                                yardstick={"n": 12, "agreement": 1.0, "faithful": False,
+                                           "min_n": 30, "min_agreement": 0.99}),
+                  "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "not graded for this model" in text
+    assert "at least 99% of at least 30 tracks" in text and "checked on 12 tracks" in text
+    assert "only 100%" not in text
+
+
+def test_a_model_with_no_trim_tracks_says_so(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": {"model": "EMPTY", "tracks": 0, "annual_volume": 0, "latest": None,
+                            "yardstick": None, "recipe_history": None, "trim_effort": None, "errors": {}},
+                  "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "No laser trim tracks are stored" in text and "not graded" not in text
+
+
+def test_a_value_that_is_not_there_reads_as_a_dash_never_as_zero_and_never_crashes(tk_root):
+    tab = _tab(tk_root)
+    effort = {"B": {"tracks_cut": None, "cuts": None, "graded_untrimmed_n": None,
+                    "arrive_in_spec_pct": None, "in_limits_after_cut1_pct": None, "multi_cut_n": None}}
+    history = [{"system": "B", "first": None, "last": None, "recipe": None, "n": None,
+                "trim_pass_pct": None, "median_incoming_r": None}]
+    tab.set_data({"facts": dict(FACTS, trim_effort=effort, recipe_history=history),
+                  "findings": [{**FINDING, "n_units": None, "expected_gain_points": None}]})
+    text = " | ".join(_texts(tab))
+    assert "RECIPE HISTORY" in text                     # it rendered all the way to the last section
+    assert "median incoming — Ω" in text and "0 Ω" not in text
+    assert "— tracks cut" in text and "()" not in text
+    assert "rests on — tracks" in text and "no gain claimed" in text
+    assert "None" not in text
