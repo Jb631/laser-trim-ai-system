@@ -759,6 +759,8 @@ def log_phases(phases: dict, total: int, processor, summary) -> None:
         parts.append(f"retrains {phases['retrain']:.1f}s")
     if "advance" in phases:
         parts.append(f"advance {phases['advance']:.1f}s")
+    if "findings" in phases:
+        parts.append(f"findings {phases['findings']:.1f}s")
     logger.info("Batch phases: %s", " | ".join(parts))
 
 
