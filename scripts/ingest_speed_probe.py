@@ -62,6 +62,23 @@ def main() -> int:
         print("no .xls files found")
         return 1
 
+    # ---- layer 0: metadata round trips -------------------------------------
+    # On a share, every stat()/exists()/resolve() is its own network
+    # conversation. The app makes about 16 of them per file (counted
+    # 2026-09-20), so their unit cost matters as much as the read does.
+    import os
+    meta = {}
+    for label, fn in (("stat", os.stat), ("exists", os.path.exists),
+                      ("resolve", lambda q: Path(q).resolve())):
+        t = time.perf_counter()
+        for f in files:
+            fn(f)
+        meta[label] = (time.perf_counter() - t) / len(files) * 1000
+    per_op = sum(meta.values()) / len(meta)
+    print(f"\n0. metadata      stat {meta['stat']:6.1f} ms | exists {meta['exists']:6.1f} ms"
+          f" | resolve {meta['resolve']:6.1f} ms   (per call)")
+    print(f"                 x16 calls/file in the app = ~{per_op*16:6.0f} ms/file of pure round trips")
+
     # ---- layer 1: raw read -------------------------------------------------
     t = time.perf_counter()
     total_bytes = 0
