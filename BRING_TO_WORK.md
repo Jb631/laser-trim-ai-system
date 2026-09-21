@@ -7,10 +7,14 @@ four bugs were found and fixed the night before. They only reach the work laptop
 
 Everything below is **already on `main`** (pushed 2026-09-20, commit `22a91dc`).
 
-**At work:**
+**At work**, in PowerShell. Start by changing INTO the repo — every command below is
+relative to it — and note the leading `.\` on the interpreter: without it PowerShell reads
+`.venv\Scripts\python` as a module name and answers
+"The module '.venv' could not be loaded." (cmd.exe does not need it; PowerShell does.)
 
+    cd C:\dev\laser-trim-ai-system
     git pull
-    .venv\Scripts\python scripts\run_test_gate.py        # optional, ~3–5 minutes: the WHOLE test suite, every file OK
+    .\.venv\Scripts\python scripts\run_test_gate.py      # optional, ~3–5 minutes: the WHOLE test suite, every file OK
 
 Then follow "The sequence" in the 2026-09-18 section exactly as written.
 

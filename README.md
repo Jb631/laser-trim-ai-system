@@ -57,7 +57,8 @@ Production quality analysis platform for potentiometer laser trim data. Built fo
 ```bash
 # Create and activate virtual environment
 python -m venv .venv
-.venv\Scripts\activate      # Windows
+.\.venv\Scripts\activate     # Windows PowerShell (the leading .\ is required)
+.venv\Scripts\activate       # Windows cmd.exe
 source .venv/bin/activate   # Linux/Mac
 
 # Install dependencies

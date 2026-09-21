@@ -13,7 +13,8 @@ Last updated: 2026-09-20
     git pull
 
 Then follow the rebuild checklist in `BRING_TO_WORK.md` as written. Optional, ~4 minutes, worth it
-once: `.venv\Scripts\python scripts\run_test_gate.py` — the whole test suite, every file OK.
+once: `.\.venv\Scripts\python scripts\run_test_gate.py` — the whole test suite, every file OK.
+(PowerShell needs the leading `.\`, and you must `cd C:\dev\laser-trim-ai-system` first.)
 
 ### Four fixes that change what the rebuild stores — take these with you
 
@@ -133,7 +134,8 @@ problem — per-file conversations with the share were. Same code, same laptop:
 - [ ] **A1 · Run the probe AT WORK, on the office network.** *James · 1 minute.*
       **Prediction, now strong:** round trips at work are under 1 ms, so lookups
       should read ~1–2 ms and the app should run near 14 files/sec.
-      `.venv\Scripts\python scripts\ingest_speed_probe.py "\\192.168.66.9\BTXData\Departments\System Data\TEST_DATA\DLTS" 25`
+      `cd C:\dev\laser-trim-ai-system` first, then
+      `.\.venv\Scripts\python scripts\ingest_speed_probe.py "\\192.168.66.9\BTXData\Departments\System Data\TEST_DATA\DLTS" 25`
       Read the `stat` figure on the first line:
       **~1 ms** → the VPN was the limit; rebuild at work, expect 5–6 hours.
       **~113 ms** → the file server (or SentinelOne's handling of the share) is
