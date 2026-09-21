@@ -199,3 +199,20 @@ def test_a_setting_older_than_the_lookback_is_not_offered_as_a_recommendation():
     facts, findings = cut_setting.analyze("M", old + recent, label)
     assert findings == []
     assert facts == {}                      # the 2019 block is outside LOOKBACK_DAYS entirely
+
+
+def test_only_the_millimetre_laser_is_described_as_a_longer_or_shorter_cut():
+    """Laser 2 (DLTS) labels the field `Laser Cut Length (mm)`; laser 1 (LTS) uses the
+    same label with no unit and values in the thousands. Calling laser 1's number
+    "longer" reads a unit off a label -- the mistake that had `pred_deltas` described
+    wrongly for a week. Laser 1 gets "a higher/lower setting" instead.
+    """
+    tracks_b = two_blocks(0.6, 0.3)
+    f_b = only(cut_setting.analyze("M", tracks_b, label)[1])
+    assert "a lower setting" in f_b.summary
+    assert "shorter" not in f_b.summary and "longer" not in f_b.summary
+
+    tracks_a = (block(0, START, 120, 0.75, 0.6, 0.6, system="A")
+                + block(1000, days(START, 201)[-1], 120, 0.88, 0.3, 0.3, system="A"))
+    f_a = only(cut_setting.analyze("M", tracks_a, label)[1])
+    assert "a shorter cut" in f_a.summary

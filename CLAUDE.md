@@ -228,6 +228,16 @@ folder name — `parse_file` passes the detected FORMAT to `_extract_tracks`, so
 is read by the System A reader. Never pass `SystemType.C` to an extractor: the dispatch
 sends everything that is not A to the System B reader, and an A-format file read as B does
 not raise, it produces wrong numbers. Pinned by `tests/test_laser3_is_read_like_laser2.py`.
+**Cut length is TWO different quantities** (2026-09-20, James asked what "4100" was).
+The `Trim Parameters` sheet labels it `Laser Cut Length (mm)` on laser 2 (DLTS) — real
+millimetres, 0.55 / 0.75 / 0.88 — and `Laser Cut Length` with **no unit** on laser 1 (LTS),
+where the values are raw machine counts in the thousands (2,950 / 4,000 / 4,100). Never pool
+them and never call laser 1's number "longer" or "shorter": nothing in this codebase has
+established its scale. `Trim Volts` is a SEPARATE field on the same sheet — the cut setting
+is not a voltage. Laser 1 also carries `High Cut Length` / `Low Cut Length`, a different pair
+again (constant at 2,950 on 8232-1 while `Laser Cut Length` moved 4100 → 4000), so name the
+field you mean.
+
 **Data note:** Same serial number can appear multiple times — this is VALID (unit trimmed multiple times). Do not treat as duplicates.
 **Linearity spec:** Zero-tolerance — every single measurement point must be in-spec. This is a customer requirement, not configurable.
 

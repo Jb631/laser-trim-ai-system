@@ -270,7 +270,18 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
                            if switched else ""))
         annual = sum(1 for t in rows if t.file_date >= latest - timedelta(days=365)
                      and _setting(t) in (best, current))
-        direction = "shorter" if best < current else "longer"
+        # "shorter"/"longer" is a claim about a physical length; "lower"/"higher" is a
+        # claim about the number on the sheet. Only laser 2 (DLTS) licenses the first:
+        # its label is `Laser Cut Length (mm)`. Laser 1 (LTS) carries the same label
+        # with NO unit and values in the thousands (2,950 / 4,000 / 4,100) -- raw
+        # machine counts whose scale nobody in this codebase has established. Asserting
+        # "longer" there would be reading a unit off a label, which is exactly how
+        # `pred_deltas` got described wrongly for a week.
+        physical = system == "A"
+        if physical:
+            direction = "a shorter cut" if best < current else "a longer cut"
+        else:
+            direction = "a lower setting" if best < current else "a higher setting"
         findings.append(Finding(
             model=model, analyzer="cut_setting", category="Cut setting",
             lever="laser_settings", systems=(system,),
