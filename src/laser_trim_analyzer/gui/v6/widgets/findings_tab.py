@@ -31,7 +31,8 @@ def _txt(v) -> str:
 # What the engine calls each analyzer -> what a person would call it.
 _ANALYZER_NAMES = {"recipe_change": "the recipe history", "ink_target": "the ink target",
                    "trim_effort": "what each cut buys", "limit_tables": "the limit tables",
-                   "cut_setting": "the cut settings"}
+                   "cut_setting": "the cut settings",
+                   "pass_burden": "the multi-pass burden"}
 
 
 class FindingsTab(ctk.CTkFrame):
@@ -68,6 +69,16 @@ class FindingsTab(ctk.CTkFrame):
                            f"{_num(tab.get('graded'))} graded points of {_num(tab.get('rows'))} rows · "
                            f"{_num(tab.get('n'))} tracks · {_txt(tab.get('first'))} → {_txt(tab.get('last'))} · "
                            f"{_pct(tab.get('trim_pass_pct'))} left the laser inside limits", muted=True)
+        burden = facts.get("pass_burden") or {}
+        if burden:
+            self._heading("CUTS THE RECIPE DID NOT ASK FOR (LAST YEAR)")
+            for group, g in sorted(burden.items()):
+                self._line(f"{group} · {_num(g.get('n'))} tracks · the recipe's normal is "
+                           f"{_num(g.get('normal_cuts'))} cut(s) · "
+                           f"{_pct(g.get('share_over_recipe'))} took more · "
+                           f"{_num(g.get('unplanned_passes'))} unplanned passes "
+                           f"({_num(g.get('unplanned_passes_per_100_tracks'))} per 100 tracks)",
+                           muted=True)
         cuts = facts.get("cut_setting") or {}
         if cuts:
             self._heading("CUT SETTINGS THIS MODEL HAS BEEN RUN AT")

@@ -690,6 +690,9 @@ def check_findings_fixtures() -> None:
             check("findings: the cut-setting facts are computed (and empty on four tracks), never None",
                   facts is not None and facts.get("cut_setting") == {},
                   f"{None if facts is None else facts.get('cut_setting')!r}")
+            check("findings: the pass-burden facts are computed (and empty on four tracks), never None",
+                  facts is not None and facts.get("pass_burden") == {},
+                  f"{None if facts is None else facts.get('pass_burden')!r}")
         except Exception as e:                      # an exception is a FAIL, never a skip
             check("findings: the engine runs on the fixtures", False, f"{type(e).__name__}: {e}")
         finally:

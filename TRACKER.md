@@ -343,6 +343,19 @@ screens parts.
       Each silence rule was made to FAIL first: 8 mutations, 8 reds. Two tests passed for the wrong
       reason at first and were fixed — one fixture rendered a 35% pass rate as 40%, so the "too
       small to act on" test had a gain of zero and never reached the floor it was meant to exercise.
+- [x] **B6c · Multi-pass burden (catalogue #6) — SHIPPED** (2026-09-20). Cuts the RECIPE did not
+      ask for, and the laser time they cost — James's "not tie up capacity at the laser", as a
+      number per model. The trap it exists to avoid is the one that caught the analysis by hand:
+      "86% of 8232-1 needs a second pass" was a recipe change, not parts failing, so counting raw
+      passes measures the process sheet. It works inside one laser, one track name and one cut
+      setting, takes that group's OWN normal cut count, and reports only the work above it.
+      On the home slice: 8232-1's two cuts are correctly silent (1.0% over recipe) while **8340-1
+      takes more than its one cut on 28% of tracks — 40 unplanned laser passes per 100 tracks.**
+      It claims no yield gain; freeing capacity is not a verdict change. 9 mutations, 9 reds —
+      three tests passed for the wrong reason first (one asserted only the laser label, which
+      survives pooling; one had no burden to suppress; one inserted the larger cut count first so
+      the tie-break rule it meant to pin was never reached). A tie in "normal" now resolves to the
+      LARGER count: deterministic, and a coin toss can never manufacture a burden.
 - [ ] **B7 · Cut-length model — PROMOTED** (James, 2026-09-20: "i want to do the
       cut length model i feel that is important"). No longer waits for the full
       rebuild: the home slice supplies real data now. Still gets its own design
@@ -381,7 +394,21 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
       to look like results, and safety nets that could not fail.
       Nine of the findings were fixed the same night (see "Done recently"); the rest are in §6 and
       §9 of that document, including the four that need your decision.
-- [ ] **C2… · Refactors**, from the top of that list.
+- [ ] **C2… · Refactors**, from the top of that list. *Not started — the sequencing above
+      (after B2) is deliberate: the rebuild runs through this exact code.*
+      **Two things measured 2026-09-20, before anyone starts step 1 ("delete the dead lines"):**
+      - The honest count is **14 definitions / 669 lines** never named anywhere outside their own
+        body, not 853. (A first pass said 96 defs / 5,837 lines — it used a regex that excluded
+        matches preceded by a dot, which is exactly how every method is called. If a dead-code
+        number ever looks too good, that is the bug to check for.) The 14: the whole unused
+        alerts feature (`create_alert`, `get_unresolved_alerts`, `resolve_alert`,
+        `acknowledge_alert`), `get_unmatched_ft_diagnostics`, `get_comparison_pairs`,
+        `get_final_test`, `get_unprocessed_files`, `get_escape_scatter_data`, `get_trend_data`,
+        `get_comparative_model_trends`, `get_cpk_trend_for_model`, `get_analysis`.
+      - **`_set_sqlite_pragma` is in that list and MUST NOT be deleted.** It is a SQLAlchemy
+        `@event.listens_for(self._engine, "connect")` listener (manager.py:259) — nothing names
+        it because SQLAlchemy calls it. Deleting it turns **foreign-key enforcement off on every
+        connection**, silently. Any "unreferenced" scan must skip decorated definitions.
 
 ## D. Checks at the shop — James
 
