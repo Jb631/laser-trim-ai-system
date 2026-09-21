@@ -274,11 +274,67 @@ screens parts.
       day's work. Next two, in order: **#2 station setup mismatch** (the laser and final test
       grading to different limit tables — D1 below is its first case, and it needs the rebuilt
       final-test data) and **#5 rework load** (hand-trim volume per model).
+- [x] **B4 questions 2, 3 and 4 — ANSWERED on the home slice** (2026-09-20, `slice_v2.db`).
+      Yardstick = the exact best-offset test (an offset exists that puts every graded point in
+      limits iff `max(lower−err) <= min(upper−err)`); it agrees with the app's own stored verdict
+      on **1,484 of 1,484** laser-2 tracks, so it can be trusted on intermediate passes.
+      - **Q2 · Which cut lengths pass first time? The per-pass cut setting is a STRONG lever —
+        the biggest single effect found in this data so far.** Holding model, machine, limit table,
+        incoming resistance and period all constant:
+
+            cut setting   tracks   after cut 1   END OF LASER
+        8232-1 · laser 2 (DLTS) · 2018-20 · one 45-point table
+                   0.55       33          52%           97%
+                   0.75      245          34%           78%
+                   0.88      476           8%           38%
+        8340-1 · laser 1 (LTS) · 2023-09 onward · one 53-point table
+                   3000      414          19%           19%
+                   3500    1,204          40%           41%   <- optimum
+                   4000      408          23%           23%
+                   4341       74           5%            5%
+        8232-1 falls monotonically as the cut gets longer; 8340-1 has an **optimum at 3500**, and it
+        wins in BOTH halves of incoming resistance (48% vs 23/27/7 below the median, 37% vs 19/13/5
+        above). Median incoming resistance differs by under 60 Ω across 8340-1's four settings.
+      - **The 0.88 setting was an 8-month EXPERIMENT, not the later recipe.** Dec 2018 → Aug 2019,
+        inside a nine-year run of 0.75 (52 months at 0.75, 6 at 0.88, 1 month carrying both). Before
+        it: 18% / 62%. During: 9% / 38%. After: 36% / 83%. *(Claude had this recorded as "0.75 then
+        0.88" — wrong, and now corrected.)*
+      - **Q3 · Was there a cut that avoids the second pass? The shop already ran the experiment and
+        it went the WRONG way.** A longer cut did not remove the second pass — the median stayed at
+        2 passes in every group — it just made both passes land out of limits. Shorter, not longer,
+        is where first-pass success lives. This is the same direction as James's stated goal.
+      - **Q4 · Do the lasers differ? They do not even store the same quantity.** `laser_cut_length`
+        is 0.55–0.88 on laser 2 (DLTS) and 2500–4341 on laser 1 (LTS) — different units, never to be
+        compared or pooled. And the lever does not act the same: 8232-1's three laser-1 settings
+        (2950 / 4000 / 4100) sit at 43–51% end-of-laser with no separation, while 8340-1's four on
+        the same machine span 5–41%.
+      - **What this does NOT establish.** Settings are run in blocks: only 8% of 8340-1's 184
+        production days and 2% of 8232-1's 86 used more than one setting, so this is a
+        between-period comparison and a material-era effect cannot be ruled out from the data alone.
+        The same-day pairs that exist are too thin to settle it (1–3 shared days per pair). **So this
+        is a specific, cheap thing to TEST at the machine, not a number to act on blindly:** alternate
+        3500 and 4000 on 8340-1 by lot for a week and the app will read the answer straight out.
+- [x] **The per-POSITION cut column does not carry a model.** `cut_lengths` (laser 2's column 18)
+      is nearly constant within a pass — 13.66 → 14.39 across a whole sweep, a ~5% range — and it
+      explains nothing about what the sweep did: per-track correlation with the change in error at
+      that position is **+0.02** (signed) and **+0.11** (absolute), and with the local step **+0.18**.
+      The cumulative form correlates at |r|>0.5 on 50% of tracks — but so does cumulative *trim
+      current*, in the same 50/50 split, which is the signature of "any monotone index tracks a
+      wandering signal", not physics. Mean per-position cut is identical for tracks that passed on
+      cut 1 and tracks that needed a second (14.132 vs 14.139). **Consequence for B7: the cut-length
+      model's input is the per-PASS setting plus the incoming curve, not a per-position cut vector.**
+      That is the second column in this family whose name promised more than it holds (after
+      `pred_deltas` / `used_deltas`) — verify a column against data before believing its header.
 - [ ] **B7 · Cut-length model — PROMOTED** (James, 2026-09-20: "i want to do the
       cut length model i feel that is important"). No longer waits for the full
       rebuild: the home slice supplies real data now. Still gets its own design
       and approval, and still starts with the B4 questions — they are the cheap
       first step of this work, not a detour. Data for it:
+      **Reshaped by the B4 answers above:** the input is the per-PASS cut setting and
+      the incoming curve — the per-position cut column is nearly constant and carries no
+      signal. The first question is no longer "what does a cut do at position i" but
+      "what cut setting does THIS incoming curve want", and the data already shows the
+      answer is model-specific (monotone on 8232-1, an optimum at 3500 on 8340-1).
       **laser 2 (DLTS) is the only machine recording the cut at every position.**
       8232-1's laser 2 history is 2013 → 2022-07 (4,178 files; it has run on
       laser 1 (LTS) since 2023-03). Models on laser 2 THIS year with heavy
