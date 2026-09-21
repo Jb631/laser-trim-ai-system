@@ -150,10 +150,18 @@ problem — per-file conversations with the share were. Same code, same laptop:
       hides inside the parse number.
           `.\.venv\Scripts\python scripts\parse_locality_probe.py "\\192.168.66.9\BTXData\Departments\System Data\TEST_DATA\DLTS" 25`
       Local much faster → A2 (mirror, ~73 GB). No difference → A3 (processes).
-- [ ] **A2 · Local mirror of the share** — now UNLIKELY to be needed (the ping
+- [x] **A1a · Is the share making PARSING slow? NO — measured at work 2026-09-21.**
+      `parse_locality_probe` on 25 real files: on the share 172.8 ms/file, local copies
+      **201.1 ms/file — local was SLOWER (0.9x)**. So the share and the scanner are
+      cleared, and **A2 is dead: mirroring 73 GB would have bought nothing.** (James:
+      "im not copying all the files to the computer thats crazy" — and he was right.)
+      Parsing there is CPU-bound at ~173–293 ms/file against the Mac's 67.8, which is a
+      real single-core gap between the machines, not a defect.
+- [ ] ~~**A2 · Local mirror of the share**~~ **— RULED OUT** (A1a above: local is no
+      faster than the share). Kept only so nobody proposes it again. — now UNLIKELY to be needed (the ping
       cleared the server); only if A1 still shows slow lookups on the LAN.
-      One `robocopy /MT:32 /Z` copy, restartable, then point the app at the
-      copy and rebuild at local speed. *Claude writes the script.*
+      The idea was one `robocopy /MT:32 /Z` copy, then rebuild at local speed. The
+      measurement says there is no local speed to gain.
 - [ ] **A3 · Processes instead of threads.** *After the rebuild.* Measured on 96
       real files: threads give **1.0×** at 1, 4, 8 or 16; processes give 3.6× at
       4 and **6.8× at 8**. The thread pool and its cap of 4 were built for the
