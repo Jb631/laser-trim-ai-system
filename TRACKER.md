@@ -469,11 +469,13 @@ PO numbers and prices, and must never be committed).
         patches.** Not a five-second delete.
       - **One latent defect that nobody had carried forward** — see the next line; it was the most
         dangerous of the 23 and is now fixed.
-      The other 22 are small (a duplicated regex between `parser.py` and `trim_passes.py`; a
-      `pass_index=None` hole in the Ruling-11 IntegrityError guard; two differently-scoped pass
-      rates on one screen from `limit_tables`; the `Response` field that may be the same field on
-      two machines and is now split). They are written up in the ledgers, which is why the ledgers
-      stay until their substance is inlined.
+      **Two of the 23 are now closed** (see "Done recently"): the `pass_index=None` hole, which
+      could have rolled back a whole file's analysis save mid-rebuild, and the duplicated
+      pass-sheet regex, now pinned by a test instead of merged.
+      The other 20 are small (a `Response` field that may be the same field on two machines and is
+      now split; two differently-scoped pass
+      rates on one screen from `limit_tables`; a float stored into an Integer column). They are
+      written up in the ledgers, which is why the ledgers stay until their substance is inlined.
 - [x] **A blank THEORY cell can no longer become an error of 0.0** (2026-09-20, found while
       reading the ledgers). `final_test_parser.py` honours "blank is ungraded, never 0.0" in the
       branch that uses the file's own error column — and the branch 20 lines below substituted the
@@ -529,6 +531,14 @@ PO numbers and prices, and must never be committed).
   clears it, measured. `tests/test_customer_value_guard.py` now pins it: 14 tests, and all four
   rules were mutated to prove they bite. Two of those tests passed for the wrong reason when first
   written and were rebuilt. **Nothing leaked; the whole history scans clean.**
+
+- **Two latent faults closed before the rebuild, both found by reading the build ledgers.**
+  A trim pass with no `pass_index` would have hit `nullable=False` at flush and rolled back the
+  WHOLE analysis save — every track's verdict for that file — to save one pass row; the guard
+  written to prevent exactly that did not catch it, because `None` is a perfectly good set member.
+  And the two copies of the pass-sheet regex (`parser.py`, `trim_passes.py`) that decide which
+  sheets are trim passes are now pinned by a test, so they cannot answer differently about the
+  same workbook. Both proven by reverting the fix and watching the test go red.
 
 - 2026-09-20 · the app now SHOWS the shop's laser names — "Laser 1 (LTS)",
   "Laser 2 (DLTS)", "Laser 3 (LTS3)" — on the company trend chart (legend in

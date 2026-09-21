@@ -222,3 +222,40 @@ def test_every_parser_track_gets_a_db_track_row(tmp_path, monkeypatch):
         f"{len(db_analysis.tracks)} DB tracks; zip would truncate")
     assert [t.track_id for t in db_analysis.tracks] == \
            [t.track_id for t in result.tracks], "mapping reordered the tracks"
+
+
+def test_write_trim_passes_tolerates_a_missing_pass_index(tmp_path, monkeypatch):
+    """The sibling hazard to the duplicate-index case above, and the one the dedup
+    guard does NOT catch (found 2026-09-20 while reading the build ledgers).
+
+    `None` is a perfectly good set member, so a pass with no index survives the
+    duplicate check and then meets `pass_index nullable=False` at flush -- raising
+    the very IntegrityError the tolerate-fix exists to avoid, and rolling back the
+    whole analysis save. During an unattended rebuild that costs every track's
+    verdict for that file, to save one pass row.
+    """
+    from laser_trim_analyzer.database import manager as mgr
+    from laser_trim_analyzer.core.processor import Processor
+
+    db = mgr.DatabaseManager(tmp_path / "t.db")
+    monkeypatch.setattr(mgr, "_db_manager", db, raising=False)
+    proc = Processor(use_ml=False)
+    result = proc.process_file(Path("tests/fixtures/trim/dlts_8232-1_243.xls"))
+
+    track = result.tracks[0]
+    assert len(track.trim_passes) >= 2
+    keep = len(track.trim_passes) - 1
+    track.trim_passes[0]["pass_index"] = None
+
+    db_id = db.save_analysis(result)          # must not raise
+    assert db_id > 0
+
+    with db.session() as s:
+        n = s.execute(sa.text("SELECT COUNT(*) FROM trim_passes")).scalar()
+        nulls = s.execute(sa.text(
+            "SELECT COUNT(*) FROM trim_passes WHERE pass_index IS NULL")).scalar()
+        verdicts = s.execute(sa.text(
+            "SELECT COUNT(*) FROM track_results WHERE analysis_id = :a"), {"a": db_id}).scalar()
+    assert nulls == 0
+    assert n == keep, f"expected the indexless pass dropped and {keep} kept, got {n}"
+    assert verdicts >= 1, "the track's verdict must survive a dropped pass row"

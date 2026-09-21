@@ -3613,6 +3613,19 @@ class DatabaseManager:
         seen_indices = set()
         for p in passes:
             idx = p.get("pass_index")
+            # A MISSING index is the same hazard by another route, and the dedup
+            # below does not catch it: `None` is a perfectly good set member, so the
+            # first pass without an index is kept and then hits `pass_index
+            # nullable=False` at flush -- raising the very IntegrityError this block
+            # exists to avoid, and taking the whole analysis save with it. Drop it
+            # for the same reason a duplicate is dropped: one lost pass row is worth
+            # far less than the graded verdict of every track in the file.
+            if idx is None:
+                logger.warning(
+                    "Track %s: trim pass with no pass_index (sheet %r) -- dropping it; "
+                    "the pass row is lost, the track's verdict is not",
+                    db_track.track_id, p.get("sheet"))
+                continue
             if idx in seen_indices:
                 logger.warning(
                     "Track %s: duplicate trim pass_index %r (sheet %r) -- "

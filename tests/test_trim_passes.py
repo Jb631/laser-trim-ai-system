@@ -379,3 +379,28 @@ def test_a_duration_cell_is_a_blank_and_never_raises():
     df = pd.DataFrame({0: [1.5, np.timedelta64(5, "s"),
                            pd.Timedelta(seconds=5), 2.5]}, dtype=object)
     assert _col(df, 0, 0) == [1.5, None, None, 2.5]
+
+
+def test_the_two_pass_sheet_patterns_cannot_drift_apart():
+    """`parser._PASS_SHEET_RE` and `trim_passes._A` are the same rule, written twice.
+
+    The duplication is deliberate and the comment at parser.py:1333 gives the reason
+    (`_A` is a private module detail, not a committed interface). What was missing is
+    anything holding the two copies together: they decide which sheets count as trim
+    passes, and a change to one would silently give the parser and the pass reader two
+    different answers about the same workbook. Flagged in the trim-capture ledger,
+    2026-09-20; pinned here rather than merged, so the privacy reason survives.
+    """
+    from laser_trim_analyzer.core.parser import ExcelParser
+    from laser_trim_analyzer.core import trim_passes as tp
+
+    assert ExcelParser._PASS_SHEET_RE.pattern == tp._A.pattern
+    assert ExcelParser._PASS_SHEET_RE.flags == tp._A.flags
+    # and they agree on real sheet names, not just as strings
+    for name in ("SEC1 TRK1 2 TRM2", "SEC1 TRK1 1", "SEC1 TRK1 TRM",
+                 "Trim 1", "Lin Error", "TRK1", "SEC1 TRK2 3 TRM1"):
+        a = ExcelParser._PASS_SHEET_RE.match(name)
+        b = tp._A.match(name)
+        assert (a is None) == (b is None), name
+        if a is not None:
+            assert a.groupdict() == b.groupdict(), name
