@@ -162,7 +162,23 @@ problem — per-file conversations with the share were. Same code, same laptop:
       cleared the server); only if A1 still shows slow lookups on the LAN.
       The idea was one `robocopy /MT:32 /Z` copy, then rebuild at local speed. The
       measurement says there is no local speed to gain.
-- [ ] **A3 · Processes instead of threads.** *After the rebuild.* Measured on 96
+- [ ] **A0 · WHERE THE INGEST'S TIME ACTUALLY GOES — measured at work, 2026-09-21.**
+      From the app's own batch line: `load 0.0s | check 0.3s (62,323 new) | verify 0
+      files 0.0s | process 674 files 520.1s`. **The pre-pass is free** — 0.3 s to
+      classify 62,323 files — and every second is inside the per-file loop, at
+      **771.7 ms/file**. `pool_probe` on the same machine puts parse+analyse through
+      the SAME 4-thread pool at **339.2 ms/file**. So **56% of the ingest, 432 ms a
+      file, is spent outside parsing** — and a process pool cannot touch any of it.
+      By Amdahl that caps A3 alone at `1/(0.57 + 0.43/2.5)` = **1.35x**: 70 hours
+      would become 52. **A3 is therefore NOT the first move; it was until this
+      measurement.** The prime suspect is the save, which is serial by construction:
+      `run_folder` pulls each result off the generator and calls `db.save_analysis`
+      one at a time on the consuming thread while four parser threads contend for
+      the same GIL — and save cost climbs as the database grows, with
+      `cache_size` at SQLite's 2 MB default against a file heading past 5 GB.
+      The batch line now prints `of which save Xs (N%, N ms/file)` and `rest`, so the
+      next two-minute run says whether the save is the 432 ms or only part of it.
+- [ ] **A3 · Processes instead of threads.** *Now gated on A0.* *After the rebuild.* Measured on 96
       real files: threads give **1.0×** at 1, 4, 8 or 16; processes give 3.6× at
       4 and **6.8× at 8**. The thread pool and its cap of 4 were built for the
       old 8 GB PC; the new laptop has 48 GB. Needs a design, not a patch:
@@ -170,8 +186,15 @@ problem — per-file conversations with the share were. Same code, same laptop:
       worker (six places); under tests each worker process would open the REAL
       database; and Windows starts processes differently from the Mac. No gain
       over the VPN (bandwidth-bound) — it pays on local files or a fast LAN.
-- [ ] **A4 · Batch the saves** — after A3. Saving is one file at a time
-      (~24 ms on the laptop), so it becomes the ceiling at ~40 files/sec.
+- [ ] **A4 · Batch the saves** — **promoted above A3** by A0: saving is the SERIAL
+      half of the loop, so it is the half a worker pool cannot help. The "~24 ms on
+      the laptop" in the old note is stale — the speed probe measured 28.9 ms into an
+      empty scratch database and **109 ms under the rebuild's own write load**, and
+      the real database is far bigger than either. Pragmas are part of this
+      (`synchronous=FULL` fsyncs every commit; `cache_size` is 2 MB). A/B'd on a copy
+      of the 3.7 GB work database on the Mac: **3.9 ms/save either way** — a null
+      result about THIS disk, not an answer about the laptop's, where a save costs
+      7-28x more.
 - [ ] **A5 · Worker count only ever goes down.** A memory warning drops a worker
       and nothing restores it for the rest of the run. Small; fold into A3.
 

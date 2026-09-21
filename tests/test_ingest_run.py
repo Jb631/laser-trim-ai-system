@@ -357,3 +357,92 @@ def test_process_page_has_no_private_pipeline():
     src = Path(process_page.__file__).read_text()
     assert "os.scandir" not in src
     assert "process_batch" not in src
+
+
+def _phase_line(monkeypatch, phases, processed):
+    """log_phases' one line, captured without fighting the logging config.
+
+    A handler does not work here: the suite disables logging below WARNING, so
+    an INFO record never reaches one. Patching the call is immune to that.
+    """
+    from laser_trim_analyzer.core import ingest_run
+    seen = []
+    monkeypatch.setattr(ingest_run.logger, "info",
+                        lambda fmt, *a: seen.append(fmt % a if a else fmt))
+    summary = type("S", (), {"processed": processed})()
+    ingest_run.log_phases(phases, processed, processor=None, summary=summary)
+    return next(m for m in seen if m.startswith("Batch phases"))
+
+
+def test_the_batch_line_separates_saving_from_the_rest_of_processing(monkeypatch):
+    """`process 520s` on its own sent an investigation to the parser when most of
+    that time was the database (2026-09-21).
+
+    Saving is the SERIAL half of the ingest loop -- the pool parses four at a
+    time, every save happens one after another on the consuming thread -- so a
+    worker pool cannot speed it up and the line has to say how big it is.
+    """
+    line = _phase_line(monkeypatch, {"walk": 1.0, "process": 50.0, "save": 30.0}, 100)
+    assert "of which save 30.0s (60%, 300 ms/file)" in line
+    assert "rest 20.0s (200 ms/file)" in line
+
+
+def test_a_batch_that_saved_nothing_does_not_claim_a_save_share(monkeypatch):
+    line = _phase_line(monkeypatch, {"walk": 1.0, "process": 5.0}, 0)
+    assert "of which save" not in line          # nothing measured, nothing claimed
+
+
+def test_the_ingest_actually_measures_what_saving_costs(tmp_path, monkeypatch):
+    """The formatting tests above hand `log_phases` a phases dict, so they pass
+    even when nothing populates it. This one drives the real loop.
+
+    Saving is the serial half of the ingest: the pool parses several files at a
+    time, every save happens one after another on the consuming thread. Deleting
+    the measurement must turn this red, or the batch line is decoration.
+    """
+    import time as _time
+    from types import SimpleNamespace
+
+    (tmp_path / "a.xls").write_bytes(b"junk")
+    SAVE_S = 0.02
+    N = 5
+
+    from laser_trim_analyzer.core.models import AnalysisStatus
+
+    def _result(i):
+        # the real enum: bucket_for_status looks the status up in a dict keyed
+        # by it, and a stand-in silently sends the loop down the error path
+        return SimpleNamespace(
+            file_type="trim",
+            metadata=SimpleNamespace(model="8232-1", filename=f"f{i}.xls"),
+            overall_status=AnalysisStatus.PASS)
+
+    class _Proc:
+        last_scan_stats = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        def process_batch(self, *a, **k):
+            for i in range(N):
+                yield _result(i)
+            return SimpleNamespace(processed=N)
+
+    class _SlowDb:
+        def __init__(self):
+            self.saved = 0
+
+        def save_analysis(self, result):
+            _time.sleep(SAVE_S)          # a save that costs a known amount
+            self.saved += 1
+
+    monkeypatch.setattr(ingest_run, "Processor", _Proc)
+    monkeypatch.setattr(ingest_run, "_post_batch", lambda *a, **k: None)
+    db = _SlowDb()
+    res = run_folder(str(tmp_path), db=db, config=None)
+
+    assert res.ok and db.saved == N
+    assert "save" in res.phases, "the ingest did not measure saving at all"
+    # it measured the saves, not the whole loop
+    assert res.phases["save"] >= SAVE_S * N * 0.8
+    assert res.phases["save"] <= res.phases["process"]

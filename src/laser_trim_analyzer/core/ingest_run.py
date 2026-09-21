@@ -753,6 +753,17 @@ def log_phases(phases: dict, total: int, processor, summary) -> None:
              f"{s.get('verify_seconds', 0):.1f}s",
              f"process {getattr(summary, 'processed', 0):,} files "
              f"{phases.get('process', 0):.1f}s"]
+    # Saving is inside `process` and is the part a worker pool cannot speed up,
+    # so name it separately and as a share -- "process 520s" alone sent one
+    # investigation looking at the parser when most of it was the database.
+    done = max(1, getattr(summary, "processed", 0) or 1)
+    if "save" in phases:
+        proc_s = phases.get("process", 0) or 1
+        parts.append(f"of which save {phases['save']:.1f}s"
+                     f" ({phases['save'] / proc_s * 100:.0f}%,"
+                     f" {phases['save'] / done * 1000:.0f} ms/file)")
+        parts.append(f"rest {phases.get('process', 0) - phases['save']:.1f}s"
+                     f" ({(phases.get('process', 0) - phases['save']) / done * 1000:.0f} ms/file)")
     parts.append(f"rematch {phases['rematch']:.1f}s" if "rematch" in phases
                  else "rematch skipped (no new trims)")
     if "retrain" in phases:
@@ -952,6 +963,7 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     summary = None
     models_in_batch: Set[str] = set()
     new_trims = 0                # trim analyses actually saved by THIS batch
+    save_seconds = 0.0           # the serial half: every save, one after another
     t = time.monotonic()
     try:
         while True:
@@ -960,7 +972,15 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
             # smoothness are already saved inside the processor).
             if getattr(result, "file_type", "trim") == "trim":
                 try:
+                    # Timed because it is the SERIAL half of the loop: the pool
+                    # parses four at a time, every save happens here, one after
+                    # another, on this thread. Measured 2026-09-21 at work: a
+                    # batch spent 771.7 ms per file where the same pool parsing
+                    # alone costs 339.2, so 56% of the ingest is outside parse
+                    # -- and a process pool would not touch any of it.
+                    _t_save = time.monotonic()
                     db.save_analysis(result)
+                    save_seconds += time.monotonic() - _t_save
                     new_trims += 1
                 except Exception as exc:
                     # A duplicate hitting the unique constraint means the unit
@@ -981,6 +1001,7 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     except StopIteration as stop:
         summary = stop.value
         phases["process"] = time.monotonic() - t
+        phases["save"] = save_seconds
     except Exception as exc:
         # 2026-07-09: an exception here previously killed the worker thread
         # silently — Start stayed disabled, the app looked locked, and the
