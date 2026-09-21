@@ -216,8 +216,23 @@ Design docs live in git history at `4c6ebd8` under `archive/completed_docs/`.
 **Critical issue:** High failure rate at final linearity testing (~40% fail+warning). Most expensive place to catch defects because maximum labor/material already invested.
 **Laser numbering (James, 2026-09-20):** the shop's numbers do NOT follow the code's
 letters. **Laser 1 = `LTS` = System B. Laser 2 = `DLTS` = System A. Laser 3 = `LTS3` =
-System C.** Laser 2 (DLTS) is the one whose files carry per-position cut data. When
-writing to James, say "laser 2 (DLTS)" — never translate A/B/C to 1/2/3.
+System C.** When writing to James, say "laser 2 (DLTS)" — never translate A/B/C to 1/2/3.
+
+**BOTH machines record per-position trim data, in different places** (James, 2026-09-21:
+"i think it does in the trimvolts sheets?" — he was right, and this file said otherwise).
+* **Laser 2 (DLTS)** puts it in COLUMNS of the pass sheet: cut length, trim current,
+  predicted/used delta, target and measured output at each position. Captured since
+  2026-09-18 — and the cut-length column turned out to carry no signal (near-constant
+  within a pass, correlation +0.02 with the change in error there).
+* **Laser 1 (LTS)** puts it in the **`TrimVolts N` sheets**, which the parser has NEVER
+  read — zero occurrences of "TrimVolts" in `core/`. Layout: one COLUMN per trim
+  position, one ROW per successive laser increment, holding the output voltage after
+  each. 25 of 30 real LTS files carry them; 0 of 30 DLTS files do. Measured on
+  `lts_8232-1_193.xls`: 49 positions, 1-25 live readings each (mean 14.7), each column
+  climbing steadily (e.g. 0.4682 → 0.4845). Across real files: 49-120 columns,
+  14-103 rows. So laser 1 records the material's RESPONSE CURVE to being cut, which is
+  richer than laser 2's near-constant scalar — and it is exactly what a cut-length model
+  needs. Laser 3 is unchecked (it writes laser 2's sheet format, so probably has none).
 
 **And laser 3 writes laser 2's sheets, not laser 1's** (James, 2026-09-20: "laser 2 & 3
 use the same style sheet not 1 & 3"). Several comments in this repo claimed the opposite.

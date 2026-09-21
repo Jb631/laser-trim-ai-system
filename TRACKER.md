@@ -399,6 +399,23 @@ screens parts.
       survives pooling; one had no burden to suppress; one inserted the larger cut count first so
       the tie-break rule it meant to pin was never reached). A tie in "normal" now resolves to the
       LARGER count: deterministic, and a coin toss can never manufacture a burden.
+- [ ] **B1a · The `TrimVolts` sheets — laser 1's per-position data, never read.**
+      *(James, 2026-09-21: "i think it does in the trimvolts sheets?" — he was right and
+      the spec, this tracker and CLAUDE.md all said laser 2 was the only machine with
+      per-position data.)* **Verified:** 25 of 30 real LTS files carry `TrimVolts N`
+      sheets; 0 of 30 DLTS files do; `TrimVolts` appears NOWHERE in `core/`, so the B1
+      capture wave missed them entirely. **Layout** (measured on `lts_8232-1_193.xls`,
+      49 positions × 25 rows): one COLUMN per trim position, one ROW per successive
+      laser increment, each cell the output voltage after that increment. Live readings
+      per position run 1-25 (mean 14.7) and climb steadily — so the sheet gives, per
+      position, **how many increments were applied AND the material's response curve to
+      them.** Real files span 49-120 columns and 14-103 rows.
+      **Why this matters more than it sounds:** laser 2's per-position `cut_lengths` was
+      captured and turned out to carry no signal (near-constant, corr +0.02). Laser 1's
+      is the response curve itself, and **8232-1 has run on laser 1 since 2023** — so the
+      model James most wants a cut-length model for has been producing the right data all
+      along, into sheets nobody read. Needs: confirm the layout across models (column
+      counts vary), decide the stored shape, then capture. Laser 3 unchecked.
 - [ ] **B7 · Cut-length model — PROMOTED** (James, 2026-09-20: "i want to do the
       cut length model i feel that is important"). No longer waits for the full
       rebuild: the home slice supplies real data now. Still gets its own design
