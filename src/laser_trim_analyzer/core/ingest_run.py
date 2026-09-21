@@ -66,6 +66,18 @@ ETA_WARMUP_SECONDS = 30.0
 # Two samples 0.25 s apart are noise, not a rate.
 MIN_RATE_SPAN_SECONDS = 2.0
 
+# How often the run says where its time is going, in files saved. A folder-end
+# summary is no use for diagnosis: a run that is stopped because it is too slow
+# never reaches the end, which is exactly what happened on 2026-09-21 -- the
+# batch line existed and the log had none of it. This reports while it runs.
+#
+# Small on purpose. The whole point is to answer "where is the time going" from
+# a SHORT look at a slow run: at the 1 file/sec that prompted this, 500 would
+# have meant eight minutes before the first line, which is the same failure in
+# a smaller size. 200 gives an answer inside four minutes at that rate, and
+# every 55 seconds at the 3.6 files/sec the same run later reached.
+SAVE_REPORT_EVERY = 200
+
 # CPython hands the GIL to a waiting thread only every `switchinterval`
 # seconds, and 5 ms (the default) is an eternity to a Tk repaint that needs
 # the lock dozens of times per frame. This is why the app "kept freezing" on
@@ -982,6 +994,17 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                     db.save_analysis(result)
                     save_seconds += time.monotonic() - _t_save
                     new_trims += 1
+                    if new_trims and new_trims % SAVE_REPORT_EVERY == 0:
+                        _since = time.monotonic() - t
+                        logger.info(
+                            "Ingest so far: %s saved | %.0f ms/file overall | "
+                            "save %.0f ms/file (%.0f%%) | everything else %.0f ms/file. "
+                            "Saving is SERIAL -- one at a time on this thread -- so it "
+                            "is the part more workers cannot help.",
+                            f"{new_trims:,}", _since / new_trims * 1000,
+                            save_seconds / new_trims * 1000,
+                            (save_seconds / _since * 100) if _since else 0.0,
+                            (_since - save_seconds) / new_trims * 1000)
                 except Exception as exc:
                     # A duplicate hitting the unique constraint means the unit
                     # is ALREADY in the database (e.g. the same file under a

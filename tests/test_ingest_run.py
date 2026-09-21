@@ -446,3 +446,65 @@ def test_the_ingest_actually_measures_what_saving_costs(tmp_path, monkeypatch):
     # it measured the saves, not the whole loop
     assert res.phases["save"] >= SAVE_S * N * 0.8
     assert res.phases["save"] <= res.phases["process"]
+
+
+def test_the_run_reports_where_its_time_goes_WITHOUT_finishing(tmp_path, monkeypatch):
+    """A folder-end summary is useless for diagnosing a run too slow to finish.
+
+    2026-09-21: the batch line existed and a 70-hour run that was stopped early
+    left none of it in the log, because `log_phases` only fires when a folder
+    completes. The periodic line must appear mid-run.
+    """
+    import time as _time
+    from types import SimpleNamespace
+    from laser_trim_analyzer.core.models import AnalysisStatus
+    from laser_trim_analyzer.core import ingest_run as ir
+
+    (tmp_path / "a.xls").write_bytes(b"junk")
+    monkeypatch.setattr(ir, "SAVE_REPORT_EVERY", 3)
+    N = 7
+
+    class _Proc:
+        last_scan_stats = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        def process_batch(self, *a, **k):
+            for i in range(N):
+                yield SimpleNamespace(
+                    file_type="trim",
+                    metadata=SimpleNamespace(model="8232-1", filename=f"f{i}.xls"),
+                    overall_status=AnalysisStatus.PASS)
+            return SimpleNamespace(processed=N)
+
+    class _Db:
+        def save_analysis(self, result):
+            _time.sleep(0.01)
+
+    said = []
+    monkeypatch.setattr(ir.logger, "info", lambda fmt, *a: said.append(fmt % a if a else fmt))
+    monkeypatch.setattr(ir, "Processor", _Proc)
+    monkeypatch.setattr(ir, "_post_batch", lambda *a, **k: None)
+    run_folder(str(tmp_path), db=_Db(), config=None)
+
+    mid = [m for m in said if m.startswith("Ingest so far")]
+    assert len(mid) == 2, f"expected a line at 3 and 6 saved, got {len(mid)}: {mid}"
+    assert "3 saved" in mid[0] and "6 saved" in mid[1]
+    assert "save " in mid[0] and "everything else" in mid[0]
+
+
+def test_the_progress_report_fires_often_enough_to_be_useful_on_a_slow_run():
+    """The test above monkeypatches the interval, so it cannot catch a bad default.
+
+    A mutation proved it: setting SAVE_REPORT_EVERY to a billion left every test
+    green while making the line useless. The value is the whole point -- this
+    exists to diagnose a run too slow to finish, so it has to say something
+    within a few minutes AT THAT SLOW RATE, not at a healthy one.
+    """
+    from laser_trim_analyzer.core.ingest_run import SAVE_REPORT_EVERY
+    slowest_observed = 1.0                     # files/sec, the work laptop, 2026-09-21
+    minutes_to_first_line = SAVE_REPORT_EVERY / slowest_observed / 60
+    assert minutes_to_first_line <= 4.0, (
+        f"{SAVE_REPORT_EVERY} files means {minutes_to_first_line:.1f} minutes before "
+        "the first line at 1 file/sec -- too slow to diagnose a slow run")
