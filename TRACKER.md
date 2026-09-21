@@ -455,9 +455,35 @@ PO numbers and prices, and must never be committed).
 - [ ] **H2 · Leftovers from July, never committed:**
       `docs/chart_rep_review_2026-07-16/` and `scripts/chart_rep_review.py`.
       Keep, commit or delete?
-- [ ] **H3 · Read, then delete, the decision log** from the capture build —
-      30 recorded judgement calls:
-      `.superpowers/sdd/2026-09-17-trim-capture/progress.md`.
+- [ ] **H3 · The decision logs: READ (2026-09-20), do NOT delete yet.** All five ledgers were
+      read and every judgement call checked against the code, the tests and this file: **130 calls,
+      56 already written down somewhere durable, 51 pure process, 23 that would have been lost.**
+      Two things came out of it that change the job:
+      - **Deleting the workspaces breaks ten tracked files that cite them** — `utils/threads.py`,
+        `tests/conftest.py`, `tests/test_tk_thread_safety.py`, `tests/test_model_page_failures.py`,
+        `config.py`, `gui/v6/sections/backlog.py`, `tests/test_backlog_section.py`,
+        `tests/test_trim_capture_db.py`, `TRACKER.md` itself — and
+        `docs/superpowers/plans/2026-09-20-limit-tables.md` says "the patches ARE the code", so
+        deleting them makes that plan unexecutable. **So: inline the cited substance first, or keep
+        `H5-report.md`, `M1-brief.md`, `task-E1-brief.md`, `task-7-brief.md` and the limit-tables
+        patches.** Not a five-second delete.
+      - **One latent defect that nobody had carried forward** — see the next line; it was the most
+        dangerous of the 23 and is now fixed.
+      The other 22 are small (a duplicated regex between `parser.py` and `trim_passes.py`; a
+      `pass_index=None` hole in the Ruling-11 IntegrityError guard; two differently-scoped pass
+      rates on one screen from `limit_tables`; the `Response` field that may be the same field on
+      two machines and is now split). They are written up in the ledgers, which is why the ledgers
+      stay until their substance is inlined.
+- [x] **A blank THEORY cell can no longer become an error of 0.0** (2026-09-20, found while
+      reading the ledgers). `final_test_parser.py` honours "blank is ungraded, never 0.0" in the
+      branch that uses the file's own error column — and the branch 20 lines below substituted the
+      MEASURED value for a blank theory cell, making `measured − measured` exactly 0.0: dead centre
+      of every band, on a zero-tolerance metric. The same branch wrote 0.0 for every point of a
+      track with fewer than two points, handing it a flawless sweep. **Measured impact: zero** —
+      608 real final-test tracks parsed before and after, 0 changed, 0 verdict flips, and the
+      645-file gate is unchanged. It is LATENT, not active; it is fixed because the rebuild runs
+      this code over ~151,000 final-test records rather than 608. Both branches are pinned by tests
+      that go red when reverted.
 - [ ] **H4 · Retire V5?** It holds nothing V6 lacks; it stays until James says.
 
 ## Parked — real, not scheduled

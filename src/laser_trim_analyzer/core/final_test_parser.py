@@ -933,7 +933,16 @@ class FinalTestParser:
                         # was stored as a PASS with 0 fail points. The
                         # shop-test parser below recovers errors the same way
                         # and has never divided.
-                        errors = errors_raw.tolist()
+                        # A blank THEORY cell is not an error of zero. Substituting
+                        # the measured value above makes `measured - measured` == 0.0,
+                        # which is the same flattering fabrication the branch 20 lines
+                        # up exists to refuse -- dead centre of every band, on a
+                        # zero-tolerance metric. The substitution stays (it keeps the
+                        # array arithmetic simple) but the result is discarded: a point
+                        # with no theory has no known error, so it is ungraded, exactly
+                        # like a blank in the file's own error column.
+                        errors = [None if t is None else e
+                                  for t, e in zip(theory_values, errors_raw.tolist())]
                         logger.debug("Calculated errors from measured vs theory")
                     else:
                         # Fall back to linear fit using electrical angle as X-axis
@@ -950,7 +959,10 @@ class FinalTestParser:
                             # against the sheet's own volt limits.
                             errors = errors_raw.tolist()
                         else:
-                            errors = [0.0] * len(measured_values)
+                            # Fewer than two points: no line can be fitted, so no
+                            # residual is known. None, never 0.0 -- writing zeros here
+                            # would hand a one-point track a perfect sweep.
+                            errors = [None] * len(measured_values)
                         logger.debug("Calculated errors from linear fit")
 
                 # Sort all arrays by electrical_angle (ascending) for proper chart display
