@@ -416,6 +416,42 @@ screens parts.
       model James most wants a cut-length model for has been producing the right data all
       along, into sheets nobody read. Needs: confirm the layout across models (column
       counts vary), decide the stored shape, then capture. Laser 3 unchecked.
+- [x] **B1b · What the cut PATTERN says — investigated 2026-09-21** (James: "im more
+      interested if the cut length or patterns can tell us anything… there is a lot of
+      data available that might be able to help us"). Three answers, all on 8232-1's
+      laser-2 history, which is the only place per-position data is captured today:
+      - **The per-position CUT LENGTH is not adaptive.** It is near-uniform — positions
+        given no cut at all are rare (median 0%), and the non-zero cuts spread only
+        **4.1%** around their own median. Correlation of the cut at a position with the
+        error the laser SAW going into that pass: **+0.027** signed, +0.072 magnitude
+        (n=1,953 passes, each pass paired with the sweep that preceded it, not with the
+        untrimmed curve — the first version of this test got that wrong).
+      - **Because the adaptation is a control loop, not a varying command.** Each
+        position has its own `trim_target`, and the laser cuts until it reaches it:
+        **94% of positions land within 2 mV of target** (q1 83%, q3 98%).
+      - **So the pattern worth having is WHERE IT FAILS TO REACH TARGET — and it is
+        strongly directional.** Across 422,879 graded positions the miss rate climbs
+        monotonically along the track: **13.7% at −20 → 15.6% at 0 → 17.6% at +20**, and
+        38.4% at the far end (n=1,299). More than doubling end to end on the 5-unit
+        buckets (8.4% → 19.6%). **Not yet attributable:** `laser_cut_direction` is
+        recorded on laser 1 and is NULL on every laser-2 pass, and the miss can only be
+        computed where target-vs-achieved exists — which today is laser 2 only. Testing
+        whether cut direction explains it needs the `TrimVolts` capture (B1a). That is
+        the single most interesting thread open.
+- [ ] **B1c · 46 setup parameters per file are CAPTURED and analysed by nothing.**
+      `trim_setup.parameters` already holds laser power, duration (ns), pulse repetition
+      rate, linearity velocity, inner/outer edge position, laser height, theoretical
+      resistance, the error-split indexing setup and the resistance windows — since the
+      B1 wave, for every file. **They vary enough to analyse:** 8232-1 on laser 2 shows
+      12 distinct laser powers (52×2,899, 216×699, 72×316, 55×230), 12 pulse rates, 5
+      durations; **8232-1 on laser 1 shows 8 laser powers** (50×750, 32×734, 36×595,
+      70×271) and 8340-1 on laser 1 likewise. The `cut_setting` analyzer found a 9-point
+      yield effect from ONE setting; its machinery (hold the limit table constant,
+      require the winner in both halves of incoming resistance, grade the evidence,
+      name the changeover month) generalises to each of these without redesign.
+      **James, 2026-09-21: operators do not touch these; ENGINEERING can** — so they are
+      a real lever, at an engineering lead time rather than same-day.
+      Needs the fresh-database rebuild: the work database predates `trim_setup`.
 - [ ] **B7 · Cut-length model — PROMOTED** (James, 2026-09-20: "i want to do the
       cut length model i feel that is important"). No longer waits for the full
       rebuild: the home slice supplies real data now. Still gets its own design
