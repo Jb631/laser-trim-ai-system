@@ -140,6 +140,16 @@ problem — per-file conversations with the share were. Same code, same laptop:
       **~1 ms** → the VPN was the limit; rebuild at work, expect 5–6 hours.
       **~113 ms** → the file server (or SentinelOne's handling of the share) is
       slow even on the LAN; raise it with IT and go to A2.
+- [ ] **A1a · Is the share making PARSING slow?** *James · 2 minutes, safe to run
+      while an ingest is going.* `scripts/parse_locality_probe.py` times the SAME
+      files where they live and again as local copies. **Why it exists:** the work
+      laptop parses at 231–293 ms/file where the Mac does 67.8 ms on comparable
+      files, and a 4× CPU gap on a 48 GB laptop is not credible. `raw read` prices
+      ONE read; parsing opens the workbook AGAIN through pandas and walks a dozen
+      sheets, so anything charging per OPEN (SMB round trips, on-access scanning)
+      hides inside the parse number.
+          `.\.venv\Scripts\python scripts\parse_locality_probe.py "\\192.168.66.9\BTXData\Departments\System Data\TEST_DATA\DLTS" 25`
+      Local much faster → A2 (mirror, ~73 GB). No difference → A3 (processes).
 - [ ] **A2 · Local mirror of the share** — now UNLIKELY to be needed (the ping
       cleared the server); only if A1 still shows slow lookups on the LAN.
       One `robocopy /MT:32 /Z` copy, restartable, then point the app at the
