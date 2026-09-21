@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import text
 
-from .analyzers import ink_target, limit_tables, recipe_change, trim_effort
+from .analyzers import cut_setting, ink_target, limit_tables, recipe_change, trim_effort
 from .data import load_model_tracks, yardstick_fidelity
 from .model import Finding, rank
 
@@ -30,7 +30,7 @@ def compute_for_model(db, model: str) -> Tuple[Dict[str, Any], List[Finding]]:
     # these screens silence is itself a result, so a failure must never be able to look like one.
     facts: Dict[str, Any] = {"model": model, "tracks": len(tracks), "annual_volume": 0, "latest": None,
                              "yardstick": None, "recipe_history": None, "trim_effort": None,
-                             "limit_tables": None, "errors": {}}
+                             "limit_tables": None, "cut_setting": None, "errors": {}}
     if not tracks:
         return facts, []
     latest = max(t.file_date for t in tracks)
@@ -62,6 +62,12 @@ def compute_for_model(db, model: str) -> Tuple[Dict[str, Any], List[Finding]]:
         findings += table_findings
     except Exception as exc:
         failed("limit_tables", exc)
+    try:
+        cut_facts, cut_findings = cut_setting.analyze(model, tracks, _laser_label)  # stored verdicts only
+        facts["cut_setting"] = cut_facts
+        findings += cut_findings
+    except Exception as exc:
+        failed("cut_setting", exc)
     if fidelity["faithful"]:
         try:
             effort_facts, effort_findings = trim_effort.analyze(model, tracks, _laser_label)

@@ -127,7 +127,7 @@ def test_every_documented_key_exists_even_for_a_model_with_no_tracks(monkeypatch
     facts, findings = engine.compute_for_model(None, "EMPTY")
     assert findings == [] and facts["tracks"] == 0
     assert set(facts) == {"model", "tracks", "annual_volume", "latest", "yardstick",
-                          "recipe_history", "trim_effort", "limit_tables", "errors"}
+                          "recipe_history", "trim_effort", "limit_tables", "cut_setting", "errors"}
 
 
 def test_refresh_reports_what_did_not_get_done(tmp_path, monkeypatch):

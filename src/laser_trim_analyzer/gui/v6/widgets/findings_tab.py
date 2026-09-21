@@ -30,7 +30,8 @@ def _txt(v) -> str:
 
 # What the engine calls each analyzer -> what a person would call it.
 _ANALYZER_NAMES = {"recipe_change": "the recipe history", "ink_target": "the ink target",
-                   "trim_effort": "what each cut buys", "limit_tables": "the limit tables"}
+                   "trim_effort": "what each cut buys", "limit_tables": "the limit tables",
+                   "cut_setting": "the cut settings"}
 
 
 class FindingsTab(ctk.CTkFrame):
@@ -67,6 +68,21 @@ class FindingsTab(ctk.CTkFrame):
                            f"{_num(tab.get('graded'))} graded points of {_num(tab.get('rows'))} rows · "
                            f"{_num(tab.get('n'))} tracks · {_txt(tab.get('first'))} → {_txt(tab.get('last'))} · "
                            f"{_pct(tab.get('trim_pass_pct'))} left the laser inside limits", muted=True)
+        cuts = facts.get("cut_setting") or {}
+        if cuts:
+            self._heading("CUT SETTINGS THIS MODEL HAS BEEN RUN AT")
+            for group, g in sorted(cuts.items()):
+                current = g.get("current_setting")
+                mixed = g.get("days_with_more_than_one_setting_pct")
+                self._line(f"{group} · {_num(g.get('n'))} tracks · {_txt(g.get('window'))}"
+                           + (f" · {_pct(mixed)} of days ran more than one setting" if mixed is not None else ""),
+                           muted=True)
+                for s_ in g.get("settings") or []:
+                    mark = "  ← running now" if current is not None and s_.get("setting") == current else ""
+                    self._line(f"      cut {_txt(s_.get('setting'))} · {_num(s_.get('n'))} tracks · "
+                               f"{_pct(s_.get('pass_pct'))} left the laser inside limits · "
+                               f"median incoming {_num(s_.get('median_incoming_resistance'))} Ω · "
+                               f"{_txt(s_.get('window'))}{mark}", muted=True)
         history = facts.get("recipe_history") or []
         if history:
             self._heading("RECIPE HISTORY")

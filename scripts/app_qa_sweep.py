@@ -684,6 +684,12 @@ def check_findings_fixtures() -> None:
             check("findings: the limit-table history is computed (and empty on four tracks), never None",
                   facts is not None and facts.get("limit_tables") == [],
                   f"{None if facts is None else facts.get('limit_tables')!r}")
+            # Same rule for the cut-setting analyzer: {} is "it ran and there was nothing",
+            # None is "it never ran". Four tracks cannot reach MIN_PER_SETTING, so a non-empty
+            # result here would mean the sample floor had been lost.
+            check("findings: the cut-setting facts are computed (and empty on four tracks), never None",
+                  facts is not None and facts.get("cut_setting") == {},
+                  f"{None if facts is None else facts.get('cut_setting')!r}")
         except Exception as e:                      # an exception is a FAIL, never a skip
             check("findings: the engine runs on the fixtures", False, f"{type(e).__name__}: {e}")
         finally:

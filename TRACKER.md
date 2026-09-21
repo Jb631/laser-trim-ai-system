@@ -271,7 +271,9 @@ screens parts.
       recommendation out of thin air.
 - [ ] **B6 · The remaining eight findings**, one at a time, each with a test that it
       says nothing when there is nothing to say. The frame is built and proven; each is now a
-      day's work. Next two, in order: **#2 station setup mismatch** (the laser and final test
+      day's work. **#7 cut setting jumped the queue** (B6b below): it was the only one of the three
+      not waiting on the rebuild — it needs trim data only — and it carries the largest measured
+      effect in the data. Next two, in order: **#2 station setup mismatch** (the laser and final test
       grading to different limit tables — D1 below is its first case, and it needs the rebuilt
       final-test data) and **#5 rework load** (hand-trim volume per model).
 - [x] **B4 questions 2, 3 and 4 — ANSWERED on the home slice** (2026-09-20, `slice_v2.db`).
@@ -325,6 +327,22 @@ screens parts.
       model's input is the per-PASS setting plus the incoming curve, not a per-position cut vector.**
       That is the second column in this family whose name promised more than it holds (after
       `pred_deltas` / `used_deltas`) — verify a column against data before believing its header.
+- [x] **B6b · Cut setting (a new catalogue finding) — SHIPPED** (2026-09-20). The app now reads the
+      B4 answer back out for EVERY model by itself, instead of it living in this file for two.
+      It groups on (laser, track name, limit table) — never pooling machines whose cut numbers are
+      not even the same quantity, never comparing two tests — finds what the laser is set to NOW,
+      and reports a better setting only when it wins **in both halves of incoming resistance**, so
+      the ink cannot be credited to the cut. It names the month a setting changed when the change
+      was a clean switch, and always says how strong the evidence is: mixed on the same days, run
+      side by side across months, or two separate periods.
+      On the rebuilt home slice it finds **8232-1 on laser 1: the laser moved from 4100 to 4000 in
+      July 2026 and has been 9 points worse since** (53% of 474 tracks vs 43% of 223, winning in
+      both resistance halves) — and it stays SILENT on 8340-1, correctly, because the shop already
+      moved to that model's best setting (3500) in January 2025. On the work database the engine ran
+      over the five busiest models with no analyzer failure.
+      Each silence rule was made to FAIL first: 8 mutations, 8 reds. Two tests passed for the wrong
+      reason at first and were fixed — one fixture rendered a 35% pass rate as 40%, so the "too
+      small to act on" test had a gain of zero and never reached the floor it was meant to exercise.
 - [ ] **B7 · Cut-length model — PROMOTED** (James, 2026-09-20: "i want to do the
       cut length model i feel that is important"). No longer waits for the full
       rebuild: the home slice supplies real data now. Still gets its own design
@@ -449,6 +467,15 @@ PO numbers and prices, and must never be committed).
   price beside its model, a customer name or a PO number — and prints only WHERE, never the value.
   Proven on a throwaway repository: it passes invented data and fails a real price and a real
   customer name.
+
+- **The customer-value guard had two defects of its own, and now has tests.** Scanning the whole
+  history turned up one report — against a commit from April that had been on `main` for months.
+  It was a FALSE POSITIVE: model 8035-2 has a zero-priced backlog line, and `0.00` matched the "00"
+  of a `9-00 AM` timestamp inside a data filename. Fixed twice over (a zero unit price is not
+  customer information; a number inside a path, filename or date is not a price) — each fix alone
+  clears it, measured. `tests/test_customer_value_guard.py` now pins it: 14 tests, and all four
+  rules were mutated to prove they bite. Two of those tests passed for the wrong reason when first
+  written and were rebuilt. **Nothing leaked; the whole history scans clean.**
 
 - 2026-09-20 · the app now SHOWS the shop's laser names — "Laser 1 (LTS)",
   "Laser 2 (DLTS)", "Laser 3 (LTS3)" — on the company trend chart (legend in
