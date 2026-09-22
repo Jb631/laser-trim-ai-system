@@ -1,5 +1,47 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-23 — bringing the finished rebuild home (do it THIS way)
+
+The rebuild finished on 2026-09-22: **173,740 files walked, 168,501 processed in 21.8 hours,
+no database errors** (from its own log). But the copy that came home through OneDrive was the
+OLD database — 80,708 of its 81,104 analyses written on 3–4 September, no `trim_passes`, no
+`trim_setup`. The small log files had synced; the big database had not finished uploading.
+
+**Why a folder sync goes wrong.** A live SQLite database is up to three files — `analysis.db`,
+`analysis.db-wal` (committed changes not yet folded in) and `analysis.db-shm`. OneDrive
+uploads each one separately, whenever it likes, so you can get three files from three
+different moments. SQLite then correctly refuses the mismatched set as "malformed". Nothing
+was corrupt — the main file passed its integrity check on its own.
+
+**At work**, in PowerShell:
+
+    cd C:\dev\laser-trim-ai-system
+    git pull
+
+1. **Close the app.** Nothing may be writing while you copy.
+2. **Check the rebuild is really there** (read-only — it cannot change anything):
+
+       .\.venv\Scripts\python scripts\verify_rebuild.py data\analysis.db
+
+   Expect `trim_passes` and `trim_setup` WITH rows, and a file of roughly **5 GB, not 3.75**.
+   If it shows them missing, stop — the rebuild is not in that file, and we find it first.
+3. **Make ONE self-contained file** in your OneDrive folder:
+
+       .\.venv\Scripts\python scripts\snapshot_db.py data\analysis.db "$env:OneDrive\analysis_2026-09-23.db"
+
+   It folds the journal in, checks integrity, compares row counts against the original,
+   and prints the file's **exact size in bytes**. Write that number down. (If
+   `$env:OneDrive` is empty on that laptop, use the full path to your OneDrive folder.)
+4. **Wait for OneDrive to show that one file as synced** before you leave.
+
+**At home:** check the downloaded file is **exactly** the byte count from step 3 before using
+it. OneDrive shows a file in the folder before it has finished arriving — that is what
+happened this time.
+
+**And going forward: take `data\` out of OneDrive.** A 5 GB file that changes constantly is the
+worst possible thing to sync, and a sync that catches it mid-write can upload a torn copy.
+Carry deliberate snapshots instead.
+
 ## ⚡ 2026-09-20 night — BEFORE the rebuild: push at home, pull at work, then run it
 
 The rebuild below (2026-09-18 section) is unchanged. What changed is **what it will store**, because
