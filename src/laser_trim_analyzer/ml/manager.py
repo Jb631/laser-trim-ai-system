@@ -530,13 +530,19 @@ class MLManager:
                             if analysis_count == 0:
                                 continue
 
-                            # Bulk update sigma_threshold for all tracks of this model
+                            # Bulk update sigma_threshold for this model's GRADED tracks.
+                            # Not ERROR/PROCESSING_FAILED (their sigma is the analyser's
+                            # 999.999 marker) or UNTRIMMED (no trim verdict): the two
+                            # updates below never grade them, so stamping them with the
+                            # threshold -- and counting them in `updated` -- claimed an
+                            # update the verdicts never saw (2026-09-24).
                             result1 = session.execute(
                                 update(TrackResult)
                                 .where(TrackResult.analysis_id.in_(analysis_subquery))
+                                .where(TrackResult.status.notin_(_UNGRADED))
                                 .values(sigma_threshold=new_threshold)
                             )
-                            track_count = result1.rowcount  # Get count from UPDATE result
+                            track_count = result1.rowcount  # graded tracks only
 
                             # Bulk update sigma_pass: the threshold is calibrated on
                             # UNTRIMMED sigma, so gate on untrimmed (raw-element) sigma,

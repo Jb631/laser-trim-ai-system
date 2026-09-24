@@ -78,3 +78,29 @@ def test_apply_moves_sigma_but_never_the_linearity_verdict(tmp_path, monkeypatch
     assert _state(db, no_tracks)[0] == "ERROR"                                # never PASS
     assert _state(db, mixed) == ("PASS", [("PASS", True, True), ("UNTRIMMED", None, None)])
     assert _state(db, legacy_err) == ("ERROR", [("ERROR", False, True)])      # legacy row, never FAIL
+
+
+def test_apply_writes_no_threshold_onto_an_ungraded_track_and_does_not_count_it(
+        tmp_path, monkeypatch):
+    """The threshold is a grading input. An ERROR track failed processing (its sigma is
+    the analyser's 999.999 marker) and an UNTRIMMED sweep has no trim verdict, so neither
+    is graded against it -- and neither may be stamped with it either, or counted in
+    `updated` as if it had been. Until 2026-09-24 the first bulk UPDATE wrote
+    sigma_threshold onto every track of the model and counted them all."""
+    from laser_trim_analyzer.database.models import TrackResult as DBTR
+    db = _db(tmp_path, monkeypatch)
+    graded = _add(db, "s1", "PASS", [("PASS", True, True, 0.1)])
+    warned = _add(db, "s2", "WARNING", [("WARNING", True, False, 0.9)])
+    err = _add(db, "s3", "ERROR", [("ERROR", None, None, 999.999)])
+    failed = _add(db, "s4", "ERROR", [("PROCESSING_FAILED", None, None, 999.999)])
+    untrimmed = _add(db, "s5", "UNTRIMMED", [("UNTRIMMED", None, None, 0.1)])
+
+    counts = _apply(db, tmp_path, threshold=0.5)
+
+    with db.session() as s:
+        thresholds = {t.analysis_id: t.sigma_threshold for t in s.query(DBTR).all()}
+    assert thresholds[graded] == 0.5 and thresholds[warned] == 0.5
+    assert thresholds[err] is None, "an ERROR track is never stamped with a threshold"
+    assert thresholds[failed] is None, "nor a PROCESSING_FAILED one"
+    assert thresholds[untrimmed] is None, "nor an UNTRIMMED sweep"
+    assert counts["updated"] == 2, f"only the two graded tracks were updated: {counts}"
