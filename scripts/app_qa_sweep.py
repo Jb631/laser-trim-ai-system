@@ -2299,31 +2299,64 @@ def main() -> int:
     check("stale model: anchored 90d window is non-empty (alert clickthrough)",
           n_win > 0, f"units={n_win}")
 
-    # ---- every ERROR row has a reason (2026-09-23) --------------------------
-    # analysis_results.error_reason, or -- for rows stored before that column
-    # existed -- the linked track's own linearity_spec_warning / anomaly_reason:
-    # the exact COALESCE _load_units/_search_units read (model_page.py). A hard
-    # zero: an ERROR result with nothing to show why is the bug this check guards
-    # (237 of 237 failed this before the fix — see task-3-brief.md).
+    # ---- every ERROR row has a reason (2026-09-23, revised 2026-09-24) ------
+    # analysis_results.error_reason, or a linked track's own linearity_spec_warning
+    # / anomaly_reason -- the exact COALESCE _load_units/_search_units read
+    # (model_page.py). A row saved before error_reason existed can still carry its
+    # reason on a processed_files row instead: either the row LINKED by analysis_id
+    # (populated for a track-level ERROR since this task) or the per-PATH failure
+    # marker (analysis_id NULL, a synthetic skip: hash, matched by file_path) --
+    # that marker is where the 3 zero-track rows' "No valid track data found"
+    # actually lives (_write_failure_marker), and their ids are not stable across a
+    # rebuild so nothing here may name them.
+    #
+    # A reason that exists ONLY on a processed_files row is WARNed, not FAILed: it
+    # is a known, accepted gap (design doc ruling 3c -- "3 rows show no reason
+    # until reprocessed"), not a bug, and a check that reads FAIL forever trains
+    # everyone to stop reading the FAIL line. A row with NO reason ANYWHERE is
+    # still a hard zero -- no budget, no percentage, same standard as every other
+    # zero-tolerance check in this file.
     n_error = raw.execute(
         "SELECT COUNT(*) FROM analysis_results WHERE overall_status='ERROR'"
     ).fetchone()[0]
-    n_unexplained = raw.execute(
-        "SELECT COUNT(*) FROM ("
-        "  SELECT a.id,"
+    row = raw.execute(
+        "WITH per_own AS ("
+        "  SELECT a.id AS aid,"
         "         MAX(CASE"
         "           WHEN a.error_reason IS NOT NULL AND a.error_reason != '' THEN 1"
         "           WHEN t.linearity_spec_warning IS NOT NULL AND t.linearity_spec_warning != '' THEN 1"
         "           WHEN t.anomaly_reason IS NOT NULL AND t.anomaly_reason != '' THEN 1"
-        "           ELSE 0 END) AS has_reason"
+        "           ELSE 0 END) AS has_own_reason"
         "  FROM analysis_results a"
         "  LEFT JOIN track_results t ON t.analysis_id = a.id"
         "  WHERE a.overall_status = 'ERROR'"
         "  GROUP BY a.id"
-        ") WHERE has_reason = 0"
-    ).fetchone()[0]
-    check("every ERROR row has a reason (error_reason, or a track's own words)",
-          n_unexplained == 0, f"unexplained={n_unexplained} of {n_error} ERROR rows")
+        "),"
+        "per_pf AS ("
+        "  SELECT a.id AS aid,"
+        "         MAX(CASE WHEN pf.error_message IS NOT NULL AND pf.error_message != '' "
+        "                  THEN 1 ELSE 0 END) AS has_pf_reason"
+        "  FROM analysis_results a"
+        "  LEFT JOIN processed_files pf"
+        "    ON pf.analysis_id = a.id"
+        "    OR (pf.file_path = a.file_path AND pf.analysis_id IS NULL"
+        "        AND pf.file_hash LIKE 'skip:%')"
+        "  WHERE a.overall_status = 'ERROR'"
+        "  GROUP BY a.id"
+        ")"
+        "SELECT"
+        "  SUM(CASE WHEN po.has_own_reason=0 AND pp.has_pf_reason=0 THEN 1 ELSE 0 END),"
+        "  SUM(CASE WHEN po.has_own_reason=0 AND pp.has_pf_reason=1 THEN 1 ELSE 0 END)"
+        " FROM per_own po JOIN per_pf pp ON pp.aid = po.aid"
+    ).fetchone()
+    n_fail, n_marker_only = (row[0] or 0), (row[1] or 0)
+    check("every ERROR row has a reason SOMEWHERE (error_reason, a track's own "
+          "words, or a processed_files row)",
+          n_fail == 0, f"reasonless={n_fail} of {n_error} ERROR rows")
+    if n_marker_only:
+        warn("every ERROR row has a reason: rows whose reason lives ONLY on a "
+             "processed_files row (predate error_reason -- reprocess candidates)",
+             f"{n_marker_only} of {n_error} ERROR rows")
 
     # ============ 5. UNIT VERDICT CONSISTENCY (broad sample) ==================
     # Linearity is the ZERO-TOLERANCE customer disposition, so these are hard
