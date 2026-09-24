@@ -12,10 +12,13 @@ This script re-opens each such file, read-only, and fills those three columns th
 SAME reader Task 4 uses (`core.trim_passes.read_increment_volts`, fed by `core.trim_passes.
 increment_volts_frame` and `core.trim_setup.read_keyvalue`) -- so a back-filled row is
 identical to a freshly-parsed one. It reads ONLY what it needs per file: the `Model
-Parameters` (and `Track Parameters`, if present) sheet for the three ignored-point/reading-
-count fields, and each `TrimVolts N` sheet a candidate `Trim N` pass actually needs. It never
-re-reads a `Trim N` sheet itself -- nothing on positions/errors/limits/recipe/etc. is touched,
-on this row or any other.
+Parameters` (and `Track Parameters`, if present) sheet for `increment_volts_frame`'s fields
+(`Points From Start`/`Points From End` when the file carries both, else `Initial`/`Ending
+Points Ignored`, plus `Number of Readings (Lin)`), each `TrimVolts N` sheet a candidate
+`Trim N` pass actually needs, and -- since Task 5 fix round 2 -- the workbook's own
+`VOLTAGES` sheet, to check each capture before writing it (see "Placement self-check"
+below). It never re-reads a `Trim N` sheet itself -- nothing on positions/errors/limits/
+recipe/etc. is touched, on this row or any other.
 
 A pass whose file has no `TrimVolts{N}` sheet (the one-in-4,972 touch-up case Task 4
 measured), or whose sheet exists but fails to read, is left exactly as it was: NULL,
@@ -23,6 +26,18 @@ indistinguishable from "not yet attempted". That is Task 4's own representation,
 something this script can improve on without changing that ruling -- so a stopped-short
 handful of files will be re-opened, harmlessly, on every future run. See the module's test
 file for how small that set is expected to be.
+
+Placement self-check (Task 5 fix round 2). Task 4's `first_row` rule (2026-09-24 review:
+Points From Start/End when the file names both) was proven on 6,263 local sheets, but the
+work database carries 4,311 laser-1 files, across many models, whose Points From Start
+differs from its Initial Points Ignored -- more variety than the local corpus can promise to
+have exercised. Before writing a pass, this script checks the capture against the workbook's
+own `VOLTAGES` sheet the same way `scripts/app_qa_sweep.py`'s corpus sweep already does
+(`core.trim_passes.voltages_placement`, shared by both so they can never disagree about a
+file): if VOLTAGES CONTRADICTS the placement, that pass is refused -- not written -- and
+named in the summary under "placement disagrees" (a wrong position is worse than none); if
+the workbook has no `VOLTAGES` sheet (or it cannot settle this specific column), the pass is
+written as it always was, and counted under "placement unverified".
 
 Unlike the QA harnesses (`chart_qa_render_all.py`, `app_qa_sweep.py`), this script does NOT
 refuse `data/analysis.db` -- filling in three columns of your own database, from your own
@@ -57,6 +72,7 @@ filled, not the oldest slice of it.
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -94,6 +110,22 @@ class FileWork(NamedTuple):
     passes: List[PassRef]
 
 
+class CaptureResult(NamedTuple):
+    """What `_capture_file` found for one file's candidate sheets.
+
+    captures: {sheet: capture} -- cleared to write (placement confirmed, or unverifiable).
+    problem: None, "missing" or "unreadable" (see `_capture_file`).
+    disagreed: sheets whose capture was REFUSED -- the workbook's own VOLTAGES sheet
+        contradicts the placement, so it was never added to `captures` and is not written.
+    unverified: sheets that ARE in `captures` (written) but could not be checked against
+        VOLTAGES (no VOLTAGES sheet, or it does not reach this sheet's column).
+    """
+    captures: Dict[str, Dict[str, Any]]
+    problem: Optional[str]
+    disagreed: List[str]
+    unverified: List[str]
+
+
 class BackfillReport:
     """Everything a caller (the CLI, or a test) needs to know about one run."""
 
@@ -106,16 +138,23 @@ class BackfillReport:
         self.files_updated = 0
         self.passes_filled = 0
         self.passes_unfilled = 0                            # attempted, but no sheet / unreadable sheet
+        self.passes_disagreed = 0                # refused: VOLTAGES contradicts the placement
+        self.passes_unverified = 0            # written, but no VOLTAGES sheet to check against
         self.files_missing = 0
         self.files_unreadable = 0
         self.missing_files: List[str] = []
         self.unreadable_files: List[str] = []
+        self.disagreements: List[str] = []          # "<path> <sheet>", refused, never written
+        self.unverified_placements: List[str] = []  # "<path> <sheet>", written, unchecked
         self.elapsed_s = 0.0
 
     def __repr__(self) -> str:      # pragma: no cover -- debugging aid only
         return (f"BackfillReport(dry_run={self.dry_run}, files_run={self.files_run}, "
                 f"files_updated={self.files_updated}, passes_filled={self.passes_filled}, "
-                f"passes_unfilled={self.passes_unfilled}, files_missing={self.files_missing}, "
+                f"passes_unfilled={self.passes_unfilled}, "
+                f"passes_disagreed={self.passes_disagreed}, "
+                f"passes_unverified={self.passes_unverified}, "
+                f"files_missing={self.files_missing}, "
                 f"files_unreadable={self.files_unreadable})")
 
 
@@ -208,36 +247,44 @@ def _read_trim_setup(xl: pd.ExcelFile) -> Dict[str, Any]:
     return setup
 
 
-def _capture_file(file_path: Optional[str],
-                  sheets_needed: List[str]) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
+def _capture_file(file_path: Optional[str], sheets_needed: List[str]) -> CaptureResult:
     """Open `file_path` read-only and read exactly what is needed for `sheets_needed`
-    (each a `trim_passes.sheet` value, e.g. "Trim 1").
+    (each a `trim_passes.sheet` value, e.g. "Trim 1"): `Model Parameters`/`Track Parameters`,
+    the specific `TrimVolts N` sheets those sheets need, and `VOLTAGES` (if present) to check
+    each one before it is offered to be written.
 
-    Returns (captures, problem):
-      captures: {sheet: {increment_volts, increment_volts_first_row,
-                 increment_volts_truncated}} -- present only for a name that really is a
-                 `Trim N` sheet AND has a readable `TrimVolts N` companion. A name missing
-                 from the result is left exactly as it was in the database (see module
-                 docstring) -- never guessed, never written as an empty capture.
-      problem: None, "missing" (no such file here) or "unreadable" (the file exists but the
-               workbook could not be opened, or something inside it raised unexpectedly).
-               Never raises.
+    A capture that has anything live in it (`any(curves)`) is checked against `VOLTAGES`
+    with `core.trim_passes.voltages_placement` -- the SAME comparison
+    `scripts/app_qa_sweep.py`'s corpus sweep runs, not a second copy of it:
+      - "misplaced": VOLTAGES contradicts where this capture says its readings are. Refused
+        -- left out of `captures` entirely, named in `disagreed` -- a wrong position stored
+        as data is worse than another NULL row a later run can still fill correctly.
+      - "uncheckable": no VOLTAGES sheet, or it does not reach this sheet's column. Written
+        as it always was (Task 4's own behaviour, unchanged), named in `unverified`.
+      - "placed": written, nothing special recorded.
+    A capture with nothing live in it (`not any(curves)`, e.g. no TrimVolts sheet at all)
+    has nothing to check and is handled exactly as before Task 5 fix round 2: absent from
+    `captures`, absent from both `disagreed` and `unverified`.
+
+    See `CaptureResult` for the full return shape. `problem` is None, "missing" (no such
+    file here) or "unreadable" (the file exists but the workbook could not be opened, or
+    something inside it raised unexpectedly). Never raises.
     """
     if not file_path:
-        return {}, "missing"
+        return CaptureResult({}, "missing", [], [])
     path = Path(file_path)
     try:
         exists = path.exists()
     except OSError:
         exists = False
     if not exists:
-        return {}, "missing"
+        return CaptureResult({}, "missing", [], [])
 
     try:
         opened = pd.ExcelFile(path)
     except Exception:
         logger.debug("backfill: could not open %s", file_path, exc_info=True)
-        return {}, "unreadable"
+        return CaptureResult({}, "unreadable", [], [])
 
     try:
         # A context manager, like every other ExcelFile in this codebase (parser.py's
@@ -247,12 +294,24 @@ def _capture_file(file_path: Optional[str],
             setup = _read_trim_setup(xl)
             first_row, window = _tp.increment_volts_frame(setup)
             trimvolts = _tp.trimvolts_sheets(xl.sheet_names)
+            volts = None
+            if "VOLTAGES" in xl.sheet_names:
+                try:
+                    volts = pd.read_excel(xl, sheet_name="VOLTAGES", header=None)
+                except Exception:
+                    logger.debug("backfill: could not read VOLTAGES in %s", file_path,
+                                exc_info=True)
+                    volts = None      # same as no VOLTAGES sheet: every capture uncheckable
+
             out: Dict[str, Dict[str, Any]] = {}
+            disagreed: List[str] = []
+            unverified: List[str] = []
             for sheet in sheets_needed:
                 m = ExcelParser._TRIM_N_RE.match(sheet.strip())
                 if not m:
                     continue
-                tv_sheet = trimvolts.get(int(m.group(1)))
+                n = int(m.group(1))
+                tv_sheet = trimvolts.get(n)
                 if tv_sheet is None:
                     logger.debug("backfill: no TrimVolts sheet beside %r in %s", sheet, file_path)
                     continue
@@ -262,14 +321,29 @@ def _capture_file(file_path: Optional[str],
                     logger.debug("backfill: could not read %r beside %r in %s",
                                 tv_sheet, sheet, file_path, exc_info=True)
                     continue
-                out[sheet] = _tp.read_increment_volts(df, first_row, window)
-            return out, None
+                cap = _tp.read_increment_volts(df, first_row, window)
+                curves = cap["increment_volts"]
+                if any(curves):
+                    pc = _tp.voltages_placement(
+                        curves, cap["increment_volts_first_row"], volts, n)
+                    if pc.result == "misplaced":
+                        logger.warning(
+                            "backfill: %r in %s placed at first_row %s disagrees with "
+                            "VOLTAGES (%d of %d off, %d matched) -- refusing to write it",
+                            sheet, file_path, cap["increment_volts_first_row"],
+                            pc.bad, pc.live_count, pc.matched)
+                        disagreed.append(sheet)
+                        continue                   # refused: never added to `out`
+                    if pc.result == "uncheckable":
+                        unverified.append(sheet)
+                out[sheet] = cap
+            return CaptureResult(out, None, disagreed, unverified)
     except Exception:
         # Nothing inside core.trim_passes is documented to raise, but a file this script
         # has never seen before gets no benefit of the doubt: one bad workbook must cost
         # only itself, never the run.
         logger.warning("backfill: unexpected failure reading %s", file_path, exc_info=True)
-        return {}, "unreadable"
+        return CaptureResult({}, "unreadable", [], [])
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +395,11 @@ def backfill(db, *, dry_run: bool = False, limit: Optional[int] = None,
                         continue
                     # Mirrors _write_trim_passes exactly: an empty curves list is stored as
                     # a real SQL NULL, never the JSON text "[]"; first_row/truncated are
-                    # written unconditionally, exactly as Task 4's own writer does.
+                    # written unconditionally FOR EVERY PASS THAT REACHES `pending` -- which
+                    # is not every candidate pass any more (Task 5 fix round 2): one whose
+                    # placement disagreed with the workbook's own VOLTAGES sheet was refused
+                    # earlier, in `_capture_file`/the loop below, and never added here at
+                    # all. What Task 4's writer does for a pass it DOES write is unchanged.
                     row.increment_volts = cap["increment_volts"] or sql_null()
                     row.increment_volts_first_row = cap["increment_volts_first_row"]
                     row.increment_volts_truncated = cap["increment_volts_truncated"]
@@ -330,29 +408,38 @@ def backfill(db, *, dry_run: bool = False, limit: Optional[int] = None,
 
     for i, work in enumerate(files):
         sheets_needed = [p.sheet for p in work.passes]
-        captures, problem = _capture_file(work.file_path, sheets_needed)
-        # Progress wants the short, friendly name; a missing/unreadable report wants the
-        # actual PATH -- that is the actionable fact (which share location is unreachable),
-        # and two files can share a bare filename in different folders.
+        result = _capture_file(work.file_path, sheets_needed)
+        # Progress wants the short, friendly name; a missing/unreadable/disagreed report
+        # wants the actual PATH -- that is the actionable fact (which share location is
+        # unreachable, or which file's placement to go look at), and two files can share a
+        # bare filename in different folders.
         display_name = work.filename or work.file_path or f"analysis {work.analysis_id}"
         problem_name = work.file_path or work.filename or f"analysis {work.analysis_id}"
 
-        if problem == "missing":
+        if result.problem == "missing":
             report.files_missing += 1
             report.missing_files.append(problem_name)
-        elif problem == "unreadable":
+        elif result.problem == "unreadable":
             report.files_unreadable += 1
             report.unreadable_files.append(problem_name)
         else:
             touched = False
+            disagreed_sheets = set(result.disagreed)
+            unverified_sheets = set(result.unverified)
             for p in work.passes:
-                cap = captures.get(p.sheet)
-                if cap is None:
+                cap = result.captures.get(p.sheet)
+                if cap is not None:
+                    pending.append((p.pass_id, cap))
+                    report.passes_filled += 1
+                    touched = True
+                    if p.sheet in unverified_sheets:
+                        report.passes_unverified += 1
+                        report.unverified_placements.append(f"{problem_name} {p.sheet}")
+                elif p.sheet in disagreed_sheets:
+                    report.passes_disagreed += 1
+                    report.disagreements.append(f"{problem_name} {p.sheet}")
+                else:
                     report.passes_unfilled += 1
-                    continue
-                pending.append((p.pass_id, cap))
-                report.passes_filled += 1
-                touched = True
             if touched:
                 report.files_updated += 1
 
@@ -373,20 +460,42 @@ def backfill(db, *, dry_run: bool = False, limit: Optional[int] = None,
 # CLI
 # ---------------------------------------------------------------------------
 
-def _snapshot_hint(db_path: Path) -> str:
+_NAME = re.compile(r"^(?P<dir>.*[\\/])?(?P<name>[^\\/]+)$")
+
+
+def _snapshot_hint(db_path) -> str:
     """The exact command to run first -- right next to the database, on LOCAL disk, never a
     cloud-synced folder: `BRING_TO_WORK.md` already tells James to keep `data\\` out of
     OneDrive, and queuing this database's own size for upload as a "just in case" copy is
     the same mistake in a new place. `snapshot_db.py` refuses to overwrite an existing
     file, which is worth saying here rather than let that refusal be the first anyone hears
     of it. `os.name` picks the form: PowerShell on the Windows machine this script actually
-    runs on, plain POSIX for testing here on the Mac.
+    runs on, plain POSIX for testing here on the Mac -- and automatically under a test that
+    monkeypatches `os.name`, since this builds `dst` with a plain regex over `str(db_path)`
+    rather than a `pathlib` instance method.
+
+    That is deliberate, not merely convenient for testing: `pathlib.Path(...)` (the
+    FACTORY) dispatches on `os.name` and happily returns a working `WindowsPath` on this
+    Mac when `os.name` reads "nt" -- but `.with_name()`, `.with_suffix()` and friends
+    reconstruct via the concrete class directly (`type(self)(...)`), which raises
+    `UnsupportedOperation: cannot instantiate 'WindowsPath' on your system` regardless of
+    what `os.name` says (verified on this Python, 3.14). A path STRING is already correct
+    for wherever `main()` actually runs it; this only ever needs to read that string, never
+    walk it as a real filesystem path.
     """
-    dst = db_path.with_name(db_path.stem + "_pre_tv_backfill" + db_path.suffix)
+    s = str(db_path)
+    m = _NAME.match(s)
+    prefix, name = (m.group("dir") or "", m.group("name")) if m else ("", s)
+    if "." in name and not name.startswith("."):
+        stem, _, suffix = name.rpartition(".")
+        dst_name = f"{stem}_pre_tv_backfill.{suffix}"
+    else:
+        dst_name = f"{name}_pre_tv_backfill"
+    dst = f"{prefix}{dst_name}"
     note = "    (refuses to overwrite -- if that name is already there, pick another)"
     if os.name == "nt":
-        return f"    .\\.venv\\Scripts\\python scripts\\snapshot_db.py {db_path} {dst}\n{note}"
-    return f"    python scripts/snapshot_db.py {db_path} {dst}\n{note}"
+        return f"    .\\.venv\\Scripts\\python scripts\\snapshot_db.py {s} {dst}\n{note}"
+    return f"    python scripts/snapshot_db.py {s} {dst}\n{note}"
 
 
 def _print_names(label: str, names: List[str]) -> None:
@@ -460,9 +569,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     verb = "Would fill" if args.dry_run else "Filled"
     print(f"\n{verb} {report.passes_filled:,} pass(es) across {report.files_updated:,} "
           f"file(s) in {format_clock(report.elapsed_s)}.")
+    if report.passes_unverified:
+        print(f"({report.passes_unverified:,} of those {report.passes_filled:,} could not "
+              f"be checked against the workbook's own VOLTAGES sheet -- written anyway, as "
+              f"before this check existed.)")
     if report.passes_unfilled:
         print(f"{report.passes_unfilled:,} candidate pass(es) left exactly as they were "
               f"(no TrimVolts sheet found, or it could not be read).")
+    if report.passes_disagreed:
+        print(f"{report.passes_disagreed:,} candidate pass(es) REFUSED -- the workbook's "
+              f"own VOLTAGES sheet disagrees with where this run would have placed them. "
+              f"Left exactly as they were; a wrong position is worse than none.")
+        _print_names("placement disagrees", report.disagreements)
     if report.missing_files:
         _print_names("missing", report.missing_files)
     if report.unreadable_files:

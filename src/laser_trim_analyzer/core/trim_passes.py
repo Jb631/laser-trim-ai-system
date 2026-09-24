@@ -9,7 +9,7 @@ here.
 import logging
 import numbers
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -340,3 +340,63 @@ def read_increment_volts(df: pd.DataFrame, first_row: Optional[int],
     truncated = n >= XLS_MAX_COLUMNS or (window is not None and n < window)
     return {"increment_volts": curves, "increment_volts_first_row": first_row,
             "increment_volts_truncated": bool(truncated)}
+
+
+class PlacementCheck(NamedTuple):
+    """One `voltages_placement` verdict. `bad`/`matched`/`live_count` are only meaningful
+    when `result == "misplaced"` from the comparison loop actually running (not from the
+    `volts is None`/`first_row is None` short-circuits, which carry zeros); `blank_last` is
+    set whenever the loop allowed a blank last cell, whether or not that ended up mattering
+    to the verdict -- a caller that only records it on "placed" (as
+    `scripts/app_qa_sweep.py` does) must gate on `result` itself."""
+    result: str            # "placed", "misplaced" or "uncheckable"
+    bad: int
+    matched: int
+    live_count: int
+    blank_last: bool
+
+
+def voltages_placement(curves: List[List[float]], first_row: Optional[int],
+                       volts: Optional[pd.DataFrame], column: int) -> PlacementCheck:
+    """Does a captured `TrimVolts` curve set sit where the workbook's OWN `VOLTAGES` sheet
+    says it should?
+
+    Laser 1 writes each `TrimVolts N` column's last reading into `VOLTAGES`, column N, at
+    the position row of that column -- so curve k's last reading must equal
+    `VOLTAGES[first_row + k, column]`, exactly. One allowance, measured on every local sheet
+    that has a VOLTAGES sheet (2026-09-24 corpus check): the LAST live curve's cell may be
+    blank; no other cell may be. At least one curve must actually MATCH -- a capture whose
+    only checkable cell is that allowed blank proves nothing, and without this rule a sheet
+    read one row off would pass on the blank-last allowance alone.
+
+    Extracted from `scripts/app_qa_sweep.py`'s `_trimvolts_placement_one` (2026-09-24 corpus
+    sweep; lifted out unchanged in Task 5 fix round 2 so a live capture -- about to be
+    written by `scripts/backfill_increment_volts.py` -- and the corpus sweep run the
+    IDENTICAL rule) rather than a second copy of it. Pure: `volts` is the already-read
+    `VOLTAGES` sheet (or None if the workbook has none); no file I/O here.
+
+    `curves` is assumed to have at least one live (non-empty) entry -- `any(curves)` -- a
+    caller with nothing live to check has nothing to verify and should not call this at all
+    (both current callers already filter that case before reaching here).
+    """
+    if volts is None or volts.shape[1] <= column:
+        return PlacementCheck("uncheckable", 0, 0, 0, False)
+    if first_row is None:
+        return PlacementCheck("misplaced", 0, 0, 0, False)
+    live = [k for k, c in enumerate(curves) if c]
+    bad = matched = 0
+    blank_last = False
+    for k in live:
+        r = first_row + k
+        v = volts.iat[r, column] if r < volts.shape[0] else None
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or v != v:
+            if k == live[-1] and r < volts.shape[0]:
+                blank_last = True       # the one allowance: the last live cell may be blank
+                continue
+            bad += 1
+        elif float(v) != curves[k][-1]:
+            bad += 1
+        else:
+            matched += 1
+    result = "misplaced" if (bad or not matched) else "placed"
+    return PlacementCheck(result, bad, matched, len(live), blank_last)

@@ -19,7 +19,8 @@ import pytest
 import sqlalchemy as sa
 
 from laser_trim_analyzer.core.trim_passes import (
-    XLS_MAX_COLUMNS, increment_volts_frame, read_increment_volts, trimvolts_sheets)
+    XLS_MAX_COLUMNS, increment_volts_frame, read_increment_volts, trimvolts_sheets,
+    voltages_placement)
 
 LTS = Path("tests/fixtures/trim/lts_8232-1_193.xls")
 LTS_194 = Path("tests/fixtures/trim/lts_8232-1_194.xls")
@@ -151,6 +152,72 @@ def test_trimvolts_sheets_are_found_by_pass_number_and_an_ambiguous_number_is_no
     names = ["Model Parameters", "TrimVolts1", "Trim 1", "trimvolts 2", "Trim 2",
              "VOLTAGES", "TrimVolts3", "TrimVolts 3", "TrimVoltsX"]
     assert trimvolts_sheets(names) == {1: "TrimVolts1", 2: "trimvolts 2"}
+
+
+# ---------------------------------------------------- the placement self-check (pure), 2026-09-24
+# (Task 5 fix round 2: extracted from scripts/app_qa_sweep.py's _trimvolts_placement_one so the
+# corpus sweep and a live capture -- about to be written by backfill_increment_volts.py -- run
+# one rule, not two that could drift apart.)
+
+def _volts(rows):
+    """A VOLTAGES-shaped DataFrame from a list of rows (each a list of cells)."""
+    return pd.DataFrame(rows)
+
+
+def test_voltages_placement_confirms_an_exact_match():
+    # Column 1, rows 2 and 3 (first_row=2, k=0..1) hold the two curves' last readings.
+    volts = _volts([[0, 0], [0, 0], [0, 0.50], [0, 0.60]])
+    pc = voltages_placement([[0.1, 0.2, 0.50], [0.3, 0.60]], first_row=2, volts=volts, column=1)
+    assert pc.result == "placed"
+    assert (pc.matched, pc.bad, pc.live_count) == (2, 0, 2)
+
+
+def test_voltages_placement_catches_a_first_row_off_by_one():
+    """The exact fault class this check exists for: every curve one row off."""
+    volts = _volts([[0, 0], [0, 0], [0, 0.50], [0, 0.60]])
+    pc = voltages_placement([[0.1, 0.2, 0.50], [0.3, 0.60]], first_row=3, volts=volts, column=1)
+    assert pc.result == "misplaced"
+    assert pc.bad == 2 and pc.matched == 0
+
+
+def test_voltages_placement_allows_only_the_last_live_curves_blank_cell():
+    # first_row=2: curve k=0 reads row 2, curve k=1 (the last live curve) reads row 3.
+    volts = _volts([[0, 0], [0, 0], [0, 0.50], [0, float("nan")]])
+    pc = voltages_placement([[0.1, 0.2, 0.50], [0.3, 0.60]], first_row=2, volts=volts, column=1)
+    assert pc.result == "placed" and pc.blank_last is True
+    # The SAME blank on curve k=0 -- not the last one -- is not forgiven.
+    volts2 = _volts([[0, 0], [0, 0], [0, float("nan")], [0, 0.60]])
+    pc2 = voltages_placement([[0.1, 0.2, 0.50], [0.3, 0.60]], first_row=2, volts=volts2, column=1)
+    assert pc2.result == "misplaced"
+
+
+def test_voltages_placement_requires_at_least_one_real_match():
+    """A one-curve capture whose only checkable cell is the allowed blank proves nothing --
+    without this rule a sheet read one row off would pass on the blank-last allowance alone."""
+    volts = _volts([[0, 0], [0, float("nan")]])
+    pc = voltages_placement([[0.1, 0.2]], first_row=1, volts=volts, column=1)
+    assert pc.result == "misplaced"
+    assert pc.matched == 0
+
+
+def test_voltages_placement_is_uncheckable_without_a_voltages_sheet():
+    pc = voltages_placement([[0.1, 0.2]], first_row=0, volts=None, column=1)
+    assert pc.result == "uncheckable"
+
+
+def test_voltages_placement_is_uncheckable_when_the_column_is_out_of_range():
+    volts = _volts([[0, 0], [0, 0]])          # only columns 0-1
+    pc = voltages_placement([[0.1, 0.2]], first_row=0, volts=volts, column=5)
+    assert pc.result == "uncheckable"
+
+
+def test_voltages_placement_with_no_first_row_is_misplaced_not_uncheckable():
+    """A VOLTAGES sheet WAS available to check against, but the capture never determined
+    where it belongs -- that is unverifiable evidence, not neutral silence, so it is bucketed
+    the same as a genuine mismatch (refuse to write), not as 'nothing to check'."""
+    volts = _volts([[0, 0], [0, 0]])
+    pc = voltages_placement([[0.1, 0.2]], first_row=None, volts=volts, column=1)
+    assert pc.result == "misplaced"
 
 
 # ------------------------------------------------------------- the real laser-1 file

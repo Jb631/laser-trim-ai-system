@@ -147,8 +147,48 @@ def _null_out_path(db_path):
         conn.close()
 
 
+def _write_modified_copy(path, *, mutate=None, drop=()):
+    """A .xlsx copy of the real LTS fixture with `mutate(sheets)` applied (a {name: df}
+    dict, mutated in place) and/or the sheets named in `drop` removed -- everything else
+    byte-for-byte the same values, round-tripped through openpyxl. Same pattern
+    test_increment_volts.py's `test_a_pass_whose_trimvolts_sheet_is_missing_keeps_
+    everything_else` uses for exactly this kind of test."""
+    xl = pd.ExcelFile(LTS)
+    sheets = {s: pd.read_excel(xl, sheet_name=s, header=None) for s in xl.sheet_names}
+    if mutate:
+        mutate(sheets)
+    with pd.ExcelWriter(path, engine="openpyxl") as w:
+        for s, df in sheets.items():
+            if s not in drop:
+                df.to_excel(w, sheet_name=s, header=False, index=False)
+    return path
+
+
+def _bump_initial_points_ignored(sheets, delta=1):
+    """Shifts the LTS fixture's start-position rule by `delta` WITHOUT touching VOLTAGES or
+    any TrimVolts/Trim sheet -- the exact shape of file Task 4's own review found 4,311 of
+    on the work database (Points From Start differing from Initial Points Ignored), except
+    here the mismatch is against the ground truth (VOLTAGES) rather than another field the
+    workbook also names. LTS has no `Points From Start`, so `increment_volts_frame` falls
+    back to `Initial Points Ignored` -- the field this perturbs."""
+    df = sheets["Model Parameters"]
+    for r in range(df.shape[0]):
+        label = df.iat[r, 1]
+        if isinstance(label, str) and label.strip().lower() == "initial points ignored":
+            df.iat[r, 0] = float(df.iat[r, 0]) + delta
+            return
+    raise AssertionError("'Initial Points Ignored' not found in Model Parameters")
+
+
 _FAKE_CAPTURE = {"increment_volts": [[0.1, 0.2]], "increment_volts_first_row": 0,
                  "increment_volts_truncated": False}
+
+
+def _fake_capture_file(path, sheets):
+    """A `_capture_file` stand-in for the batching/progress tests: every requested sheet is
+    captured cleanly, nothing missing, nothing disagreed or unverified -- those tests are
+    about transaction/progress cadence, not the placement check (which has its own tests)."""
+    return biv.CaptureResult({s: _FAKE_CAPTURE for s in sheets}, None, [], [])
 
 
 def _fake_files(n, passes_per_file=1):
@@ -344,6 +384,61 @@ def test_a_limited_run_backfills_the_newer_file_first_end_to_end(tmp_path, monke
     assert not _filled(LTS.name), "the older (2020) file must still be untouched"
 
 
+# ========================================= 7. placement self-check (controller fix round 2)
+
+def test_a_correctly_placed_capture_is_never_flagged(tmp_path, monkeypatch):
+    """The base case behind every other test in this file, stated explicitly: two real,
+    correctly-placed fixtures write cleanly and trip neither new counter."""
+    db = _build_db(tmp_path, monkeypatch, [LTS, LTS_194])
+    _null_out(db)
+
+    report = biv.backfill(db)
+    assert report.passes_disagreed == 0
+    assert report.disagreements == []
+    assert report.passes_filled == 4        # 2 files x 2 Trim-N passes
+
+
+def test_a_misplaced_capture_is_refused_and_named(tmp_path, monkeypatch):
+    """Perturb a COPY's Model Parameters so the start-position rule places every curve one
+    row off the machine's own VOLTAGES placement -- the exact class of file Task 4's
+    first_row review found 4,311 of on the work database (Points From Start differing from
+    Initial Points Ignored). Must be refused, not written, and named."""
+    bad = _write_modified_copy(tmp_path / "perturbed.xlsx", mutate=_bump_initial_points_ignored)
+    db = _build_db(tmp_path, monkeypatch, [bad], name="perturbed.db")
+    _null_out(db)
+
+    report = biv.backfill(db)
+    assert report.passes_filled == 0
+    assert report.passes_disagreed >= 1
+    assert any("perturbed.xlsx" in n and "Trim" in n for n in report.disagreements), \
+        report.disagreements
+
+    with db.session() as s:
+        rows = s.execute(sa.text(
+            "SELECT increment_volts FROM trim_passes WHERE sheet LIKE 'Trim %'")).all()
+    assert rows and all(r[0] is None for r in rows), \
+        "a misplaced capture must never be written"
+
+
+def test_a_workbook_with_no_voltages_sheet_is_written_and_counted_unverified(tmp_path, monkeypatch):
+    no_volts = _write_modified_copy(tmp_path / "no_voltages.xlsx", drop=("VOLTAGES",))
+    db = _build_db(tmp_path, monkeypatch, [no_volts], name="no_voltages.db")
+    _null_out(db)
+
+    report = biv.backfill(db)
+    assert report.passes_disagreed == 0
+    assert report.passes_unverified >= 1
+    assert report.passes_filled >= 1
+    assert any("no_voltages.xlsx" in n for n in report.unverified_placements), \
+        report.unverified_placements
+
+    with db.session() as s:
+        rows = s.execute(sa.text(
+            "SELECT increment_volts FROM trim_passes WHERE sheet LIKE 'Trim %'")).all()
+    assert rows and all(r[0] is not None for r in rows), \
+        "a pass this script cannot check is still written -- Task 4's own prior behaviour"
+
+
 # ==================================================================== 3. resume, limit, ETA
 
 def test_a_second_run_touches_nothing_already_filled(tmp_path, monkeypatch):
@@ -389,8 +484,7 @@ def test_progress_fires_every_progress_every_files_and_once_at_the_end(tmp_path,
     from laser_trim_analyzer.database import manager as mgr
     db = mgr.DatabaseManager(tmp_path / "prog.db")
     monkeypatch.setattr(biv, "_select_candidates", lambda _db: _fake_files(7))
-    monkeypatch.setattr(biv, "_capture_file",
-                        lambda path, sheets: ({s: _FAKE_CAPTURE for s in sheets}, None))
+    monkeypatch.setattr(biv, "_capture_file", _fake_capture_file)
 
     seen = []
     biv.backfill(db, progress_every=3, progress=lambda *a: seen.append(a))
@@ -472,8 +566,7 @@ def test_a_small_run_commits_in_one_transaction(tmp_path, monkeypatch):
     from laser_trim_analyzer.database import manager as mgr
     db = mgr.DatabaseManager(tmp_path / "batch_small.db")
     monkeypatch.setattr(biv, "_select_candidates", lambda _db: _fake_files(7))
-    monkeypatch.setattr(biv, "_capture_file",
-                        lambda path, sheets: ({s: _FAKE_CAPTURE for s in sheets}, None))
+    monkeypatch.setattr(biv, "_capture_file", _fake_capture_file)
     calls = []
     monkeypatch.setattr(db, "session", _counting_session(db, calls))
 
@@ -486,8 +579,7 @@ def test_the_batch_writer_chunks_at_two_hundred_files(tmp_path, monkeypatch):
     from laser_trim_analyzer.database import manager as mgr
     db = mgr.DatabaseManager(tmp_path / "batch_big.db")
     monkeypatch.setattr(biv, "_select_candidates", lambda _db: _fake_files(450))
-    monkeypatch.setattr(biv, "_capture_file",
-                        lambda path, sheets: ({s: _FAKE_CAPTURE for s in sheets}, None))
+    monkeypatch.setattr(biv, "_capture_file", _fake_capture_file)
     calls = []
     monkeypatch.setattr(db, "session", _counting_session(db, calls))
 
@@ -544,3 +636,47 @@ def test_main_dry_run_flag_writes_nothing(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert "DRY RUN" in capsys.readouterr().out
     assert _target_columns_snapshot(db) == before
+
+
+def test_snapshot_hint_is_posix_form_on_this_machine():
+    hint = biv._snapshot_hint(Path("data/analysis.db"))
+    assert hint.startswith("    python scripts/snapshot_db.py "
+                           "data/analysis.db data/analysis_pre_tv_backfill.db")
+    assert "refuses to overwrite" in hint
+
+
+def test_snapshot_hint_is_powershell_form_on_windows(monkeypatch):
+    """Fully automatic, no manual eyeballing needed: monkeypatching `os.name` to "nt" is
+    enough to prove the PowerShell branch for real, even run here on the Mac -- and not
+    only the `python` vs `.\\.venv\\Scripts\\python` choice `_snapshot_hint` makes itself.
+    `biv.os` is the real `os` module (not a copy), so this also flips what `pathlib.Path()`'s
+    own FACTORY sees: `Path("data/analysis.db")`, constructed AFTER this monkeypatch, comes
+    back a genuine `WindowsPath` and prints backslash-normalised even though a forward slash
+    was typed -- `str()` on it is `"data\\analysis.db"`, not `"data/analysis.db"`. Verified
+    empirically on this Python (3.14): the factory's `os.name` dispatch and a derived path's
+    reconstruction (`.with_name()` and friends, which call the concrete class directly and
+    raise `UnsupportedOperation` off real Windows regardless of `os.name`) are different
+    mechanisms -- `_snapshot_hint` calls neither of the latter, only `str()`, which is why
+    this works at all."""
+    monkeypatch.setattr(biv.os, "name", "nt")
+    hint = biv._snapshot_hint(Path("data/analysis.db"))
+    assert hint.startswith(
+        "    .\\.venv\\Scripts\\python scripts\\snapshot_db.py "
+        "data\\analysis.db data\\analysis_pre_tv_backfill.db")
+    assert "refuses to overwrite" in hint
+
+
+def test_snapshot_hint_preserves_whichever_separator_the_path_already_uses(monkeypatch):
+    """A db_path that already reads like a Windows path (as it would in production, typed
+    by James at a PowerShell prompt) round-trips fully backslashed -- this is what the
+    controller's own example line looks like, produced for real rather than hand-assembled."""
+    monkeypatch.setattr(biv.os, "name", "nt")
+    hint = biv._snapshot_hint("data\\analysis.db")
+    assert hint.startswith(
+        "    .\\.venv\\Scripts\\python scripts\\snapshot_db.py "
+        "data\\analysis.db data\\analysis_pre_tv_backfill.db")
+
+
+def test_snapshot_hint_handles_a_multi_dot_filename():
+    hint = biv._snapshot_hint(Path("data/analysis.snapshot.db"))
+    assert "data/analysis.snapshot_pre_tv_backfill.db" in hint

@@ -2170,9 +2170,14 @@ def _trimvolts_placement_one(path):
     BEFORE the parse, so a workbook that then fails to parse is still known to be one
     whose Points From Start differs from its Initial Points Ignored (`pfs_differs`): the
     files the first_row rule exists for. Module level so a process pool can run it.
+
+    The comparison itself is `core.trim_passes.voltages_placement` (Task 5 fix round 2):
+    this function still does its own independent file census/reading, but no longer its own
+    copy of the placement loop.
     """
     import re as _re
     import pandas as _pd
+    from laser_trim_analyzer.core import trim_passes as _tp
     from laser_trim_analyzer.core.parser import ExcelParser, drop_cached_bytes
 
     def _count(v):
@@ -2228,35 +2233,22 @@ def _trimvolts_placement_one(path):
                     continue
                 out["checked"] += 1
                 fr = p.get("increment_volts_first_row")
-                if volts is None or volts.shape[1] <= n:
+                # The comparison loop itself lives in core.trim_passes.voltages_placement
+                # (Task 5 fix round 2) -- lifted out unchanged so this sweep and a live
+                # capture (the back-fill script, about to write a row) run one rule, not two
+                # that could drift apart. See that function's docstring for the blank-last
+                # allowance and the "at least one match" requirement.
+                pc = _tp.voltages_placement(curves, fr, volts, n)
+                if pc.result == "uncheckable":
                     out["uncheckable"] += 1
-                    continue
-                if fr is None:
-                    out["misplaced"].append(f"{where}: no first_row")
-                    continue
-                live = [k for k, c in enumerate(curves) if c]
-                bad = matched = blank_last = 0
-                for k in live:
-                    r = fr + k
-                    v = volts.iat[r, n] if r < volts.shape[0] else None
-                    if not isinstance(v, (int, float)) or isinstance(v, bool) or v != v:
-                        if k == live[-1] and r < volts.shape[0]:
-                            blank_last = 1
-                            continue
-                        bad += 1
-                    elif float(v) != curves[k][-1]:
-                        bad += 1
-                    else:
-                        matched += 1
-                # At least one cell must MATCH: a one-curve sheet whose only cell is blank
-                # proves nothing, and without this a 1x1 sheet read one row off passed on
-                # the blank-last allowance alone (every local pass matches at least one).
-                if bad or not matched:
-                    out["misplaced"].append(
-                        f"{where}: first_row {fr}, {bad} of {len(live)} off, {matched} matched")
+                elif pc.result == "misplaced":
+                    detail = ("no first_row" if fr is None else
+                             f"first_row {fr}, {pc.bad} of {pc.live_count} off, "
+                             f"{pc.matched} matched")
+                    out["misplaced"].append(f"{where}: {detail}")
                 else:
                     out["placed"] += 1
-                    out["blank_last"] += blank_last
+                    out["blank_last"] += int(pc.blank_last)
     except Exception as exc:
         out["error"] = f"{type(exc).__name__}: {str(exc)[:80]}"
     return out
