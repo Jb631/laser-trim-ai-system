@@ -62,9 +62,14 @@ Findings page rebuilt. No schema change, nothing to retrain, nothing to click on
    test that).
 5. **Fonts are on the system fallback, not Plex yet** — Segoe UI for text, Cascadia Mono for
    the numbers, or **Consolas** on a machine without Cascadia Mono (Windows 11 ships it;
-   Windows 10 may not). Either is fine. Bundling IBM Plex needs your yes (five small files
-   from Google's font repo, about 0.8 MB) — say the word and it ships; until then the fallback
-   is by design, nothing is broken.
+   Windows 10 may not). Either is fine. Bundling IBM Plex needs your yes to download six small
+   files, under 1 MB, all under the SIL Open Font Licence: `IBMPlexSans-Regular.ttf`,
+   `IBMPlexSans-Medium.ttf` and `license.txt` from IBM's own repository (github.com/IBM/plex,
+   `packages/plex-sans/fonts/complete/ttf/`), and `IBMPlexMono-Regular.ttf`,
+   `IBMPlexMono-Medium.ttf` and `OFL.txt` from Google's (github.com/google/fonts,
+   `ofl/ibmplexmono/`). (Google's Sans folder now carries only a variable font, so the Sans
+   files come from IBM.) Say the word and it ships; until then the fallback is by design,
+   nothing is broken.
 
 ## ⚡ 2026-09-23 — bringing the finished rebuild home (do it THIS way)
 
