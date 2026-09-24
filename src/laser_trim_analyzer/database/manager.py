@@ -1266,7 +1266,22 @@ class DatabaseManager:
             # where it left off (e.g. after a crash or interrupted startup).
             # Done in Python because the shop-number extraction regex lives
             # there; iterates in batches of 1000 to keep memory bounded.
-            self._backfill_unit_ids(session)
+            #
+            # Guarded like every sibling migration (2026-09-24): it WRITES, so
+            # on a database it cannot write -- a read-only file, a full disk, a
+            # locked share -- it raised straight out of _init_database and the
+            # V6 app exited with "Fatal error" before showing a single screen.
+            # The work database has 1,512 rows no backfill can fill (a junk
+            # serial or no date), so this runs, and writes, at EVERY start-up.
+            # A refused backfill costs only the unit-level yield of the rows it
+            # did not reach, and it is retried at the next start-up.
+            try:
+                self._backfill_unit_ids(session)
+            except Exception as e:
+                session.rollback()
+                logger.warning(
+                    f"unit_id backfill migration refused, skipped until the next "
+                    f"start-up (the database opens without it): {e}")
 
             # Migration: Add aliases column to model_specs.
             # Stores pipe-separated alternate model numbers so a single spec

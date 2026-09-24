@@ -231,6 +231,49 @@ class TestUnitIdBackfill:
             row = s.query(DBAR).filter(DBAR.serial == "3P").one()
             assert row.unit_id == "8895/3/2025-03-26"
 
+    def test_a_backfill_that_cannot_write_never_stops_the_database_opening(
+            self, tmp_path, caplog):
+        """A read-only database with a NULL unit_id the backfill COULD fill.
+
+        The backfill writes at every start-up that finds such a row. It used to run
+        unguarded inside `_init_database`, so on a database it could not write it raised
+        straight out of the constructor and the V6 app exited "Fatal error" before a
+        single screen -- the state of the Mac's own read-only production copy on
+        2026-09-24. Built by the real code, then the FILE made read-only: the same
+        refusal SQLite gives for a locked share or a full disk.
+        """
+        import logging
+        import os
+        from laser_trim_analyzer.database.manager import DatabaseManager
+        from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+
+        db_path = tmp_path / "readonly.db"
+        db = DatabaseManager(database_path=db_path)
+        self._insert_legacy_row(db, "9001", "3P", "2025-03-26")
+        with db.session() as s:
+            s.execute(text("UPDATE analysis_results SET unit_id = NULL"))
+            s.commit()
+        db.close()      # checkpoints the WAL, so every byte is in the main file
+        assert compute_unit_id("9001", "3P", datetime(2025, 3, 26)) is not None, \
+            "the row must be one the backfill WOULD fill, or it never tries to write"
+
+        os.chmod(db_path, 0o444)
+        try:
+            with caplog.at_level(logging.WARNING,
+                                 logger="laser_trim_analyzer.database.manager"):
+                ro = DatabaseManager(database_path=db_path)     # must not raise
+            with ro.session() as s:
+                rows = [(r.serial, r.unit_id) for r in s.query(DBAR).all()]
+            ro.close()
+        finally:
+            os.chmod(db_path, 0o644)
+
+        assert rows == [("3P", None)], "a read works, and nothing was written"
+        refused = [r for r in caplog.records
+                   if r.levelno == logging.WARNING and "unit_id backfill" in r.getMessage()]
+        assert refused, "the refused backfill must be named in the log, not swallowed"
+        assert "readonly" in refused[0].getMessage()
+
 
 class TestGetUnitYieldTrend:
     def _setup(self, tmp_path):
