@@ -82,7 +82,7 @@ The shop's numbers do NOT follow the code's letters (James, 2026-09-20):
 |---|---|---|---|
 | **Laser 1** | `LTS` | System B | each pass's sweep + that pass's settings |
 | **Laser 2** | `DLTS` | System A | the same, **plus the cut applied, trim current, target output and measured output at every position** |
-| **Laser 3** | `LTS3` | System C | same format as laser 1 |
+| **Laser 3** | `LTS3` | System C | laser 2's sheet format (not laser 1's — corrected 2026-09-24; pinned by `tests/test_laser3_is_read_like_laser2.py`), including the per-position cut data |
 
 ## The critical path — read this first
 
@@ -583,7 +583,7 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       in steps. Measured while designing: three of today's colour pairs fail the basic
       readability minimum, including the out-of-control drift tier; the app has no colour for
       PASS or FAIL at all; only 9 of 96 findings claim a gain and all 96 are drawn the same.
-- [x] **F2 · Build step 1 — SHIPPED** (`28a4862..4338b01`, 25 commits). New refined-dark
+- [x] **F2 · Build step 1 — SHIPPED** (`28a4862..4338b01`, 24 commits). New refined-dark
       palette and a readability test; shared building blocks, sentence-case headers and a
       page caption; chart text on the theme's scale with laser colours kept clear of
       pass/fail meaning; the two `cut_setting` fixes (a short trial cannot be "best", "now
@@ -591,7 +591,15 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       tested data; the Findings page rebuilt as four groups with one open row and a
       merged-track table; the Model page's Findings tab on that same view;
       `scripts/render_pages.py` with a mechanical `--audit` for clipped text, plus the 14
-      overflow fixes it found.
+      overflow fixes it found. **Final-review fix round (2026-09-24, `4443bbf..8631b34`):**
+      the selected tab/segment readable (new `SEGMENT_SELECTED`, 4.8:1; a widget-level
+      contrast test that reads what the controls really draw) and dark checkmarks; every
+      Findings row opens its own evidence (a key per track/table); a pass-rate move across a
+      limit-table change is uncoloured and tagged "different test"; cut_setting says when only
+      a TABLE went quiet and never merges two tables; the audit sees squeezed-out and
+      past-the-edge text, the real settings and the tab names, and writes before teardown;
+      plus the minors (local caption date, Home wraps and notices, four shouting strings).
+      Its one open line: at 1280×720 the Triage model list gets no room (left for Triage's step).
       **One piece still open: Task 4, bundled IBM Plex fonts.** Downloading five files
       (~0.8 MB, `github.com/google/fonts`, OFL 1.1) needs James's yes — asked, not yet
       answered. Every family tuple in `theme.py` was always written as a fallback chain with
