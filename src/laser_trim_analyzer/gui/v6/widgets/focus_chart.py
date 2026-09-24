@@ -19,25 +19,29 @@ from laser_trim_analyzer.ml.drift_types import FRACTION_METRICS, metric_label
 from laser_trim_analyzer.ml.lots import MIN_LOTS_TRAIN
 from laser_trim_analyzer.ml.spc import RECENT_K, SpcSeries
 
-# Off-scale ceiling/floor markers (both chart views) and the note above them
-# (2026-09-24 facelift step 2 Task 3b): kept as one pair so the note's
-# clearance can never drift from the marker's real size. matplotlib's scatter
-# `s` is a marker's area in points**2 (the same convention as
-# markersize**2), so a circular marker's radius is sqrt(s)/2 points -- ~2.7pt
-# at s=30. The clearance is more than double that, so the note's reserved
-# band and a ceiling marker (itself clipped to the axes, see set_series) can
-# never touch.
+# Off-scale ceiling/floor markers, both chart views (2026-09-24 facelift step
+# 2 Task 3b). matplotlib's scatter `s` is a marker's area in points**2 (the
+# same convention as markersize**2), so a circular marker's radius is
+# sqrt(s)/2 points -- ~2.7pt at s=30.
 _OFFSCALE_MARKER_S = 30
-_OFFSCALE_NOTE_CLEARANCE_PT = 6.0
-# The legend row (set_series) never grows past this many columns -- wraps to
-# a second row instead of overflowing the figure width, which a 6-entry
-# single row measurably did (over 1000px on an 8in/96dpi figure).
-_LEGEND_MAX_NCOL = 4
-# ... and stacks ABOVE the off-scale note, not beside it: clear enough for
-# TWO wrapped rows of it (measured ~17pt/row at CHART_FONT, so ~34pt for
-# two) plus the note's own clearance and height on top, so the two can never
-# collide regardless of how many entries the legend ends up wrapping.
-_LEGEND_CLEARANCE_PT = 40.0
+# set_series's header band (round 2, same task): the key line (what's drawn)
+# and the off-scale note share ONE row, its bottom edge this far above the
+# axes -- more than double the marker radius above, so a ceiling marker
+# (itself clipped to the axes) can never reach it. A second, rarer line (the
+# "control limits off-scale" disclosure) stacks ABOVE that row, and the title
+# above both -- see set_series's own pad arithmetic.
+_HEADER_LINE_CLEARANCE_PT = 6.0
+_HEADER_LINE_HEIGHT_PT = 14.0
+# The unit-view rolling median (round 2): a 30-day window, widened to 90 once
+# the displayed range exceeds ~18 months -- a 30-day window over years of
+# history is as noisy as the old daily median was. min 5 units so a handful
+# of points right after a long idle stretch don't masquerade as a median: a
+# consecutive-unit gap wider than this many days is drawn as a break, never
+# a straight line across the idle stretch (independent of which window size
+# is in use).
+_ROLLING_WINDOW_SWITCH_DAYS = 548          # ~18 months
+_ROLLING_MIN_UNITS = 5
+_ROLLING_GAP_BREAK_DAYS = 30
 
 
 def spc_draw_params(series: SpcSeries, focus_recent: int = RECENT_K) -> dict:
@@ -155,17 +159,25 @@ class FocusChart(ctk.CTkFrame):
         untouched and still decides what reaches this function at all (every
         one of those choices already spans <= 366 days, so only "All" — or
         an unbounded caller like the QA harness — ever needs this trim).
+
+        Round 2 (same task, controller + James, on real 6607/8340-1 renders):
+        round 1's per-CALENDAR-DAY median still zigzagged hard on a sparse
+        day, reading as a solid wall over 12 months, and the "control limits
+        off-scale" disclosure drew INSIDE the axes on top of the ceiling
+        markers. Units are now near-invisible context dots; the one strong
+        line is a TIME-based rolling median (never a straight line across an
+        idle stretch); there is no legend box at all — a left-aligned title,
+        one small key line under it naming only what actually got drawn, the
+        off-scale note sharing that same line, and every OTHER notice either
+        on that line too or its own line above it, but never inside the axes.
         """
         import numpy as np
+        from matplotlib.transforms import offset_copy
         ax, t = self._ax, self.theme
         ax.clear()
         self._style()
-        # pad=18 (default ~6) leaves the "▲ N off-scale" note its own band between the title
-        # and the axes -- set here, unconditionally, so the title sits at the same height
-        # whether or not this render ends up needing that band (2026-09-24 facelift step 2
-        # Task 3; see the note's own comment below for why it moved).
-        ax.set_title(metric_label(metric), pad=18)
         if not dates or not values:
+            ax.set_title(metric_label(metric), loc="left", pad=10)
             ax.text(0.5, 0.5, "No measurements for this metric in the selected window.",
                     transform=ax.transAxes, ha="center", va="center", color=t.TEXT_SECONDARY)
             self.canvas.draw_idle()
@@ -180,76 +192,27 @@ class FocusChart(ctk.CTkFrame):
 
         arr = np.array([v if v is not None else np.nan for v in values], dtype=float)
         finite = arr[np.isfinite(arr)]
-        self._median_line = None  # set by the baseline branch, drawn post-y-window
 
-        # SPC overlays (Rule 1 only).
+        # SPC overlays (Rule 1 only). Undecorated (no `label=`) -- nothing
+        # here builds a legend any more; the key line below names them.
         if baseline_mean is not None:
-            ax.axhline(baseline_mean, color=t.TEXT_SECONDARY, ls="--", lw=1, label="Baseline mean")
+            ax.axhline(baseline_mean, color=t.TEXT_SECONDARY, ls="--", lw=1)
             if baseline_std:
                 ax.axhspan(baseline_mean - 2 * baseline_std, baseline_mean + 2 * baseline_std,
                            color=t.TIER_WARNING, alpha=0.08)
                 for k in (3, -3):
-                    # "±3σ limit", not "±3σ control limit" (2026-09-24 Task 3b): the legend
-                    # is now a fixed row above the axes, so every label's width counts
-                    # toward whether it fits without wrapping past 2 rows (see the legend
-                    # build below) -- shortened without losing what it names.
-                    ax.axhline(baseline_mean + k * baseline_std, color=t.TIER_OOC, ls=":", lw=1,
-                               label="±3σ limit" if k == 3 else None)
+                    ax.axhline(baseline_mean + k * baseline_std, color=t.TIER_OOC, ls=":", lw=1)
         if recent_batch_start is not None:
             ax.axvspan(recent_batch_start, dates[-1], color=t.ACCENT, alpha=0.10)
 
-        if baseline_mean is None:
-            # Trend view (e.g. Smoothness): SCATTER only. Connecting clustered, gappy
-            # per-unit points with a line reads as jagged noise and implies a continuity
-            # that isn't there (the "charts are all over the place" complaint).
-            ax.scatter(dates, values, s=12, color=t.ACCENT, alpha=0.8, label=metric_label(metric))
-        else:
-            # Control chart for BATCH data (2026-07-07 redesign). file_date is
-            # day-granularity: a batch lands as many units on ONE x position.
-            # Drawing one line through raw units produced vertical zigzags
-            # inside each batch-day and long horizontal jumps between batches —
-            # "vertical lines then horizontal connected lines" (James). SPC
-            # treatment for grouped data instead: individuals as dots, the
-            # trend as a line through DAILY MEANS, broken across gaps >14 days
-            # so idle periods don't render as fake continuity.
-            # Small and low-alpha on purpose (2026-09-24 facelift step 2 Task
-            # 3b): every unit drawn at full strength buried the daily-median
-            # line -- the one line meant to carry the read -- under its own
-            # dots. Units are now context; the median below is the strong
-            # line the eye follows. Labeled just "Units", not "<metric> —
-            # units" -- the metric is already the chart's own title, and the
-            # legend is now a fixed row above the axes where every label's
-            # width counts (see the legend build below).
-            ax.scatter(dates, values, s=8, color=t.ACCENT, alpha=0.22, label="Units")
-            by_day: dict = {}
-            for d, v in zip(dates, values):
-                if v is None or not np.isfinite(v):
-                    continue
-                by_day.setdefault(d, []).append(v)
-            if by_day:
-                mdates_ = sorted(by_day)
-                mvals: list = []
-                mx: list = []
-                prev = None
-                for d in mdates_:
-                    if prev is not None and (d - prev).days > 14:
-                        mx.append(prev)          # break the line across the gap
-                        mvals.append(np.nan)
-                    mx.append(d)
-                    # MEDIAN, not mean: one scale-corrupt unit in a batch
-                    # (e.g. 2.1e8 Ω) would drag the day's mean off-scale and
-                    # draw a full-height spike. The median tracks the batch;
-                    # the red Rule-1 markers still disclose the outliers.
-                    mvals.append(float(np.median(by_day[d])))
-                    prev = d
-                self._median_line = (mx, mvals)  # drawn after the y-window is known
-
-        # ---- Robust y-window. A control chart must keep the control band and the
-        # bulk of the data legible; outliers (lone OR clustered — e.g. a 929 Ω
-        # scale error among 4,700s) must NOT stretch the axis and flatten
-        # everything. Both modes anchor on the central bulk (10-90 pct);
-        # out-of-window points are clamped to the edge and DISCLOSED below —
-        # in no-baseline mode they previously vanished silently.
+        # ---- Robust y-window. Computed BEFORE anything drawn below needs to
+        # know it (the rolling median clips to it; the header text needs to
+        # know whether the +-3sigma band ended up on-screen at all). A control
+        # chart must keep the control band and the bulk of the data legible;
+        # outliers (lone OR clustered — e.g. a 929 Ω scale error among
+        # 4,700s) must NOT stretch the axis and flatten everything. Both
+        # modes anchor on the central bulk (10-90 pct); out-of-window points
+        # are clamped to the edge and DISCLOSED below.
         lo_c, hi_c = [], []
         if finite.size:
             if finite.size >= 10:
@@ -290,45 +253,71 @@ class FocusChart(ctk.CTkFrame):
                     lo, hi = lo - 1.0, hi + 1.0
             pad = (hi - lo) * 0.08 or abs(hi) * 0.1 or 1.0
             ax.set_ylim(lo - pad, hi + pad)
-        if limits_off_scale is not None:
-            ax.text(0.01, 0.97,
-                    f"±3σ control limits off-scale ({t.fmt_measure(limits_off_scale[0], 3)} … "
-                    f"{t.fmt_measure(limits_off_scale[1], 3)}) — baseline spans mixed history",
-                    transform=ax.transAxes, ha="left", va="top", fontsize=t.CHART_FONT_SMALL,
-                    color=t.TIER_WARNING)
-
-        # Daily median trend line. A batch-day where MOST units are corrupt has
-        # an off-scale median — drawing it (even clamped) reads as a spike. The
-        # line covers only in-window days; off-window days become a GAP, and
-        # their story is told by the clamped markers + disclosure below.
-        med = self._median_line
-        if med is not None:
-            y0, y1 = ax.get_ylim()
-            mx, mvals = med
-            mgapped = [v if (np.isfinite(v) and y0 <= v <= y1) else np.nan
-                       for v in mvals]
-            ax.plot(mx, mgapped, lw=1.6, marker="o", ms=4, color=t.ACCENT_HOVER,
-                    alpha=0.95, label="Daily median", zorder=4)
-            self._median_line = None
-
-        # Clamp + disclose EVERY out-of-window point (both modes). With a
-        # trained baseline, out-of-limit points are Rule-1 violations (red);
-        # without one they're still shown/counted, in warning amber (no SPC
-        # meaning, just "far outside the bulk — check the data").
-        #
-        # In-window vs off-scale are two different pictures (2026-09-24
-        # facelift step 2 Task 3b, James: "that chart looks horrible" on
-        # 6607 — 487 individual red dots crowned the ceiling, one per
-        # off-scale unit). An in-window point beyond the limits is real news
-        # AT ITS OWN POSITION and is still drawn exactly as before, one dot
-        # per point. A point clamped to the y-edge is off the visible scale —
-        # drawing hundreds of them is hundreds of near-identical dots on one
-        # line, which reads as a solid bar, not as data. Those are now ONE
-        # marker per (calendar month, top-or-bottom edge) that has any, so a
-        # glance tells "a flagged point right here" (round, in-window) from
-        # "a month's worth piled at the edge" (triangle) apart; the note
-        # below keeps naming the true total and the worst value.
         y0, y1 = ax.get_ylim()
+
+        # ---- Units + the one strong line. Both live only with a baseline to
+        # grade against; the plain trend view (e.g. Smoothness) stays simple
+        # scatter, unchanged -- it never had a legend-worthy overlay to begin
+        # with, so it gets no key line either.
+        median_drawn = False
+        roll_days = None
+        if baseline_mean is None:
+            # Trend view: SCATTER only. Connecting clustered, gappy per-unit
+            # points with a line reads as jagged noise and implies a
+            # continuity that isn't there (the "charts are all over the
+            # place" complaint).
+            ax.scatter(dates, values, s=12, color=t.ACCENT, alpha=0.8)
+        else:
+            # Near-invisible dots -- context, not ink (round 2: round 1's
+            # alpha=0.22 still let a sparse-day model's daily-median line read
+            # as a solid teal wall over 12 months). Every unit still draws;
+            # none are dropped, just faint.
+            ax.scatter(dates, values, s=5, color=t.ACCENT, alpha=0.16, edgecolors="none", zorder=2)
+
+            # TIME-based rolling median (round 2), replacing the old
+            # per-CALENDAR-DAY median, which zigzagged hard whenever a day
+            # carried few units — exactly what James flagged. A pandas
+            # offset-string rolling window looks back a span of WALL-CLOCK
+            # TIME regardless of how many (or how few) units landed on any
+            # one day, which is what actually smooths a sparse model.
+            # Widened to 90 days once the shown window exceeds ~18 months —
+            # 30 days of noise over years of history is the same zigzag
+            # again, just at a different scale. Inputs are clipped to the
+            # y-window first: the median is rank-based so this rarely moves
+            # it, but it guarantees the drawn line can never itself need an
+            # off-scale clamp.
+            import pandas as pd
+            pairs = sorted((d, min(max(v, y0), y1)) for d, v in zip(dates, values)
+                           if v is not None and np.isfinite(v))
+            if pairs:
+                window_span_days = (max(dates) - min(dates)).days
+                roll_days = 90 if window_span_days > _ROLLING_WINDOW_SWITCH_DAYS else 30
+                s_in = pd.Series([v for _, v in pairs],
+                                 index=pd.DatetimeIndex([d for d, _ in pairs]))
+                roll = s_in.rolling(f"{roll_days}D", min_periods=_ROLLING_MIN_UNITS).median()
+                mx: list = []; mvals: list = []
+                prev_d = None
+                for d, v in roll.items():
+                    # Never drawn across a gap: a resumed model after an idle
+                    # stretch gets a break, not a straight line to its first
+                    # point back (2016 -> 2023 on 6607 must read empty) --
+                    # independent of which rolling window size is in use above.
+                    if prev_d is not None and (d - prev_d).days > _ROLLING_GAP_BREAK_DAYS:
+                        mx.append(prev_d); mvals.append(float("nan"))
+                    mx.append(d); mvals.append(float(v) if np.isfinite(v) else float("nan"))
+                    prev_d = d
+                median_drawn = any(np.isfinite(v) for v in mvals)
+                if median_drawn:
+                    ax.plot(mx, mvals, lw=2.2, color=t.ACCENT, zorder=4)
+
+        # ---- In-window vs off-scale. An in-window point beyond the limits is
+        # real news AT ITS OWN POSITION and is drawn there, one small dot per
+        # point. A point clamped to the y-edge is off the visible scale —
+        # drawing hundreds of them individually reads as a solid bar, not as
+        # data (6607: 487 of them). Those are ONE marker per (calendar month,
+        # top-or-bottom edge) that has any, clipped to the axes so a marker
+        # can never bleed into the header row above it. Both marker kinds and
+        # the note use CHECK -- "something worth a look", not a tier verdict.
         has_limits = baseline_mean is not None and bool(baseline_std)
         ucl = (baseline_mean + 3 * baseline_std) if has_limits else None
         lcl = (baseline_mean - 3 * baseline_std) if has_limits else None
@@ -351,46 +340,24 @@ class FocusChart(ctk.CTkFrame):
                     off_by_month[key] = (d, y1 if edge == "top" else y0)
             else:
                 in_x.append(d); in_y.append(v)
-        mark_color = t.TIER_OOC if has_limits else t.TIER_WARNING
         if in_x:
-            # Named in the legend — unexplained red dots were the most alarming
-            # thing on the page (live-walk finding, 2026-07-08).
-            mark_label = "Beyond ±3σ" if has_limits else "Far outside displayed range"
-            ax.scatter(in_x, in_y, color=mark_color, s=30, zorder=5, label=mark_label)
+            ax.scatter(in_x, in_y, s=9, color=t.CHECK, alpha=0.55, edgecolors="none", zorder=5)
         if off_by_month:
             tops = [xy for (_y, _m, edge), xy in off_by_month.items() if edge == "top"]
             bots = [xy for (_y, _m, edge), xy in off_by_month.items() if edge == "bottom"]
-            # clip_on=True (2026-09-24 Task 3b): pinned exactly at y1/y0, a marker
-            # bleeding past the axes edge (the old clip_on=False) reached into the
-            # note's own band below — raised clear of it below too, so the two can
-            # never meet even at the boundary.
             if tops:
-                ax.scatter([p[0] for p in tops], [p[1] for p in tops], color=mark_color,
-                           marker="^", s=_OFFSCALE_MARKER_S, zorder=5, clip_on=True,
-                           label="Off-scale")
+                ax.scatter([p[0] for p in tops], [p[1] for p in tops], color=t.CHECK,
+                           marker="^", s=_OFFSCALE_MARKER_S, zorder=5, clip_on=True)
             if bots:
-                ax.scatter([p[0] for p in bots], [p[1] for p in bots], color=mark_color,
-                           marker="v", s=_OFFSCALE_MARKER_S, zorder=5, clip_on=True,
-                           label=("Off-scale" if not tops else None))
+                ax.scatter([p[0] for p in bots], [p[1] for p in bots], color=t.CHECK,
+                           marker="v", s=_OFFSCALE_MARKER_S, zorder=5, clip_on=True)
+
+        note = ""
         if off_vals:
-            # Name how far the worst excursion actually reaches, and which edge(s) —
-            # a clamped marker alone hides magnitude, which is exactly what a QA
-            # reviewer needs. The total is the true count over every point in the
-            # current window, not just the (now aggregated) markers drawing it.
-            #
-            # Its OWN band above the axes (2026-09-24 facelift step 2 Task 3), not the old
-            # (0.99, 0.97) -- inside the top-right corner of the plot itself. Two problems
-            # lived there: the legend's loc="best" only avoids overlapping DATA, never this
-            # text, and on real data (8340-1, 6607) it regularly landed on top of it; and on
-            # a model whose baseline spans mixed history (`limits_off_scale` below, drawn at
-            # the top-LEFT) the two notes could themselves collide once anything narrowed the
-            # axes to make room for a legend -- checked directly on 8340-1's full history
-            # (both notes present, 326 off-scale): moving this one out settles both at once,
-            # since nothing drawn INSIDE the axes (data, markers, a legend wherever "best"
-            # puts it) can ever reach a point above the axes' own top edge. va="bottom" so the
-            # text grows UPWARD from the axes edge, into the gap the title's pad=18 leaves.
-            # offset_copy (Task 3b) lifts it _OFFSCALE_NOTE_CLEARANCE_PT further still, clear
-            # of the ceiling/floor markers' own clipped edge just above.
+            # Name how far the worst excursion actually reaches, and which
+            # edge(s) — a clamped marker alone hides magnitude. The total is
+            # the true count over every point in the current window, not just
+            # the (now aggregated) markers drawing it.
             ext = max(off_vals, key=abs)
             n_top = sum(1 for v in off_vals if v > y1)
             n_bottom = len(off_vals) - n_top
@@ -400,12 +367,55 @@ class FocusChart(ctk.CTkFrame):
                 where = f"{len(off_vals)} off-scale below"
             else:
                 where = f"{n_top} off-scale above, {n_bottom} below"
-            from matplotlib.transforms import offset_copy
-            note_transform = offset_copy(ax.transAxes, fig=self._fig,
-                                         y=_OFFSCALE_NOTE_CLEARANCE_PT, units="points")
-            ax.text(1.0, 1.0, f"▲ {where} the chart (max {t.fmt_measure(ext, 3)})",
-                    transform=note_transform, ha="right", va="bottom", clip_on=False,
-                    fontsize=t.CHART_FONT, color=mark_color)
+            note = f"▲ {where} the chart (max {t.fmt_measure(ext, 3)})"
+
+        # ---- Header: a left-aligned title, and directly under it one small
+        # key line naming ONLY what actually got drawn above, the off-scale
+        # note right-aligned on that same line — no legend box (round 2: the
+        # old one sat on the data as often as not, and it kept naming limit
+        # lines that were not even on screen once the band went off-scale).
+        # Any OTHER notice (the "control limits off-scale" disclosure) gets
+        # its own line ABOVE this one; nothing here is ever drawn inside the
+        # axes, which is the round-2 bug on 8340-1 (it sat on the ceiling
+        # markers) this replaces.
+        key_bits = []
+        if baseline_mean is not None:
+            if median_drawn:
+                key_bits.append(f"━ {roll_days}-day median")
+            key_bits.append("·  units")
+            if limits_off_scale is None and baseline_std:
+                key_bits.append("┄ ±3σ control limit")
+            key_bits.append("╌ baseline mean")
+        key_text = "    ".join(key_bits)
+
+        show_header_row = bool(key_text) or bool(note)
+        if show_header_row:
+            header_transform = offset_copy(ax.transAxes, fig=self._fig,
+                                           y=_HEADER_LINE_CLEARANCE_PT, units="points")
+            if key_text:
+                ax.text(0.0, 1.0, key_text, transform=header_transform, ha="left", va="bottom",
+                        clip_on=False, fontsize=t.CHART_FONT_SMALL, color=t.TEXT_SECONDARY)
+            if note:
+                ax.text(1.0, 1.0, note, transform=header_transform, ha="right", va="bottom",
+                        clip_on=False, fontsize=t.CHART_FONT_SMALL, color=t.CHECK)
+        if limits_off_scale is not None:
+            # Stacked ABOVE the header row (never inside the axes -- was
+            # ax.text(0.01, 0.97, ..., va="top"), drawn on top of the ceiling
+            # off-scale markers on 8340-1's real render).
+            notice_transform = offset_copy(
+                ax.transAxes, fig=self._fig,
+                y=_HEADER_LINE_CLEARANCE_PT + _HEADER_LINE_HEIGHT_PT, units="points")
+            ax.text(0.0, 1.0,
+                    f"±3σ control limits off-scale ({t.fmt_measure(limits_off_scale[0], 3)} … "
+                    f"{t.fmt_measure(limits_off_scale[1], 3)}) — baseline spans mixed history",
+                    transform=notice_transform, ha="left", va="bottom", clip_on=False,
+                    fontsize=t.CHART_FONT_SMALL, color=t.TIER_WARNING)
+
+        n_header_lines = (1 if show_header_row else 0) + (1 if limits_off_scale is not None else 0)
+        title_pad = (10 if n_header_lines == 0
+                    else _HEADER_LINE_CLEARANCE_PT + _HEADER_LINE_HEIGHT_PT * n_header_lines + 6)
+        ax.set_title(metric_label(metric), loc="left", pad=title_pad)
+
         # ---- Explicit x-window (2026-07-08). Autoscale is LAZY and, on this
         # reused axes, held the widest range ever rendered: after viewing
         # 'All' (stretched to 2015 by one stray file), switching back to
@@ -414,49 +424,17 @@ class FocusChart(ctk.CTkFrame):
         # data every render instead of trusting autoscale to shrink.
         d0, d1 = min(dates), max(dates)
         span = (d1 - d0)
-        from datetime import timedelta as _td
-        xpad = max(span * 0.02, _td(days=1))
+        xpad = max(span * 0.02, timedelta(days=1))
         ax.set_xlim(d0 - xpad, d1 + xpad)
-        # The legend leaves the plot (2026-09-24 facelift step 2 Task 3b, same
-        # James report: the old loc="best" box sat on top of the data as often
-        # as not). Two things had to be pinned down together, both caught by
-        # rendering a realistic 6-entry legend at this figure's actual size
-        # (test_ui_responsiveness-scale data, not the small fixtures the unit
-        # tests use):
-        #   1. ncol=len(handles) (one attempt) forced every entry into ONE
-        #      row -- at this figure's width a 6-entry row measured over
-        #      1000px, wider than the whole 768px-wide figure, and it simply
-        #      ran off both edges. Capped at _LEGEND_MAX_NCOL columns instead,
-        #      so it wraps to a second row rather than overflow -- labels were
-        #      also shortened (the metric name dropped from "<metric> —
-        #      units", since it is already the chart's own title) so the
-        #      common case still fits in one row.
-        #   2. A first attempt anchored the legend BESIDE the off-scale note
-        #      (same row, opposite corners) -- a wide row ran straight
-        #      through the note in the middle (caught by
-        #      test_focus_chart_legend_does_not_cover_the_off_scale_note).
-        #      Stacked instead: the note's own band sits right above the axes
-        #      (unchanged, _OFFSCALE_NOTE_CLEARANCE_PT), the legend sits
-        #      ABOVE *that*, by enough to clear TWO wrapped rows of it with
-        #      margin -- bounded because ncol is capped, so this clearance
-        #      can never be undercut by more entries, only a wider row.
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            from matplotlib.transforms import offset_copy as _offset_copy
-            legend_transform = _offset_copy(ax.transAxes, fig=self._fig,
-                                            y=_LEGEND_CLEARANCE_PT, units="points")
-            ax.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
-                     bbox_transform=legend_transform, ncol=min(len(handles), _LEGEND_MAX_NCOL),
-                     fontsize=t.CHART_FONT, facecolor=t.CARD, edgecolor=t.BORDER,
-                     labelcolor=t.TEXT_SECONDARY, borderaxespad=0)
+
         self._fig.tight_layout()
-        # tight_layout already makes room for an outside legend and the off-scale note
-        # above (checked on 8340-1's full history, 326 off-scale points: axes top landed
-        # at 0.824) -- this is a floor for the rare case it doesn't (a very short title, a
-        # different figsize), same "tight_layout() then override" order as
-        # set_spc_series's bottom-margin fix below.
-        if (handles or off_vals) and self._ax.get_position().y1 > 0.78:
-            self._fig.subplots_adjust(top=0.78)
+        # tight_layout already makes room for the header text above (checked
+        # on 8340-1's full history, both the mixed-history notice and an
+        # off-scale note present: axes top landed well under this floor) --
+        # this is a backstop for the rare case it doesn't (a very short
+        # title, a different figsize).
+        if n_header_lines and self._ax.get_position().y1 > 0.80:
+            self._fig.subplots_adjust(top=0.80)
         self.canvas.draw_idle()
 
     def set_spc_series(self, series: SpcSeries, *,

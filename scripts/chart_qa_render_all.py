@@ -309,20 +309,18 @@ def main(out_dir: str, db_path: Path) -> int:
             f"WINDOW-SWITCH REGRESSION: 90d xlim spans {narrow_span:.0f} days "
             f"(data {data_span:.0f}d; previous All render {wide_span:.0f}d) — "
             "x-axis is holding the old window")
-    # Red/flagged out-of-limit markers must be NAMED in the legend
-    # (unexplained red dots finding, 2026-07-08). 8340-1/untrimmed_error_max
-    # has off-scale points, so ONE of the two entries that can name them must
-    # be present -- "Beyond ±3σ" for a point flagged AT its own position,
-    # "Off-scale" for the monthly-aggregated marker at the ceiling/floor
-    # (facelift step 2 Task 3b split the old single "Beyond ±3σ / off-scale"
-    # label into these two, so a real dataset can legitimately carry either
-    # or both depending on whether any flagged point also stayed in-window).
-    leg = fc._ax.get_legend()
-    leg_texts = [t_.get_text() for t_ in (leg.get_texts() if leg else [])]
-    if not any(t_ in ("Beyond ±3σ", "Off-scale") for t_ in leg_texts):
-        raise AssertionError(f"legend misses the red-marker entry: {leg_texts}")
+    # Red/flagged out-of-limit points must be DISCLOSED somewhere on the
+    # chart (unexplained red dots finding, 2026-07-08). Round 2 (2026-09-24
+    # facelift step 2 Task 3b) removed the legend this check used to read
+    # that disclosure from entirely -- no legend is drawn at all any more.
+    # The "▲ N off-scale ..." note is the one disclosure guaranteed to name
+    # a count whenever any point is clamped to the y-edge, which
+    # 8340-1/untrimmed_error_max has.
+    if not any(t_.get_text().startswith("▲") for t_ in fc._ax.texts):
+        raise AssertionError("no off-scale note drawn for a dataset known to have "
+                             "off-scale points")
     _save(fc, out / "focus_8340-1_window_switch.png", manifest,
-          f"FocusChart window-switch: All(xlim {wide_span:.0f}d) -> 90d(xlim {narrow_span:.0f}d) — axis tracks the window; red markers in legend")
+          f"FocusChart window-switch: All(xlim {wide_span:.0f}d) -> 90d(xlim {narrow_span:.0f}d) — axis tracks the window; off-scale note present")
 
     # ---- 1c. The Units view's own default (facelift step 2 Task 3b, James:
     # "that chart looks horrible" on focus_6607_linearity_error.png above --

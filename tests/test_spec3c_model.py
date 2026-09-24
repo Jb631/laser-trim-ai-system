@@ -165,50 +165,17 @@ def test_focus_chart_empty_no_crash(tk_root):
     chart.set_series(metric="linearity_error", dates=[], values=[])  # empty state, no raise
 
 
-def test_focus_chart_legend_does_not_cover_the_off_scale_note(tk_root):
-    """8340-1 and 6607 (design doc 2026-09-24-facelift-step2-pages-design.md §1 item 5): the
-    legend used loc="best", which only avoids DATA -- it never saw the "▲ N off-scale" text
-    drawn separately, so on real data the two boxes overlapped. Rendered on a fresh Agg canvas
-    (the widget's own TkAgg canvas has no live window to size against in a headless test) so
-    get_window_extent() returns real, comparable pixel boxes for both artists."""
-    from datetime import datetime, timedelta
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
-
-    chart = FocusChart(tk_root, theme=ThemeManager())
-    today = datetime.now()
-    dates = [today - timedelta(days=i) for i in range(20, 0, -1)]     # oldest -> newest
-    # A gentle DOWNWARD trend keeps the newest (rightmost) points low, so the top-right
-    # corner -- where the off-scale note is drawn -- stays clear of real data; only the
-    # single outlier (forced to the OLDEST/leftmost date) is clamped up to the window top.
-    values = [0.0119 - 0.0001 * i for i in range(20)]
-    values[0] = 5.0
-    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
-                     baseline_mean=0.011, baseline_std=0.0005)
-
-    canvas = FigureCanvasAgg(chart._fig)
-    canvas.draw()
-    renderer = canvas.get_renderer()
-
-    legend = chart._ax.get_legend()
-    assert legend is not None, "the off-scale scenario above must still produce a legend"
-    legend_box = legend.get_window_extent(renderer)
-
-    notes = [txt for txt in chart._ax.texts if "off-scale" in txt.get_text()]
-    assert notes, "the outlier above must trigger the '▲ N off-scale' note"
-    note_box = notes[0].get_window_extent(renderer)
-
-    assert not legend_box.overlaps(note_box), (
-        f"legend {legend_box.bounds} overlaps the off-scale note {note_box.bounds}")
-
-
 # ---- Facelift step 2 Task 3b (2026-09-24) ---------------------------------
 # Chart QA sweep + two reviews found defects on the Investigate page's charts
 # and the unit chart it opens, none of them Task 3's. James then looked at
 # qa_output/focus_6607_linearity_error.png ("that chart looks horrible" --
 # 487 individual off-scale dots crowning the ceiling) and asked for the
-# per-UNIT view to be redesigned in the same pass.
+# per-UNIT view to be redesigned in the same pass. Round 2 (same task,
+# controller + James on the round-1 renders): the per-CALENDAR-DAY median
+# still zigzagged on a sparse day, reading as a solid wall; the legend named
+# limit lines that were not on screen when the band went off-scale; the
+# "control limits off-scale" notice drew on top of the ceiling markers. No
+# legend box at all now -- see test_no_legend_box_is_drawn below.
 
 def _scatter_window_extent(coll, ax, renderer):
     """A scatter PathCollection's own get_window_extent() can come back an
@@ -226,6 +193,41 @@ def _scatter_window_extent(coll, ax, renderer):
                 [xs.max() + radius_px, ys.max() + radius_px]])
 
 
+def _offscale_marker_collections(ax):
+    """The off-scale ceiling/floor markers, found by SIZE (there is no
+    `label=` on anything any more -- round 2 dropped the legend that would
+    have consumed it). `_OFFSCALE_MARKER_S` is the one true size, shared with
+    the widget itself, so this can never quietly drift from what it draws."""
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import _OFFSCALE_MARKER_S
+    out = []
+    for c in ax.collections:
+        sizes = c.get_sizes()
+        if len(sizes) and sizes[0] == _OFFSCALE_MARKER_S:
+            out.append(c)
+    return out
+
+
+def test_no_legend_box_is_drawn(tk_root):
+    """Round 2: the old loc="best" legend sat on top of the data as often as
+    not, and kept naming limit lines that were not even on screen once the
+    band went off-scale (design doc / James, 2026-09-24 round 2). Replaced by
+    the left-aligned-title + key-line header below -- there is no legend
+    artist at all any more, on a chart shaped to have needed one under the
+    old design (baseline, +-3sigma, an off-scale excursion)."""
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(20, 0, -1)]
+    values = [0.0119 - 0.0001 * i for i in range(20)]
+    values[-1] = 5.0
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005)
+    assert chart._ax.get_legend() is None
+
+
 def test_off_scale_note_never_touches_an_off_scale_marker(tk_root):
     """Task 3 gave the note its own band above the plot; on real data
     (focus_6607_linearity_error.png, 2023-2024) that band's bottom edge
@@ -239,12 +241,11 @@ def test_off_scale_note_never_touches_an_off_scale_marker(tk_root):
     chart = FocusChart(tk_root, theme=ThemeManager())
     today = datetime.now()
     dates = [today - timedelta(days=i) for i in range(20, 0, -1)]     # oldest -> newest
-    # Same shape as test_focus_chart_legend_does_not_cover_the_off_scale_note's
-    # fixture, mirrored: a gentle trend keeps every OTHER point comfortably
-    # inside the percentile-fit window, and only the newest (rightmost) point
-    # is the outlier -- so its marker lands at the top-right, where the note
-    # also lives, and nothing else registers as off-scale or "beyond limits"
-    # to muddy the picture.
+    # A gentle trend keeps every OTHER point comfortably inside the
+    # percentile-fit window, and only the newest (rightmost) point is the
+    # outlier -- so its marker lands at the top-right, where the note also
+    # lives, and nothing else registers as off-scale or "beyond limits" to
+    # muddy the picture.
     values = [0.0119 - 0.0001 * i for i in range(20)]
     values[-1] = 5.0
     chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
@@ -262,7 +263,7 @@ def test_off_scale_note_never_touches_an_off_scale_marker(tk_root):
     assert notes, "the outlier above must trigger the off-scale note"
     note_box = notes[0].get_window_extent(renderer)
 
-    markers = [c for c in chart._ax.collections if c.get_label() == "Off-scale"]
+    markers = _offscale_marker_collections(chart._ax)
     assert markers, "the outlier above must draw an aggregated off-scale marker"
     for coll in markers:
         marker_box = _scatter_window_extent(coll, chart._ax, renderer)
@@ -387,7 +388,7 @@ def test_off_scale_markers_are_aggregated_to_at_most_one_per_month_shown(tk_root
     shown = [d for d in dates if mdates.date2num(d) >= x0]
     months_shown = len({(d.year, d.month) for d in shown})
 
-    markers = [c for c in chart._ax.collections if c.get_label() == "Off-scale"]
+    markers = _offscale_marker_collections(chart._ax)
     n_offscale_markers = sum(len(c.get_offsets()) for c in markers)
     assert n_offscale_markers >= 1, "the fixture must actually produce off-scale markers"
     assert n_offscale_markers <= months_shown, (
@@ -412,29 +413,178 @@ def test_off_scale_note_states_the_true_total(tk_root):
     assert str(n_expected_offscale) in notes[0].get_text(), notes[0].get_text()
 
 
-def test_legend_leaves_the_axes_data_area(tk_root):
-    """The old loc="best" legend sat on top of the data as often as not.
-    Whatever it draws now, its box must sit entirely outside the axes'
-    own data rectangle -- above it, never inside."""
+def test_no_text_artist_intersects_the_axes_data_area(tk_root):
+    """Round 2's whole point: nothing drawn above the axes (title, key line,
+    off-scale note, the "control limits off-scale" disclosure) may ever be
+    drawn INSIDE it -- the round-2 bug on 8340-1 was exactly that notice
+    sitting on top of the ceiling markers. One fixture exercises all four at
+    once (a trained baseline whose band is off-scale, AND an excursion beyond
+    the visible window)."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
 
     dates, values = _long_history_with_outliers(n_years=1)
     chart = FocusChart(tk_root, theme=ThemeManager())
+    # baseline_std huge relative to the visible data -> triggers the
+    # "control limits off-scale" disclosure on its own line, ABOVE the key
+    # line -- the exact stack that has to clear the axes twice over.
     chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
-                     baseline_mean=0.011, baseline_std=0.0005)
+                     baseline_mean=0.011, baseline_std=1.3)
 
     canvas = FigureCanvasAgg(chart._fig)
     canvas.draw()
     renderer = canvas.get_renderer()
 
-    legend = chart._ax.get_legend()
-    assert legend is not None
-    legend_box = legend.get_window_extent(renderer)
     axes_box = chart._ax.get_window_extent(renderer)
-    assert not legend_box.overlaps(axes_box), (
-        f"legend {legend_box.bounds} overlaps the axes data area {axes_box.bounds}")
+    assert chart._ax.texts, "expected at least the key line to be drawn"
+    for txt in chart._ax.texts:
+        text_box = txt.get_window_extent(renderer)
+        assert not text_box.overlaps(axes_box), (
+            f"text {txt.get_text()!r} {text_box.bounds} overlaps "
+            f"the axes data area {axes_box.bounds}")
+
+
+def test_rolling_median_is_far_smoother_than_a_daily_median_would_be(tk_root):
+    """Round 2, James: the old per-CALENDAR-DAY median zigzagged hard on a
+    sparse day, reading as a solid wall over 12 months. A day-alternating
+    high/low series is the worst case for a daily median -- it swings the
+    full amplitude EVERY SINGLE DAY. "Point-to-point variance" (the
+    coordinator's own words) means the variance of consecutive DIFFERENCES,
+    not of the raw values -- this fixture's balanced 30-day windows converge
+    to a fairly constant median, so the raw values are not very spread out
+    once past the first month, but the daily median's point-to-point swing
+    is exactly the zigzag being fixed, and that is what has to shrink."""
+    from datetime import datetime, timedelta
+    import statistics
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    today = datetime.now()
+    dates, values, daily_medians = [], [], []
+    d = today - timedelta(days=119)
+    while d <= today:
+        day_vals = [0.05, 0.06] if (d.toordinal() % 2 == 0) else [0.25, 0.26]
+        for v in day_vals:
+            dates.append(d); values.append(v)
+        daily_medians.append(statistics.median(day_vals))
+        d += timedelta(days=1)
+    daily_diffs = [b - a for a, b in zip(daily_medians, daily_medians[1:])]
+    daily_diff_variance = statistics.pvariance(daily_diffs)
+
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.15, baseline_std=0.2)
+    lines = [ln for ln in chart._ax.get_lines() if ln.get_linewidth() > 1.5]
+    assert lines, "expected the rolling-median line to be drawn"
+    drawn = [y for y in lines[0].get_ydata() if y == y]     # drop NaN breaks
+    assert len(drawn) > 10
+    drawn_diffs = [b - a for a, b in zip(drawn, drawn[1:])]
+    drawn_diff_variance = statistics.pvariance(drawn_diffs)
+    # A 30-day window sliding one day at a time still has a little residual
+    # "boundary flutter" on a perfectly alternating adversarial signal like
+    # this one (each step swaps ~2 of ~60 points in the window) -- measured
+    # at ~5x smaller than the daily median's, a wide margin short of the
+    # daily median's full every-step swing.
+    assert drawn_diff_variance < daily_diff_variance * 0.25, (
+        f"rolling median's point-to-point variance {drawn_diff_variance:.5f} is not far "
+        f"below the daily median's {daily_diff_variance:.5f}")
+
+
+def test_rolling_median_never_spans_a_gap_over_30_days(tk_root):
+    """A resumed model after an idle stretch gets a break, never a straight
+    line to its first point back (2016 -> 2023 on 6607 must read empty).
+
+    The gap-break threshold is a FIXED 30 days, independent of which rolling
+    window size is active (30D under 18 months of total span, 90D at or
+    above) -- so the fixture that actually pins the explicit check needs a
+    gap BIGGER than 30 days but SMALLER than the 90-day window a >18-month
+    span switches to: only then does min_periods=5 alone fail to produce a
+    break on its own (a 90-day window bridges a 45-day gap with real points
+    on both sides), leaving the explicit >30-day check as the only thing
+    that still splits the line. ~600 days of otherwise-dense data with one
+    45-day gap in the middle."""
+    from datetime import datetime, timedelta
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    today = datetime.now()
+    start = today - timedelta(days=600)
+    dates, values = [], []
+    d = start
+    i = 0
+    while d < today:
+        if not (250 <= (d - start).days < 295):    # the 45-day gap
+            dates.append(d); values.append(0.0100 + 0.0001 * (i % 5)); i += 1
+        d += timedelta(days=1)
+
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.0105, baseline_std=0.0003)
+    lines = [ln for ln in chart._ax.get_lines() if ln.get_linewidth() > 1.5]
+    assert lines, "expected the rolling-median line to be drawn"
+    # get_xdata() hands back the pandas Timestamps the line was plotted
+    # with directly (matplotlib's datetime unit converter stores the
+    # original objects, not its internal float date-nums), so day
+    # differences come straight from Timestamp subtraction -- no
+    # mdates.num2date round trip, which chokes on a Timestamp input.
+    xs, ys = lines[0].get_xdata(), lines[0].get_ydata()
+    segments = []
+    seg = []
+    for x, y in zip(xs, ys):
+        if y != y:                                    # NaN -- a break
+            if seg:
+                segments.append(seg); seg = []
+            continue
+        seg.append(x)
+    if seg:
+        segments.append(seg)
+    assert len(segments) >= 2, "expected the 45-day gap to split the line into >= 2 segments"
+    # A segment itself may legitimately span many days (this fixture's two
+    # dense runs are ~245 and ~305 days each) -- what must never happen is
+    # a single STEP between two CONSECUTIVE plotted points wider than 30
+    # days, which is exactly what a break across the 45-day gap prevents.
+    for seg in segments:
+        for a, b in zip(seg, seg[1:]):
+            step_days = (b - a).days
+            assert step_days <= 30, f"a single line segment steps {step_days} days"
+
+
+def test_key_names_only_what_is_actually_drawn(tk_root):
+    """A chart whose +-3sigma band is off-scale (so the dotted line is not
+    meaningfully on screen) must not claim it is in the key -- the same rule
+    that already keeps the median out of the key when there are too few
+    units to compute one."""
+    from datetime import datetime, timedelta
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(60, 0, -1)]
+    values = [0.05 + 0.001 * (i % 5) for i in range(len(dates))]
+
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    # A wildly oversized baseline_std forces limits_off_scale.
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.05, baseline_std=1.3)
+    keys = [t.get_text() for t in chart._ax.texts if t.get_text().startswith("━")
+            or t.get_text().startswith("·")]
+    assert keys, "expected a key line"
+    assert "±3σ control limit" not in keys[0], keys[0]
+
+    # The complementary case: a normal (in-scale) band DOES name it. This
+    # fixture's own values span only ~0.05-0.054, so the std has to be small
+    # too, or 7*std alone exceeds the "off-scale" test's own 6x-data-span
+    # trigger and this "in-scale" case would (wrongly) go off-scale as well.
+    chart2 = FocusChart(tk_root, theme=ThemeManager())
+    chart2.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                      baseline_mean=0.05, baseline_std=0.001)
+    keys2 = [t.get_text() for t in chart2._ax.texts if t.get_text().startswith("━")
+             or t.get_text().startswith("·")]
+    assert keys2 and "±3σ control limit" in keys2[0], keys2
 
 
 # ---- Task 5: DriftMetricsTab ----------------------------------------------
