@@ -15,6 +15,7 @@ the push by this check, and the commit was rewritten. Example data is INVENTED -
 With no backlog export present (a fresh checkout, the work machine) it says so and passes: it can
 only check against a file it can read.
 """
+import functools
 import re
 import subprocess
 import sys
@@ -50,6 +51,20 @@ def _price_like(line: str):
             continue                        # a filename
         out.append(m.group(1))
     return out
+
+
+@functools.lru_cache(maxsize=None)
+def _po_pattern(po: str):
+    """A PO number as a whole number, never as digits inside a longer one.
+
+    25 of the export's PO numbers are six digits or fewer, and a plain substring match found
+    one in the last digits of a long measured float in a fixture baseline (2026-09-24). So a
+    DIGIT edge must not continue a longer number -- no digit, or digit and decimal point,
+    before it; no digit after it. A letter edge is left alone: "PO12345" still counts.
+    """
+    left = r"(?<!\d)(?<!\d\.)" if po[:1].isdigit() else ""
+    right = r"(?!\d)" if po[-1:].isdigit() else ""
+    return re.compile(left + re.escape(po) + right)
 
 
 def _backlog():
@@ -99,7 +114,7 @@ def findings_in(text: str, prices, names, pos):
                 out.append(("PRICE", n, f"  (model {model} beside one of its real unit prices)"))
         if any(c in line for c in names):
             out.append(("CUSTOMER", n, ""))
-        if any(p in line for p in pos):
+        if any(p in line and _po_pattern(p).search(line) for p in pos):
             out.append(("PO NUMBER", n, ""))
     return out
 

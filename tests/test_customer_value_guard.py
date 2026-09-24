@@ -107,6 +107,52 @@ def test_zero_priced_backlog_lines_are_dropped_before_they_reach_the_scan():
     assert find('x = ("9999-1", 0.0)') == []
 
 
+# ---- a short all-digit PO number is a whole number, never digits inside a longer one ----
+# 2026-09-24: the tail of a long measured float in a regenerated fixture baseline spelled a
+# real 5-digit PO, and the plain substring match reported a leak. 25 of the export's PO
+# numbers are six digits or fewer, so any long float could do it again.
+
+SHORT_PO = "90817"  # invented, all digits, like the export's short ones
+
+
+def find_po(line):
+    return G.findings_in(line, {}, set(), {SHORT_PO})
+
+
+def test_a_short_po_standing_alone_is_caught():
+    assert [f[0] for f in find_po("closed order 90817 today")] == ["PO NUMBER"]
+
+
+def test_a_short_po_glued_to_a_label_is_still_caught():
+    # A letter before the digits does not make them part of a longer NUMBER.
+    assert [f[0] for f in find_po("ref PO90817")] == ["PO NUMBER"]
+
+
+def test_a_short_po_after_a_word_and_a_full_stop_is_still_caught():
+    # Only a digit and then a point is a decimal; "no." is not.
+    assert [f[0] for f in find_po("order no.90817")] == ["PO NUMBER"]
+
+
+def test_a_short_po_inside_a_decimal_fraction_is_not_a_po():
+    # The shape of the real false positive: the last digits of a long float.
+    assert find_po("[0.0038472619290817, -0.0041]") == []
+
+
+def test_a_short_po_straight_after_the_decimal_point_is_not_a_po():
+    # Only the digit-and-point rule can stop this one: a point, not a digit, precedes it.
+    assert find_po("x = 0.90817") == []
+
+
+def test_a_short_po_continued_by_another_digit_is_not_a_po():
+    # Only the right-hand rule can stop this one: the left edge is a space.
+    assert find_po("count = 908172") == []
+
+
+def test_a_short_po_as_the_integer_part_of_a_decimal_still_flags():
+    # Deliberately NOT exempt: a whole number the PO's digits begin is left for a person to judge.
+    assert [f[0] for f in find_po("value 90817.5")] == ["PO NUMBER"]
+
+
 # ---- the real export, when this machine has one ----
 
 def test_the_repository_is_clean_against_the_real_backlog():
