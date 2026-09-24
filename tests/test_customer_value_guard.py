@@ -153,6 +153,29 @@ def test_a_short_po_as_the_integer_part_of_a_decimal_still_flags():
     assert [f[0] for f in find_po("value 90817.5")] == ["PO NUMBER"]
 
 
+# ---- a range git cannot read is an error, never a clean pass ----
+# 2026-09-24: `check_no_customer_values.py origin/mian..HEAD` (a typo) printed "0 commits ...
+# problems: 0" and exited 0 -- a green light that had scanned nothing.
+
+def _run_main(monkeypatch, capsys, rng):
+    import sys
+    monkeypatch.setattr(G, "_backlog", lambda: (PRICES, NAMES, POS, "invented-export.xls"))
+    monkeypatch.setattr(sys, "argv", ["check_no_customer_values.py", rng])
+    rc = G.main()
+    return rc, capsys.readouterr().out
+
+
+def test_a_range_git_cannot_read_is_fatal(monkeypatch, capsys):
+    rc, out = _run_main(monkeypatch, capsys, "origin/no-such-branch-for-this-test..HEAD")
+    assert rc == 255 and "FATAL" in out and "problems: 0" not in out
+
+
+def test_an_empty_but_valid_range_still_passes(monkeypatch, capsys):
+    # Everything pushed is a real state, not an error: HEAD..HEAD is valid and empty.
+    rc, out = _run_main(monkeypatch, capsys, "HEAD..HEAD")
+    assert rc == 0 and "0 commits" in out
+
+
 # ---- the real export, when this machine has one ----
 
 def test_the_repository_is_clean_against_the_real_backlog():

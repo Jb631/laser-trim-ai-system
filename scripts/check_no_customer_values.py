@@ -5,7 +5,8 @@
 The backlog export under `Work Files/` carries customer names, PO numbers and unit prices. None of
 them may appear in the repository -- not in code, not in a test, not in a fixture, not in a commit
 message. This scans EVERY VERSION of every text file in a git range, plus every commit message, and
-prints only WHERE a problem is, never the value itself. Exit code = number of problems.
+prints only WHERE a problem is, never the value itself. Exit code = number of problems (capped
+at 250); 255 when git cannot read the range -- a mistyped range is an error, never a clean pass.
 
 Why it exists (2026-09-20): Claude wrote an example test row using a real (model, price) pair from
 the backlog, an implementer transcribed it faithfully, and it was committed. It was caught before
@@ -126,7 +127,15 @@ def main() -> int:
         return 0
     prices, names, pos, source = data
     rng = sys.argv[1] if len(sys.argv) > 1 else "origin/main..HEAD"
-    commits = subprocess.run(["git", "rev-list", rng], cwd=REPO, capture_output=True, text=True).stdout.split()
+    listed = subprocess.run(["git", "rev-list", rng], cwd=REPO, capture_output=True, text=True)
+    if listed.returncode != 0:
+        # A range git cannot read ("origin/mian..HEAD") used to come back as no commits and
+        # "problems: 0" -- a clean pass that had scanned nothing (2026-09-24). 255 is outside the
+        # problem count's range (capped at 250), so it cannot be mistaken for one.
+        why = (listed.stderr.strip().splitlines() or ["no reason given"])[0]
+        print(f"FATAL | git cannot read the range {rng!r}: {why}")
+        return 255
+    commits = listed.stdout.split()
     problems = 0
     seen: set = set()
 
