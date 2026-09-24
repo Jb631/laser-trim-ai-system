@@ -176,3 +176,7 @@ launch_v6.command
 verify_*.log
 commit_push_*.log
 8-29-2026_data/
+
+# July 2026 chart-representation renders of the pre-rebuild database (H2, 2026-09-23):
+# kept on disk, regenerable with scripts/chart_rep_review.py from any database copy.
+docs/chart_rep_review_2026-07-16/
