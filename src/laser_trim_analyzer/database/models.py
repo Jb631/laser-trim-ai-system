@@ -627,6 +627,21 @@ class TrimPass(Base):
     trim_target = Column(SafeJSON, nullable=True)
     final_trim_value = Column(SafeJSON, nullable=True)
 
+    # Laser 1 only (2026-09-24): its `TrimVolts N` sheet, one list per engaged
+    # position of the output voltage after each laser increment -- the
+    # position's response curve to being cut. List k belongs to
+    # positions[increment_volts_first_row + k]. `increment_volts_truncated`
+    # is true when the sheet hit the .xls 256-column cap or is narrower than
+    # the file's window, i.e. positions are missing. SQL NULL (never the JSON
+    # text 'null'; see _write_trim_passes) on laser 2/3, on `Lin Error`, and
+    # on rows written before the capture. Never named `trim_volts`: that is
+    # the Trim Parameters SETTING, stored as `trim_voltage` below. The last
+    # reading is NOT this pass's measured value at that position (live
+    # reading vs the verification sweep).
+    increment_volts = Column(SafeJSON, nullable=True)
+    increment_volts_first_row = Column(Integer)
+    increment_volts_truncated = Column(Boolean)
+
     # Per-PASS recipe, from the Trim Parameters sheet.
     laser_cut_length = Column(Float)
     laser_speed_high = Column(Float)

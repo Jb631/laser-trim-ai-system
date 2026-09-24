@@ -885,6 +885,30 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"error_reason migration warning (may already exist): {e}")
 
+            # Migration: laser 1's TrimVolts capture on trim_passes (2026-09-24;
+            # see TrimPass.increment_volts). Metadata-only ADD COLUMNs, so a
+            # 6 GB database is not rewritten. Rows already stored read NULL --
+            # "not captured", which is exactly what they are -- until the
+            # back-fill (design doc ruling 4c) or a reprocess fills them. No
+            # DEFAULT, deliberately: a default would erase the record of which
+            # rows predate the capture.
+            increment_volts_columns = {
+                "increment_volts": "JSON",
+                "increment_volts_first_row": "INTEGER",
+                "increment_volts_truncated": "BOOLEAN",
+            }
+            for col_name, col_type in increment_volts_columns.items():
+                try:
+                    session.execute(text(
+                        f"ALTER TABLE trim_passes ADD COLUMN {col_name} {col_type}"))
+                    session.commit()
+                    logger.info(f"Migration: Added {col_name} column to trim_passes")
+                except Exception as e:
+                    if ("duplicate column" not in str(e).lower()
+                            and "already exists" not in str(e).lower()):
+                        logger.warning(f"trim_passes.{col_name} migration warning: {e}")
+                    session.rollback()
+
             # Migration: Add measured_electrical_angle column to track_results
             try:
                 session.execute(text("SELECT measured_electrical_angle FROM track_results LIMIT 1"))
@@ -3677,6 +3701,17 @@ class DatabaseManager:
             TrimPass.track_result_id == db_track.id).delete(synchronize_session=False)
         per_point = ("cut_lengths", "trim_currents", "pred_deltas",
                      "used_deltas", "trim_target", "final_trim_value")
+        # Laser 1's TrimVolts capture: its own columns, never folded into the
+        # `recipe` blob (which must stay exactly what it was before the capture).
+        # A pass with no capture (laser 2/3, Lin Error, no TrimVolts sheet)
+        # stores a real SQL NULL in `increment_volts` -- NOT the JSON text
+        # 'null' that SafeJSON writes for None (which is why `cut_lengths IS
+        # NULL` never matches a laser-1 row). So `increment_volts IS NULL`
+        # means "not captured" in raw SQL, for these rows and for the rows
+        # that predate the column alike; the ORM reads both back as [].
+        from sqlalchemy import null as sql_null
+        increment = ("increment_volts", "increment_volts_first_row",
+                     "increment_volts_truncated")
         # pass_sheets has no dedup guard upstream: two differently-named sheets
         # that normalise to the same leading number would produce two passes
         # with the same pass_index and collide on the (track_result_id,
@@ -3711,7 +3746,8 @@ class DatabaseManager:
             recipe = {k: v for k, v in p.items()
                       if k not in ("positions", "errors", "upper_limits",
                                    "lower_limits", "pass_index", "sheet")
-                      and k not in per_point}
+                      and k not in per_point and k not in increment}
+            curves = p.get("increment_volts")
             session.add(TrimPass(
                 track_result_id=db_track.id,
                 pass_index=idx,
@@ -3720,6 +3756,9 @@ class DatabaseManager:
                 positions=p.get("positions"), errors=p.get("errors"),
                 upper_limits=p.get("upper_limits"), lower_limits=p.get("lower_limits"),
                 **{k: p.get(k) for k in per_point},
+                increment_volts=curves if curves else sql_null(),
+                increment_volts_first_row=p.get("increment_volts_first_row"),
+                increment_volts_truncated=p.get("increment_volts_truncated"),
                 laser_cut_length=_as_float(p.get("laser_cut_length_mm")
                                            or p.get("laser_cut_length")),
                 laser_speed_high=_as_float(p.get("laser_speed_high")),

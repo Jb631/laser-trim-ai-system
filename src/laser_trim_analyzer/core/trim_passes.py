@@ -187,3 +187,126 @@ def read_pass(df: pd.DataFrame, system: SystemType, start_row: int) -> Dict[str,
         for key, idx in _A_PER_POINT.items():
             out[key] = _aligned(df, idx, start_row, n, key)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Laser 1 (LTS, System B format) records a second thing per pass that laser 2
+# does not: `TrimVolts N`, beside each `Trim N`. One COLUMN per engaged
+# position, one ROW per laser increment, each cell the output voltage after
+# that increment -- the material's response curve to being cut, which is what
+# a cut-length model learns from. Measured on 4,972 real laser-1 files
+# (2026-09-23): `TrimVolts N` exists iff `Trim N` does (the only exceptions
+# are no-cut templates and one touch-up file); no header row; row 0 non-zero
+# in every engaged column; zeros are end padding only (no zero between two
+# readings in any of 107 passes checked).
+#
+# Stored as `increment_volts`, NEVER `trim_volts`: that key already carries
+# the Trim Parameters sheet's "Trim Volts" SETTING into `trim_voltage`.
+#
+# The last reading of a column is NOT `Trim N`'s measured value at that
+# position (ratio 0.94-1.23 across the corpus): this is the live reading
+# during the cut, `Trim N` is the verification sweep after it. Never use one
+# for the other.
+# ---------------------------------------------------------------------------
+
+XLS_MAX_COLUMNS = 256      # BIFF8 (.xls) stops at column IV
+
+_TRIMVOLTS = re.compile(r"^trimvolts\s*(\d+)$", re.I)
+
+
+def trimvolts_sheets(sheet_names: List[str]) -> Dict[int, str]:
+    """{N: sheet name} for every `TrimVolts N` sheet in the workbook.
+
+    A pass number claimed by two sheets ("TrimVolts3" and "TrimVolts 3") is
+    left out rather than guessed: which one belongs to `Trim 3` is not
+    something the names can say.
+    """
+    found: Dict[int, List[str]] = {}
+    for name in sheet_names:
+        m = _TRIMVOLTS.match(str(name).strip())
+        if m:
+            found.setdefault(int(m.group(1)), []).append(name)
+    return {n: names[0] for n, names in found.items() if len(names) == 1}
+
+
+def _whole_count(v: Any) -> Optional[int]:
+    """A non-negative whole number, or None -- never a guess.
+
+    Same reading as the database's `_as_int_or_none`, which stores these very
+    fields as `trim_setup.points_ignored_start/end` (numeric text "7" -> 7,
+    7.0 -> 7, 7.5 -> None), so the two can never disagree about a file. Two
+    differences, both refusals: a TRUE cell is a flag, not a count (float(True)
+    is 1.0), and a negative count is not a count.
+    """
+    if v is None or isinstance(v, (bool, np.bool_)):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: float() of an int past 1e308. It runs outside any try
+        # in parse_file, so it must never raise -- a raise here would fail the
+        # whole file, not just this capture.
+        return None
+    if f != f or not f.is_integer() or f < 0:     # NaN, inf, fractional, negative
+        return None
+    return int(f)
+
+
+def increment_volts_frame(setup: Optional[Dict[str, Any]]) -> Tuple[Optional[int], Optional[int]]:
+    """(first_row, window) for a laser-1 file's `TrimVolts` sheets.
+
+    From the file's own `Model Parameters`, as `trim_setup.normalise_key`
+    spells them: `first_row` is `Initial Points Ignored` -- the position index
+    of column 0 -- and `window` is how many columns the sheet SHOULD have,
+    `Number of Readings (Lin)` - initial - ending ignored + 1. Measured on all
+    6,264 local laser-1 TrimVolts sheets (2026-09-24): exact on 6,198; the
+    other 66 are all NARROWER -- 11 at the .xls column cap, 55 that logged
+    fewer columns (mostly 1x1 sheets, one off-by-one). `first_row` needs only
+    its own field; `window` needs all three, and is None rather than a
+    nonsense count when they disagree.
+    """
+    setup = setup or {}
+    first_row = _whole_count(setup.get("initial_points_ignored"))
+    ending = _whole_count(setup.get("ending_points_ignored"))
+    readings = _whole_count(setup.get("number_of_readings_lin"))
+    window = None
+    if first_row is not None and ending is not None and readings is not None:
+        span = readings - first_row - ending + 1
+        window = span if span >= 1 else None
+    return first_row, window
+
+
+def read_increment_volts(df: pd.DataFrame, first_row: Optional[int],
+                         window: Optional[int]) -> Dict[str, Any]:
+    """Laser 1's `TrimVolts N` sheet: one column per engaged position, one row per laser
+    increment, each cell the output voltage after it. Zeros are end padding (a position
+    that converged early), never a reading; a blank is never a reading either, and nor is
+    text or a TRUE/FALSE flag (the same refusals as `_col`).
+
+    Curve k belongs to the pass's `positions[first_row + k]`. `first_row` is the position
+    index of column 0 (the file's Initial Points Ignored); `window` is how many columns the
+    file SHOULD have. A sheet at the .xls column limit, or narrower than its window, has
+    lost positions and says so.
+
+    A column with no reading at all -- blank at the top, with only zero padding or nothing
+    below -- is a position the pass never reached, and stays in the list as [] so every
+    curve keeps its index. Measured 2026-09-24: 1,897 such columns in 574 of the 6,264
+    local sheets, always one trailing block (573 of the 574 are 8232-1), and not one
+    reading anywhere below a leading blank.
+    """
+    curves: List[List[float]] = []
+    for col in range(df.shape[1]):
+        readings: List[float] = []
+        for v in df.iloc[:, col].tolist():
+            if (isinstance(v, (bool, np.bool_, np.timedelta64))
+                    or not isinstance(v, numbers.Real)):
+                break                 # blank, text or a flag: this position's run is over
+            f = float(v)
+            if f != f or f == 0.0:
+                break                 # NaN blank or zero padding
+            readings.append(f)
+        curves.append(readings)
+    n = df.shape[1]
+    truncated = n >= XLS_MAX_COLUMNS or (window is not None and n < window)
+    return {"increment_volts": curves, "increment_volts_first_row": first_row,
+            "increment_volts_truncated": bool(truncated)}

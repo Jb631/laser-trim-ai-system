@@ -1934,6 +1934,192 @@ def check_ingest_group() -> None:
     check_trim_capture()
 
 
+# ---- laser 1's TrimVolts capture (2026-09-24) --------------------------------
+# The day the capture shipped. A laser-1 `Trim N` pass row created before it
+# cannot carry `increment_volts` -- filling those is the back-fill's job (design
+# doc ruling 4c) or a reprocess's, never a failure here. `created_date` is
+# stored UTC as 'YYYY-MM-DD HH:MM:SS.ffffff', so a string compare is a date
+# compare.
+INCREMENT_VOLTS_SINCE = "2026-09-24"
+
+
+def _laser1_pass_number(sheet):
+    """N for laser 1's pass sheet `Trim N`, else None (`Lin Error`, laser 2's `SEC1 TRK1 ...`)."""
+    import re as _re
+    m = _re.match(r"^trim\s+(\d+)$", (sheet or "").strip(), _re.I)
+    return int(m.group(1)) if m else None
+
+
+def _file_has_trimvolts(path, n):
+    """True/False: does the workbook carry a `TrimVolts n` sheet with anything in it?
+    None: it cannot be opened here (a work-share path on the Mac, a moved file).
+
+    Deliberately NOT the parser's own sheet lookup: a check that asks the code
+    under test whether the sheet exists agrees with that code's bugs."""
+    import pandas as _pd
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        xl = _pd.ExcelFile(p)
+        names = [s for s in xl.sheet_names
+                 if s.replace(" ", "").lower() == f"trimvolts{n}"]
+        if not names:
+            return False
+        df = _pd.read_excel(xl, sheet_name=names[0], header=None)
+        return bool(df.size) and bool(df.notna().to_numpy().any())
+    except Exception:
+        return None
+
+
+def _increment_volts_audit(conn, since, max_files=20):
+    """Every laser-1 `Trim N` pass row in `conn`, sorted by whether it carries its curves.
+
+    A pass processed since `since` WITHOUT them is settled against its own
+    workbook: the sheet is there, so the capture missed it (`missed`, a FAIL);
+    the sheet is not (a touch-up file -- 1 in 4,972 locally) or is empty
+    (`no_sheet`, correct); or the file cannot be opened (`unverified`). At most
+    `max_files` workbooks are opened; beyond that a row counts as unverified.
+    Raw SQL on purpose, and `IS NULL` is exact here: the writer stores a real SQL
+    NULL for "no capture", never SafeJSON's 'null' text.
+    """
+    import re as _re
+    out = {"passes": 0, "captured": 0, "predates": 0, "no_sheet": 0,
+           "missed": [], "unverified": []}
+    verdicts = {}
+    for sheet, created, has, path in conn.execute(
+            "SELECT p.sheet, p.created_date, p.increment_volts IS NOT NULL, a.file_path "
+            "FROM trim_passes p JOIN track_results t ON t.id = p.track_result_id "
+            "JOIN analysis_results a ON a.id = t.analysis_id "
+            "WHERE p.sheet LIKE 'trim %'"):
+        n = _laser1_pass_number(sheet)
+        if n is None:
+            continue
+        out["passes"] += 1
+        if has:
+            out["captured"] += 1
+            continue
+        if (created or "") < since:
+            out["predates"] += 1
+            continue
+        key = (path, n)
+        if key not in verdicts:
+            verdicts[key] = (_file_has_trimvolts(path, n)
+                             if len(verdicts) < max_files else None)
+        name = _re.split(r"[\\/]", path or "")[-1]    # a UNC path on any OS
+        where = f"{name} {sheet}"
+        if verdicts[key] is True:
+            out["missed"].append(where)
+        elif verdicts[key] is False:
+            out["no_sheet"] += 1
+        else:
+            out["unverified"].append(where)
+    return out
+
+
+def check_increment_volts_fixtures() -> None:
+    """Laser 1's TrimVolts capture through the REAL pipeline, into a throwaway database
+    (--only increment-volts). This is the half with teeth: the copy of the work database
+    holds no pass processed since the capture shipped until someone processes one, so the
+    database rule below is also run here, on rows that must carry the curves.
+
+    Falsify before trusting (2026-09-24): make `_write_trim_passes` store `sql_null()` for
+    increment_volts, or skip `_increment_volts_for` in the parser -- the first and last
+    checks here go FAIL (0 of 4 captured; the rule names all 4 passes as missed).
+    """
+    import json as _json
+    import shutil
+    import tempfile
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+
+    keys = ("increment_volts", "increment_volts_first_row", "increment_volts_truncated")
+    # Readings per pass, counted cell by cell on the fixtures' own TrimVolts sheets;
+    # 49 curves (57 - 2 - 7 + 1) from first_row 2 on every pass, none truncated.
+    pinned = {("lts_8232-1_193.xls", "Trim 1"): 199, ("lts_8232-1_193.xls", "Trim 2"): 719,
+              ("lts_8232-1_194.xls", "Trim 1"): 880, ("lts_8232-1_194.xls", "Trim 2"): 795}
+    want = {k: (49, v, 2, 0) for k, v in pinned.items()}
+    fixtures = sorted((REPO / "tests" / "fixtures" / "trim").glob("*.xls"))
+    check("increment volts: the four trim fixtures are present", len(fixtures) == 4,
+          f"{[f.name for f in fixtures]}")
+    if len(fixtures) != 4:
+        return
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None))
+    tmp = Path(tempfile.mkdtemp(prefix="increment_volts_sweep_"))
+    fdb = None
+    try:
+        fdb = _mgr.DatabaseManager(tmp / "iv.db")
+        _mgr._db_manager = fdb                 # BOTH globals: a Processor must never
+        _dbpkg._db_manager = fdb               # reach the configured database.
+        proc = Processor(use_ml=False)
+        for f in fixtures:
+            fdb.save_analysis(proc.process_file(f))
+        conn = sqlite3.connect(f"file:{tmp / 'iv.db'}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT a.filename, p.sheet, p.increment_volts, p.increment_volts_first_row, "
+                "p.increment_volts_truncated, p.recipe FROM trim_passes p "
+                "JOIN track_results t ON t.id = p.track_result_id "
+                "JOIN analysis_results a ON a.id = t.analysis_id").fetchall()
+            audit = _increment_volts_audit(conn, INCREMENT_VOLTS_SINCE)
+        finally:
+            conn.close()
+        got, leaked, in_recipe = {}, [], []
+        for fname, sheet, volts, first_row, truncated, recipe in rows:
+            if (fname, sheet) in pinned:
+                curves = _json.loads(volts) if volts is not None else []
+                got[(fname, sheet)] = (len(curves), sum(len(c) for c in curves),
+                                       first_row, truncated)
+            elif (volts, first_row, truncated) != (None, None, None):
+                leaked.append(f"{fname} {sheet}: {str(volts)[:12]!r}/{first_row}/{truncated}")
+            if recipe and set(keys) & set(_json.loads(recipe) or {}):
+                in_recipe.append(f"{fname} {sheet}")
+        check("increment volts: every laser-1 Trim N fixture pass stores its 49 curves, "
+              "the pinned readings, first_row 2, not truncated",
+              got == want, f"{sorted(got.items())}" if got != want
+              else f"{len(got)} passes, {sum(v[1] for v in got.values())} readings")
+        check("increment volts: no other pass carries them (Lin Error, laser 2) -- a real "
+              "SQL NULL, never SafeJSON's 'null' text",
+              not leaked and len(rows) == 11,
+              f"{len(rows)} pass rows; leaked={leaked[:3]}")
+        check("increment volts: never folded into the recipe blob", not in_recipe,
+              f"{in_recipe[:3]}")
+        check("increment volts: the database rule finds the fixtures' 4 passes captured",
+              audit["passes"] == 4 and audit["captured"] == 4 and not audit["missed"]
+              and not audit["unverified"],
+              f"passes={audit['passes']} captured={audit['captured']} "
+              f"missed={audit['missed'][:3]} unverified={audit['unverified'][:3]}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("increment volts: the fixtures run through the pipeline", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        _mgr._db_manager, _dbpkg._db_manager = saved
+        if fdb is not None:
+            fdb.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_increment_volts_on_database(raw) -> None:
+    """On the copy: every laser-1 `Trim N` pass processed since the capture shipped carries
+    its TrimVolts curves. Rows that predate it are skipped (the back-fill's job, not a
+    failure). Until a pass is processed on a machine running this code there is nothing
+    to check here, and the detail says so; the fixture half above carries the teeth."""
+    a = _increment_volts_audit(raw, INCREMENT_VOLTS_SINCE)
+    since = a["passes"] - a["predates"]
+    check(f"increment volts: every laser-1 Trim N pass processed since "
+          f"{INCREMENT_VOLTS_SINCE} carries its TrimVolts curves",
+          not a["missed"],
+          f"missed={a['missed'][:3]} ({len(a['missed'])})" if a["missed"] else
+          f"{since} processed since ({a['captured']} carry them, {a['no_sheet']} whose "
+          f"workbook has no TrimVolts sheet); {a['predates']} of {a['passes']} predate "
+          f"the capture (skipped: back-fill)")
+    if a["unverified"]:
+        warn("increment volts: passes processed since the capture WITHOUT curves whose "
+             "workbook cannot be opened here to settle it",
+             f"{len(a['unverified'])}: {a['unverified'][:3]}")
+
+
 def main() -> int:
     # REQUIRED DB-path argv (2026-08-31; was optional with a production
     # default). The sweep opens its target read-write, and the old default —
@@ -2770,6 +2956,8 @@ def main() -> int:
     check_ft_parser_console_silence()
     check_ft_graded_window()
     check_ingest_group()
+    check_increment_volts_fixtures()
+    check_increment_volts_on_database(raw)
 
     # Ingest guard fires on a synthetic corrupt track.
     guard_track = TrackData(
@@ -3396,7 +3584,8 @@ STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
               "ft-silence": check_ft_parser_console_silence,
               "ft-window": check_ft_graded_window,
               "ingest": check_ingest_group,
-              "findings": check_findings_fixtures}
+              "findings": check_findings_fixtures,
+              "increment-volts": check_increment_volts_fixtures}
 
 
 if __name__ == "__main__":

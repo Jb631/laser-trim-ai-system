@@ -167,9 +167,6 @@ class ExcelParser:
             # Extract test date (needs xl for fallback to cell reading)
             test_date = self._extract_test_date(xl, file_path, format_type)
 
-            # Extract track data (needs xl)
-            tracks = self._extract_tracks(xl, file_path, format_type)
-
             # The laser parameter block for this file: resistance limits,
             # laser settings, ignored-point counts. Must be read here, while
             # `xl` is still open — it closes at the end of this `with` block,
@@ -180,6 +177,11 @@ class ExcelParser:
             # layout that produced nothing was the wrong layout") rather than
             # branched on system type, so a file is never assumed to be
             # exactly one layout.
+            #
+            # Read BEFORE the tracks (2026-09-24): laser 1's `TrimVolts N`
+            # sheets are indexed by this block's ignored-point counts, and
+            # reading it once here is cheaper than reading the sheet twice.
+            # It reads only its own sheets, so the order changes no value.
             trim_setup: Dict[str, Any] = {}
             for sheet, label_col, value_col in (
                     ("Track Parameters", 0, 1),     # System A
@@ -197,6 +199,10 @@ class ExcelParser:
                 if len(got) >= 3:
                     for k, v in got.items():
                         trim_setup.setdefault(k, v)
+
+            # Extract track data (needs xl)
+            tracks = self._extract_tracks(
+                xl, file_path, format_type, _tp.increment_volts_frame(trim_setup))
 
         # Build metadata after file is closed (metadata carries the IDENTITY,
         # extraction above used the FORMAT).
@@ -655,13 +661,19 @@ class ExcelParser:
                          file_path.name, type(exc).__name__, exc)
 
     def _extract_tracks(
-        self, xl: pd.ExcelFile, file_path: Path, system_type: SystemType
+        self, xl: pd.ExcelFile, file_path: Path, system_type: SystemType,
+        increment_frame: Tuple[Optional[int], Optional[int]] = (None, None),
     ) -> List[Dict[str, Any]]:
-        """Extract data for all tracks in the file."""
+        """Extract data for all tracks in the file.
+
+        `increment_frame` is (first_row, window) for laser 1's `TrimVolts`
+        sheets (`trim_passes.increment_volts_frame`); only the System B reader
+        uses it, since only laser 1 writes those sheets.
+        """
         if system_type == SystemType.A:
             return self._extract_system_a_tracks(xl, file_path)
         else:
-            return self._extract_system_b_tracks(xl, file_path)
+            return self._extract_system_b_tracks(xl, file_path, increment_frame)
 
     def _extract_system_a_tracks(self, xl: pd.ExcelFile, file_path: Path) -> List[Dict[str, Any]]:
         """Extract tracks from System A file."""
@@ -806,8 +818,15 @@ class ExcelParser:
         return bool(np.allclose(
             measured[both_present], theory[both_present], rtol=0, atol=1e-9))
 
-    def _extract_system_b_tracks(self, xl: pd.ExcelFile, file_path: Path) -> List[Dict[str, Any]]:
-        """Extract tracks from System B file."""
+    def _extract_system_b_tracks(
+        self, xl: pd.ExcelFile, file_path: Path,
+        increment_frame: Tuple[Optional[int], Optional[int]] = (None, None),
+    ) -> List[Dict[str, Any]]:
+        """Extract tracks from System B file.
+
+        `increment_frame` is (first_row, window) for this file's `TrimVolts`
+        sheets, from its Model Parameters; see `_read_trim_passes`.
+        """
         tracks = []
 
         # Same per-pass recipe sheet as System A (see _extract_system_a_tracks),
@@ -957,7 +976,8 @@ class ExcelParser:
                 track_data["trim_passes"] = self._read_trim_passes(
                     xl, SystemType.B, sys_b_track_id, start_row, recipes,
                     exclude_sheets=(no_cut_template_sheet,)
-                    if no_cut_template_sheet else ())
+                    if no_cut_template_sheet else (),
+                    increment_frame=increment_frame)
                 tracks.append(track_data)
 
         return tracks
@@ -1392,10 +1412,43 @@ class ExcelParser:
             return None
         return self._find_data_start(df, columns["position"])
 
+    # Laser 1's pass sheets: "Trim 1", "Trim 2", ... (never "Lin Error").
+    _TRIM_N_RE = re.compile(r"^trim\s+(\d+)$", re.I)
+
+    def _increment_volts_for(
+        self, xl: pd.ExcelFile, sheet: str, trimvolts: Dict[int, str],
+        increment_frame: Tuple[Optional[int], Optional[int]], track_id: str,
+    ) -> Dict[str, Any]:
+        """Laser 1's `TrimVolts N` capture for the pass sheet `Trim N`, or {}.
+
+        Never raises, and {} leaves the pass exactly as it was before this
+        capture existed: a failure here must cost the three new keys, never
+        the `Trim N` sweep read beside them. `Lin Error` has no TrimVolts, and
+        a touch-up file legitimately has none for a real `Trim N` (1 file in
+        4,972), so absence is not news -- DEBUG, like a sheet that won't read.
+        """
+        m = self._TRIM_N_RE.match(sheet.strip())
+        if not m:
+            return {}
+        n = int(m.group(1))
+        tv_sheet = trimvolts.get(n)
+        if tv_sheet is None:
+            logger.debug("No TrimVolts%d sheet beside %r (track %s)", n, sheet, track_id)
+            return {}
+        try:
+            df = pd.read_excel(xl, sheet_name=tv_sheet, header=None)
+            first_row, window = increment_frame
+            return _tp.read_increment_volts(df, first_row, window)
+        except Exception:
+            logger.debug("Could not read %r beside %r (track %s)", tv_sheet, sheet,
+                         track_id, exc_info=True)
+            return {}
+
     def _read_trim_passes(
         self, xl: pd.ExcelFile, system_type: SystemType, track_id: str,
         start_row: Optional[int], recipes: List[Dict[str, Any]],
         exclude_sheets: Sequence[str] = (),
+        increment_frame: Tuple[Optional[int], Optional[int]] = (None, None),
     ) -> List[Dict[str, Any]]:
         """Sweeps for every pass after the untrimmed one, each joined to its recipe.
 
@@ -1424,6 +1477,14 @@ class ExcelParser:
         try/except so one malformed sheet is skipped rather than discarding
         every pass already read for this track — real production files are
         messy.
+
+        System B format only: each `Trim N` pass also carries laser 1's
+        `TrimVolts N` sheet as `increment_volts` (one list of readings per
+        engaged position), `increment_volts_first_row` and
+        `increment_volts_truncated` -- see `trim_passes.read_increment_volts`.
+        `increment_frame` is (first_row, window) from the file's own Model
+        Parameters. Keyed on the FORMAT the caller passes, so a laser-3 label
+        never reaches it: laser 3 writes laser 2's sheets.
         """
         out: List[Dict[str, Any]] = []
         try:
@@ -1431,6 +1492,13 @@ class ExcelParser:
         except Exception:
             logger.warning("Could not list trim passes for track %s", track_id, exc_info=True)
             return out
+        trimvolts: Dict[int, str] = {}
+        if system_type == SystemType.B:
+            try:
+                trimvolts = _tp.trimvolts_sheets(xl.sheet_names)
+            except Exception:
+                logger.debug("Could not list TrimVolts sheets for track %s", track_id,
+                             exc_info=True)
         if exclude_sheets:
             excluded = {s.strip().lower() for s in exclude_sheets if s}
             sheets = [(idx, name) for idx, name in sheets
@@ -1456,6 +1524,9 @@ class ExcelParser:
                 entry.update(_tp.read_pass(df, system_type, start_row))
                 recipe = self._recipe_for_pass(sheet, idx, recipes)
                 entry.update({k: v for k, v in recipe.items() if k not in entry})
+                if system_type == SystemType.B:
+                    entry.update(self._increment_volts_for(
+                        xl, sheet, trimvolts, increment_frame, track_id))
             except Exception:
                 logger.warning(
                     "Could not read trim pass %r for track %s", sheet, track_id,

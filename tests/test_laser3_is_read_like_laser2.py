@@ -38,7 +38,8 @@ def test_extraction_dispatches_on_format_never_on_the_lts3_label(monkeypatch):
     p = ExcelParser()
     seen = []
     monkeypatch.setattr(ExcelParser, "_extract_system_a_tracks", lambda self, xl, fp: seen.append("A") or [])
-    monkeypatch.setattr(ExcelParser, "_extract_system_b_tracks", lambda self, xl, fp: seen.append("B") or [])
+    # `*_`: the B reader also takes laser 1's TrimVolts frame (2026-09-24).
+    monkeypatch.setattr(ExcelParser, "_extract_system_b_tracks", lambda self, xl, fp, *_: seen.append("B") or [])
     p._extract_tracks(None, Path("x"), SystemType.A)
     p._extract_tracks(None, Path("x"), SystemType.B)
     assert seen == ["A", "B"]
@@ -63,7 +64,7 @@ def test_a_real_lts3_file_would_be_read_by_the_laser_2_reader(tmp_path, monkeypa
     monkeypatch.setattr(ExcelParser, "_extract_system_a_tracks",
                         lambda self, xl, fp: used.append("A") or real_a(self, xl, fp))
     monkeypatch.setattr(ExcelParser, "_extract_system_b_tracks",
-                        lambda self, xl, fp: used.append("B") or [])
+                        lambda self, xl, fp, *_: used.append("B") or [])
     try:
         result = ExcelParser().parse_file(path)
     except Exception as exc:                       # an empty A-format workbook may yield no tracks
