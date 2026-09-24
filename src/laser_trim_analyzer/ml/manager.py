@@ -470,6 +470,12 @@ class MLManager:
             from laser_trim_analyzer.database.models import (
                 TrackResult, AnalysisResult, QAAlert, AlertType
             )
+            from laser_trim_analyzer.core.model_stats import failed_processing_statuses
+
+            # Never re-graded: failed records carry markers, not readings; an
+            # UNTRIMMED sweep has no trim verdict. Enum members, as the existing
+            # .name comparisons below expect names.
+            _UNGRADED = [s.name for s in failed_processing_statuses()] + [StatusType.UNTRIMMED.name]
 
             models_updated = set()
 
@@ -540,6 +546,7 @@ class MLManager:
                                 .where(
                                     and_(
                                         TrackResult.analysis_id.in_(analysis_subquery),
+                                        TrackResult.status.notin_(_UNGRADED),
                                         func.coalesce(
                                             TrackResult.untrimmed_sigma_gradient,
                                             TrackResult.sigma_gradient,
@@ -557,25 +564,25 @@ class MLManager:
                                 )
                             )
 
-                            # OPTIMIZATION 2: Bulk update track status based on sigma_pass and linearity_pass
-                            # Status = PASS if both pass, FAIL if both fail, WARNING otherwise
+                            # OPTIMIZATION 2: Bulk update track status using the SAME rule
+                            # ingest uses (core/analyzer.py, "Determine overall status"):
+                            # linearity is zero-tolerance -- a linearity failure is FAIL
+                            # whatever sigma says; sigma only ever moves PASS vs WARNING.
+                            # ERROR/PROCESSING_FAILED/UNTRIMMED tracks are never re-graded
+                            # (no verdict to correct), and a NULL linearity_pass is ungraded,
+                            # not a rejection.
                             # NOTE: Use .name (not .value) for SQLite - SQLAlchemy stores enum NAME not value
                             session.execute(
                                 update(TrackResult)
                                 .where(TrackResult.analysis_id.in_(analysis_subquery))
+                                .where(TrackResult.status.notin_(_UNGRADED))
+                                .where(TrackResult.linearity_pass.isnot(None))
                                 .values(
                                     status=case(
-                                        # Both pass -> PASS
-                                        (and_(
-                                            TrackResult.sigma_pass == True,
-                                            TrackResult.linearity_pass == True
-                                        ), StatusType.PASS.name),
-                                        # Both fail -> FAIL
-                                        (and_(
-                                            TrackResult.sigma_pass == False,
-                                            TrackResult.linearity_pass == False
-                                        ), StatusType.FAIL.name),
-                                        # Mixed -> WARNING
+                                        # Linearity is zero-tolerance: a linearity failure
+                                        # is FAIL whatever sigma says.
+                                        (TrackResult.linearity_pass == False, StatusType.FAIL.name),  # noqa: E712
+                                        (TrackResult.sigma_pass == True, StatusType.PASS.name),  # noqa: E712
                                         else_=StatusType.WARNING.name
                                     )
                                 )
@@ -654,7 +661,13 @@ class MLManager:
                             )
                             analysis_updates += result.rowcount
 
-                            # Update remaining analyses (all tracks PASS) -> PASS
+                            # Update remaining analyses (all tracks PASS) -> PASS.
+                            # Also requires an actual PASS track: without this, an
+                            # all-UNTRIMMED analysis and an ERROR analysis with no
+                            # tracks at all both satisfy "no ERROR/FAIL/WARNING
+                            # track" vacuously and would wrongly become PASS here --
+                            # they are left alone (whatever overall_status they
+                            # already had) instead.
                             result = session.execute(
                                 update(AnalysisResult)
                                 .where(AnalysisResult.model == model_name)
@@ -664,6 +677,11 @@ class MLManager:
                                     .where(TrackResult.status.in_([
                                         StatusType.ERROR.name, StatusType.FAIL.name, StatusType.WARNING.name
                                     ]))
+                                ))
+                                .where(exists(
+                                    select(TrackResult.id)
+                                    .where(TrackResult.analysis_id == AnalysisResult.id)
+                                    .where(TrackResult.status == StatusType.PASS.name)
                                 ))
                                 .values(overall_status=StatusType.PASS.name)
                             )
