@@ -629,6 +629,13 @@ def check_ft_regrade_dry_run(db) -> None:
           f"{report.missing} unreachable")
 
 
+# The four 8232-1 fixtures the findings and increment-volts checks were written against, BY NAME.
+# They used to glob the folder and demand exactly four files, so the two two-track fixtures added
+# on 2026-09-24 switched both checks off entirely (a FAIL, then the whole body skipped).
+_FOUR_8232_FIXTURES = ("dlts_8232-1_242.xls", "dlts_8232-1_243.xls",
+                       "lts_8232-1_193.xls", "lts_8232-1_194.xls")
+
+
 def check_findings_fixtures() -> None:
     """Process findings on the four trim fixtures: real-cut counting, grading fidelity, lever
     safety, and the cache round trip. Builds its own throwaway database (--only findings).
@@ -645,7 +652,8 @@ def check_findings_fixtures() -> None:
     from laser_trim_analyzer.findings.engine import refresh_findings
     from laser_trim_analyzer.findings.model import Finding, LEVERS
 
-    fixtures = sorted((REPO / "tests/fixtures/trim").glob("*.xls"))
+    fixtures = [f for f in (REPO / "tests/fixtures/trim" / n for n in _FOUR_8232_FIXTURES)
+                if f.is_file()]
     check("findings: the four trim fixtures are present", len(fixtures) == 4,
           f"{[f.name for f in fixtures]}")
     if len(fixtures) == 4:
@@ -2079,7 +2087,8 @@ def check_increment_volts_fixtures() -> None:
     pinned = {("lts_8232-1_193.xls", "Trim 1"): 199, ("lts_8232-1_193.xls", "Trim 2"): 719,
               ("lts_8232-1_194.xls", "Trim 1"): 880, ("lts_8232-1_194.xls", "Trim 2"): 795}
     want = {k: (49, v, 2, 0) for k, v in pinned.items()}
-    fixtures = sorted((REPO / "tests" / "fixtures" / "trim").glob("*.xls"))
+    fixtures = [f for f in (REPO / "tests" / "fixtures" / "trim" / n for n in _FOUR_8232_FIXTURES)
+                if f.is_file()]
     check("increment volts: the four trim fixtures are present", len(fixtures) == 4,
           f"{[f.name for f in fixtures]}")
     if len(fixtures) != 4:
