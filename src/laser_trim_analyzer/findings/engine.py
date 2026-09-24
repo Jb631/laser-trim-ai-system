@@ -4,7 +4,7 @@ Runs after an ingest, on the ingest worker thread (never the Tk thread), for
 the models that ingest touched. The screens only ever read the cache.
 """
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import text
@@ -24,7 +24,33 @@ def _laser_label(system: str) -> str:
     return laser_label(system)
 
 
-def compute_for_model(db, model: str) -> Tuple[Dict[str, Any], List[Finding]]:
+def _fleet_latest(db) -> Optional[datetime]:
+    """The newest trim file in the database -- what 'now' means to a finding.
+
+    Two kinds of row must not win this: a record whose PROCESSING failed carries
+    `file_date = datetime.now()` from the moment the analyser gave up
+    (`processor._create_minimal_metadata`), not a measurement -- counting it would mean
+    today's crash always looks like "the latest data". And a mistyped filename date can
+    put a file months in the future, which would make every model's real, current data
+    look "stale" by comparison. Neither exists in the work database today (checked
+    2026-09-23), so this changes nothing yet -- it is here for when one turns up.
+    """
+    from .data import _date
+    from laser_trim_analyzer.core.model_stats import _FAILED_PROCESSING
+    params: Dict[str, Any] = {f"failed{i}": name for i, name in enumerate(_FAILED_PROCESSING)}
+    placeholders = ", ".join(f":{k}" for k in params)
+    params["cutoff"] = datetime.now() + timedelta(days=1)
+    with db.session() as s:
+        v = s.execute(text(
+            "SELECT MAX(file_date) FROM analysis_results "
+            "WHERE system IN ('A','B','C') "
+            f"AND overall_status NOT IN ({placeholders}) "
+            "AND file_date <= :cutoff"), params).scalar()
+    return _date(v)
+
+
+def compute_for_model(db, model: str,
+                      fleet_latest: Optional[datetime] = None) -> Tuple[Dict[str, Any], List[Finding]]:
     tracks = load_model_tracks(db, model)
     # Every documented key exists from the first line. None = not computed; an empty list =
     # computed, and there is nothing. An analyzer that CRASHED is named in facts["errors"]: on
@@ -34,6 +60,8 @@ def compute_for_model(db, model: str) -> Tuple[Dict[str, Any], List[Finding]]:
                              "limit_tables": None, "cut_setting": None, "pass_burden": None, "errors": {}}
     if not tracks:
         return facts, []
+    if fleet_latest is None:
+        fleet_latest = _fleet_latest(db)
     latest = max(t.file_date for t in tracks)
     volume = sum(1 for t in tracks if t.file_date >= latest - timedelta(days=365))
     facts["annual_volume"] = volume
@@ -64,7 +92,8 @@ def compute_for_model(db, model: str) -> Tuple[Dict[str, Any], List[Finding]]:
     except Exception as exc:
         failed("limit_tables", exc)
     try:
-        cut_facts, cut_findings = cut_setting.analyze(model, tracks, _laser_label)  # stored verdicts only
+        cut_facts, cut_findings = cut_setting.analyze(model, tracks, _laser_label,
+                                                       now=fleet_latest)  # stored verdicts only
         facts["cut_setting"] = cut_facts
         findings += cut_findings
     except Exception as exc:
@@ -105,13 +134,14 @@ def refresh_findings(db, models: Optional[Iterable[str]] = None,
             models = [r[0] for r in s.execute(text(
                 "SELECT DISTINCT model FROM analysis_results "
                 "WHERE system IN ('A','B','C') AND model IS NOT NULL ORDER BY model"))]
+    fleet_latest = _fleet_latest(db)          # computed once -- "now" is the same instant for every model
     stored = n_models = 0
     failed_models: Dict[str, str] = {}
     analyzer_errors: Dict[str, Dict[str, str]] = {}
     for model in models:
         n_models += 1
         try:
-            facts, findings = compute_for_model(db, model)
+            facts, findings = compute_for_model(db, model, fleet_latest=fleet_latest)
             stored += db.replace_process_findings(model, facts, [f.to_dict() for f in findings])
             if facts["errors"]:
                 analyzer_errors[model] = dict(facts["errors"])

@@ -104,7 +104,9 @@ def test_a_crashed_analyzer_is_named_not_shown_as_silence(tmp_path, monkeypatch)
         raise RuntimeError("analyzer exploded")
     monkeypatch.setattr(engine.recipe_change, "analyze", boom)
     monkeypatch.setattr(engine.trim_effort, "analyze", boom)
-    facts, findings = engine.compute_for_model(None, "HOT")
+    # db=None with no fleet_latest would make compute_for_model query it from db itself --
+    # pass a fixed instant so this stays a test of load_model_tracks() being mocked, not the DB.
+    facts, findings = engine.compute_for_model(None, "HOT", fleet_latest=START)
     assert set(facts["errors"]) == {"recipe_change", "trim_effort"}
     assert facts["errors"]["recipe_change"] == "RuntimeError: analyzer exploded"
     assert facts["recipe_history"] is None and facts["trim_effort"] is None   # not computed...
@@ -116,7 +118,7 @@ def test_a_healthy_run_has_no_errors_and_an_explicit_history(tmp_path, monkeypat
     from laser_trim_analyzer.findings import engine
     hot = _hot()
     monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
-    facts, _ = engine.compute_for_model(None, "HOT")
+    facts, _ = engine.compute_for_model(None, "HOT", fleet_latest=START)
     assert facts["errors"] == {}
     assert isinstance(facts["recipe_history"], list) and isinstance(facts["trim_effort"], dict)
 
@@ -222,6 +224,44 @@ def test_a_crash_in_the_limit_table_analyzer_is_named_like_any_other(tmp_path, m
     def boom(*a, **k):
         raise RuntimeError("bad table")
     monkeypatch.setattr(engine.limit_tables, "analyze", boom)
-    facts, findings = engine.compute_for_model(None, "HOT")
+    facts, findings = engine.compute_for_model(None, "HOT", fleet_latest=START)
     assert facts["errors"] == {"limit_tables": "RuntimeError: bad table"} and facts["limit_tables"] is None
     assert [f.analyzer for f in findings] == ["ink_target"]
+
+
+# ---- Task 5: _fleet_latest -- what "now" means, and what cannot be trusted to say so ----
+
+def test_a_failed_processing_row_does_not_move_fleet_latest(tmp_path):
+    """A PROCESSING_FAILED/ERROR row's file_date is when the analyser gave up
+    (_create_minimal_metadata sets it to datetime.now()), not a measurement -- so a fresh
+    crash must never be able to make itself "the latest data"."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import AnalysisResult, StatusType, SystemType
+    from laser_trim_analyzer.findings.engine import _fleet_latest
+    db = _db(tmp_path)
+    with db.session() as s:
+        s.add(AnalysisResult(model="M", serial="M-1", system=SystemType.B,
+                             filename="m1.xls", file_date=START, overall_status=StatusType.PASS))
+    before = _fleet_latest(db)
+    with db.session() as s:
+        s.add(AnalysisResult(model="M", serial="M-2", system=SystemType.B,
+                             filename="m2.xls", file_date=datetime.now(), overall_status=StatusType.ERROR))
+    assert _fleet_latest(db) == before == START
+
+
+def test_a_row_dated_more_than_a_day_in_the_future_does_not_move_fleet_latest(tmp_path):
+    """A mistyped filename date can put a file months out -- which would make every OTHER
+    model's real, current data look "stale" by comparison if it were allowed to set "now"."""
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.models import AnalysisResult, StatusType, SystemType
+    from laser_trim_analyzer.findings.engine import _fleet_latest
+    db = _db(tmp_path)
+    with db.session() as s:
+        s.add(AnalysisResult(model="M", serial="M-1", system=SystemType.B,
+                             filename="m1.xls", file_date=START, overall_status=StatusType.PASS))
+    before = _fleet_latest(db)
+    with db.session() as s:
+        s.add(AnalysisResult(model="M", serial="M-2", system=SystemType.B,
+                             filename="m2.xls", file_date=datetime.now() + timedelta(days=400),
+                             overall_status=StatusType.PASS))
+    assert _fleet_latest(db) == before == START

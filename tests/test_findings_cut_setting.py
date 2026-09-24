@@ -216,3 +216,45 @@ def test_only_the_millimetre_laser_is_described_as_a_longer_or_shorter_cut():
                 + block(1000, days(START, 201)[-1], 120, 0.88, 0.3, 0.3, system="A"))
     f_a = only(cut_setting.analyze("M", tracks_a, label)[1])
     assert "a shorter cut" in f_a.summary
+
+
+from datetime import datetime, timedelta
+
+
+def test_a_setting_that_ran_for_under_sixty_days_cannot_be_crowned_best():
+    # 8397-2's shape: the "winner" ran for 23 days. It must not become the recommendation.
+    short = [track(i, START + timedelta(hours=9 * i), 1.0, 4000.0 if i % 2 else 5000.0, True)
+             for i in range(60)]                                    # 60 tracks over ~22 days, all passing
+    long = block(1000, days(START, 201)[-1], 240, 2.0, 0.4, 0.4)
+    facts, findings = cut_setting.analyze("M", short + long, label)
+    assert findings == []
+    listed = {s["setting"] for s in facts["Laser 1 (LTS) · Track A"]["settings"]}
+    assert 1.0 in listed                    # still shown as context, just not as the answer
+
+
+def test_a_setting_that_ran_long_enough_still_wins():
+    f = only(cut_setting.analyze("M", two_blocks(0.6, 0.3), label)[1])
+    assert f.evidence["best"] == 1.0
+
+
+def test_a_model_that_has_not_run_for_six_months_is_not_now_running():
+    tracks = two_blocks(0.6, 0.3)
+    newest = max(t.file_date for t in tracks)
+    f = only(cut_setting.analyze("M", tracks, label, now=newest + timedelta(days=400))[1])
+    assert "now running" not in f.title and "last ran" in f.title
+    assert f.expected_gain_points is None and f.tracks_per_year is None
+    assert f.evidence["stale"] is True
+
+
+def test_a_model_still_in_production_is_now_running():
+    tracks = two_blocks(0.6, 0.3)
+    newest = max(t.file_date for t in tracks)
+    f = only(cut_setting.analyze("M", tracks, label, now=newest + timedelta(days=10))[1])
+    assert "now running" in f.title and f.expected_gain_points is not None
+    assert f.evidence["stale"] is False
+
+
+def test_the_evidence_names_its_track_and_its_grade():
+    f = only(cut_setting.analyze("M", two_blocks(0.6, 0.3), label)[1])
+    assert f.evidence["track"] == "Track A"
+    assert f.evidence["grade"] == "two_periods"

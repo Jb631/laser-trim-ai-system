@@ -35,7 +35,7 @@ is a between-period comparison and a material-era effect cannot be excluded from
 the data alone. That disclosure travels with every finding, because the honest
 recommendation is "test this at the machine", not "change this".
 """
-from datetime import timedelta
+from datetime import datetime, timedelta
 from statistics import median
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -48,6 +48,12 @@ MIN_TOTAL = 150
 MIN_GAIN_POINTS = 8.0       # below this the difference is not worth disturbing a working laser
 MIN_PER_HALF = 15           # per incoming-resistance half, for the both-halves control
 CURRENT_DAYS = 120          # what the laser is set to now
+# Measured 2026-09-23 (rebuilt database): 80 live settings, median run 298 days, 13 under
+# 60 -- including 8397-2's 23-day "best", which is why a trial cannot be crowned winner.
+MIN_RUN_DAYS = 60
+# 8397-2's newest file is Apr 2025 against the fleet's newest of Sep 2026 -- nowhere near
+# "now". Past this many days behind the fleet, a group is reported as history, not a rate.
+STALE_DAYS = 180
 
 
 def _setting(t) -> Optional[float]:
@@ -176,6 +182,10 @@ def _span(rows) -> str:
     return f"{ds[0]} .. {ds[-1]}"
 
 
+def _span_days(rows) -> int:
+    return (max(t.file_date for t in rows) - min(t.file_date for t in rows)).days
+
+
 def _describe_group(rows, by_setting: Dict[float, List]) -> Dict[str, Any]:
     return {"n": len(rows), "window": _span(rows),
             "days_with_more_than_one_setting_pct": _overlap_share(rows),
@@ -188,8 +198,13 @@ def _describe_group(rows, by_setting: Dict[float, List]) -> Dict[str, Any]:
                          for s, g in sorted(by_setting.items())]}
 
 
-def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Finding]]:
-    """Facts for every group with more than one cut setting; a finding only where it is safe."""
+def analyze(model: str, tracks, laser_label,
+           now: Optional[datetime] = None) -> Tuple[Dict[str, Any], List[Finding]]:
+    """Facts for every group with more than one cut setting; a finding only where it is safe.
+
+    `now` is the fleet's newest trim file, not this model's -- a model that stopped running
+    months ago must not be reported as "now running" just because it once was.
+    """
     facts: Dict[str, Any] = {}
     findings: List[Finding] = []
     dated = [t for t in tracks if t.file_date is not None and t.passes]
@@ -230,11 +245,17 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
         rates = {s: r for s, r in rates.items() if r is not None}
         if current not in rates or len(rates) < 2:
             continue
-        best = max(rates, key=lambda s: (rates[s], -abs(s - current)))
+        # A trial is not a run: only a setting with MIN_RUN_DAYS of production behind it can be
+        # the recommendation. The current setting is always eligible -- it is what we compare to.
+        eligible = {s: r for s, r in rates.items()
+                    if s == current or _span_days(live[s]) >= MIN_RUN_DAYS}
+        if len(eligible) < 2:
+            continue
+        best = max(eligible, key=lambda s: (eligible[s], -abs(s - current)))
         facts[label]["current_setting"] = current
         if best == current:
             continue                                  # already on the best of the settings tried
-        gain = rates[best] - rates[current]
+        gain = eligible[best] - eligible[current]
         if gain < MIN_GAIN_POINTS:
             continue
         halves = _wins_both_halves(rows, best, current)
@@ -245,11 +266,18 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
         both_months, all_months = _concurrency(rows, best, current)
         # Three grades of evidence, weakest last. Mixed on the same day is as close to
         # randomised as this shop gets; running side by side over months still rules out a
-        # simple before/after; separate blocks do not, and must say so.
+        # simple before/after; separate blocks do not, and must say so. Computed once, then
+        # the strength text branches on it -- a single source of truth for both.
         if overlap is not None and overlap >= 25.0:
+            grade = "same_days"
+        elif all_months and both_months * 2 >= all_months:
+            grade = "side_by_side"
+        else:
+            grade = "two_periods"
+        if grade == "same_days":
             strength = (f"The two settings ran alongside each other on {overlap:.0f}% of production "
                         "days, so this is not a comparison of two periods.")
-        elif all_months and both_months * 2 >= all_months:
+        elif grade == "side_by_side":
             strength = (f"They ran side by side in {both_months} of the {all_months} months either "
                         f"was in use -- rarely on the same day, but not one after the other -- so a "
                         f"simple before-and-after change in material does not explain it. Worth "
@@ -282,30 +310,45 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
             direction = "a shorter cut" if best < current else "a longer cut"
         else:
             direction = "a lower setting" if best < current else "a higher setting"
+        # "now" is the FLEET's newest trim file, not this group's own -- a model that has
+        # not been on this laser in months must not be reported as "now running".
+        stale = now is not None and newest < now - timedelta(days=STALE_DAYS)
+        if stale:
+            title = (f"{laser_label(system)}: cut {best:g} passed {gain:.0f} points more often "
+                     f"than {current:g}, the setting it last ran at ({newest:%b %Y})")
+        else:
+            title = (f"{laser_label(system)}: cut {best:g} passed {gain:.0f} points more often "
+                     f"than the {current:g} now running")
+        summary = (
+            f"On the same limit table, {best:g} left {eligible[best]:.0f}% of "
+            f"{len(live[best]):,} tracks inside their linearity limits against "
+            f"{eligible[current]:.0f}% of {len(live[current]):,} at {current:g} "
+            f"({direction}). It wins in both halves of incoming resistance "
+            f"({halves['below']['best_pct']:.0f}% vs {halves['below']['current_pct']:.0f}% below "
+            f"{halves['median_resistance']:g} ohm, {halves['above']['best_pct']:.0f}% vs "
+            f"{halves['above']['current_pct']:.0f}% above), so the ink does not explain it. "
+            + strength)
+        if stale:
+            summary = (f"This model has not run on this laser since {newest:%B %Y}, so nothing "
+                       "here is running now -- it is the record of what worked. " + summary)
         findings.append(Finding(
             model=model, analyzer="cut_setting", category="Cut setting",
             lever="laser_settings", systems=(system,),
-            title=(f"{laser_label(system)}: cut {best:g} passed {gain:.0f} points more often "
-                   f"than the {current:g} now running"),
-            summary=(
-                f"On the same limit table, {best:g} left {rates[best]:.0f}% of "
-                f"{len(live[best]):,} tracks inside their linearity limits against "
-                f"{rates[current]:.0f}% of {len(live[current]):,} at {current:g} "
-                f"({direction}). It wins in both halves of incoming resistance "
-                f"({halves['below']['best_pct']:.0f}% vs {halves['below']['current_pct']:.0f}% below "
-                f"{halves['median_resistance']:g} ohm, {halves['above']['best_pct']:.0f}% vs "
-                f"{halves['above']['current_pct']:.0f}% above), so the ink does not explain it. "
-                + strength),
+            title=title,
+            summary=summary,
             n_units=len(live[best]) + len(live[current]),
             strength_name="points more often inside limits",
             strength_value=round(gain, 1),
-            expected_gain_points=round(gain, 1),
-            gain_definition=("percentage points of tracks leaving the laser inside their per-point "
-                             "linearity limits, best setting versus the setting now running, on one "
-                             "machine and one limit table"),
-            scope_annual_tracks=annual,
+            expected_gain_points=None if stale else round(gain, 1),
+            gain_definition=("" if stale else
+                             ("percentage points of tracks leaving the laser inside their per-point "
+                              "linearity limits, best setting versus the setting now running, on one "
+                              "machine and one limit table")),
+            scope_annual_tracks=0 if stale else annual,
             evidence={"group": facts[label], "best": best, "current": current,
                       "halves": halves, "days_mixed_pct": overlap,
                       "months_side_by_side": both_months, "months_total": all_months,
-                      "changeover": _changeover(rows, best, current)}))
+                      "changeover": _changeover(rows, best, current),
+                      "track": track_name, "grade": grade, "stale": stale,
+                      "last_ran": newest.date().isoformat()}))
     return facts, findings
