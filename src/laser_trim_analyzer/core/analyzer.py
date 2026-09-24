@@ -1218,10 +1218,13 @@ class Analyzer:
             linearity_spec=0.01,
             sigma_gradient=999.999,
             sigma_threshold=0.001,
-            sigma_pass=False,
+            # No verdict: nothing was graded. False here was counted as a linearity FAIL by
+            # every consumer that reads `linearity_pass is not None` (2026-09-23: 8856 laser 2
+            # read 27.7% instead of 49.0%). Same call enforce_measurement_backed_verdict makes.
+            sigma_pass=None,
             optimal_offset=0.0,
             linearity_error=999.999,
-            linearity_pass=False,
+            linearity_pass=None,
             linearity_fail_points=0,
             failure_probability=1.0,
             risk_category=RiskCategory.UNKNOWN,

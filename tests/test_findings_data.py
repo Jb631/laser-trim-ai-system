@@ -115,3 +115,19 @@ def test_a_stored_final_sweep_of_exact_zeros_loses_its_verdict_but_keeps_its_lim
     assert _is_blank_template([None] * 6 + [0.0] * 105)
     assert not _is_blank_template([0.0] * 9)                     # too few readings to call
     assert not _is_blank_template([0.0] * 50 + [1e-9]) and not _is_blank_template(None)
+
+
+def test_a_failed_processing_track_is_not_a_measurement(fixture_db):
+    """An ERROR track stored with linearity_pass=0 (every such row on the rebuilt work
+    database) must not reach the analyzers, which count every non-None verdict."""
+    from sqlalchemy import text
+    from laser_trim_analyzer.findings.data import load_model_tracks
+    before = load_model_tracks(fixture_db, "8232-1")
+    victim = before[0].track_id
+    with fixture_db.session() as s:
+        s.execute(text("UPDATE track_results SET status='ERROR', linearity_pass=0 WHERE id=:i"),
+                  {"i": victim})
+        s.commit()
+    after = load_model_tracks(fixture_db, "8232-1")
+    assert victim not in {t.track_id for t in after}
+    assert len(after) == len(before) - 1

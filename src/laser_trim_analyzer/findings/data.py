@@ -9,6 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 
 from .grading import in_limits
+from ..core.model_stats import _FAILED_PROCESSING
+
+# Status NAMES, as SQLAlchemy stores the enum. The one definition, never re-typed.
+_FAILED_SQL = ", ".join(f"'{name}'" for name in _FAILED_PROCESSING)
 
 
 @dataclass(frozen=True)
@@ -135,7 +139,9 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
             "       p.lower_limits, p.laser_cut_length "
             "FROM trim_passes p JOIN track_results t ON t.id = p.track_result_id "
             "JOIN analysis_results a ON a.id = t.analysis_id "
-            "WHERE a.model = :m ORDER BY p.track_result_id, p.pass_index"), {"m": model}).fetchall()
+            "WHERE a.model = :m AND a.system IN ('A','B','C') "
+            f"AND t.status NOT IN ({_FAILED_SQL}) "
+            "ORDER BY p.track_result_id, p.pass_index"), {"m": model}).fetchall()
         track_rows = s.execute(text(
             "SELECT t.id, a.file_date, a.system, t.untrimmed_errors, t.untrimmed_resistance, "
             "       t.trimmed_resistance, t.error_data, t.upper_limits, t.lower_limits, t.linearity_pass, "
@@ -144,6 +150,7 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
             "FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
             "LEFT JOIN trim_setup s ON s.analysis_id = a.id "
             "WHERE a.model = :m AND a.system IN ('A','B','C') "
+            f"AND t.status NOT IN ({_FAILED_SQL}) "
             "ORDER BY a.file_date, t.id"), {"m": model}).fetchall()
     passes: Dict[int, List[PassView]] = {}
     for tid, idx, sheet, err, up, lo, cut in pass_rows:
