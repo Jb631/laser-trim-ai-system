@@ -6,6 +6,7 @@ recipe they are the record of what each cut did. Pass index 0 IS the
 untrimmed sweep and is already stored on the track row, so it never appears
 here.
 """
+import json
 import logging
 import numbers
 import re
@@ -187,6 +188,48 @@ def read_pass(df: pd.DataFrame, system: SystemType, start_row: int) -> Dict[str,
         for key, idx in _A_PER_POINT.items():
             out[key] = _aligned(df, idx, start_row, n, key)
     return out
+
+
+def _decode_json(value: Any) -> Any:
+    """An already-decoded value (a dict/list, the ORM's own shape) passes through
+    unchanged; a raw-SQL caller's string/bytes is decoded; anything that won't parse is
+    treated as absent rather than raised."""
+    if isinstance(value, (str, bytes)):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    return value
+
+
+def initial_trim_values(row_value: Any, recipe: Any) -> Optional[List[Optional[float]]]:
+    """The initial trim value per position (`_A_PER_POINT["initial_trim_value"]`, column M
+    of a laser-2/3 pass sheet) -- "where the output started" beside `trim_target` ("where it
+    had to go") and `final_trim_value` ("where it ended"). Read the same way whichever place
+    a row keeps it in, so a caller never has to know which.
+
+    New rows (2026-09-24) store it in `TrimPass.initial_trim_value`'s own column. Rows
+    written before that column existed -- ~83,000 of them, never migrated at start-up, since
+    a heavy UPDATE across that many rows at start-up is the shape of the 2026-09-14 night --
+    still carry it inside `recipe['initial_trim_value']`, mixed with ~38 unrelated scalar
+    settings (`_write_trim_passes` folded every key `per_point`/`increment` didn't name into
+    `recipe`, and this one wasn't named until now).
+
+    `row_value` wins whenever the row has one. A row with no capture there (a laser-1 row,
+    whose sheets have no such column; any other "not captured" row) reads back through the
+    ORM as `[]` -- SafeJSON's `none_as` default -- which is falsy, so it falls through to
+    `recipe` correctly with no special-casing. `recipe` accepts a decoded dict (the ORM's
+    own shape) or a raw JSON string/bytes (a raw-SQL caller's shape). Laser 1 has neither,
+    and this returns None.
+
+    The SQL equivalent, for a caller that would rather stay in one query:
+    `COALESCE(p.initial_trim_value, json_extract(p.recipe, '$.initial_trim_value'))`.
+    """
+    value = _decode_json(row_value)
+    if value:
+        return value
+    recipe = _decode_json(recipe)
+    return recipe.get("initial_trim_value") if isinstance(recipe, dict) else None
 
 
 # ---------------------------------------------------------------------------

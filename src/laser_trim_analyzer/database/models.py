@@ -625,6 +625,17 @@ class TrimPass(Base):
     pred_deltas = Column(SafeJSON, nullable=True)
     used_deltas = Column(SafeJSON, nullable=True)
     trim_target = Column(SafeJSON, nullable=True)
+    # The value AT EACH POSITION before this cut (column M); `final_trim_value` below is
+    # after it. Read by the parser since day one (core/trim_passes._A_PER_POINT) but not
+    # given its own column until 2026-09-24 -- until then it fell into `recipe` below, mixed
+    # with ~38 unrelated scalar settings. Existing rows (~83,000, NOT migrated at start-up --
+    # see the migration comment in manager.py) still carry it there; read either form back
+    # through `trim_passes.initial_trim_values(row.initial_trim_value, row.recipe)`, never
+    # `row.initial_trim_value` alone. Like `increment_volts` below, "not captured" (laser 1,
+    # whose sheets have no such column) is a real SQL NULL, never the JSON text 'null' that a
+    # plain `None` through SafeJSON writes for its per-point siblings above -- see
+    # _write_trim_passes.
+    initial_trim_value = Column(SafeJSON, nullable=True)
     final_trim_value = Column(SafeJSON, nullable=True)
 
     # Laser 1 only (2026-09-24): its `TrimVolts N` sheet, one list per engaged

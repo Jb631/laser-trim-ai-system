@@ -933,6 +933,34 @@ class DatabaseManager:
                 self._meta_set(session, INCREMENT_VOLTS_SINCE_KEY,
                                datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f"))
 
+            # Migration: initial_trim_value gets its own column on trim_passes
+            # (2026-09-24; see TrimPass.initial_trim_value). Metadata-only ADD
+            # COLUMN -- no data is moved. The ~83,000 existing laser-2/3 pass
+            # rows keep the value inside `recipe`, where it has always been; a
+            # heavy UPDATE across them at start-up is the shape of the
+            # 2026-09-14 night. They read back the same value as a new row
+            # through trim_passes.initial_trim_values(row.initial_trim_value,
+            # row.recipe) -- no "since" record is needed the way increment_volts
+            # has one, because that helper's recipe fallback works forever, not
+            # just until a back-fill catches up. No DEFAULT: a default would
+            # make an old row indistinguishable from a laser-1 row that never
+            # had the value at all.
+            try:
+                session.execute(text("SELECT initial_trim_value FROM trim_passes LIMIT 1"))
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                logger.info("Running migration: Adding initial_trim_value column")
+                try:
+                    session.execute(text(
+                        "ALTER TABLE trim_passes ADD COLUMN initial_trim_value JSON"))
+                    session.commit()
+                    logger.info("Migration completed: Added initial_trim_value column")
+                except Exception as e:
+                    if ("duplicate column" not in str(e).lower()
+                            and "already exists" not in str(e).lower()):
+                        logger.warning(f"initial_trim_value migration warning: {e}")
+                    session.rollback()
+
             # Migration: Add measured_electrical_angle column to track_results
             try:
                 session.execute(text("SELECT measured_electrical_angle FROM track_results LIMIT 1"))
@@ -3737,6 +3765,16 @@ class DatabaseManager:
         from sqlalchemy import null as sql_null
         increment = ("increment_volts", "increment_volts_first_row",
                      "increment_volts_truncated")
+        # The initial trim value per position (2026-09-24): given its own column rather
+        # than left to fall into `recipe`, where it was the one per_point key `_A_PER_POINT`
+        # reads that this writer never named -- see TrimPass.initial_trim_value. Same
+        # real-SQL-NULL convention as increment_volts above, for the same reason: laser 1
+        # has no such column at all (the key is absent from the pass dict, not merely
+        # empty), so a plain `p.get` stored through SafeJSON would write the JSON text
+        # 'null', not NULL. A laser-2/3 pass always carries the key (even the rare one with
+        # no real reading in it is a non-empty, position-aligned list of Nones -- captured,
+        # just empty), so this only ever takes the NULL branch for laser 1.
+        initial_trim = ("initial_trim_value",)
         # pass_sheets has no dedup guard upstream: two differently-named sheets
         # that normalise to the same leading number would produce two passes
         # with the same pass_index and collide on the (track_result_id,
@@ -3771,8 +3809,10 @@ class DatabaseManager:
             recipe = {k: v for k, v in p.items()
                       if k not in ("positions", "errors", "upper_limits",
                                    "lower_limits", "pass_index", "sheet")
-                      and k not in per_point and k not in increment}
+                      and k not in per_point and k not in increment
+                      and k not in initial_trim}
             curves = p.get("increment_volts")
+            initial = p.get("initial_trim_value")
             session.add(TrimPass(
                 track_result_id=db_track.id,
                 pass_index=idx,
@@ -3781,6 +3821,7 @@ class DatabaseManager:
                 positions=p.get("positions"), errors=p.get("errors"),
                 upper_limits=p.get("upper_limits"), lower_limits=p.get("lower_limits"),
                 **{k: p.get(k) for k in per_point},
+                initial_trim_value=initial if initial else sql_null(),
                 increment_volts=curves if curves else sql_null(),
                 increment_volts_first_row=(p.get("increment_volts_first_row")
                                            if curves else None),

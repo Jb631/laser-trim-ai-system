@@ -2335,6 +2335,143 @@ def check_increment_volts_corpus() -> None:
           "; ".join(why) if why else f"all of them, across all {len(parsed)} workbooks")
 
 
+# ---- initial_trim_value gets its own column (2026-09-24) --------------------
+# Laser 2 (DLTS) and laser 3 (LTS3, read in laser 2's format) pass sheets carry, per
+# position, the trim target (column L), the INITIAL trim value (M) and the final trim
+# value (N). The parser has always read column M (core/trim_passes._A_PER_POINT), but
+# until now `_write_trim_passes` folded it into the pass row's `recipe` JSON blob instead
+# of giving it its own column. Existing rows are NOT migrated at start-up -- a heavy
+# UPDATE across ~83,000 rows at start-up is the shape of the 2026-09-14 night -- so they
+# keep the value in `recipe` and must read back the same through
+# `trim_passes.initial_trim_values`.
+
+def check_initial_trim_value_fixtures() -> None:
+    """Through the real pipeline, into a throwaway database (--only initial-trim-value):
+    a laser-2 (DLTS) Trim N pass gets its own `initial_trim_value` column, the recipe blob
+    no longer carries the key, and a laser-1 (LTS) pass has it in neither place (its sheets
+    have no such column).
+
+    Falsify before trusting (2026-09-24): make `_write_trim_passes` store `sql_null()` for
+    initial_trim_value regardless of the parsed value -- the first check below goes FAIL
+    (no DLTS pass carries a value). Stop excluding the key from `recipe` -- the second check
+    FAILs. Let a laser-1 pass carry a plain `None` through SafeJSON instead of `sql_null()`
+    -- the third check FAILs (the JSON text 'null' is not IS NULL, so it would read as
+    "leaked").
+    """
+    import json as _json
+    import shutil
+    import tempfile
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+
+    dlts = REPO / "tests" / "fixtures" / "trim" / "dlts_8232-1_243.xls"
+    lts = REPO / "tests" / "fixtures" / "trim" / "lts_8232-1_193.xls"
+    check("initial trim value: both fixtures are present", dlts.exists() and lts.exists(),
+          f"dlts={dlts.exists()} lts={lts.exists()}")
+    if not (dlts.exists() and lts.exists()):
+        return
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None))
+    tmp = Path(tempfile.mkdtemp(prefix="initial_trim_value_sweep_"))
+    fdb = None
+    try:
+        fdb = _mgr.DatabaseManager(tmp / "itv.db")
+        _mgr._db_manager = fdb                 # BOTH globals: a Processor must never
+        _dbpkg._db_manager = fdb               # reach the configured database.
+        proc = Processor(use_ml=False)
+        for f in (dlts, lts):
+            fdb.save_analysis(proc.process_file(f))
+        conn = sqlite3.connect(f"file:{tmp / 'itv.db'}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT a.system, p.sheet, p.initial_trim_value, p.recipe FROM trim_passes p "
+                "JOIN track_results t ON t.id = p.track_result_id "
+                "JOIN analysis_results a ON a.id = t.analysis_id").fetchall()
+        finally:
+            conn.close()
+        dlts_real, dlts_missing, in_recipe, laser1_leaked, laser1_rows = 0, [], [], [], 0
+        for system, sheet, raw_value, recipe_raw in rows:
+            recipe = _json.loads(recipe_raw) if recipe_raw else None
+            in_recipe_here = isinstance(recipe, dict) and "initial_trim_value" in recipe
+            if system in ("A", "C"):
+                values = _json.loads(raw_value) if raw_value is not None else None
+                if values and any(v is not None for v in values):
+                    dlts_real += 1
+                else:
+                    dlts_missing.append(sheet)
+                if in_recipe_here:
+                    in_recipe.append(sheet)
+            else:                                       # laser 1: no such column at all
+                laser1_rows += 1
+                if raw_value is not None or in_recipe_here:
+                    laser1_leaked.append(sheet)
+        check("initial trim value: every DLTS Trim N fixture pass carries a real value "
+              "through its own column",
+              dlts_real > 0 and not dlts_missing,
+              f"{dlts_real} with values; missing={dlts_missing[:3]}")
+        check("initial trim value: never folded into the recipe blob any more",
+              not in_recipe, f"{in_recipe[:3]}")
+        check("initial trim value: a laser-1 pass has it in neither place (its sheets "
+              "have no such column)",
+              laser1_rows > 0 and not laser1_leaked,
+              f"{laser1_rows} laser-1 rows; leaked={laser1_leaked[:3]}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("initial trim value: the fixtures run through the pipeline", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        _mgr._db_manager, _dbpkg._db_manager = saved
+        if fdb is not None:
+            fdb.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_initial_trim_value_on_database(raw) -> None:
+    """On the copy: every laser-2/3 Trim pass whose `recipe` blob already carries a real
+    `initial_trim_value` reads that SAME value back through `trim_passes.initial_trim_values`.
+
+    An unmigrated copy's rows are ALL "old rows" -- the migration adds the column but writes
+    no data into it, by design (no start-up backfill of ~83,000 rows) -- so this exercises
+    the recipe-fallback path at full production scale, not just a synthetic test row. FAIL
+    only when the helper LOSES a value its row's recipe already had -- never on the small
+    residual of passes whose sheet genuinely had nothing there (measured on the research
+    corpus at 0.1-0.3% of laser-2/3 passes). Asserting 0 there would fail on real data for a
+    reason that is not a bug -- exactly the trap this file's own docstring warns against.
+
+    Falsify before trusting (2026-09-24): make the helper ignore `recipe` -- every row with
+    a real recipe value but no column value reads back None, and `lost` stops being 0.
+    """
+    import json as _json
+    from laser_trim_analyzer.core.trim_passes import initial_trim_values
+
+    rows = raw.execute(
+        "SELECT p.initial_trim_value, p.recipe FROM trim_passes p "
+        "JOIN track_results t ON t.id = p.track_result_id "
+        "JOIN analysis_results a ON a.id = t.analysis_id "
+        "WHERE a.system IN ('A', 'C')").fetchall()
+    total = len(rows)
+    if total == 0:
+        warn("initial trim value: no laser-2/3 Trim passes on this copy to check")
+        return
+    recipe_real = helper_real = lost = 0
+    for raw_value, recipe_raw in rows:
+        recipe = _json.loads(recipe_raw) if recipe_raw else None
+        row_value = _json.loads(raw_value) if raw_value is not None else None
+        recipe_values = recipe.get("initial_trim_value") if isinstance(recipe, dict) else None
+        recipe_has_real = bool(recipe_values) and any(v is not None for v in recipe_values)
+        helper_values = initial_trim_values(row_value, recipe)
+        helper_has_real = bool(helper_values) and any(v is not None for v in helper_values)
+        recipe_real += int(recipe_has_real)
+        helper_real += int(helper_has_real)
+        lost += int(recipe_has_real and not helper_has_real)
+    check("initial trim value: the helper never loses a value its row's recipe already had "
+          f"({recipe_real} of {total} laser-2/3 Trim passes on this copy carry a real "
+          "value in recipe)",
+          lost == 0, f"lost={lost}")
+    check("initial trim value: the helper's coverage matches the recipe's exactly "
+          "(no under-reading, no phantom reads)",
+          helper_real == recipe_real, f"helper={helper_real} recipe={recipe_real}")
+
+
 def main() -> int:
     # REQUIRED DB-path argv (2026-08-31; was optional with a production
     # default). The sweep opens its target read-write, and the old default —
@@ -3174,6 +3311,8 @@ def main() -> int:
     check_increment_volts_fixtures()
     check_increment_volts_corpus()
     check_increment_volts_on_database(raw)
+    check_initial_trim_value_fixtures()
+    check_initial_trim_value_on_database(raw)
 
     # Ingest guard fires on a synthetic corrupt track.
     guard_track = TrackData(
@@ -3802,7 +3941,8 @@ STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
               "ingest": check_ingest_group,
               "findings": check_findings_fixtures,
               "increment-volts": lambda: (check_increment_volts_fixtures(),
-                                          check_increment_volts_corpus())}
+                                          check_increment_volts_corpus()),
+              "initial-trim-value": check_initial_trim_value_fixtures}
 
 
 if __name__ == "__main__":
