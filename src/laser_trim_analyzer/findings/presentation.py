@@ -204,6 +204,32 @@ def statement(finding: Dict[str, Any]) -> str:
     return title
 
 
+def _merged_statement(members: Sequence[Dict[str, Any]]) -> str:
+    """The statement for a MERGED row (arrange() found more than one finding under one
+    _merge_key) -- the same wording as statement(), except it never names a single track: a
+    merged row is about every track in it, and its "both tracks"/"N tracks" tag (_tags) already
+    says how many. Computed from every member, not from member order -- a lone `text =
+    statement(fnd)` computed before merging (final review, 2026-09-24) named whichever finding's
+    track happened to be first in `findings`, so it could read "Track A ... last ran on that
+    limit table" on a row tagged "both tracks". Uses the LATEST `last_ran` among the members.
+
+    Only cut_setting findings ever merge (see _merge_key), so this only has to handle that shape,
+    and every member is guaranteed the same laser/best/current/stale/ran_on_laser_since -- those
+    are the merge key itself.
+    """
+    fnd = members[0]
+    ev = fnd.get("evidence") or {}
+    best, current = float(ev["best"]), float(ev["current"])
+    if not ev.get("stale"):
+        return f"{_laser(fnd)}: cut {current:g} → try {best:g}"
+    last_ran_values = [(m.get("evidence") or {}).get("last_ran") for m in members]
+    last_ran = max((v for v in last_ran_values if v), default=None)
+    if _ran_on_laser_since(ev):
+        return (f"{_laser(fnd)}: {best:g} did better than {current:g}, "
+                f"last ran on that limit table {_month(last_ran)}")
+    return f"{_laser(fnd)}: {best:g} did better than {current:g}, last run {_month(last_ran)}"
+
+
 def _merge_key(finding) -> Optional[Tuple]:
     """Same model, analyzer and recommendation, differing only by track -> one row.
 
@@ -343,6 +369,11 @@ def arrange(findings: Sequence[Dict[str, Any]], *, include_empty: bool = True) -
             r.tags = _tags(r.findings)
             # Sorted, so a refresh that returns the merged findings in another order keeps the key.
             r.ident = tuple(sorted((_identity(x) for x in r.findings), key=repr))
+            if len(r.findings) > 1:
+                # Recompute explicitly from every member -- see _merged_statement. r.statement/base
+                # were set from whichever finding created the row, which must not stand once a
+                # second one has merged into it.
+                r.statement = r.base = _merged_statement(r.findings)
         _name_what_differs(rows)
         _unique_keys(rows)
         _sort(spec.key, rows)

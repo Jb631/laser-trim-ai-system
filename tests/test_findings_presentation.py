@@ -261,3 +261,36 @@ def test_two_tracks_whose_rows_would_say_different_things_are_not_merged():
     gone = cut(track="Track B", ev={"stale": True, "ran_on_laser_since": False, "last_ran": "2026-01-12",
                                     "table": "t1"})
     assert len(rows_of(P.arrange([moved, gone]), "yield")) == 2
+
+
+# ---- A merged row never names one track (review finding, 2026-09-24) -------------------------------
+# Dual-track models share limits, so a stale cut_setting finding for each track merges into one
+# "both tracks" row -- but the row's statement used to be computed before the merge, from whichever
+# finding happened to create it, so it could still read "Track A ... last ran on that limit table"
+# while tagged "both tracks". A merged row must name no single track; an unmerged row still does.
+
+def test_a_merged_stale_row_names_no_single_track_and_uses_the_latest_month():
+    a = cut(track="Track A", ev={"stale": True, "ran_on_laser_since": True,
+                                  "last_ran": "2025-11-04", "table": "t1"})
+    b = cut(track="Track B", ev={"stale": True, "ran_on_laser_since": True,
+                                  "last_ran": "2026-01-12", "table": "t1"})
+    rows = rows_of(P.arrange([a, b]), "yield")
+    assert len(rows) == 1 and rows[0].merged and "both tracks" in rows[0].tags
+    stmt = rows[0].statement
+    assert "Track A" not in stmt and "Track B" not in stmt
+    assert stmt == ("Laser 1 (LTS): 6800 did better than 6900, "
+                     "last ran on that limit table Jan 2026")           # the LATER of the two months
+
+    # Order must not matter: arrange() should not read the merged text off whichever finding
+    # happened to create the row.
+    reordered = rows_of(P.arrange([b, a]), "yield")
+    assert reordered[0].statement == stmt
+
+
+def test_an_unmerged_stale_row_still_names_its_track():
+    a = cut(track="Track A", ev={"stale": True, "ran_on_laser_since": True,
+                                  "last_ran": "2026-01-12", "table": "t1"})
+    rows = rows_of(P.arrange([a]), "yield")
+    assert len(rows) == 1 and not rows[0].merged
+    assert rows[0].statement == ("Laser 1 (LTS): 6800 did better than 6900, Track A "
+                                  "last ran on that limit table Jan 2026")
