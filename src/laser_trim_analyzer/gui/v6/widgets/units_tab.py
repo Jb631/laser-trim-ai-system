@@ -28,6 +28,17 @@ _COLUMNS = [("serial", "Serial"), ("file_date", "Date"), ("overall_status", "Sta
 INITIAL_ROWS = 50
 
 
+def error_reason_cell_text(reason: str) -> str:
+    """The *Linearity error* cell for an ERROR row that carries a reason.
+
+    "not graded: <reason>", shortened to 60 characters (ellipsis included) so
+    one long parser/analyzer message can't blow out the row height in this
+    narrow column. Pure, so the truncation is testable on its own.
+    """
+    text = f"not graded: {reason}"
+    return text if len(text) <= 60 else text[:59] + "…"
+
+
 def show_all_label(total: int, noun: str, expanded: bool) -> str:
     """The button's wording. Pure, so the phrasing is testable.
 
@@ -235,12 +246,22 @@ class _UnitRow(ctk.CTkFrame):
         # (live-walk finding, 2026-07-08: a column of plain-white 'Fail').
         _status_color = {"Fail": theme.TIER_OOC, "FAIL": theme.TIER_OOC,
                          "Warning": theme.TIER_WARNING, "WARNING": theme.TIER_WARNING}
+        # An ERROR row has no linearity_error value (nothing was graded) — that
+        # cell would otherwise just read "—". Show why instead, when the
+        # loader found a reason (analysis_results.error_reason, or a
+        # COALESCE onto the track's own words for rows older than that column).
+        is_error_row = str(unit.get("overall_status", "")).upper() == "ERROR"
+        reason = unit.get("error_reason") if is_error_row else None
         for key, _ in _COLUMNS:
             v = unit.get(key)
-            txt = (v.strftime("%Y-%m-%d") if hasattr(v, "strftime")
-                   else f"{v:.4g}" if isinstance(v, float) else str(v) if v is not None else "—")
-            color = _status_color.get(txt, theme.TEXT_PRIMARY) if key == "overall_status" \
-                else theme.TEXT_PRIMARY
+            if key == "linearity_error" and reason:
+                txt = error_reason_cell_text(reason)
+                color = theme.TEXT_SECONDARY
+            else:
+                txt = (v.strftime("%Y-%m-%d") if hasattr(v, "strftime")
+                       else f"{v:.4g}" if isinstance(v, float) else str(v) if v is not None else "—")
+                color = _status_color.get(txt, theme.TEXT_PRIMARY) if key == "overall_status" \
+                    else theme.TEXT_PRIMARY
             lbl = ctk.CTkLabel(self, text=txt, font=theme.font(theme.SIZE_BODY),
                                text_color=color)
             lbl.pack(side="left", expand=True, fill="x", padx=theme.SPACE_SM, pady=theme.SPACE_XS)

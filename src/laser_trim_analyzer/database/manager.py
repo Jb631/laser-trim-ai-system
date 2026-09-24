@@ -55,6 +55,14 @@ from laser_trim_analyzer.utils.hashing import calculate_file_hash, stat_once
 logger = logging.getLogger(__name__)
 
 
+# Default sentinel for `_record_processed_file`'s `marker_reason` param: `None`
+# is a legitimate VALUE there (a track-level ERROR has always left the
+# file-level `errors` empty), so the "caller didn't pass one" fallback can't
+# be spelled as `marker_reason is None` -- that would silently replace a
+# real None with `reason` and start marking track-level ERRORs as unreadable.
+_UNSET = object()
+
+
 def _error_reason(analysis) -> Optional[str]:
     """What an ERROR result says went wrong, in one short line.
 
@@ -858,6 +866,24 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"linearity_spec_warning migration warning (may already exist): {e}")
 
+            # Migration: Add error_reason column to analysis_results (2026-09-23).
+            # Why overall_status is ERROR, for the 237 rows on the rebuild that
+            # couldn't say -- see core/processor.py's error_reason_of(). Not
+            # back-filled: the Model page COALESCEs onto track_results'
+            # linearity_spec_warning/anomaly_reason for rows written before
+            # this column existed.
+            try:
+                session.execute(text("SELECT error_reason FROM analysis_results LIMIT 1"))
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                logger.info("Running migration: Adding error_reason column")
+                try:
+                    session.execute(text("ALTER TABLE analysis_results ADD COLUMN error_reason TEXT"))
+                    session.commit()
+                    logger.info("Migration completed: Added error_reason column")
+                except Exception as e:
+                    logger.warning(f"error_reason migration warning (may already exist): {e}")
+
             # Migration: Add measured_electrical_angle column to track_results
             try:
                 session.execute(text("SELECT measured_electrical_angle FROM track_results LIMIT 1"))
@@ -1640,7 +1666,14 @@ class DatabaseManager:
                 analysis.metadata.file_path,
                 db_analysis.id,
                 success=is_success,
-                reason=_error_reason(analysis),
+                # The row's own error_message: analysis_results.error_reason
+                # when the processor set one (track-level ERRORs included),
+                # else the same file-level text the marker below uses.
+                reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
+                # The marker's reason stays the file-level text ONLY -- see
+                # _record_processed_file's docstring for why this must not
+                # change which files get retried.
+                marker_reason=_error_reason(analysis),
             )
 
             logger.debug(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
@@ -1693,7 +1726,9 @@ class DatabaseManager:
                                 analysis.metadata.file_path,
                                 db_analysis.id,
                                 success=is_success,
-                                reason=_error_reason(analysis),
+                                # See save_analysis for why reason/marker_reason differ.
+                                reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
+                                marker_reason=_error_reason(analysis),
                             )
 
                             saved_ids.append(db_analysis.id)
@@ -1927,6 +1962,7 @@ class DatabaseManager:
         analysis_id: int,
         success: bool = True,
         reason: Optional[str] = None,
+        marker_reason=_UNSET,
     ) -> None:
         """Record a file as processed.
 
@@ -1935,8 +1971,23 @@ class DatabaseManager:
             file_path: Path to the processed file
             analysis_id: ID of the saved AnalysisResult
             success: False for ERROR results — allows retry on next run
-            reason: the ERROR's own words, used for the failure marker below
+            reason: the ERROR's own words, written to THIS row's error_message
+                (analysis_results.error_reason when the caller has one, else
+                the file-level `errors` text) — what the Model page shows.
+            marker_reason: the file-level `errors` text ONLY, used for the
+                retry-suppression marker below. Deliberately NOT `reason`:
+                which files get retried must not change with the addition of
+                analysis_results.error_reason (2026-09-23) — a track-level
+                ERROR (bad limit columns, too few points) has always left
+                `errors` empty and so has never gotten a marker; that stays
+                true even though it now gets a `reason` for display. Left
+                unpassed (the `_UNSET` default, not `None` — a track-level
+                ERROR legitimately passes `marker_reason=None`, which must
+                NOT fall back to `reason`), callers get the old one-value
+                behaviour.
         """
+        if marker_reason is _UNSET:
+            marker_reason = reason
         file_path = Path(file_path)
 
         # One stat for existence, size and mtime: on the work share each
@@ -1962,6 +2013,7 @@ class DatabaseManager:
                 file_modified_date=datetime.fromtimestamp(file_stat.st_mtime),
                 analysis_id=analysis_id,
                 success=success,
+                error_message=(None if success else reason),
             )
             session.add(processed_file)
             session.flush()
@@ -1977,6 +2029,7 @@ class DatabaseManager:
                 DBProcessedFile.success: success,
                 DBProcessedFile.file_path: str(file_path),
                 DBProcessedFile.filename: file_path.name,
+                DBProcessedFile.error_message: (None if success else reason),
             })
             session.flush()
 
@@ -1996,7 +2049,7 @@ class DatabaseManager:
         if success:
             self._clear_failure_marker(session, file_path)
         else:
-            self._write_failure_marker(session, file_path, reason)
+            self._write_failure_marker(session, file_path, marker_reason)
 
     def _write_failure_marker(self, session: Session, file_path: Path,
                               reason: Optional[str]) -> bool:
@@ -3524,6 +3577,7 @@ class DatabaseManager:
             ),
             data_quality=getattr(analysis, 'data_quality', 'good'),
             data_quality_issues=json.dumps(getattr(analysis, 'data_quality_issues', [])) if getattr(analysis, 'data_quality_issues', []) else None,
+            error_reason=getattr(analysis, 'error_reason', None),
         )
 
         # Add track results
@@ -3966,6 +4020,9 @@ class DatabaseManager:
             existing.data_quality = getattr(analysis, 'data_quality', None)
             issues = getattr(analysis, 'data_quality_issues', None) or []
             existing.data_quality_issues = json.dumps(issues) if issues else None
+            # Same as _map_analysis_to_db -- without this a re-processed
+            # file's reason is silently dropped on every subsequent save.
+            existing.error_reason = getattr(analysis, 'error_reason', None)
 
             # Delete old tracks explicitly and flush before adding new ones
             # This avoids unique constraint violations

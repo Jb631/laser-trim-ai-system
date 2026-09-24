@@ -232,6 +232,15 @@ class AnalysisResult(Base):
     overall_status = Column(Enum(StatusType), nullable=False)
     processing_time = Column(Float)  # seconds
 
+    # Why overall_status is ERROR (NULL otherwise). Set by the processor from
+    # the ERROR tracks' own linearity_spec_warning/anomaly_reason, or the
+    # file-level error message when there were no tracks at all (2026-09-23:
+    # none of the 237 ERROR rows on the rebuild could say why). The 234 rows
+    # written before this column existed are explained on read instead, via
+    # COALESCE(error_reason, track_results.linearity_spec_warning,
+    # track_results.anomaly_reason) -- see gui/v6/pages/model_page.py.
+    error_reason = Column(Text, nullable=True)
+
     # Analysis metadata
     timestamp = Column(DateTime, default=utc_now, nullable=False)  # Always store in UTC
     output_dir = Column(Text)

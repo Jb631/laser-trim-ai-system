@@ -871,31 +871,40 @@ class ModelPage(PageBase):
         return compute_recent_means(self.app.db, model, recent_days=_RECENT_DAYS)
 
     def _load_units(self, model) -> List[dict]:
+        from sqlalchemy import func as _f
+        # Why this ERROR is an ERROR: the column set 2026-09-23, or (for rows
+        # written before it existed) the same track's own words -- so all 237
+        # rows on the rebuild explain themselves without a back-fill.
+        reason = _f.coalesce(DBAR.error_reason, DBTR.linearity_spec_warning, DBTR.anomaly_reason)
         cutoff = self._window_cutoff()
         with self.app.db.session() as s:
             q = (s.query(DBAR.id, DBAR.serial, DBAR.file_date, DBAR.overall_status,
-                         DBTR.sigma_gradient, DBTR.final_linearity_error_shifted)
+                         DBTR.sigma_gradient, DBTR.final_linearity_error_shifted, reason)
                  .join(DBTR, DBTR.analysis_id == DBAR.id).filter(DBAR.model == model))
             if cutoff:
                 q = q.filter(DBAR.file_date >= cutoff)
             rows = q.order_by(DBAR.file_date.desc()).limit(200).all()
             return [{"analysis_id": r[0], "serial": r[1], "file_date": r[2],
                      "overall_status": getattr(r[3], "value", str(r[3])),
-                     "sigma_gradient": r[4], "linearity_error": r[5]} for r in rows]
+                     "sigma_gradient": r[4], "linearity_error": r[5],
+                     "error_reason": r[6]} for r in rows]
 
     def _search_units(self, model, query: str) -> List[dict]:
         """Serial lookup for the model — ignores the window and the recent cap so an old
         unit can still be found. Case-insensitive substring match on serial."""
+        from sqlalchemy import func as _f
+        reason = _f.coalesce(DBAR.error_reason, DBTR.linearity_spec_warning, DBTR.anomaly_reason)
         like = f"%{query}%"
         with self.app.db.session() as s:
             rows = (s.query(DBAR.id, DBAR.serial, DBAR.file_date, DBAR.overall_status,
-                            DBTR.sigma_gradient, DBTR.final_linearity_error_shifted)
+                            DBTR.sigma_gradient, DBTR.final_linearity_error_shifted, reason)
                     .join(DBTR, DBTR.analysis_id == DBAR.id)
                     .filter(DBAR.model == model, DBAR.serial.ilike(like))
                     .order_by(DBAR.file_date.desc()).limit(500).all())
             return [{"analysis_id": r[0], "serial": r[1], "file_date": r[2],
                      "overall_status": getattr(r[3], "value", str(r[3])),
-                     "sigma_gradient": r[4], "linearity_error": r[5]} for r in rows]
+                     "sigma_gradient": r[4], "linearity_error": r[5],
+                     "error_reason": r[6]} for r in rows]
 
     def _on_unit_search(self, query: str) -> None:
         model = self._current_model

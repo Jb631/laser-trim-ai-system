@@ -315,6 +315,12 @@ class AnalysisResult(BaseAnalysisModel):
     errors: List[str] = Field(default_factory=list, description="Processing errors")
     warnings: List[str] = Field(default_factory=list, description="Processing warnings")
 
+    # Why overall_status is ERROR (None otherwise) -- from the ERROR tracks'
+    # own linearity_spec_warning/anomaly_reason, or the file-level error
+    # message when there were no tracks at all. See core/processor.py's
+    # error_reason_of() and database/manager.py's analysis_results.error_reason.
+    error_reason: Optional[str] = Field(None, description="Why overall_status is ERROR")
+
     # Database reference
     db_id: Optional[int] = Field(None, description="Database record ID")
 

@@ -2299,6 +2299,32 @@ def main() -> int:
     check("stale model: anchored 90d window is non-empty (alert clickthrough)",
           n_win > 0, f"units={n_win}")
 
+    # ---- every ERROR row has a reason (2026-09-23) --------------------------
+    # analysis_results.error_reason, or -- for rows stored before that column
+    # existed -- the linked track's own linearity_spec_warning / anomaly_reason:
+    # the exact COALESCE _load_units/_search_units read (model_page.py). A hard
+    # zero: an ERROR result with nothing to show why is the bug this check guards
+    # (237 of 237 failed this before the fix — see task-3-brief.md).
+    n_error = raw.execute(
+        "SELECT COUNT(*) FROM analysis_results WHERE overall_status='ERROR'"
+    ).fetchone()[0]
+    n_unexplained = raw.execute(
+        "SELECT COUNT(*) FROM ("
+        "  SELECT a.id,"
+        "         MAX(CASE"
+        "           WHEN a.error_reason IS NOT NULL AND a.error_reason != '' THEN 1"
+        "           WHEN t.linearity_spec_warning IS NOT NULL AND t.linearity_spec_warning != '' THEN 1"
+        "           WHEN t.anomaly_reason IS NOT NULL AND t.anomaly_reason != '' THEN 1"
+        "           ELSE 0 END) AS has_reason"
+        "  FROM analysis_results a"
+        "  LEFT JOIN track_results t ON t.analysis_id = a.id"
+        "  WHERE a.overall_status = 'ERROR'"
+        "  GROUP BY a.id"
+        ") WHERE has_reason = 0"
+    ).fetchone()[0]
+    check("every ERROR row has a reason (error_reason, or a track's own words)",
+          n_unexplained == 0, f"unexplained={n_unexplained} of {n_error} ERROR rows")
+
     # ============ 5. UNIT VERDICT CONSISTENCY (broad sample) ==================
     # Linearity is the ZERO-TOLERANCE customer disposition, so these are hard
     # zeros — no percentage budget, no "small tolerance for exclusions".

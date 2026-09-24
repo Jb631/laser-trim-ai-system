@@ -98,7 +98,29 @@ def enforce_measurement_backed_verdict(track, source: str = "") -> Optional[str]
     track.status = AnalysisStatus.ERROR
     track.linearity_pass = None
     track.sigma_pass = None
+    # Record the reason the same way the parser does (linearity_spec_warning),
+    # only when the track didn't already carry one -- so error_reason_of()
+    # (below) can find it without a third field to check. Never overwrites an
+    # existing warning: that text is what actually happened first.
+    track.linearity_spec_warning = track.linearity_spec_warning or reason
     return reason
+
+
+def error_reason_of(tracks, overall_status) -> Optional[str]:
+    """Why an ERROR result is an ERROR, from the tracks that made it one. None otherwise.
+
+    The words already exist on the track (the analyzer's linearity_spec_warning or
+    anomaly_reason); this only brings them to the one place the app asks."""
+    if overall_status != AnalysisStatus.ERROR:
+        return None
+    parts = []
+    for t in tracks:
+        if getattr(t, "status", None) != AnalysisStatus.ERROR:
+            continue
+        why = getattr(t, "linearity_spec_warning", None) or getattr(t, "anomaly_reason", None)
+        if why:
+            parts.append(f"{t.track_id}: {why}")
+    return ("; ".join(parts)[:500]) or "ERROR with no recorded reason"
 
 
 class Processor:
@@ -444,6 +466,7 @@ class Processor:
                 data_quality=data_quality,
                 data_quality_issues=quality_issues,
                 trim_setup=parsed.get("trim_setup"),
+                error_reason=error_reason_of(analyzed_tracks, overall_status),
             )
 
             logger.debug(f"Completed: {file_path.name} - {overall_status.value} "
@@ -1847,6 +1870,7 @@ class Processor:
             processing_time=time.time() - start_time,
             tracks=[],
             errors=[error_msg],
+            error_reason=error_msg[:500],
         )
 
     def _create_minimal_metadata(self, file_path: Path) -> FileMetadata:
