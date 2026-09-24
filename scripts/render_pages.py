@@ -32,26 +32,31 @@ Why two modes exist (controller ruling, Task 9, 2026-09-24): PIL.ImageGrab.grab 
 Mac -- confirmed empirically, see _grab() -- because the process has no Screen Recording permission,
 which is James's security setting to grant, not this script's to request. The default (capture) mode
 stays for a machine that allows it (Windows, at work) and fails loudly rather than saving a blank PNG
-when it can't. --audit is the mechanical replacement for "look at the PNG and check nothing is cut
-off": it walks the real widget tree and reports every text widget Tk is squeezing smaller than the
-text actually needs.
+when it can't. --audit is a mechanical HELPER for "look at the pages and check nothing is cut off" --
+it walks the real widget tree and reports text Tk is cutting off -- not a replacement for looking:
+it cannot see a colour, an overlap inside a chart, or text that fits but reads badly.
 
-The --audit trick, in one paragraph: a widget's ALLOCATED size (`winfo_width`/`winfo_height`) is what
-its container actually gave it; its REQUESTED size (`winfo_reqwidth`/`winfo_reqheight`) is what it
-would need to draw its current text without clipping. When allocated is smaller than requested, the
-text is being cut off -- that comparison alone is the whole detector (find_clipped_text_widgets,
-proven against real CustomTkinter geometry in tests/test_render_pages_audit.py). Two things have to be
-true for that comparison to mean anything, both confirmed empirically before this was written:
+The --audit trick: a widget's ALLOCATED size (`winfo_width`/`winfo_height`) is what its container
+actually gave it; its REQUESTED size (`winfo_reqwidth`/`winfo_reqheight`) is what it would need to
+draw its current text without clipping. When allocated is smaller than requested, the text is being
+cut off. Two more ways text is cut off that that comparison cannot see were added after the final
+review (2026-09-24), because both left a widget looking healthy: a label squeezed out ENTIRELY is
+unmapped by its geometry manager (so it was skipped as "not on screen"), and a grid cell pushed past
+its container's right edge keeps its full size (so allocated == requested) while the container clips
+it. find_clipped_text_widgets checks all three, proven against real CustomTkinter geometry in
+tests/test_render_pages_audit.py. Two things have to be true for any of it to mean anything, both
+confirmed empirically before this was written:
   1. The window must be MAPPED, even if invisible. A withdrawn root leaves every child stuck at
      Tk's placeholder size (1x1) forever, fit or not -- probed directly: a label with plenty of room
      read alloc=(1,1) under a withdrawn root. So --audit deiconifies the window OFF-SCREEN
      ("+20000+20000", far past any real display) instead of withdrawing it: mapped, just not in
      anyone's way.
-  2. Only CURRENTLY MAPPED widgets count. CTkTabview only grids its ACTIVE tab (`.set()` grids the
+  2. Only widgets something LAID OUT count. CTkTabview only grids its ACTIVE tab (`.set()` grids the
      new one and grid_forgets the rest 100 ms later); a tab nobody has ever selected was never gridded
      at all and sits at that same (1x1) placeholder no matter how much text it holds. Reporting that
-     as a clip would be pure noise, so find_clipped_text_widgets skips anything `winfo_ismapped()`
-     says is not currently on screen. This is WHY the first cut of --audit only ever saw the Findings
+     as a clip would be pure noise, so find_clipped_text_widgets skips an unmapped widget unless the
+     top of its unmapped chain is itself laid out (winfo_manager() non-empty) under a mapped parent --
+     which is a squeezed-out widget, not a hidden one. This is WHY the first cut of --audit only ever saw the Findings
      tab reliably (plus, incidentally, Drift Metrics and Trim vs Final Test -- probed directly with
      winfo_ismapped()/winfo_manager() down each tab's ancestor chain: both are CTkScrollableFrame
      subclasses whose content is embedded onto an internal canvas via create_window(), which does not
@@ -102,31 +107,82 @@ class ClippedWidget:
     text: str
     alloc: Tuple[int, int]
     req: Tuple[int, int]
+    # How it is cut off: "squeezed" (given less room than it asked for), "squeezed out" (laid out
+    # but given NO room, so its geometry manager unmapped it), or "past the edge of <path> by N px"
+    # (full size, but beyond a container's right edge, which clips it).
+    why: str = "squeezed"
 
     def line(self) -> str:
         aw, ah = self.alloc
         rw, rh = self.req
         return (f"{self.page} | {self.window_size} | {self.path} | "
-                f"{self.text!r} | alloc={aw}x{ah} req={rw}x{rh}")
+                f"{self.text!r} | alloc={aw}x{ah} req={rw}x{rh} | {self.why}")
 
 
 def _iter_widgets(root) -> Iterator[tk.Misc]:
-    """Depth-first walk of `root` and every Tk descendant (real widgets only --
-    this is `winfo_children()`, so it reaches CTk composites' internal tk
-    widgets exactly as Tk itself sees them)."""
+    """Depth-first walk of `root` and every Tk descendant.
+
+    tkinter's OWN winfo_children, never the widget's: CustomTkinter overrides it to hide parts of
+    a composite -- CTkTabview.winfo_children() leaves out its segmented button, i.e. every TAB
+    NAME, as "part of the tab view itself" (final review, 2026-09-24: the Model page's seven tab
+    names were never audited)."""
     yield root
     try:
-        children = root.winfo_children()
+        children = tk.Misc.winfo_children(root)
     except Exception:
         children = []
     for child in children:
         yield from _iter_widgets(child)
 
 
+def _parent(widget) -> Optional[tk.Misc]:
+    try:
+        name = widget.winfo_parent()
+        return widget.nametowidget(name) if name else None
+    except Exception:
+        return None
+
+
+def _squeezed_out(widget) -> Optional[tk.Misc]:
+    """The widget in `widget`'s chain that a geometry manager LAID OUT but did not MAP although its
+    parent is mapped -- the packer and the grid unmap a slave whose allocation comes out at zero,
+    i.e. one squeezed out entirely. None when nothing was: a mapped chain, or one whose unmapped
+    top is simply not laid out (an unselected tab, a pack_forget()ed widget, a withdrawn window)."""
+    w = widget
+    while w is not None:
+        if w.winfo_ismapped():
+            return None
+        parent = _parent(w)
+        if parent is None:
+            return None                       # the top of the chain is the window itself
+        if parent.winfo_ismapped():
+            return w if w.winfo_manager() else None
+        w = parent
+    return None
+
+
+def _past_an_edge(widget) -> Optional[Tuple[tk.Misc, int]]:
+    """The first ancestor whose RIGHT edge `widget`'s right edge runs past by more than the
+    tolerance, and by how much. Every Tk window clips its children, so a grid cell pushed beyond
+    its container keeps its full size (the size check cannot see it) and is still cut off."""
+    right = widget.winfo_rootx() + widget.winfo_width()
+    a = _parent(widget)
+    while a is not None:
+        over = right - (a.winfo_rootx() + a.winfo_width())
+        if over > _TOLERANCE_PX:
+            return a, over
+        a = _parent(a)
+    return None
+
+
 def find_clipped_text_widgets(root, *, page: str = "", window_size: str = "") -> List[ClippedWidget]:
-    """Every text-bearing widget under `root` whose allocated width or height is
-    more than `_TOLERANCE_PX` below its requested (natural) size -- i.e. its
-    text is being cut off by its container.
+    """Every text-bearing widget under `root` whose text is being cut off, three ways:
+      * squeezed -- its allocated width or height is more than `_TOLERANCE_PX` below its requested
+        (natural) size;
+      * squeezed out -- laid out (winfo_manager() non-empty) but unmapped while its parent is
+        mapped: its manager had no room left for it at all (see _squeezed_out);
+      * past an edge -- its right edge passes a container's right edge by more than the tolerance
+        (see _past_an_edge).
 
     Only `tkinter.Label` and `tkinter.Button` are checked. CustomTkinter draws
     a widget's text with a REAL tk widget of one of those two classes, held
@@ -139,8 +195,10 @@ def find_clipped_text_widgets(root, *, page: str = "", window_size: str = "") ->
     inner widgets is in fact a `tkinter.Label`; `tkinter.Button` is kept in the
     check anyway (cheap, and future-proof against a widget that really is one).
 
-    Skips anything `winfo_ismapped()` says is not currently on screen -- see
-    the module docstring's point 2. Not a clip if it is not visible.
+    A widget that is not on screen because nothing laid it out -- a tab nobody selected, a hidden
+    page -- is skipped, never reported (the module docstring's point 2). What this can NOT see: a
+    colour, an overlap inside a chart, or text that fits but reads badly. It is a helper for
+    looking at the pages, not a replacement for it.
     """
     found: List[ClippedWidget] = []
     for widget in _iter_widgets(root):
@@ -154,16 +212,23 @@ def find_clipped_text_widgets(root, *, page: str = "", window_size: str = "") ->
         if not text:
             continue
         try:
-            if not widget.winfo_ismapped():
-                continue
             alloc_w, alloc_h = widget.winfo_width(), widget.winfo_height()
             req_w, req_h = widget.winfo_reqwidth(), widget.winfo_reqheight()
+            if not widget.winfo_ismapped():
+                dropped = _squeezed_out(widget)
+                why = None if dropped is None else (
+                    "squeezed out" if dropped is widget else f"squeezed out (with {dropped})")
+            elif (req_w - alloc_w > _TOLERANCE_PX) or (req_h - alloc_h > _TOLERANCE_PX):
+                why = "squeezed"
+            else:
+                edge = _past_an_edge(widget)
+                why = None if edge is None else f"past the right edge of {edge[0]} by {edge[1]} px"
         except Exception:
             continue
-        if (req_w - alloc_w > _TOLERANCE_PX) or (req_h - alloc_h > _TOLERANCE_PX):
+        if why is not None:
             found.append(ClippedWidget(
                 page=page, window_size=window_size, path=str(widget),
-                text=text[:60], alloc=(alloc_w, alloc_h), req=(req_w, req_h),
+                text=text[:60], alloc=(alloc_w, alloc_h), req=(req_w, req_h), why=why,
             ))
     return found
 
@@ -199,11 +264,26 @@ def _pump(app, seconds: float = _PUMP_SECONDS) -> None:
         time.sleep(0.02)
 
 
+def _refuse_to_save(*_args, **_kwargs) -> None:
+    """Config.save() for an app built on a QA copy. The settings were loaded from the REAL
+    data/config.yaml with only database.path pointed at the copy -- so a save (any Settings
+    button, in --show mode) would write James's config.yaml pointing at a throwaway copy, and the
+    next real launch would open (or create) that. Every Settings section already swallows a failed
+    save, so this refuses loudly in the log and changes nothing on disk."""
+    raise RuntimeError("render_pages.py: settings are never saved from an app built on a QA copy "
+                       "(data/config.yaml is left exactly as it was)")
+
+
 def _build_app(db_path: Path):
     """Refuse the production database (caller's job, before this is called),
     then build a V6App against `db_path` with BOTH database globals injected --
     mirrors scripts/refresh_findings.py, and the same global constraint every
-    script/test that builds a DatabaseManager or Processor follows."""
+    script/test that builds a DatabaseManager or Processor follows.
+
+    The settings are the real ones (Config.load(), final review 2026-09-24): with Config()
+    defaults, everything that depends on James's settings -- the Home page's folder list, the
+    active models, the thresholds -- was audited EMPTY. Only the database path is overridden, and
+    saving is refused (_refuse_to_save)."""
     from laser_trim_analyzer.database import manager as mgr
     import laser_trim_analyzer.database as dbpkg
     from laser_trim_analyzer.config import Config
@@ -212,8 +292,9 @@ def _build_app(db_path: Path):
     db = mgr.DatabaseManager(db_path)
     mgr._db_manager = db
     dbpkg._db_manager = db
-    config = Config()
+    config = Config.load()
     config.database.path = db_path
+    config.save = _refuse_to_save
     app = V6App(config, db=db, auto_train_on_first_run=False)
     return app, db
 
@@ -408,6 +489,12 @@ def run_audit(app, target_model: Optional[str],
 
     clipped: List[ClippedWidget] = []
     failures: List[str] = []
+    try:
+        # macOS clamps "+20000+20000" back into a corner of the screen, so off-screen alone does
+        # not hide it there; fully transparent does, and the window stays mapped (real geometry).
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
     for width, height in _audit_sizes(app):
         size_label = f"{width}x{height}"
         # Off-screen but MAPPED -- see the module docstring, point 1.
@@ -469,12 +556,25 @@ def run_audit(app, target_model: Optional[str],
         app.deiconify()
         app.update_idletasks()
         app.update()
-        _force_one_loader_failure(app, target_model, size_label, clipped)
+        failure = _force_one_loader_failure(app, target_model, size_label, clipped)
+        if failure:
+            print(failure)
+            failures.append(failure)
     return clipped, failures
 
 
+def load_banner_shows(page, loader: str) -> bool:
+    """Is `page`'s load banner laid out AND naming `loader`? The forced-failure pass below walks
+    the page only to check that banner's text -- if the banner never appeared, walking would
+    "pass" having checked nothing (final review, 2026-09-24)."""
+    banner = getattr(page, "_load_banner", None)
+    if banner is None:
+        return False
+    return banner.winfo_manager() != "" and loader in str(banner.cget("text"))
+
+
 def _force_one_loader_failure(app, model: str, size_label: str,
-                               clipped: List[ClippedWidget]) -> None:
+                               clipped: List[ClippedWidget]) -> Optional[str]:
     """Patch ModelPage._load_units to always raise for the duration of ONE
     reload, so `failed` (the plain list `_set_load_banner` reads) is genuinely
     non-empty and the banner renders real text -- restored in a `finally` no
@@ -483,6 +583,9 @@ def _force_one_loader_failure(app, model: str, size_label: str,
     (gui/v6/pages/model_page.py:371) and is only otherwise called from a
     search-box handler this audit never triggers (:907), so patching it here
     does not disturb anything else this run measures.
+
+    Returns an AUDIT FAILURE line when the banner never showed "unit list" -- the walk would then
+    have checked nothing -- and None when it did and was walked.
     """
     from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
 
@@ -498,8 +601,12 @@ def _force_one_loader_failure(app, model: str, size_label: str,
         _pump(app)
         app.update_idletasks()
         page = app.page_container.get_page("model")
+        if not load_banner_shows(page, "unit list"):
+            return (f"AUDIT FAILURE | {size_label} | the forced unit-list failure never showed in "
+                    f"the Model page's load banner -- the banner's text was never checked")
         clipped.extend(find_clipped_text_widgets(
             page, page="model:load-banner-forced", window_size=size_label))
+        return None
     finally:
         ModelPage._load_units = original
 
