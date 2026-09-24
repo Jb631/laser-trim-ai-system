@@ -15,53 +15,84 @@ from laser_trim_analyzer.ml.drift_types import DriftTier
 
 @dataclass
 class ThemeManager:
-    # Surfaces
-    BG: str = "#1a1f2e"; SURFACE: str = "#1e2435"; CARD: str = "#263244"; ELEVATED: str = "#2f3b50"
+    # Surfaces (refined dark, spec 2026-09-23)
+    BG: str = "#111a28"; SURFACE: str = "#172233"; CARD: str = "#1c2a3e"; ELEVATED: str = "#243550"
     # Sidebar
-    SIDEBAR_BG: str = "#1a1f2e"; SIDEBAR_ACTIVE: str = "#263244"; SIDEBAR_STRIPE: str = "#3b82f6"
-    # Accent
-    ACCENT: str = "#3b82f6"; ACCENT_HOVER: str = "#60a5fa"; ACCENT_PRESSED: str = "#2563eb"
+    SIDEBAR_BG: str = "#111a28"; SIDEBAR_ACTIVE: str = "#1c2a3e"; SIDEBAR_STRIPE: str = "#4fd6b8"
+    # Accent -- teal means "act here"
+    ACCENT: str = "#4fd6b8"; ACCENT_HOVER: str = "#74e0c8"; ACCENT_PRESSED: str = "#36b99c"
+    ACCENT_TINT: str = "#123a37"
     # Text
-    TEXT_PRIMARY: str = "#e8eef5"; TEXT_SECONDARY: str = "#9ca8bd"
-    TEXT_DISABLED: str = "#5a6478"; TEXT_INVERSE: str = "#1a1f2e"
+    TEXT_PRIMARY: str = "#f3f6fa"; TEXT_SECONDARY: str = "#b6c2d2"
+    TEXT_DISABLED: str = "#93a1b6"; TEXT_INVERSE: str = "#0b1f1b"   # INVERSE = text on teal
     # Borders
-    DIVIDER: str = "#2a3142"; BORDER: str = "#3a4456"
-    # Tiers (preserved V5 semantic)
-    TIER_STABLE: str = "#1e2435"
+    DIVIDER: str = "#26344b"; BORDER: str = "#34465f"
+    # "Check this" -- coral
+    CHECK: str = "#ff8f7a"; CHECK_TINT: str = "#3e2522"
+    # Verdicts -- always drawn WITH their word, never colour alone
+    PASS_FG: str = "#9bd66f"; PASS_BG: str = "#1f3322"
+    FAIL_FG: str = "#ff8f7a"; FAIL_BG: str = "#3e2522"
+    NEUTRAL_FG: str = "#c3cedb"; NEUTRAL_BG: str = "#243550"
+    WATCH_FG: str = "#f5b544"; WATCH_BG: str = "#3a2f16"
+    # Tiers (preserved V5 semantic; OOC brightened -- #ef4444 was 4.2:1 on its own background)
+    TIER_STABLE: str = "#172233"
     TIER_WARNING_BG: str = "#3d2f1a"; TIER_WARNING: str = "#f59e0b"
     TIER_DRIFT_BG: str = "#3d2418"; TIER_DRIFT: str = "#f97316"
-    TIER_OOC_BG: str = "#3d1818"; TIER_OOC: str = "#ef4444"
-    # Typography
-    FONT_FAMILY: Tuple[str, ...] = ("Inter", "Segoe UI", "system-ui")
-    SIZE_CAPTION: int = 11; SIZE_BODY: int = 13; SIZE_HEADING: int = 16
-    SIZE_TITLE: int = 20; SIZE_DISPLAY: int = 28
-    # Spacing / radii
+    TIER_OOC_BG: str = "#3d1818"; TIER_OOC: str = "#ff7a7a"
+    # Charts. SERIES_* are keyed by the code's system letter; the UI still says "Laser 2 (DLTS)".
+    CHART_REFERENCE: str = "#8a9bb3"
+    SERIES_A: str = "#6aa8ff"; SERIES_B: str = "#b39cff"; SERIES_C: str = "#f28dc6"
+    CHART_FONT_SMALL: float = 8.0; CHART_FONT: float = 9.0; CHART_FONT_LARGE: float = 10.0
+    # Typography. On Windows (GDI) Plex Medium is its OWN family, not a weight of Plex Sans,
+    # so "bold" is mapped onto it in font()/mono() when it is available.
+    FONT_FAMILY: Tuple[str, ...] = ("IBM Plex Sans", "Segoe UI", "system-ui")
+    FONT_FAMILY_MEDIUM: Tuple[str, ...] = ("IBM Plex Sans Medium",)
+    MONO_FAMILY: Tuple[str, ...] = ("IBM Plex Mono", "Cascadia Mono", "Consolas", "Menlo", "Courier")
+    MONO_FAMILY_MEDIUM: Tuple[str, ...] = ("IBM Plex Mono Medium",)
+    SIZE_CAPTION: int = 12; SIZE_BODY: int = 14; SIZE_HEADING: int = 17
+    SIZE_TITLE: int = 22; SIZE_DISPLAY: int = 30; SIZE_READOUT: int = 20
+    # Spacing / radii (unchanged)
     SPACE_XS: int = 4; SPACE_SM: int = 8; SPACE_MD: int = 12
     SPACE_LG: int = 16; SPACE_XL: int = 24; SPACE_2XL: int = 32
     RADIUS_SM: int = 4; RADIUS_MD: int = 6; RADIUS_LG: int = 8
 
     resolved_family: str = field(default="", init=False)
-    # One CTkFont per (family, size, weight) — see font(). Excluded from
-    # repr/eq: it is a performance cache, not part of the theme's identity.
+    resolved_medium: Optional[str] = field(default=None, init=False)
+    resolved_mono: str = field(default="", init=False)
+    resolved_mono_medium: Optional[str] = field(default=None, init=False)
     _font_cache: Dict[Tuple[str, int, str], ctk.CTkFont] = field(
         default_factory=dict, init=False, repr=False, compare=False)
     _font_root: Optional[object] = field(
         default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self):
-        # Resolve the font family ONCE against what Tk actually has (real fallback).
-        object.__setattr__(self, "resolved_family", self._resolve_family())
+        # Resolve each family ONCE against what Tk actually has (a real fallback).
+        available = self._available_families()
+        object.__setattr__(self, "resolved_family", self._pick(self.FONT_FAMILY, available))
+        object.__setattr__(self, "resolved_medium", self._pick(self.FONT_FAMILY_MEDIUM, available, None))
+        object.__setattr__(self, "resolved_mono", self._pick(self.MONO_FAMILY, available))
+        object.__setattr__(self, "resolved_mono_medium", self._pick(self.MONO_FAMILY_MEDIUM, available, None))
 
-    def _resolve_family(self) -> str:
+    @staticmethod
+    def _available_families() -> set:
         try:
             import tkinter.font as tkfont
-            available = set(tkfont.families())
-            for fam in self.FONT_FAMILY:
-                if fam in available:
-                    return fam
-        except Exception:
-            pass
-        return self.FONT_FAMILY[-1]  # last entry is the generic fallback
+            return set(tkfont.families())
+        except Exception:          # no Tk root yet (tests, imports): resolve to the fallbacks
+            return set()
+
+    _NO_DEFAULT = object()
+
+    @classmethod
+    def _pick(cls, candidates, available, default=_NO_DEFAULT):
+        for fam in candidates:
+            if fam in available:
+                return fam
+        return candidates[-1] if default is cls._NO_DEFAULT else default
+
+    def _resolve_family(self) -> str:
+        """Kept for callers of the old API: the resolved Sans family."""
+        return self._pick(self.FONT_FAMILY, self._available_families())
 
     # ---- Helpers ----
     def font(self, size: int, weight: str = "normal") -> ctk.CTkFont:
@@ -84,16 +115,31 @@ class ThemeManager:
         Do not `configure()` a font you get from here — it is shared, and the
         change would land on every widget using that size. Nothing does today.
         """
+        if weight == "bold" and self.resolved_medium:
+            return self._shared_font(self.resolved_medium, size, "normal")
+        return self._shared_font(self.resolved_family, size, weight)
+
+    def mono(self, size: int, weight: str = "normal") -> ctk.CTkFont:
+        """The same shared font, in the mono family -- every NUMBER in the app uses this."""
+        if weight == "bold" and self.resolved_mono_medium:
+            return self._shared_font(self.resolved_mono_medium, size, "normal")
+        return self._shared_font(self.resolved_mono, size, weight)
+
+    def _shared_font(self, family: str, size: int, weight: str) -> ctk.CTkFont:
         root = getattr(tkinter, "_default_root", None)
         if root is not self._font_root:
             self._font_cache.clear()
             self._font_root = root
-        key = (self.resolved_family, size, weight)
+        key = (family, size, weight)
         cached = self._font_cache.get(key)
         if cached is None:
-            cached = ctk.CTkFont(family=self.resolved_family, size=size, weight=weight)
+            cached = ctk.CTkFont(family=family, size=size, weight=weight)
             self._font_cache[key] = cached
         return cached
+
+    def series_color(self, system: str) -> str:
+        """Line colour for a laser's series, by the code's system letter."""
+        return {"A": self.SERIES_A, "B": self.SERIES_B, "C": self.SERIES_C}.get(system, self.CHART_REFERENCE)
 
     def tier_color(self, tier: DriftTier) -> Tuple[str, str]:
         """(background, foreground) for a tier. STABLE blends into SURFACE."""

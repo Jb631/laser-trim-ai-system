@@ -9,21 +9,24 @@ Shared fixtures (tk_root, make_app) live in tests/conftest.py.
 def test_theme_exposes_color_tokens():
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     t = ThemeManager()
-    assert (t.BG, t.SURFACE, t.CARD, t.ELEVATED) == ("#1a1f2e", "#1e2435", "#263244", "#2f3b50")
-    assert (t.SIDEBAR_BG, t.SIDEBAR_ACTIVE, t.SIDEBAR_STRIPE) == ("#1a1f2e", "#263244", "#3b82f6")
-    assert (t.ACCENT, t.ACCENT_HOVER, t.ACCENT_PRESSED) == ("#3b82f6", "#60a5fa", "#2563eb")
+    # Refined-dark palette (spec 2026-09-23, section 1).
+    assert (t.BG, t.SURFACE, t.CARD, t.ELEVATED) == ("#111a28", "#172233", "#1c2a3e", "#243550")
+    assert (t.SIDEBAR_BG, t.SIDEBAR_ACTIVE, t.SIDEBAR_STRIPE) == ("#111a28", "#1c2a3e", "#4fd6b8")
+    assert (t.ACCENT, t.ACCENT_HOVER, t.ACCENT_PRESSED) == ("#4fd6b8", "#74e0c8", "#36b99c")
     assert (t.TEXT_PRIMARY, t.TEXT_SECONDARY, t.TEXT_DISABLED, t.TEXT_INVERSE) == \
-        ("#e8eef5", "#9ca8bd", "#5a6478", "#1a1f2e")
-    assert (t.DIVIDER, t.BORDER) == ("#2a3142", "#3a4456")
+        ("#f3f6fa", "#b6c2d2", "#93a1b6", "#0b1f1b")
+    assert (t.DIVIDER, t.BORDER) == ("#26344b", "#34465f")
 
 
 def test_theme_exposes_tier_color_tokens():
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     t = ThemeManager()
-    assert t.TIER_STABLE == "#1e2435"
+    # TIER_STABLE tracks SURFACE; TIER_OOC brightened to #ff7a7a (spec 2026-09-23: #ef4444
+    # was only 4.2:1 on its own background). WARNING/DRIFT keep their old values.
+    assert t.TIER_STABLE == "#172233"
     assert (t.TIER_WARNING_BG, t.TIER_WARNING) == ("#3d2f1a", "#f59e0b")
     assert (t.TIER_DRIFT_BG, t.TIER_DRIFT) == ("#3d2418", "#f97316")
-    assert (t.TIER_OOC_BG, t.TIER_OOC) == ("#3d1818", "#ef4444")
+    assert (t.TIER_OOC_BG, t.TIER_OOC) == ("#3d1818", "#ff7a7a")
 
 
 def test_theme_spacing_and_radii():
@@ -32,19 +35,20 @@ def test_theme_spacing_and_radii():
     assert (t.SPACE_XS, t.SPACE_SM, t.SPACE_MD, t.SPACE_LG, t.SPACE_XL, t.SPACE_2XL) == \
         (4, 8, 12, 16, 24, 32)
     assert (t.RADIUS_SM, t.RADIUS_MD, t.RADIUS_LG) == (4, 6, 8)
+    # Type scale moved one step up (spec 2026-09-23, section 1).
     assert (t.SIZE_CAPTION, t.SIZE_BODY, t.SIZE_HEADING, t.SIZE_TITLE, t.SIZE_DISPLAY) == \
-        (11, 13, 16, 20, 28)
-    assert t.FONT_FAMILY[0] == "Inter" and "Segoe UI" in t.FONT_FAMILY
+        (12, 14, 17, 22, 30)
+    assert t.FONT_FAMILY[0] == "IBM Plex Sans" and "Segoe UI" in t.FONT_FAMILY
 
 
 def test_theme_tier_color_pairs():
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.ml.drift_types import DriftTier
     t = ThemeManager()
-    assert t.tier_color(DriftTier.STABLE) == ("#1e2435", "#e8eef5")
+    assert t.tier_color(DriftTier.STABLE) == ("#172233", "#f3f6fa")
     assert t.tier_color(DriftTier.WARNING) == ("#3d2f1a", "#f59e0b")
     assert t.tier_color(DriftTier.DRIFT) == ("#3d2418", "#f97316")
-    assert t.tier_color(DriftTier.OUT_OF_CONTROL) == ("#3d1818", "#ef4444")
+    assert t.tier_color(DriftTier.OUT_OF_CONTROL) == ("#3d1818", "#ff7a7a")
 
 
 def test_theme_tier_dot_color_stable_is_visible():
