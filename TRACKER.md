@@ -543,6 +543,27 @@ PO numbers and prices, and must never be committed).
       3. **Each upload REPLACES the active list.** Manual pinning stays for exceptions.
       Queued behind the engine build.
 
+## F. The facelift — James, 2026-09-23
+
+"i think the app needs a facelift or polish, i dont like the design, lastly the finings sheet
+i dont like the layout its just a bunch of rows and its hard to see whats important."
+
+- [x] **F1 · Design, step 1 — APPROVED section by section.**
+      `docs/superpowers/specs/2026-09-23-design-system-and-findings-page-design.md`, with the
+      approved picture beside it (`…-findings-page-mockup.html`). James chose: Findings
+      **grouped by issue** (four groups); what is wrong today is **dated or generic** and
+      **hard to read**; direction **refined dark** (today's navy, brighter text, bigger
+      numbers, teal as the one accent); scope **restyle AND relayout every page**, delivered
+      in steps. Measured while designing: three of today's colour pairs fail the basic
+      readability minimum, including the out-of-control drift tier; the app has no colour for
+      PASS or FAIL at all; only 9 of 96 findings claim a gain and all 96 are drawn the same.
+- [ ] **F2 · Build step 1** — plan next, then build: IBM Plex bundled, new tokens app-wide,
+      the shared building blocks, the Findings page and tab rebuilt, and the two
+      `cut_setting` fixes (a setting must have run for a real period to be "best"; "now
+      running" must mean now — which retires 8397-2's "+48 points").
+- [ ] **F3… · Relayout each remaining page**, one design round each: Model, Home,
+      Dashboard, Triage, Process, Settings. Order to be agreed after F2 ships.
+
 ## Housekeeping
 
 - [ ] **H1 · `CLAUDE.md` step 1 breaks the git remote.** There is no `.env`, so

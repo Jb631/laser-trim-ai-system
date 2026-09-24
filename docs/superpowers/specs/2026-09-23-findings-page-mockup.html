@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Findings page — approved design (2026-09-23)</title>
+<!-- Visual reference for docs/superpowers/specs/2026-09-23-design-system-and-findings-page-design.md.
+     A WEB rendering of the design James approved, with real findings from the 2026-09-22 rebuild.
+     The CustomTkinter build matches its colours, type and hierarchy; shapes follow it as closely
+     as CTk allows. The spec is the authority where this and it disagree. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+body{margin:0;background:#0b111c;padding:32px 16px;font-family:'IBM Plex Sans',system-ui,sans-serif}
+.app{max-width:880px;margin:0 auto;background:#111a28;color:#f3f6fa;border-radius:12px;padding:24px 28px;border:1px solid #26344b}
+.title{font-size:22px;font-weight:500}
+.cap{font-size:14px;color:#b6c2d2;margin-top:4px}
+.gh{display:flex;align-items:baseline;gap:10px;margin-top:24px;padding-bottom:6px;border-bottom:1px solid #26344b}
+.gh .nm{font-size:17px;font-weight:500}
+.gh .col{margin-left:auto;font-size:12px;color:#b6c2d2}
+.cnt{font-family:'IBM Plex Mono',monospace;font-size:13px;padding:1px 9px;border-radius:4px;background:#123a37;color:#4fd6b8}
+.cor{background:#3e2522;color:#ff8f7a}
+.gd{font-size:13px;color:#b6c2d2;margin:6px 0 2px}
+.r{display:grid;grid-template-columns:84px minmax(0,1fr) auto;gap:16px;align-items:baseline;padding:10px 8px;border-bottom:1px solid #1f2d42;font-size:14px}
+.r:hover{background:#243550}
+.md{font-family:'IBM Plex Mono',monospace;font-size:13px;color:#b6c2d2}
+.ro{font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:500;color:#f3f6fa;text-align:right;white-space:nowrap}
+.tag{font-size:12px;padding:1px 7px;border-radius:4px;background:#243550;color:#c3cedb;margin-left:6px;white-space:nowrap}
+.open{background:#172233}
+.exp{background:#1c2a3e;border-radius:8px;margin:0 0 6px;padding:14px 18px;border:1px solid #2c3d57}
+.exp p{font-size:14px;color:#dbe3ec;line-height:1.6;margin:0 0 10px}
+.tb{display:grid;grid-template-columns:auto auto auto;gap:4px 24px;font-size:13px;margin:0 0 12px;justify-content:start}
+.tb .h{color:#b6c2d2;font-size:12px}
+.tb .n{font-family:'IBM Plex Mono',monospace}
+.btn{display:inline-block;background:#4fd6b8;color:#0b1f1b;font-weight:500;font-size:13px;padding:6px 14px;border-radius:6px}
+.more{font-size:13px;color:#4fd6b8;padding:8px 8px 0}
+.up{color:#9bd66f}.dn{color:#ff8f7a}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="title">Findings</div>
+<div class="cap">8 changes worth testing · 53 ways to save laser time · 22 tests to check · worked out 23 Sep</div>
+
+<div class="gh"><span class="nm">Change a setting to raise yield</span><span class="cnt">8</span><span class="col">tracks a year</span></div>
+<div class="gd">A different setting did better on the same test</div>
+<div class="r open" style="border-bottom:0"><span class="md">6607</span><span>Laser 1: cut 6900 → try 6800 <span class="tag">both tracks</span><span class="tag">two periods · test first</span></span><span class="ro">~300</span></div>
+<div class="exp">
+<p>Changed in October 2024. Since then fewer tracks leave the laser in spec, on both tracks:</p>
+<div class="tb"><span class="h">cut</span><span class="h">tracks</span><span class="h">in spec</span>
+<span class="n">6800</span><span class="n">813 · 766</span><span class="n">87% · 89%</span>
+<span class="n">6900</span><span class="n">1,283 · 1,207</span><span class="n">60% · 70%</span></div>
+<p>It holds at both high and low incoming resistance, so the ink doesn't explain it. But the two settings ran in separate periods, so a change in material can't be ruled out. To settle it, alternate 6800 and 6900 by lot for a week and this page will read the answer back.</p>
+<span class="btn">Open 6607</span></div>
+<div class="r"><span class="md">6607</span><span>Aim incoming resistance higher: 4,348 to 8,244 Ω</span><span class="ro">~77</span></div>
+<div class="r"><span class="md">8232-1</span><span>Laser 1: cut 4000 → try 4100 <span class="tag">two periods · test first</span></span><span class="ro">~66</span></div>
+<div class="r"><span class="md">1844205</span><span>Laser 1: cut 3000 → try 3500 <span class="tag">two periods · test first</span></span><span class="ro">~33</span></div>
+<div class="r"><span class="md">7844</span><span>Laser 2: cut 2 → try 1.8 <span class="tag">two periods · test first</span></span><span class="ro">~24</span></div>
+<div class="more">Show all 8</div>
+
+<div class="gh"><span class="nm">Laser time you could save</span><span class="cnt">53</span><span class="col">tracks</span></div>
+<div class="gd">Units cut that didn't need it, or given more cuts than planned</div>
+<div class="r"><span class="md">7458-1</span><span>Laser 2: 51% arrive already in spec and are cut anyway</span><span class="ro">1,008</span></div>
+<div class="r"><span class="md">7844</span><span>Laser 2: 37% arrive already in spec and are cut anyway</span><span class="ro">523</span></div>
+<div class="r"><span class="md">7845</span><span>Laser 2: 42% arrive already in spec and are cut anyway</span><span class="ro">522</span></div>
+<div class="r"><span class="md">8712</span><span>Laser 2: 27% arrive already in spec and are cut anyway</span><span class="ro">439</span></div>
+<div class="r"><span class="md">8712</span><span>Laser 2: the extra cuts add only +5 points</span><span class="ro">420</span></div>
+<div class="more">Show all 53</div>
+
+<div class="gh"><span class="nm">Check the test</span><span class="cnt cor">22</span><span class="col">tracks</span></div>
+<div class="gd">Graded against more than one limit table, so pass rates across the change don't compare</div>
+<div class="r"><span class="md">8232-1</span><span>Laser 1: the limit table changed</span><span class="ro">935</span></div>
+<div class="r"><span class="md">8570</span><span>Laser 1: two limit tables in service at once</span><span class="ro">903</span></div>
+<div class="r"><span class="md">6607</span><span>Laser 1: the limit table changed</span><span class="ro">856</span></div>
+<div class="more">Show all 22</div>
+
+<div class="gh"><span class="nm">What changed</span><span class="cnt">12</span><span class="col">pass-rate move</span></div>
+<div class="gd">Recipe changes, newest first</div>
+<div class="r"><span class="md">8232-1</span><span>Jan 2025 · laser 1: 1 cut → 2 cuts</span><span class="ro up">+21</span></div>
+<div class="r"><span class="md">6607</span><span>Oct 2024 · laser 1: cut 6800 → 6900</span><span class="ro dn">−22</span></div>
+<div class="r"><span class="md">1844205</span><span>Oct 2024 · laser 1: cut 3600 → 3500</span><span class="ro up">+20</span></div>
+<div class="r"><span class="md">6126</span><span>Oct 2024 · laser 1: cut 3500 → 3700</span><span class="ro up">+10</span></div>
+<div class="more">Show all 12</div>
+</div>
+</body>
+</html>
