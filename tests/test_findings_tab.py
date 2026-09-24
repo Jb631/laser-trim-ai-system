@@ -176,3 +176,29 @@ def test_the_tab_draws_findings_with_the_same_groups_as_the_page(tk_root):
     assert "Change a setting to raise yield" in texts
     assert "What changed" not in texts                  # empty groups hidden on one model's tab
     assert not any(x.startswith("Open ") for x in texts)  # already on the model
+
+
+
+def test_a_section_heading_is_no_smaller_than_the_group_headings_inside_it(tk_root):
+    """Final review, 2026-09-24: the tab's section headings ("What to do about it") were caption
+    size, smaller than the FindingsView group headers (SIZE_HEADING) drawn inside them."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    tab = _tab(tk_root)
+    tab.set_data({"facts": FACTS, "findings": [FINDING]})
+
+    def size_of(text):
+        found = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, ctk.CTkLabel) and c.cget("text") == text:
+                    found.append(c.cget("font").cget("size"))
+                walk(c)
+        walk(tab)
+        assert found, f"no label reads {text!r}"
+        return found[0]
+
+    group = size_of("Change a setting to raise yield")
+    assert group == ThemeManager().SIZE_HEADING
+    for section in ("What was measured", "What to do about it", "Recipe history"):
+        assert size_of(section) >= group, section

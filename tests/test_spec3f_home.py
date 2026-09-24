@@ -329,3 +329,39 @@ def _buttons(widget):
             out.append(c)
         out.extend(_buttons(c))
     return out
+
+
+# ---- the full-width lines fit at 1280 wide (final review, 2026-09-24) -------
+
+def test_the_full_width_home_lines_fit_at_1280_by_720(make_app):
+    """Four Home lines wrapped at 1100 px inside a card ~1,064 px wide at 1280x720 -- clipped as soon
+    as they held a real folder list. Measured with the audit's own detector, on a real mapped window
+    (invisible: alpha 0), with invented folder names long enough to wrap."""
+    import pathlib
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    from render_pages import find_clipped_text_widgets
+
+    app = make_app()
+    page = _home(app)
+    folders = "  →  ".join(f"/invented/share/laser-{i}/Trim Data/Production line {i}" for i in range(1, 9))
+    page._folders_label.configure(text=f"8 folders, in this order:  {folders}")
+    page._summary.configure(text=f"Summary line {folders}")
+    for label, lead in ((page._legacy_ft_label, "Legacy line"), (page._unreadable_label, "Unreadable line")):
+        label.configure(text=f"{lead} {folders}")
+        label.pack(side="top", fill="x")
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.geometry("1280x720+20000+20000")
+    app.deiconify()
+    app.update_idletasks()
+    app.update()
+    try:
+        leads = ("8 folders", "Summary line", "Legacy line", "Unreadable line")
+        ours = [c for c in find_clipped_text_widgets(page, page="home", window_size="1280x720")
+                if c.text.startswith(leads)]
+        assert not ours, [c.line() for c in ours]
+    finally:
+        app.withdraw()

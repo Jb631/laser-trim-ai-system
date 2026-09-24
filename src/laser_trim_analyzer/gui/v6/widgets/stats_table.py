@@ -105,8 +105,8 @@ def _caption_count(row: StatRow, lot_rows: Dict[str, StatRow]) -> int:
 class StatsTableZone(ctk.CTkFrame):
     """The stats table, and — when a lot is selected — how that lot compares."""
 
-    CAPTION = ("LIN-PASSING = units the customer accepted (linearity passed; "
-               "a sigma WARNING still ships). ALL = every unit, including the "
+    CAPTION = ("Lin-passing = units the customer accepted (linearity passed; "
+               "a sigma WARNING still ships). All units = every unit, including the "
                "linearity rejects. Blank cells mean nothing was recorded — "
                "never a zero.")
     RATE_CAPTION = ("These two count TRACK measurements, not units: a two-track "
@@ -202,7 +202,7 @@ class StatsTableZone(ctk.CTkFrame):
         # Disposition band — the split is the whole point of the table, so it
         # gets its own row of headings, centred over the columns it names.
         for label, first in (("All units", 1),
-                             ("LIN-PASSING (accepted)", rule_column + 1)):
+                             ("Lin-passing (accepted)", rule_column + 1)):
             ctk.CTkLabel(frame, text=label, font=t.font(t.SIZE_CAPTION, "bold"),
                          text_color=t.TEXT_SECONDARY, anchor="center")\
                 .grid(row=ROW_GROUPS, column=first, columnspan=width,

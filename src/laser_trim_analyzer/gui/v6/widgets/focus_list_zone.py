@@ -277,7 +277,7 @@ class FocusListZone(ctk.CTkFrame):
             # average but IN control, so nothing changed today. Re-alarming on
             # them every morning is how a list loses its audience.
             self._chronic_heading.configure(
-                text=f"CHRONICALLY HIGH — stable, different problem ({len(res.chronic)})")
+                text=f"Chronically high — stable, different problem ({len(res.chronic)})")
             self._chronic_heading.pack(side="top", fill="x",
                                        pady=(t.SPACE_MD, t.SPACE_XS))
             self._chronic_body.pack(side="top", fill="x")

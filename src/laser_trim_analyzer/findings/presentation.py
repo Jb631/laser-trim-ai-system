@@ -7,7 +7,7 @@ Spec: docs/superpowers/specs/2026-09-23-design-system-and-findings-page-design.m
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
@@ -355,7 +355,9 @@ def _plural(n: int, one: str, many: str) -> str:
     return f"{n:,} {one if n == 1 else many}"
 
 
-def caption(groups: Sequence[Group], findings: Sequence[Dict[str, Any]]) -> str:
+def caption(groups: Sequence[Group], findings: Sequence[Dict[str, Any]], *,
+            tz: Optional[tzinfo] = None) -> str:
+    """`tz` is for tests; the page passes nothing and gets the machine's own time zone."""
     n = {g.spec.key: len(g.rows) for g in groups}
     parts = [_plural(n.get("yield", 0), "change worth testing", "changes worth testing"),
              _plural(n.get("laser_time", 0), "way to save laser time", "ways to save laser time"),
@@ -363,7 +365,11 @@ def caption(groups: Sequence[Group], findings: Sequence[Dict[str, Any]]) -> str:
     stamps = [str(x.get("computed_at")) for x in findings if x.get("computed_at")]
     if stamps:
         try:
-            dt = datetime.fromisoformat(max(stamps)[:19])
+            # computed_at is written by utc_now() (database/models.py) and read back without its
+            # zone, so it is UTC: an evening refresh in the US is already TOMORROW in UTC. Say the
+            # date in the reader's own time (final review, 2026-09-24).
+            dt = (datetime.fromisoformat(max(stamps)[:19])
+                  .replace(tzinfo=timezone.utc).astimezone(tz))
             parts.append(f"worked out {dt.day} {dt:%b}")          # NOT %-d: it raises on Windows
         except ValueError:
             pass

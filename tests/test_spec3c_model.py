@@ -803,7 +803,7 @@ def test_model_page_shows_the_stats_table(make_app):
     texts = [w.cget("text") for w in _all_labels(page._stats_table)]
     assert any("track measurements" in t for t in texts)
     assert any("Untrimmed resistance" in t for t in texts)
-    assert any("LIN-PASSING" in t for t in texts)
+    assert any("Lin-passing" in t for t in texts)
     assert any("Tracks that passed linearity" in t for t in texts)
 
 

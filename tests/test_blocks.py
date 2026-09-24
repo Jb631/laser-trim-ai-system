@@ -1,4 +1,5 @@
 """The building blocks draw only from theme tokens and behave as the spec says (section 2)."""
+import re
 import tkinter
 
 import customtkinter as ctk
@@ -81,7 +82,7 @@ def test_a_real_click_fires_on_click_exactly_once_per_leaf(tk_root, t):
 
     event_generate needs the widget genuinely viewable, which the withdrawn tk_root never is
     (confirmed empirically: event_generate dispatches nothing at all, even after update(), while
-    withdrawn) -- so deiconify for the duration of the test and withdraw again after.
+    withdrawn) -- so deiconify for the duration of the test, invisibly, and withdraw again after.
 
     Leaves are found with the BASE tkinter.Misc.winfo_children, not the public (possibly
     CTk-overridden) one: CTkFrame hides its own _canvas from the public version ("part of the
@@ -93,6 +94,13 @@ def test_a_real_click_fires_on_click_exactly_once_per_leaf(tk_root, t):
     r = blocks.row(tk_root, t, "6607", "Laser 1 (LTS): cut 6900 → try 6800", "~300",
                    tags=("both tracks",), on_click=lambda: hits.append(1))
     r.pack()
+    # Mapped (event_generate needs it) but never seen during the gate: macOS clamps
+    # +20000+20000 back into a screen corner, so the window is also fully transparent.
+    try:
+        tk_root.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    tk_root.geometry("+20000+20000")
     tk_root.deiconify()
     tk_root.update()
     try:
@@ -117,6 +125,31 @@ def test_a_real_click_fires_on_click_exactly_once_per_leaf(tk_root, t):
         tk_root.withdraw()
 
 
+def test_leaving_a_row_for_another_row_whose_name_starts_the_same_drops_the_hover(tk_root, t):
+    """Tk names siblings .!ctkframe, .!ctkframe2 ... .!ctkframe20. The leave check asked whether
+    the widget under the pointer had a path STARTING with the row's -- and ".!ctkframe20.!ctklabel"
+    starts with ".!ctkframe2", so moving from the 2nd row onto the 20th left the 2nd lit."""
+    holder = ctk.CTkFrame(tk_root)
+    rows = [blocks.row(holder, t, f"M{i}", f"statement {i}", "1", on_click=lambda: None)
+            for i in range(1, 21)]
+    second, twentieth = rows[1], rows[19]
+    assert str(second).endswith("!ctkframe2") and str(twentieth).endswith("!ctkframe20")
+    inside_twentieth = twentieth.winfo_children()[0]            # its model label
+
+    class Event:
+        x_root = y_root = 0
+
+    second._set_hover(True)
+    second.winfo_containing = lambda x, y: inside_twentieth     # the pointer is on row 20 now
+    second._on_leave(Event())
+    assert second.cget("fg_color") == "transparent"
+
+    second._set_hover(True)
+    second.winfo_containing = lambda x, y: second.winfo_children()[0]   # still on row 2's own label
+    second._on_leave(Event())
+    assert second.cget("fg_color") == t.ELEVATED                 # a child is still inside
+
+
 def test_the_primary_button_carries_dark_text_on_teal(tk_root, t):
     b = blocks.primary_button(tk_root, t, "Open 6607", lambda: None)
     assert b.cget("fg_color") == t.ACCENT and b.cget("text_color") == t.TEXT_INVERSE
@@ -133,17 +166,93 @@ def test_no_block_hard_codes_a_colour():
     assert not re.search(r'"#[0-9a-fA-F]{6}"', src), "colours come from theme.py only"
 
 
+_SHOUT = re.compile(r"^\s*([A-Z][A-Z0-9]*(?:[- ,&/'—]+[A-Z][A-Z0-9]*)*)(?![a-z])")
+_VERDICT_LABELS = {"PASS", "FAIL", "UNTRIMMED", "NOT GRADED", "SIGMA WATCH"}
+
+
+def _literal_starts(source: str):
+    """(line, text) for the START of every string a user could read: a plain literal's whole
+    text, an f-string's text up to its first replacement field. Two kinds of literal are not
+    starts: the continuation of an implicit concatenation ("..." "...", mid-sentence), and a
+    literal that is a whole statement (a docstring -- never on screen)."""
+    import io
+    import tokenize
+
+    starts = []
+    skip = {tokenize.NL, tokenize.COMMENT}
+    statement_start = {tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENCODING}
+    fstart = getattr(tokenize, "FSTRING_START", None)          # Python 3.12+ splits f-strings up
+    fmiddle = getattr(tokenize, "FSTRING_MIDDLE", None)
+    fend = getattr(tokenize, "FSTRING_END", None)
+    prev = None                  # type of the previous significant token
+    depth = 0                    # inside an f-string (3.12+ tokens)
+    take_next_middle = False
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type in skip:
+            continue
+        if depth:
+            if tok.type == fmiddle and take_next_middle:
+                starts.append((tok.start[0], tok.string))
+            take_next_middle = False
+            if tok.type == fstart:
+                depth += 1
+            elif tok.type == fend:
+                depth -= 1
+                if not depth:
+                    prev = tok.type
+            continue
+        is_string = tok.type == tokenize.STRING or tok.type == fstart
+        if is_string and prev not in (tokenize.STRING, fend) and prev not in statement_start \
+                and prev is not None:
+            if tok.type == fstart:
+                take_next_middle = True
+            else:
+                m = re.match(r"(?is)^([rbuf]*)('\'\'|\"\"\"|'|\")(.*)\2$", tok.string)
+                if m:
+                    text = m.group(3)
+                    if "f" in m.group(1).lower():                 # a pre-3.12 f-string token
+                        text = re.split(r"(?<!\{)\{(?!\{)", text)[0]
+                    starts.append((tok.start[0], text))
+        if tok.type == fstart:
+            depth = 1
+            continue
+        prev = tok.type
+    return starts
+
+
 def test_no_v6_heading_is_shouting():
-    """Sentence case everywhere (spec section 2). Verdict words are labels, not headings."""
-    import pathlib, re
+    """Sentence case everywhere (spec section 2). Verdict words are labels, not headings.
+
+    Widened twice. 2026-09-23: digits and parentheses (a '(' used to break the match, so
+    "CUTS THE RECIPE DID NOT ASK FOR (LAST YEAR)" slipped past). 2026-09-24 (final review): the old
+    scan matched only a string that was ALL capitals from quote to quote, so a heading that SHOUTS
+    and then goes on in lower case passed it -- f"CHRONICALLY HIGH — stable, different problem
+    ({n})" and "LIN-PASSING (accepted)". It now reads the START of every literal, f-strings
+    included, and flags a leading run of capitals eight letters or longer.
+    """
+    import pathlib
     root = pathlib.Path(__file__).resolve().parents[1] / "src/laser_trim_analyzer/gui/v6"
-    allowed = {"PASS", "FAIL", "UNTRIMMED", "NOT GRADED", "SIGMA WATCH"}
-    shouting = []
+    shouting, seen = [], 0
     for p in root.rglob("*.py"):
-        # Widened 2026-09-23 (fix round 1) to include digits and parentheses -- the original
-        # class let "CUTS THE RECIPE DID NOT ASK FOR (LAST YEAR)" (findings_tab.py) slip past,
-        # since the '(' broke the match before it ever reached the closing quote.
-        for m in re.finditer(r'"([A-Z][A-Z0-9 \',&/()—-]{8,})"', p.read_text()):
-            if m.group(1).strip() not in allowed:
-                shouting.append(f"{p.name}: {m.group(1)}")
+        for line, text in _literal_starts(p.read_text()):
+            seen += 1
+            m = _SHOUT.match(text)
+            if not m:
+                continue
+            run = m.group(1).strip(" ,&/'—-")
+            if run not in _VERDICT_LABELS and sum(c.isalpha() for c in run) >= 8:
+                shouting.append(f"{p.name}:{line}: {text[:60]!r}")
+    assert seen > 500, f"the scan read only {seen} string starts -- it is not reading the source"
     assert not shouting, shouting
+
+
+def test_the_shouting_scan_reads_f_strings_and_skips_what_nobody_sees():
+    src = ('"""A DOCSTRING THAT SHOUTS is never on screen."""\n'
+           'x = f"CHRONICALLY HIGH — stable ({n})"\n'
+           'y = ("Items not recognised (add-ons such as "\n     "FAI/LAT/TEST UNITS, and more)")\n'
+           'z = "LIN-PASSING (accepted)"\n')
+    starts = [text for _line, text in _literal_starts(src)]
+    assert any(t.startswith("CHRONICALLY HIGH") for t in starts)       # an f-string's start
+    assert "LIN-PASSING (accepted)" in starts
+    assert not any(t.startswith("A DOCSTRING") for t in starts)         # a docstring
+    assert not any(t.startswith("FAI/LAT") for t in starts)             # mid-sentence continuation

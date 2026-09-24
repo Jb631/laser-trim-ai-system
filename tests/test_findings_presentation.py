@@ -128,6 +128,16 @@ def test_the_caption_counts_rows_after_merging_and_dates_portably():
     assert cap.endswith("worked out 23 Sep")          # never strftime("%-d"): it raises on Windows
 
 
+def test_the_caption_says_the_date_in_the_readers_own_time():
+    # computed_at is UTC (utc_now()). 02:30 UTC on the 24th is still the evening of the 23rd in
+    # the US -- the caption must not say "worked out 24 Sep" to someone who refreshed on the 23rd.
+    from datetime import timedelta, timezone
+    fs = [cut(computed_at="2026-09-24 02:30:00.123456")]
+    groups = P.arrange(fs)
+    assert P.caption(groups, fs, tz=timezone(timedelta(hours=-4))).endswith("worked out 23 Sep")
+    assert P.caption(groups, fs, tz=timezone.utc).endswith("worked out 24 Sep")
+
+
 def test_value_text_for_counts():
     assert P.value_text("laser_time", 1008.0) == "1,008" and P.value_text("check", 22.0) == "22"
 

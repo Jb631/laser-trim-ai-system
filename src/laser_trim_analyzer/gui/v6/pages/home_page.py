@@ -41,6 +41,14 @@ from laser_trim_analyzer.gui.v6.widgets.process_progress_section import (
     ProcessProgressSection)
 
 
+# Every full-width Home line wraps here. 1100 was wider than the room these lines get at the
+# 1280x720 the audit checks (the run card is ~1,064 px there, ~1,040 inside its padding), so a
+# real folder list would have been cut off at its right edge -- invisible while no folders were
+# listed (final review, 2026-09-24). 950 is the value Task 9 gave the Model page's full-width
+# lines for the same width, with the same margin.
+_WRAP = 950
+
+
 class HomePage(PageBase):
     page_title = "Home"
 
@@ -94,7 +102,7 @@ class HomePage(PageBase):
         # which order. "Process everything new" is otherwise a promise with no
         # visible terms.
         self._folders_label = ctk.CTkLabel(
-            inner, text="", anchor="w", justify="left", wraplength=1100,
+            inner, text="", anchor="w", justify="left", wraplength=_WRAP,
             font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
         self._folders_label.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
 
@@ -105,7 +113,7 @@ class HomePage(PageBase):
         # "did that do anything?" is a question the app should not need to be
         # asked twice.
         self._summary = ctk.CTkLabel(inner, text="", anchor="w", justify="left",
-                                     wraplength=1100, font=t.font(t.SIZE_BODY),
+                                     wraplength=_WRAP, font=t.font(t.SIZE_BODY),
                                      text_color=t.TEXT_PRIMARY)
         self._summary.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
 
@@ -116,7 +124,7 @@ class HomePage(PageBase):
         # a banner — but it stays up until Settings clears it, because every
         # final-test number on the screens below is computed from those rows.
         self._legacy_ft_label = ctk.CTkLabel(
-            parent, text="", anchor="w", justify="left", wraplength=1100,
+            parent, text="", anchor="w", justify="left", wraplength=_WRAP,
             font=t.font(t.SIZE_CAPTION), text_color=t.TIER_WARNING)
         self._legacy_ft_count = 0
 
@@ -125,7 +133,7 @@ class HomePage(PageBase):
         # unchanged on disk (2026-09-17). Silent at zero; while it says
         # anything it also says the way back.
         self._unreadable_label = ctk.CTkLabel(
-            parent, text="", anchor="w", justify="left", wraplength=1100,
+            parent, text="", anchor="w", justify="left", wraplength=_WRAP,
             font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
         self._unreadable_count = 0
 

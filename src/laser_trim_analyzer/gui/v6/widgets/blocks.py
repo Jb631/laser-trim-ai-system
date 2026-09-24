@@ -1,8 +1,11 @@
 """The building blocks every V6 page is made of (spec 2026-09-23, section 2).
 
 Plain functions that build CustomTkinter widgets from theme tokens and return them UNPACKED,
-so the caller decides the layout. No colour or size in this file is a literal: all of it
-comes from the ThemeManager, so a change to the look is a change to theme.py alone.
+so the caller decides the layout. No COLOUR in this file is a literal, and every font size,
+spacing step and corner radius comes from the ThemeManager, so a change to the look is a change
+to theme.py alone. The pixel numbers that remain are the shapes of single blocks -- a pill's
+height and side padding, the model column's width, a line's wrap length -- which no other
+block shares and no page changes.
 """
 from typing import Callable, Dict, Iterable, Optional, Tuple
 
@@ -91,8 +94,11 @@ def row(parent, theme, model: str, statement: str, value_text: str, *, tags: Ite
     def leave(event) -> None:
         # <Leave> also fires when the pointer moves onto a CHILD label; only drop the hover
         # when the pointer has really left the row, or the row flickers as you cross it.
+        # "Inside" is the row itself or a path BELOW it: a bare startswith() took the 20th row
+        # (".!ctkframe20") for a child of the 2nd (".!ctkframe2"), so the 2nd row stayed lit.
         under = frame.winfo_containing(event.x_root, event.y_root)
-        if under is None or not str(under).startswith(str(frame)):
+        own = str(frame)
+        if under is None or not (str(under) == own or str(under).startswith(own + ".")):
             set_hover(False)
 
     def bind_all(w) -> None:
@@ -121,6 +127,7 @@ def row(parent, theme, model: str, statement: str, value_text: str, *, tags: Ite
         bind_all(frame)
     frame._on_click_all = click_all       # test hooks: the real bound handlers
     frame._set_hover = set_hover
+    frame._on_leave = leave
     return frame
 
 

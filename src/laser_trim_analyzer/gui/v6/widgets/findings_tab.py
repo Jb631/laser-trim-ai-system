@@ -111,9 +111,13 @@ class FindingsTab(ctk.CTkFrame):
 
     # ---- pieces ----
     def _heading(self, text: str) -> None:
+        # A SECTION of the tab ("What to do about it") holds the FindingsView's group headers
+        # (SIZE_HEADING, bold), so it can be no smaller than they are -- a caption-sized section
+        # title above a heading-sized group title read upside down (final review, 2026-09-24).
+        # More space above than below, so each section starts visibly.
         t = self.theme
-        ctk.CTkLabel(self._body, text=text, font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
-                     anchor="w").pack(fill="x", pady=(t.SPACE_MD, t.SPACE_SM))
+        ctk.CTkLabel(self._body, text=text, font=t.font(t.SIZE_HEADING, "bold"),
+                     text_color=t.TEXT_PRIMARY, anchor="w").pack(fill="x", pady=(t.SPACE_XL, t.SPACE_SM))
 
     def _line(self, text: str, *, muted: bool = False) -> None:
         t = self.theme

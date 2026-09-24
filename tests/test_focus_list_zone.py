@@ -345,7 +345,7 @@ def test_chronic_strip_lists_and_routes(tk_root):
     chronic = _entry("SICK")
     z.set_result(_result([_entry("HOT")], chronic=[chronic]))
     txt = " | ".join(_labels(z))
-    assert "CHRONICALLY HIGH — stable, different problem (1)" in txt
+    assert "Chronically high — stable, different problem (1)" in txt
     assert z._chronic_heading.winfo_manager() == "pack"
     assert "SICK" in txt and chronic.verdict in txt and chronic.sub_line in txt
     z._chronic_rows[0]._on_click()
@@ -358,7 +358,7 @@ def test_chronic_strip_is_absent_when_nothing_is_chronic(tk_root):
     assert z._chronic_rows == []
     assert z._chronic_heading.winfo_manager() == ""
     assert z._chronic_body.winfo_manager() == ""
-    assert "CHRONICALLY HIGH" not in " | ".join(_labels(z))
+    assert "chronically high" not in " | ".join(_labels(z)).lower()
 
 
 # ---- end-to-end: a REAL compute_focus_list row, rendered verbatim ---------

@@ -780,13 +780,13 @@ class ModelPage(PageBase):
                 worst = (m, shift, key, tier)
 
         if trained == 0:
-            state_txt, color = "NOT TRAINED — run drift training in Settings", t.TEXT_DISABLED
+            state_txt, color = "Not trained — run drift training in Settings", t.TEXT_DISABLED
         elif worst is None:
-            state_txt, color = "HOLDING — all watched metrics stable", t.TEXT_PRIMARY
+            state_txt, color = "Holding — all watched metrics stable", t.TEXT_PRIMARY
         else:
             from laser_trim_analyzer.ml.drift_types import metric_label as _ml
             shift_txt = f"{worst[1]:+.1f}σ" if worst[1] is not None else "flagged"
-            state_txt = f"DRIFTING — {_ml(worst[0])}: last lot {shift_txt} vs baseline lots"
+            state_txt = f"Drifting — {_ml(worst[0])}: last lot {shift_txt} vs baseline lots"
             color = t.TIER_OOC if worst[3] == "OUT_OF_CONTROL" else t.TIER_DRIFT
 
         parts = [state_txt]
@@ -1113,7 +1113,7 @@ class ModelPage(PageBase):
         ctk.CTkLabel(dlg, text=(f"Reset {model}'s drift baselines because the design/"
                                 "process changed. Data BEFORE the effective date is "
                                 "excluded from the new baselines. If too little data "
-                                "exists after the date, metrics read NOT TRAINED until "
+                                "exists after the date, metrics read \"Not trained\" until "
                                 "enough new lots accumulate. This action is recorded."),
                      font=t.font(t.SIZE_BODY), wraplength=480, justify="left",
                      text_color=t.TEXT_PRIMARY).pack(padx=16, pady=(16, 8), anchor="w")
