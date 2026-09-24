@@ -503,10 +503,11 @@ def test_model_page_banners_a_trim_vs_ft_spec_mismatch(make_app):
         "cross-station numbers (escapes, Gap) compare different "
         "requirements at those positions.")
     assert page._spec_banner.winfo_manager() == "pack"
-    # It qualifies the VERDICT, so it must stay directly under it — pack()
-    # would otherwise re-append it at the bottom of the body when re-shown.
-    slaves = page._verdict.master.pack_slaves()
-    assert slaves.index(page._spec_banner) == slaves.index(page._verdict) + 1
+    # It qualifies the page's verdict (now the caption, not a body label), so it must
+    # stay pinned directly above "Worth changing" -- pack() would otherwise re-append
+    # it at the bottom of the body when re-shown.
+    slaves = page._spec_banner.master.pack_slaves()
+    assert slaves.index(page._spec_banner) == slaves.index(page._worth_section) - 1
 
 
 def test_model_page_says_nothing_when_the_stations_agree_or_are_unknown(make_app):
@@ -844,8 +845,10 @@ def test_existing_model_page_content_is_still_there(make_app):
     app, page = _stats_app(make_app)
     for attr in ("_focus_chart", "_pill_row", "_drift_tab", "_smoothness_tab",
                  "_units_tab", "_ft_units_tab", "_trimft_tab", "_history_tab",
-                 "_predictor", "_verdict"):
+                 "_predictor", "_worth_section"):
         assert getattr(page, attr) is not None
+    # The old _verdict label is gone -- its text is the page caption now (Task 2).
+    assert not hasattr(page, "_verdict")
 
 
 def _all_labels(widget):
@@ -1030,3 +1033,143 @@ def test_window_and_lot_still_hold_when_file_date_carries_a_clock_time(tmp_path)
     assert compute_model_stats(db, "MID",
                                lot=(day - timedelta(days=1),
                                     day - timedelta(days=1))).tracks == 0
+
+
+# ---- Task 2 (facelift step 2): "Worth changing" comes first ---------------
+# docs/superpowers/specs/2026-09-24-facelift-step2-pages-design.md §1 "Investigate",
+# ruling 1, items 1-4. The old _verdict body label is gone (its text is now the page
+# caption); the two TIER_WARNING captions are blocks.banner check-tone banners; the
+# model's cached findings move from the seventh tab to a "Worth changing on this
+# model" section above the pills; the three-sentence σ key shrinks to one line, its
+# full explanation moved to the Drift metrics tab.
+
+# Verified live shape (tests/test_findings_tab.py's own FINDING): ink_target -> "yield",
+# one of the three groups _WORTH_CHANGING_GROUPS includes. Invented values throughout.
+_WORTH_CHANGING_FINDING = {
+    "model": "HOT", "analyzer": "ink_target", "title": "Incoming resistance: aim lower",
+    "category": "Ink target", "lever": "ink",
+    "lever_label": "Ink formulation (incoming resistance)", "lead_time": "next lot",
+    "expected_gain_points": 3.9, "tracks_per_year": 34.0, "annual_volume": 873,
+    "summary": ("Invented for the test — within Laser 1 (LTS) running 2 cuts, incoming "
+                "resistance below the median did better."),
+    "strength_name": "Spearman", "strength_value": -0.15, "n_units": 346, "evidence": {},
+}
+
+
+def _worth_app(make_app, model="HOT", *, finding=True):
+    """App on the Model page with a seeded model and (unless finding=False) one cached
+    process finding, loaded synchronously -- same pattern as _stats_app above."""
+    app = make_app()
+    _seed_tracks(app.db, model, "untrimmed_resistance")
+    if finding:
+        app.db.replace_process_findings(
+            model, {"tracks": 1}, [dict(_WORTH_CHANGING_FINDING, model=model)])
+    app.set_model_route(model)
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    return app, page
+
+
+def test_caption_carries_the_verdict_sentence(make_app, monkeypatch):
+    """The old _verdict body label is gone; its text is now the page caption
+    (PageBase.set_caption), so it inherits set_caption's rule: configured on every
+    apply, "—" when the verdict could not be computed (M1, unchanged)."""
+    app, page = _worth_app(make_app, finding=False)
+    monkeypatch.setattr(page, "_compute_verdict", lambda *a, **k: (
+        "Holding — invented verdict sentence for the test", page.theme.TEXT_PRIMARY))
+    page.reload_now()
+    assert page._caption.cget("text") == "Holding — invented verdict sentence for the test"
+    assert not hasattr(page, "_verdict")
+
+
+def test_worth_changing_header_precedes_pills_and_stats_table(make_app):
+    app, page = _worth_app(make_app)
+    texts = [w.cget("text") for w in _all_labels(page._worth_section)]
+    assert any("Worth changing on this model" in t for t in texts)
+
+    slaves = page._body.pack_slaves()
+    assert slaves.index(page._worth_section) < slaves.index(page._pill_row)
+    assert slaves.index(page._worth_section) < slaves.index(page._stats_table)
+
+    view = page._worth_view
+    assert view is not None
+    assert view._include_empty is False
+    assert view._on_open is None
+    assert view._rows_per_group == 3
+    assert view._groups == {"yield", "laser_time", "check"}
+    assert [f["title"] for f in view._findings] == ["Incoming resistance: aim lower"]
+
+
+def test_no_findings_shows_the_quiet_line_not_the_view(make_app):
+    app, page = _worth_app(make_app, finding=False)
+    texts = [w.cget("text") for w in _all_labels(page._worth_section)]
+    assert any(t == "Nothing worth changing stands out for this model." for t in texts)
+    assert page._worth_view is None
+
+
+def test_a_failed_findings_load_banners_never_the_quiet_line(make_app, monkeypatch):
+    """A crashed 'process findings' loader must say NOTHING in the Worth-changing
+    section -- the general load banner (already naming "process findings", which
+    contains "findings") does the talking; drawing "nothing worth changing" on top
+    of a crash would be the CLAUDE.md hazard this page exists to remove."""
+    app = make_app()
+    _seed_tracks(app.db, "HOT", "untrimmed_resistance")
+    app.set_model_route("HOT")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+
+    def _boom(*a, **kw):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(app.db, "get_process_facts", _boom)
+    page.reload_now()
+
+    assert page._load_banner.winfo_manager() != ""
+    assert "findings" in page._load_banner.cget("text")
+    texts = [w.cget("text") for w in _all_labels(page._worth_section)]
+    assert not any("Nothing worth changing" in t for t in texts)
+    assert page._worth_view is None
+
+
+def test_spec_and_load_banners_are_check_tone_blocks_hidden_when_quiet(make_app):
+    app, page = _worth_app(make_app, finding=False)
+    t = page.theme
+    for banner in (page._spec_banner, page._load_banner):
+        assert banner.cget("text_color") == t.CHECK
+        assert banner.cget("fg_color") == t.CHECK_TINT
+        assert banner.winfo_manager() == ""        # nothing to say on a healthy load
+
+
+def test_sigma_key_is_one_line_full_explanation_moved_to_drift_tab(make_app):
+    app, page = _worth_app(make_app, finding=False)
+    assert page._sigma_key.cget("text") == (
+        "σ = how far the last lot sits from this model's history of lots — a "
+        "drift signal, not a spec.")
+    slaves = page._body.pack_slaves()
+    assert slaves.index(page._sigma_key) == slaves.index(page._pill_row) + 1
+
+    full = page._drift_tab._sigma_key_lbl.cget("text")
+    assert "baseline of historical lot medians" in full
+    assert "Drift signal, not a spec." in full
+
+
+def test_tabs_have_a_minimum_height_so_a_selected_tab_never_collapses(make_app):
+    """render_pages.py --audit found 6607's Smoothness tab SQUEEZED OUT (unmapped) at
+    1280x720 once "Worth changing" made everything above the tabs taller than the window.
+    CTkTabview does not propagate the selected tab's own content size upward
+    (customtkinter's ctk_tabview.py: `_configure_grid` grids the tab frame `sticky="nsew"`
+    into a `weight=1` row, so it gets exactly however tall pack() allocates the tabview
+    itself -- nothing about its content). `expand=True` only fills LEFTOVER room in the
+    scrollable body once every other child has its natural size, which used to always be
+    positive; once it is not, pack falls back to CTkTabview's own un-set default
+    (measured ~250px), too short for even its button row plus a usable content row.
+    A minimum height keeps expand=True's "grow when there's room" behaviour while giving
+    every tab a floor it can never be squeezed under -- 520 comfortably held every tab's
+    content in the audited data (measured 404-684px per tab)."""
+    app = make_app()
+    page = app.page_container.get_page("model")
+    assert page._tabs.cget("height") >= 520

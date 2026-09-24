@@ -12,6 +12,7 @@ from typing import Optional
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 HEADER_HEIGHT = 44
 
@@ -120,7 +121,16 @@ class PageBase(ctk.CTkFrame):
         # Created here but NOT packed -- set_caption() packs it (before self._content) the
         # first time a page gives it text, and unpacks it again on "".
         self._caption = ctk.CTkLabel(self, text="", font=self.theme.font(self.theme.SIZE_BODY),
-                                     text_color=self.theme.TEXT_SECONDARY, anchor="w")
+                                     text_color=self.theme.TEXT_SECONDARY, anchor="w",
+                                     justify="left")
+        # No fixed pixel wraplength on page-width text (global-constraints.md): a caption is
+        # one sentence, but Investigate's (facelift step 2, Task 2) can run to 4-5 clauses
+        # joined by " · " and genuinely overflows an unwrapped single line -- found by
+        # render_pages.py --audit, squeezed at both audited window sizes. `self` (this page)
+        # is never destroyed/rebuilt for its own lifetime, so this binds exactly once
+        # (blocks.wrap_to_width: call it once per (label, container) lifetime). Padding
+        # matches set_caption's own padx=SPACE_LG on both sides, below.
+        blocks.wrap_to_width(self._caption, self, padding=self.theme.SPACE_LG * 2)
         self._content = ctk.CTkFrame(self, fg_color="transparent")
         self._content.pack(fill="both", expand=True,
                            padx=self.theme.SPACE_LG, pady=self.theme.SPACE_MD)

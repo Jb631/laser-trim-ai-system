@@ -264,6 +264,46 @@ def test_page_base_set_caption_shows_and_clears(tk_root):
     assert slaves.index(p._caption) < slaves.index(p._content)      # before the content frame
 
 
+def test_page_base_caption_wraps_to_the_page_instead_of_overflowing(tk_root):
+    """Task 2 (facelift step 2, 2026-09-24): Investigate's caption can run to several
+    clauses joined by " · " and genuinely overflows an unwrapped single line --
+    render_pages.py --audit found it squeezed at both audited window sizes (a caption was
+    never given a wraplength at all until this fix). blocks.wrap_to_width ties it to the
+    PAGE's own width (self), the same helper and padding convention every other page-width
+    label in gui/v6 now follows.
+
+    <Configure> never fires under the withdrawn tk_root (tests/test_blocks.py's own
+    finding), even though geometry propagation still runs -- map off-screen the same way
+    render_pages.py does.
+    """
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): pass
+
+    t = ThemeManager()
+    p = _P(tk_root, theme=t)
+    p.pack(fill="both", expand=True)
+    tk_root.geometry("500x300")
+    try:
+        tk_root.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    tk_root.geometry("+20000+20000")
+    tk_root.deiconify()
+    tk_root.update_idletasks()
+    tk_root.update()
+    try:
+        p.set_caption("One clause · Two clause · Three clause · Four clause · Five clause")
+        tk_root.update_idletasks()
+        tk_root.update()
+        assert p._caption.cget("wraplength") == 500 - t.SPACE_LG * 2
+    finally:
+        tk_root.withdraw()
+
+
 def test_page_container_add_get_show(tk_root):
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.page_container import PageContainer

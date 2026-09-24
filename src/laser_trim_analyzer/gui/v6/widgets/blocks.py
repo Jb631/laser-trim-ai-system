@@ -157,6 +157,12 @@ def wrap_to_width(label: ctk.CTkLabel, container, padding: int = 0) -> None:
     break that one. wraplength is set once immediately, from whatever width the container reports
     right now, and again on every <Configure> after; it never drops below 120 -- narrower than
     that reads as one word per line, which is worse than staying a little wide.
+
+    Call this ONCE per (label, container) lifetime; its binding is never removed. Calling it again
+    on the same still-live container -- e.g. from inside a re-render/apply path that runs again
+    against a persistent widget -- stacks another <Configure> handler on top of the last one, and
+    they accumulate forever. If a label is rebuilt on every apply, bind it to a frame that gets
+    rebuilt WITH it, never to a long-lived container such as a page's scrollable body.
     """
     def _update(_event=None) -> None:
         try:

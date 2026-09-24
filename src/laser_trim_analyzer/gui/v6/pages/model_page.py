@@ -14,9 +14,12 @@ from laser_trim_analyzer.core.model_stats import (
 from laser_trim_analyzer.core.spec_alignment import compare_station_specs
 from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
+from laser_trim_analyzer.findings import presentation as P
 from laser_trim_analyzer.gui.v6.page_base import PageBase
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
 from laser_trim_analyzer.gui.v6.widgets.findings_tab import FindingsTab
+from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
 from laser_trim_analyzer.gui.v6.widgets.history_tab import HistoryTab
 from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
@@ -76,6 +79,22 @@ def _unit_row(r) -> dict:
             "track_status": getattr(r[7], "name", r[7])}
 
 
+# The three groups the page's "Worth changing on this model" section shows (design doc
+# 2026-09-24-facelift-step2-pages-design.md §1, ruling 1 item 3). "history" (recipe changes,
+# already happened -- nothing to decide) and "other" (an analyzer this page does not know) stay
+# off it; both are still on the Findings tab, one click away.
+_WORTH_CHANGING_GROUPS = ("yield", "laser_time", "check")
+
+
+def _worth_changing_count(findings) -> int:
+    """Rows the 'Worth changing' section will show, across its three groups -- the SAME
+    arrange() FindingsView itself calls when it draws them, so the header's count and the
+    rows under it can never disagree."""
+    groups = P.arrange(findings or [], include_empty=False)
+    keys = set(_WORTH_CHANGING_GROUPS)
+    return sum(len(g.rows) for g in groups if g.spec.key in keys)
+
+
 class ModelPage(PageBase):
     page_title = "Model"
 
@@ -84,6 +103,10 @@ class ModelPage(PageBase):
         self._current_metric: str = _DEFAULT_METRIC
         self._window_choice: str = "90d"
         self._reload_gen = 0
+        # The "Worth changing" FindingsView, when this model has findings to show --
+        # None otherwise (no findings, or the load failed). Rebuilt by
+        # _set_findings_section() on every apply().
+        self._worth_view = None
         self._user_picked_metric = False
         self._chart_view = "lots"            # "lots" | "units" — see _VIEW_LOTS
         # Both chart views are loaded by the SAME _reload pass and cached here,
@@ -173,62 +196,43 @@ class ModelPage(PageBase):
         # over the matplotlib chart won't page-scroll (the chart canvas owns
         # its events); wheel anywhere else, or the scrollbar, works.
         self._body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        # ---- ZONE 1: the app's read (2026-07-13, James: "clear sections for
-        # what im looking at and what the app is telling me"). Verdict FIRST
-        # (the answer), then the per-metric pills (the evidence), then the σ
-        # key. Everything in this zone is an interpretation.
-        self._zone_header(self._body, "What the app is telling you",
-                          "drift-watch verdict — one verdict per lot, never a spec disposition")
-        # THE daily question in one line (user #17, 2026-07-13: "not getting
-        # the most out of the available data"): holding or drifting, which
-        # way the window is moving vs the model's lifetime, and whether this
-        # model has historically been difficult.
-        self._verdict = ctk.CTkLabel(self._body, text="", font=t.font(t.SIZE_BODY, "bold"),
-                                     text_color=t.TEXT_PRIMARY, anchor="w",
-                                     justify="left", wraplength=950)
-        self._verdict.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
-        # Trim-vs-FT spec misalignment (James, 2026-08-30: "i also want to know
-        # when the trim and test specs dont align"). It sits with the verdict
-        # because it changes how EVERY cross-station number on this page reads:
-        # when the two stations grade to different limits, an "escape" is not a
-        # missed defect, it is two different questions subtracted. Packed only
-        # when there is something to say — an always-present banner is wallpaper.
-        self._spec_banner = ctk.CTkLabel(self._body, text="", anchor="w",
-                                         justify="left", wraplength=950,
-                                         font=t.font(t.SIZE_CAPTION),
-                                         text_color=t.TIER_WARNING)
-        # A loader that raised must never read as "this model has no data"
-        # (code review 2026-09-20): each _reload loader is independently
-        # guarded, and a failure used to fall through to an empty default
-        # that the tabs render as a plain statement of fact. This banner
-        # names exactly which parts of the page could not be loaded this
-        # pass, so a crash and a genuine absence never look identical.
-        self._load_banner = ctk.CTkLabel(self._body, text="", anchor="w",
-                                         justify="left", wraplength=950,
-                                         font=t.font(t.SIZE_CAPTION),
-                                         text_color=t.TIER_WARNING)
+        # ---- Banners (design doc item 2): a failed loader, and a trim-vs-final-test spec
+        # mismatch. Check tone (blocks.banner) -- replacing the old TIER_WARNING captions --
+        # packed only when they have something to say, directly above "Worth changing", which
+        # this and every other zone in the body now follows (facelift step 2, 2026-09-24: the
+        # findings move from the seventh tab to the top of the page). _worth_section is created
+        # FIRST and packed immediately so the banners have a stable, always-present `before=`
+        # anchor to pack themselves against (see _set_spec_banner / _set_load_banner).
+        self._worth_section = ctk.CTkFrame(self._body, fg_color="transparent")
+        self._worth_section.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        self._spec_banner = blocks.banner(self._body, t, "")
+        self._load_banner = blocks.banner(self._body, t, "")
+        # ---- "How it's running" (design doc item 4): the per-metric pills (the evidence
+        # behind the caption's verdict sentence), a one-line σ key, and the stats table.
+        self._zone_header(self._body, "How it's running",
+                          "the metric pills, the σ key, and this model's stats — click a "
+                          "pill to chart it below")
         self._pill_row = MetricPillRow(self._body, theme=t, on_pill_click=self._on_pill_click)
         self._pill_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-        # Plain-language key for the pill numbers: σ was shown with no
-        # explanation anywhere in the app (2026-07-07, user feedback).
-        ctk.CTkLabel(self._body,
-                     text=("σ = how far the last LOT's median sits from this model's baseline "
-                           "of historical lot medians (lot = production run; new lot after "
-                           ">3 idle days). +1.0σ = the last lot ran one lot-σ above normal. "
-                           "Drift signal, not a spec."),
-                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
-                     anchor="w", justify="left", wraplength=980)\
-            .pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        # Plain-language key for the pill numbers, ONE line (facelift step 2, 2026-09-24): the
+        # full three-sentence explanation this used to be moved to the Drift metrics tab
+        # (DriftMetricsTab), next to the baseline/recent numbers it is actually explaining.
+        self._sigma_key = ctk.CTkLabel(
+            self._body,
+            text=("σ = how far the last lot sits from this model's history of lots — a "
+                  "drift signal, not a spec."),
+            font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
+            anchor="w", justify="left")
+        self._sigma_key.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        # self._body is built once, right here, and never destroyed/rebuilt for the page's
+        # whole lifetime -- so this binds exactly once (blocks.wrap_to_width: call it once per
+        # (label, container) lifetime, never from inside a re-render/apply path).
+        blocks.wrap_to_width(self._sigma_key, self._body)
+        self._stats_table = StatsTableZone(self._body, theme=t)
+        self._stats_table.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         # ---- ZONE 2: the data itself — where the read above is verified.
         self._zone_header(self._body, "What you're looking at",
                           "the measurements — chart the pill you clicked; units & final tests in the tabs")
-        # The stats table goes FIRST in this zone: it is the thing James
-        # currently leaves the app to compute (export to Excel, work out
-        # historical avg/min/max for resistance and angle, all units vs
-        # lin-passing). Everything below it — chart, tabs — is the deep dive
-        # you take once these numbers raise a question.
-        self._stats_table = StatsTableZone(self._body, theme=t)
-        self._stats_table.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         # Chart card header: the view toggle sits with the chart it controls.
         # Same segmented-button styling as the Triage scope toggle so the two
         # "this switches what you're looking at" controls read as one thing.
@@ -249,7 +253,23 @@ class ModelPage(PageBase):
                      anchor="w").pack(side="left")
         self._focus_chart = FocusChart(self._body, theme=t)
         self._focus_chart.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
-        self._tabs = ThemedTabView(self._body, theme=t)
+        # CTkTabview does not propagate its tabs' own content size upward (`_configure_grid`
+        # grids each tab frame `sticky="nsew"` into a `weight=1` row, so the CURRENTLY
+        # SELECTED tab gets exactly however tall pack() allocates `self._tabs` -- nothing
+        # about its content). `expand=True` (below) fills any LEFTOVER room in the scrollable
+        # body once every other child has its natural size -- which used to always be
+        # positive, since the tabs were the last, tallest thing on the page. The new "Worth
+        # changing" section (design doc item 3) can make everything ABOVE the tabs alone
+        # exceed the window's viewport, leaving zero leftover: pack then falls back to
+        # CTkTabview's own un-set default (~250px), which is too short for its button row
+        # PLUS a usable content row, and the selected tab's frame collapses to 0 and
+        # disappears -- found by render_pages.py --audit (6607, Smoothness, 1280x720: the
+        # tab's own content vanished, not just shrank). A minimum height keeps `expand=True`'s
+        # "grow when there's room" behaviour while giving every tab a floor it can never be
+        # squeezed under; 520 comfortably fit every tab's content in the audited data
+        # (measured 404-684px per tab, several of which are themselves scrollable and so are
+        # not limited to it either).
+        self._tabs = ThemedTabView(self._body, theme=t, height=520)
         self._tabs.pack(side="top", fill="both", expand=True)
         self._drift_tab = DriftMetricsTab(self._tabs.add("Drift Metrics"), theme=t,
                                           on_requalify=self._on_requalify,
@@ -496,22 +516,25 @@ class ModelPage(PageBase):
                     _try("drift tab", lambda: self._drift_tab.clear())
                 _try("baseline info", lambda: self._drift_tab.set_baseline_info(requal))
                 _try("pill select", lambda: self._pill_row.set_selected(chosen))
-                # Always configured — never left showing a PREVIOUS model's
-                # verdict when this model's verdict failed to compute.
+                # Always set — never left showing a PREVIOUS model's verdict when this
+                # model's verdict failed to compute (M1). The old `_verdict` label is gone;
+                # its text is now the page CAPTION (design doc item 1: "Caption = the
+                # drift-watch verdict sentence").
                 # ...and never a verdict built on a drift status that FAILED to load:
                 # _compute_verdict does not raise on status=None, it answers "NOT TRAINED --
                 # run drift training in Settings" -- confident, specific, and false when the
                 # real reason is a crashed query. The banner below says what happened.
                 shown = verdict if (verdict and "drift status" not in failed) else None
-                _try("verdict", lambda: self._verdict.configure(
-                    text=shown[0] if shown else "—",
-                    text_color=shown[1] if shown else self.theme.TEXT_SECONDARY))
-                # Spec banner first, load banner second: both pack with
-                # after=self._verdict, and the LAST one packed lands directly
-                # under the verdict — so when both have something to say, the
-                # load banner (an error) leads and the spec banner follows.
-                _try("spec banner", lambda: self._set_spec_banner(spec))
+                _try("caption", lambda: self.set_caption(shown[0] if shown else "—"))
+                # Load banner first, spec banner second: both pack with
+                # before=self._worth_section (a fixed anchor, never each other -- see
+                # _set_load_banner / _set_spec_banner), and pack(before=X) always lands a
+                # widget immediately next to X -- so calling load then spec puts spec
+                # (packed second) closer to X, i.e. load (an error) leads and spec follows
+                # when both have something to say on the same pass.
                 _try("load banner", lambda: self._set_load_banner(failed))
+                _try("spec banner", lambda: self._set_spec_banner(spec))
+                _try("worth changing", lambda: self._set_findings_section(findings_data, failed))
                 _try("lot selector", lambda: self._set_lot_choices(lots, lot_label))
                 _try("stats table", lambda: self._stats_table.set_stats(
                     stats, lot_stats=lot_stats, verdicts=verdicts,
@@ -570,15 +593,19 @@ class ModelPage(PageBase):
         self._reload()
 
     def _set_spec_banner(self, comparison) -> None:
-        """Show the amber line only when the two stations really do differ.
+        """Show the check-tone banner only when the two stations really do differ.
 
         "aligned" and "insufficient" both say nothing: one is good news that
         needs no banner, the other is an unanswered question, and dressing an
-        unanswered question in amber is how a warning stops being believed.
+        unanswered question as a warning is how a warning stops being believed.
 
-        `after=self._verdict` because pack() would otherwise re-append the
-        label at the BOTTOM of the body every time it is shown again — the
-        banner has to stay with the verdict it qualifies.
+        `before=self._worth_section`: a fixed, always-present sibling (never
+        `self._verdict` -- that label is gone, its text is the page caption
+        now) so pack() re-inserts this banner in the same place -- directly
+        above "Worth changing" -- every time it is shown again, instead of
+        re-appending it at the bottom of the body. See the load-then-spec
+        call order in apply() for how the two banners end up ordered
+        load-first when both fire on the same pass.
         """
         if comparison is None or comparison.status != "differs":
             self._spec_banner.pack_forget()
@@ -592,7 +619,7 @@ class ModelPage(PageBase):
                   "positions."))
         self._spec_banner.pack(side="top", fill="x",
                                pady=(0, self.theme.SPACE_SM),
-                               after=self._verdict)
+                               before=self._worth_section)
 
     def _set_load_banner(self, failed) -> None:
         """Name every loader that raised this pass, so a crash never reads as
@@ -600,9 +627,9 @@ class ModelPage(PageBase):
         see the module docstring / code review 2026-09-20). `failed` is a
         plain list built on the worker thread; this method only reads it.
 
-        `after=self._verdict`, same reason as `_set_spec_banner`: pack()
-        would otherwise re-append the label at the bottom of the body every
-        time it is shown again.
+        `before=self._worth_section`, same anchor as `_set_spec_banner` and
+        the same reason: pack() would otherwise re-append the label at the
+        bottom of the body every time it is shown again.
         """
         if not failed:
             self._load_banner.pack_forget()
@@ -613,7 +640,51 @@ class ModelPage(PageBase):
                   "error, not an absence of data. The log has the details."))
         self._load_banner.pack(side="top", fill="x",
                                pady=(0, self.theme.SPACE_SM),
-                               after=self._verdict)
+                               before=self._worth_section)
+
+    def _set_findings_section(self, findings_data, failed) -> None:
+        """"Worth changing on this model" (design doc item 3): the model's findings, in
+        the same FindingsView the Findings page and the Findings tab draw, capped to 3
+        rows across the three ACTIONABLE groups (_WORTH_CHANGING_GROUPS) -- "history"
+        (recipe changes, already happened) and "other" stay off it, one click away on
+        the Findings tab. `findings_data` is the SAME dict the Findings tab gets (built
+        once in _reload's work()); this is a second consumer of it, not a second load.
+
+        Rebuilt whole on every apply(), same as FindingsView._render() and
+        FindingsTab.set_data() do -- the header's count can only ever agree with the
+        rows under it if both come from the same pass.
+
+        A FAILED "process findings" load says NOTHING here, not even the empty-state
+        line: the general load banner above already names it ("Could not load: process
+        findings, ...", set by _set_load_banner just before this runs), and drawing
+        "nothing worth changing" over a load that actually crashed is exactly the
+        CLAUDE.md hazard this page exists to remove -- a failure must never look like
+        a result.
+        """
+        t = self.theme
+        for child in self._worth_section.winfo_children():
+            child.destroy()
+        self._worth_view = None
+        if "process findings" in (failed or []):
+            return
+        findings = (findings_data or {}).get("findings") or []
+        count = _worth_changing_count(findings)
+        blocks.group_header(self._worth_section, t, "Worth changing on this model", count,
+                            tone="act").pack(fill="x", pady=(0, t.SPACE_XS))
+        if not findings:
+            ctk.CTkLabel(self._worth_section,
+                        text="Nothing worth changing stands out for this model.",
+                        font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY,
+                        anchor="w").pack(fill="x", padx=t.SPACE_SM, pady=(0, t.SPACE_SM))
+            return
+        view = FindingsView(self._worth_section, t, on_open=None, include_empty=False,
+                            rows_per_group=3, groups=_WORTH_CHANGING_GROUPS)
+        view.pack(fill="x")
+        view.set_findings(findings)
+        blocks.link_button(self._worth_section, t, "See all in the Findings tab",
+                           lambda: self._select_tab(_FINDINGS_TAB_NAME)
+                           ).pack(anchor="w", padx=t.SPACE_XS, pady=(t.SPACE_XS, 0))
+        self._worth_view = view
 
     # ---- headline chart: two views over ONE load ----
     def _set_chart_data(self, metric, spc, dates, values, baseline):

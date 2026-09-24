@@ -8,6 +8,7 @@ from typing import Callable, Dict, List
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.ml.drift_types import (
     AlertType, METRIC_GROUPS, ModelDriftStatus, format_metric_value,
     metric_label)
@@ -38,6 +39,22 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         self._rows: Dict[str, _MetricRow] = {}
         self._group_headers: List = []
         self._on_requalify = on_requalify
+        # The full σ explanation (facelift step 2, 2026-09-24): the model page's own key,
+        # right under its pills, is now a single line pointing here -- this is where the
+        # baseline/recent/shift numbers below actually live. Built once, here, and never
+        # rebuilt: set_status()/clear() only ever touch _rows and _group_headers.
+        self._sigma_key_lbl = ctk.CTkLabel(
+            self, text=("σ = how far the last LOT's median sits from this model's baseline "
+                        "of historical lot medians (lot = production run; new lot after "
+                        ">3 idle days). +1.0σ = the last lot ran one lot-σ above normal. "
+                        "Drift signal, not a spec."),
+            font=theme.font(theme.SIZE_CAPTION), text_color=theme.TEXT_SECONDARY,
+            anchor="w", justify="left")
+        self._sigma_key_lbl.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
+        # `self` (this tab) is built once and never destroyed/rebuilt for the page's whole
+        # lifetime, so this binds exactly once (blocks.wrap_to_width: call it once per
+        # (label, container) lifetime, never from inside a re-render/apply path).
+        blocks.wrap_to_width(self._sigma_key_lbl, self)
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
         for i in range(len(_COLUMNS)):

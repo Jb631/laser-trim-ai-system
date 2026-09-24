@@ -84,13 +84,16 @@ def test_the_banner_clears_when_the_next_load_succeeds(make_app, monkeypatch):
 
 
 def test_model_b_never_shows_model_a_verdict(make_app, monkeypatch):
+    """The verdict text lives on the page CAPTION now (Task 2: the old _verdict body
+    label is gone), so it is this -- not a body widget -- that must never leak
+    model A's read under model B's name."""
     from test_spec3c_model import _seed
     app = make_app()
     _seed(app.db, "AAA")
     _seed(app.db, "BBB")
 
     page = _open(app, "AAA")
-    aaa_text = page._verdict.cget("text")
+    aaa_text = page._caption.cget("text")
     assert aaa_text and aaa_text != "—"
 
     def _boom(*a, **kw):
@@ -98,8 +101,8 @@ def test_model_b_never_shows_model_a_verdict(make_app, monkeypatch):
     monkeypatch.setattr(page, "_compute_verdict", _boom)
 
     _route(app, page, "BBB")
-    assert page._verdict.cget("text") == "—"
-    assert page._verdict.cget("text") != aaa_text
+    assert page._caption.cget("text") == "—"
+    assert page._caption.cget("text") != aaa_text
     assert "verdict" in page._load_banner.cget("text")
 
 
@@ -135,7 +138,8 @@ def test_a_failed_drift_status_never_reads_as_not_trained(make_app, monkeypatch)
     """M-1 review. `_compute_verdict` does not raise on status=None -- it treats a CRASHED drift-status
     load exactly like a model that was never trained, and returns the confident, specific and false
     instruction "Not trained — run drift training in Settings". The verdict rests on the drift status,
-    so when that load failed the headline must say nothing ("—") and leave the talking to the banner."""
+    so when that load failed the headline (the page CAPTION, since Task 2) must say nothing ("—")
+    and leave the talking to the banner."""
     import laser_trim_analyzer.gui.v6.pages.model_page as mp
     from test_spec3c_model import _seed
     app = make_app()
@@ -146,7 +150,7 @@ def test_a_failed_drift_status_never_reads_as_not_trained(make_app, monkeypatch)
         raise RuntimeError("database is locked")
     monkeypatch.setattr(mp, "get_model_drift_status", _boom)
     page.reload_now()
-    said = page._verdict.cget("text")
+    said = page._caption.cget("text")
     assert said == "—", said
     assert "not trained" not in said.lower()
     assert "drift status" in page._load_banner.cget("text")
