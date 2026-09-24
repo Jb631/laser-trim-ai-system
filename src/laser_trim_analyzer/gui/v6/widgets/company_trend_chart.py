@@ -17,8 +17,8 @@ from matplotlib.figure import Figure
 from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
-# Series colors: company = theme accent; systems get stable, distinct hues.
-_SYSTEM_COLORS = {"A": "#22c55e", "B": "#a78bfa", "C": "#f59e0b"}
+# Series colors: company = theme accent; systems get the theme's series colours
+# (ThemeManager.series_color) -- stable, distinct hues clear of verdict meaning.
 
 
 class CompanyTrendChart(ctk.CTkFrame):
@@ -46,8 +46,8 @@ class CompanyTrendChart(ctk.CTkFrame):
         self._ax.spines["bottom"].set_color(t.TEXT_SECONDARY)
         self._ax.spines["left"].set_visible(True)
         self._ax.spines["left"].set_color(t.TEXT_SECONDARY)
-        self._ax.tick_params(colors=t.TEXT_SECONDARY, labelsize=8)
-        self._vol_ax.tick_params(colors=t.TEXT_DISABLED, labelsize=8)
+        self._ax.tick_params(colors=t.TEXT_SECONDARY, labelsize=t.CHART_FONT)
+        self._vol_ax.tick_params(colors=t.TEXT_DISABLED, labelsize=t.CHART_FONT)
         self._ax.title.set_color(t.TEXT_PRIMARY)
 
     def set_data(self, trend: Optional[Dict[str, Any]], period_label: str = "week",
@@ -67,7 +67,7 @@ class CompanyTrendChart(ctk.CTkFrame):
                 self._ax.text(0.5, 0.5,
                               f"Chart error — see log.\n{type(exc).__name__}: {exc}",
                               transform=self._ax.transAxes, ha="center", va="center",
-                              color=self.theme.TIER_OOC, fontsize=9)
+                              color=self.theme.TIER_OOC, fontsize=self.theme.CHART_FONT_LARGE)
                 self.canvas.draw_idle()
             except Exception:
                 pass
@@ -100,7 +100,7 @@ class CompanyTrendChart(ctk.CTkFrame):
         # Volume backdrop (right axis): light bars, never competes with lines.
         vol.bar(x, [r["total"] for r in company], color=t.ELEVATED, alpha=0.9,
                 width=0.8, zorder=1)
-        vol.set_ylabel("units", color=t.TEXT_DISABLED, fontsize=8)
+        vol.set_ylabel("units", color=t.TEXT_DISABLED, fontsize=t.CHART_FONT)
         vol.yaxis.set_label_position("right")  # twin label was ghosting at left
 
         # Per-system overlays first (thin), company line on top (bold).
@@ -113,7 +113,7 @@ class CompanyTrendChart(ctk.CTkFrame):
             if all(v is None for v in ys):
                 continue
             ax.plot(x, ys, lw=1.1, alpha=0.85, marker="o", ms=2.5,
-                    color=_SYSTEM_COLORS.get(sys_name, t.TEXT_SECONDARY),
+                    color=t.series_color(sys_name),
                     label=laser_label(sys_name), zorder=3)
         comp_rates = [r["linearity_yield"] for r in company]
         ax.plot(x, comp_rates, lw=2.2, marker="o", ms=3.5,
@@ -127,7 +127,7 @@ class CompanyTrendChart(ctk.CTkFrame):
                     mfc="none", mec=t.ACCENT, zorder=5)
             ax.annotate("partial", (x[-1], comp_rates[-1]),
                         textcoords="offset points", xytext=(6, 8),
-                        fontsize=7, color=t.TEXT_SECONDARY)
+                        fontsize=t.CHART_FONT_SMALL, color=t.TEXT_SECONDARY)
 
         # Readable x labels: at most ~10 ticks (always include the last).
         step = max(1, len(periods) // 10)
@@ -136,19 +136,19 @@ class CompanyTrendChart(ctk.CTkFrame):
             ticks.append(len(periods) - 1)
         ax.set_xticks(ticks)
         ax.set_xticklabels([periods[i] for i in ticks], rotation=30, ha="right")
-        ax.set_ylabel("linearity yield %", color=t.TEXT_SECONDARY, fontsize=8)
+        ax.set_ylabel("linearity yield %", color=t.TEXT_SECONDARY, fontsize=t.CHART_FONT)
 
         # Data vintage: batch-loaded data lags production — say how fresh it is.
         if data_through is not None:
             ax.text(0.995, 1.02, f"Data through {data_through:%Y-%m-%d}",
                     transform=ax.transAxes, ha="right", va="bottom",
-                    fontsize=7.5, color=t.TEXT_SECONDARY)
+                    fontsize=t.CHART_FONT_SMALL, color=t.TEXT_SECONDARY)
         # Aggregation override disclosure (e.g. weekly coarsened to monthly for
         # an all-time window) — the toggle no longer matches what's drawn, so
         # the chart must say why.
         if note:
             ax.text(0.01, 0.03, note, transform=ax.transAxes, ha="left",
-                    va="bottom", fontsize=7.5, color=t.TIER_WARNING)
+                    va="bottom", fontsize=t.CHART_FONT_SMALL, color=t.TIER_WARNING)
 
         # Y window: show the informative band, not always 0-100.
         rates = [r["linearity_yield"] for r in company if r["linearity_yield"] is not None]
@@ -163,7 +163,7 @@ class CompanyTrendChart(ctk.CTkFrame):
         ax.patch.set_visible(False)
         # Legend ABOVE the axes (where the redundant title used to be) so it
         # can never sit on the data.
-        ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), fontsize=8,
+        ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), fontsize=t.CHART_FONT,
                   ncol=4, frameon=False, labelcolor=t.TEXT_SECONDARY,
                   handlelength=1.6, columnspacing=1.2)
         self._fig.tight_layout()

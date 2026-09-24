@@ -84,7 +84,7 @@ class HistoryTab(ctk.CTkFrame):
                 ax.spines[side].set_visible(False)
             for side in ("bottom", "left"):
                 ax.spines[side].set_color(t.TEXT_SECONDARY)
-            ax.tick_params(colors=t.TEXT_SECONDARY, labelsize=8)
+            ax.tick_params(colors=t.TEXT_SECONDARY, labelsize=t.CHART_FONT)
             ax.title.set_color(t.TEXT_PRIMARY)
 
         d = self._data
@@ -117,7 +117,7 @@ class HistoryTab(ctk.CTkFrame):
                     ext = off[np.argmax(np.abs(off - np.median(finite)))]
                     self._ax_val.text(0.99, 0.96, f"▲ {off.size} off-scale (to {ext:.4g})",
                                       transform=self._ax_val.transAxes, ha="right", va="top",
-                                      fontsize=7, color=t.TIER_OOC)
+                                      fontsize=t.CHART_FONT_SMALL, color=t.TIER_OOC)
 
         s = (d.get("stats") or {}).get(self._metric)
         if s:
@@ -140,8 +140,8 @@ class HistoryTab(ctk.CTkFrame):
             step = max(1, len(pr) // 8)
             self._ax_pr.set_xticks(xs[::step])
             self._ax_pr.set_xticklabels([pr[i][0] for i in xs[::step]], rotation=45,
-                                        ha="right", fontsize=7)
-            self._ax_pr.set_ylabel("% pass", color=t.TEXT_SECONDARY, fontsize=8)
+                                        ha="right", fontsize=t.CHART_FONT_SMALL)
+            self._ax_pr.set_ylabel("% pass", color=t.TEXT_SECONDARY, fontsize=t.CHART_FONT)
         else:
             self._ax_pr.text(0.5, 0.5, "No linearity pass/fail history.",
                              transform=self._ax_pr.transAxes, ha="center", va="center",

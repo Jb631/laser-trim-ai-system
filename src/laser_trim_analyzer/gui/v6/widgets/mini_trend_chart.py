@@ -60,7 +60,7 @@ class MiniTrendChart(ctk.CTkFrame):
             # note wasn't enough to READ a value off the line — a dip needs a
             # number. Real ticks at 0/50/100 with faint gridlines.
             ax.set_yticks([0, 50, 100])
-            ax.set_yticklabels(["0", "50", "100%"], fontsize=6, color=t.TEXT_DISABLED)
+            ax.set_yticklabels(["0", "50", "100%"], fontsize=t.CHART_FONT_SMALL, color=t.TEXT_DISABLED)
             ax.tick_params(axis="y", length=0, pad=1)
             for gy in (0, 50, 100):
                 ax.axhline(gy, color=t.TEXT_DISABLED, lw=0.5, alpha=0.22, zorder=1)
@@ -73,18 +73,18 @@ class MiniTrendChart(ctk.CTkFrame):
             # contradiction (user finding, 2026-07-08).
             ax.annotate(f"last day {ys[-1]:.0f}%", (len(ys_ds) - 1, ys_ds[-1]),
                         textcoords="offset points", xytext=(-2, 6), ha="right",
-                        fontsize=7, color=t.TEXT_PRIMARY)
+                        fontsize=t.CHART_FONT_SMALL, color=t.TEXT_PRIMARY)
             # What it is + when it spans.
             first_d, last_d = str(points[0][0]), str(points[-1][0])
             ax.text(0.0, -0.02, f"{first_d}", transform=ax.transAxes, ha="left",
-                    va="top", fontsize=6.5, color=t.TEXT_DISABLED)
+                    va="top", fontsize=t.CHART_FONT_SMALL, color=t.TEXT_DISABLED)
             ax.text(1.0, -0.02, f"{last_d}", transform=ax.transAxes, ha="right",
-                    va="top", fontsize=6.5, color=t.TEXT_DISABLED)
+                    va="top", fontsize=t.CHART_FONT_SMALL, color=t.TEXT_DISABLED)
             ax.text(0.0, 1.02, label, transform=ax.transAxes,
-                    ha="left", va="bottom", fontsize=6.5, color=t.TEXT_DISABLED)
+                    ha="left", va="bottom", fontsize=t.CHART_FONT_SMALL, color=t.TEXT_DISABLED)
         else:
             ax.text(0.5, 0.5, "no trend", transform=ax.transAxes, ha="center", va="center",
-                    color=t.TEXT_DISABLED, fontsize=8)
+                    color=t.TEXT_DISABLED, fontsize=t.CHART_FONT)
         self._fig.tight_layout(pad=0.35)
         self.canvas.draw_idle()
 

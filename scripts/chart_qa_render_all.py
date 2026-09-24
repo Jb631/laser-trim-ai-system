@@ -82,7 +82,16 @@ class _Theme:
     SPACE_XS=4; SPACE_SM=8; SPACE_MD=14; SPACE_LG=22
     RADIUS_SM=6; RADIUS_MD=10; SIZE_CAPTION=11; SIZE_BODY=13
     SIZE_HEADING=15; SIZE_TITLE=18
+    # Chart tokens (theme.py values, verbatim) -- the chart widgets read these
+    # directly (Task 3, 2026-09-23); this stub must carry them too or a
+    # headless render raises AttributeError before it can draw anything.
+    CHART_REFERENCE="#8a9bb3"
+    SERIES_A="#6aa8ff"; SERIES_B="#b39cff"; SERIES_C="#f28dc6"
+    CHART_FONT_SMALL=8.0; CHART_FONT=9.0; CHART_FONT_LARGE=10.0
     def font(self, *a, **k): return None
+    def series_color(self, system: str) -> str:
+        return {"A": self.SERIES_A, "B": self.SERIES_B,
+                "C": self.SERIES_C}.get(system, self.CHART_REFERENCE)
     @staticmethod
     def fmt_measure(v, sig: int = 4) -> str:
         if v is None: return "—"

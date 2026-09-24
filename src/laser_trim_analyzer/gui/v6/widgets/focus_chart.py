@@ -95,7 +95,7 @@ class FocusChart(ctk.CTkFrame):
             ax.spines[side].set_visible(False)
         for side in ("bottom", "left"):
             ax.spines[side].set_color(t.TEXT_SECONDARY)
-        ax.tick_params(colors=t.TEXT_SECONDARY, labelsize=9)
+        ax.tick_params(colors=t.TEXT_SECONDARY, labelsize=t.CHART_FONT_LARGE)
         ax.title.set_color(t.TEXT_PRIMARY)
 
     def set_series(self, metric: str, dates: List[datetime], values: List[float],
@@ -217,7 +217,7 @@ class FocusChart(ctk.CTkFrame):
             ax.text(0.01, 0.97,
                     f"±3σ control limits off-scale ({t.fmt_measure(limits_off_scale[0], 3)} … "
                     f"{t.fmt_measure(limits_off_scale[1], 3)}) — baseline spans mixed history",
-                    transform=ax.transAxes, ha="left", va="top", fontsize=7.5,
+                    transform=ax.transAxes, ha="left", va="top", fontsize=t.CHART_FONT_SMALL,
                     color=t.TIER_WARNING)
 
         # Daily median trend line. A batch-day where MOST units are corrupt has
@@ -266,7 +266,7 @@ class FocusChart(ctk.CTkFrame):
             # alone hides magnitude, which is exactly what a QA reviewer needs.
             ext = max(off_vals, key=abs)
             ax.text(0.99, 0.97, f"▲ {len(off_vals)} off-scale (max {t.fmt_measure(ext, 3)})",
-                    transform=ax.transAxes, ha="right", va="top", fontsize=8,
+                    transform=ax.transAxes, ha="right", va="top", fontsize=t.CHART_FONT,
                     color=mark_color)
         # ---- Explicit x-window (2026-07-08). Autoscale is LAZY and, on this
         # reused axes, held the widest range ever rendered: after viewing
@@ -279,7 +279,7 @@ class FocusChart(ctk.CTkFrame):
         from datetime import timedelta as _td
         xpad = max(span * 0.02, _td(days=1))
         ax.set_xlim(d0 - xpad, d1 + xpad)
-        ax.legend(loc="best", fontsize=8, facecolor=t.CARD, edgecolor=t.BORDER, labelcolor=t.TEXT_SECONDARY)
+        ax.legend(loc="best", fontsize=t.CHART_FONT, facecolor=t.CARD, edgecolor=t.BORDER, labelcolor=t.TEXT_SECONDARY)
         self._fig.tight_layout()
         self.canvas.draw_idle()
 
@@ -317,7 +317,7 @@ class FocusChart(ctk.CTkFrame):
         ax.set_title(
             f"{series.model} — {metric_label(series.metric)} by production lot\n"
             f"{key} · red = beyond it: something changed",
-            fontsize=9, wrap=True)
+            fontsize=t.CHART_FONT_LARGE, wrap=True)
 
         xs, values = p["xs"], p["values"]
         if not xs:
@@ -342,7 +342,7 @@ class FocusChart(ctk.CTkFrame):
                             else f"baseline {center:.4g}",
                             xy=(0.0, center), xycoords=("axes fraction", "data"),
                             xytext=(3, 3), textcoords="offset points",
-                            fontsize=8, ha="left", va="bottom", zorder=2,
+                            fontsize=t.CHART_FONT, ha="left", va="bottom", zorder=2,
                             color=t.TEXT_SECONDARY,
                             bbox=dict(facecolor=t.CARD, edgecolor="none",
                                       alpha=0.75, pad=1.0))
@@ -394,7 +394,7 @@ class FocusChart(ctk.CTkFrame):
         stride = max(1, -(-len(xs) // 12))
         ticks = list(range(len(xs) - 1, -1, -stride))[::-1]
         ax.set_xticks(ticks)
-        ax.set_xticklabels([p["x_dates"][i] for i in ticks], fontsize=8)
+        ax.set_xticklabels([p["x_dates"][i] for i in ticks], fontsize=t.CHART_FONT)
         for i in ticks:
             # "open" rides on the lot's own label: a free-floating legend line
             # for the hollow marker collided with the amber note (render check),
@@ -403,7 +403,7 @@ class FocusChart(ctk.CTkFrame):
                         xy=(xs[i], 0),
                         xycoords=("data", "axes fraction"), xytext=(0, -18),
                         textcoords="offset points", ha="center", va="top",
-                        fontsize=7, color=t.TEXT_SECONDARY, annotation_clip=False)
+                        fontsize=t.CHART_FONT_SMALL, color=t.TEXT_SECONDARY, annotation_clip=False)
         ax.set_xlim(-0.6, len(xs) - 0.4)
 
         y0, y1 = ax.get_ylim()
@@ -439,7 +439,7 @@ class FocusChart(ctk.CTkFrame):
                 dy = -42 - 20 * n_below
                 n_below += 1
             ax.annotate(note, xy=(xs[i], values[i]), xytext=(dx, dy),
-                        textcoords="offset points", fontsize=8, ha=ha,
+                        textcoords="offset points", fontsize=t.CHART_FONT, ha=ha,
                         color=t.TIER_OOC, zorder=7, annotation_clip=False,
                         bbox=dict(facecolor=t.CARD, edgecolor="none",
                                   alpha=0.8, pad=1.5),
@@ -449,13 +449,13 @@ class FocusChart(ctk.CTkFrame):
             ax.text(0.01, 0.97,
                     f"{p['old_ooc_count']} earlier out-of-control lots in this "
                     "window (unlabeled)", transform=ax.transAxes, ha="left",
-                    va="top", fontsize=7.5, color=t.TIER_WARNING)
+                    va="top", fontsize=t.CHART_FONT_SMALL, color=t.TIER_WARNING)
         if not judged:
             # Silence beats an invented limit: no band, no flags, and the reason
             # said out loud instead of an empty-looking chart.
             ax.text(0.5, 0.5,
                     f"not enough lot history to judge (needs {MIN_LOTS_TRAIN} lots)",
-                    transform=ax.transAxes, ha="center", va="center", fontsize=9,
+                    transform=ax.transAxes, ha="center", va="center", fontsize=t.CHART_FONT_LARGE,
                     color=t.TEXT_SECONDARY, zorder=8,
                     bbox=dict(facecolor=t.CARD, edgecolor="none", alpha=0.85))
 
