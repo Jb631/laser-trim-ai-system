@@ -169,7 +169,7 @@ class ModelPage(PageBase):
         # model has historically been difficult.
         self._verdict = ctk.CTkLabel(self._body, text="", font=t.font(t.SIZE_BODY, "bold"),
                                      text_color=t.TEXT_PRIMARY, anchor="w",
-                                     justify="left", wraplength=1200)
+                                     justify="left", wraplength=950)
         self._verdict.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         # Trim-vs-FT spec misalignment (James, 2026-08-30: "i also want to know
         # when the trim and test specs dont align"). It sits with the verdict
@@ -178,7 +178,7 @@ class ModelPage(PageBase):
         # missed defect, it is two different questions subtracted. Packed only
         # when there is something to say — an always-present banner is wallpaper.
         self._spec_banner = ctk.CTkLabel(self._body, text="", anchor="w",
-                                         justify="left", wraplength=1200,
+                                         justify="left", wraplength=950,
                                          font=t.font(t.SIZE_CAPTION),
                                          text_color=t.TIER_WARNING)
         # A loader that raised must never read as "this model has no data"
@@ -188,7 +188,7 @@ class ModelPage(PageBase):
         # names exactly which parts of the page could not be loaded this
         # pass, so a crash and a genuine absence never look identical.
         self._load_banner = ctk.CTkLabel(self._body, text="", anchor="w",
-                                         justify="left", wraplength=1200,
+                                         justify="left", wraplength=950,
                                          font=t.font(t.SIZE_CAPTION),
                                          text_color=t.TIER_WARNING)
         self._pill_row = MetricPillRow(self._body, theme=t, on_pill_click=self._on_pill_click)

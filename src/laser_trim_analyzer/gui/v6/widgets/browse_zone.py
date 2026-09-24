@@ -26,7 +26,7 @@ class BrowseZone(ctk.CTkFrame):
                                  "'Active' scope = models with recent data or pinned in "
                                  "Settings → Active Models."),
                      font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
-                     anchor="w", justify="left", wraplength=1200)\
+                     anchor="w", justify="left", wraplength=950)\
             .pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         # NOTE: no textvariable — CTkEntry silently drops placeholder_text when
         # a textvariable is attached (the 'mystery empty box' finding). Filter

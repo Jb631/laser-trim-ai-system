@@ -272,7 +272,7 @@ class StatsTableZone(ctk.CTkFrame):
             self, text=text,
             font=t.font(t.SIZE_CAPTION if caption else t.SIZE_BODY,
                         "bold" if bold else "normal"),
-            text_color=color, anchor="w", justify="left", wraplength=1150)
+            text_color=color, anchor="w", justify="left", wraplength=950)
         label.pack(side="top", fill="x", padx=t.SPACE_MD,
                    pady=(t.SPACE_XS, 0))
         self._rendered.append(label)

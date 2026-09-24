@@ -22,11 +22,12 @@ class YieldPanel(ctk.CTkFrame):
                                     text_color=t.TEXT_SECONDARY, anchor="w")
         self._counts.pack(side="top", fill="x", padx=t.SPACE_MD)
         self._total = ctk.CTkLabel(self, text="", font=t.font(t.SIZE_CAPTION),
-                                   text_color=t.TEXT_SECONDARY, anchor="w")
+                                   text_color=t.TEXT_SECONDARY, anchor="w",
+                                   justify="left", wraplength=440)
         self._total.pack(side="top", fill="x", padx=t.SPACE_MD)
         self._unit_line = ctk.CTkLabel(self, text="", font=t.font(t.SIZE_CAPTION),
                                        text_color=t.TEXT_PRIMARY, anchor="w",
-                                       justify="left", wraplength=620)
+                                       justify="left", wraplength=440)
         self._unit_line.pack(side="top", fill="x", padx=t.SPACE_MD)
         self._trend = MiniTrendChart(self, theme=t)
         self._trend.pack(side="top", fill="x", padx=t.SPACE_MD, pady=(t.SPACE_SM, t.SPACE_MD))

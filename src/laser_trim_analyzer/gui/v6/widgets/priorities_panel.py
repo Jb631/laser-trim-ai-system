@@ -39,7 +39,7 @@ class PrioritiesPanel(ctk.CTkFrame):
             "show counts only (add prices in Settings → Pricing). Click a model for the "
             "reason and evidence."),
             font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w",
-            justify="left", wraplength=1200).pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+            justify="left", wraplength=950).pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         header = ctk.CTkFrame(self, fg_color=t.CARD)
         header.pack(side="top", fill="x")
         header.grid_columnconfigure(tuple(range(len(_COLS))), weight=1, uniform="pp")

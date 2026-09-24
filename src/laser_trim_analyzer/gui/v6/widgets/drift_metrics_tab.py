@@ -134,7 +134,13 @@ class _MetricRow(ctk.CTkFrame):
                  alert_txt,
                  f"{_fmt(ms.baseline_mean)} ± {_fmt(ms.baseline_std)}", recent, shift_txt]
         for i in range(len(cells)):
-            self.grid_columnconfigure(i, weight=1, uniform="dm")
+            # Column 0 (the metric NAME, e.g. "Escape rate (trim PASS → FT FAIL)",
+            # the longest entry in drift_types.METRIC_LABELS at 225px/SIZE_BODY) needs
+            # more than an equal 1/6 share once six columns are squeezed into a
+            # narrower window; minsize claims it from the other five, which hold
+            # short fixed-format values ("+1.50σ") with plenty of spare width.
+            kw = {"minsize": 240} if i == 0 else {}
+            self.grid_columnconfigure(i, weight=1, uniform="dm", **kw)
         for i, txt in enumerate(cells):
             lbl = ctk.CTkLabel(self, text=txt, font=theme.font(theme.SIZE_BODY),
                                text_color=theme.TEXT_PRIMARY, anchor="w")
