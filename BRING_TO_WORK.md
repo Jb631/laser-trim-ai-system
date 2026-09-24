@@ -1,9 +1,12 @@
 # Taking V6 to work — first-day checklist
 
-## ⚡ 2026-09-24 — the new look (pull, then look)
+## ⚡ 2026-09-24 — the new look and the parse fixes (pull, then look)
 
-Step 1 of the facelift shipped: a new dark theme, bigger and more readable text, and the
-Findings page rebuilt. No schema change, nothing to retrain, nothing to click on first launch.
+This pull brings step 1 of the facelift — a new dark theme, bigger and more readable text, the
+Findings page rebuilt, IBM Plex fonts — and the parse fixes (`TRACKER.md` section G). **The first
+launch adds six empty columns to the database** (`error_reason`, three `increment_volts` columns,
+`initial_trim_value`, `track2_parameters`): metadata only, a second or two, and no row is
+rewritten at start-up. Nothing to retrain, nothing to click.
 
 1. **`git pull`.**
 2. **Open every page and look at it** — sidebar top to bottom, then a model on the Model page
@@ -76,7 +79,19 @@ Findings page rebuilt. No schema change, nothing to retrain, nothing to click on
    Every file should report `'tk': True`, and the last line should print `True`. If any say
    `False`, the app still runs fine on the fallback fonts (Segoe UI / Cascadia Mono) — tell
    Claude exactly what it printed.
-6. **OPTIONAL — back-fill laser 1's TrimVolts curves onto files already in your database.**
+6. **What the parse fixes change on screen** — only these, so anything else that moved is news:
+   - **Model page → Units:** an ERROR unit's *Linearity error* cell used to be "—"; it now says
+     why, e.g. "not graded: insufficient data points" (234 of the 237 ERROR units today; the
+     other 3 when next reprocessed).
+   - **Findings on 8856 and 8856-1, laser 2 (DLTS):** pass rates rise to what their GRADED
+     tracks do — 27.7 % → 49.0 % and 57.0 % → 72.1 % — because a track too short to grade no
+     longer counts as a linearity FAIL. 8914 barely moves (8.6 % → 8.8 %).
+   - **Two-track laser-2 models:** a file processed from now on judges its track 2 against
+     track 2's OWN resistance limits. The 1,868 two-track analyses already stored keep track 1's
+     until they are next processed — there is no back-fill for this one.
+   - **V5 → Settings → Apply ML** no longer rewrites linearity verdicts (it never had been
+     run on the rebuild).
+7. **OPTIONAL — back-fill laser 1's TrimVolts curves onto files already in your database.**
    Skip this whenever you like; nothing on screen depends on it today, and it only ever feeds
    a future cut-length model. This pull's parser change (`49f865e`) reads laser 1's (LTS)
    `TrimVolts N` sheets — the material's own response curve to each laser increment — onto
@@ -118,6 +133,11 @@ Findings page rebuilt. No schema change, nothing to retrain, nothing to click on
    *exact same command* again continues on its own — it re-selects only the passes still
    missing their curves and skips everything already filled; you don't need to track where it
    got to.
+
+**At home (the Mac) only:** since 2026-09-24 the home copy of the database is read-only
+(`chmod a-w`), after two of Claude's scripts wrote to it by accident — schema and bookkeeping
+only, nothing of yours changed (`TRACKER.md`, top). The app still opens and reads it. To write to
+it at home: `chmod u+w data/analysis.db`. Your work copy is unaffected.
 
 ## ⚡ 2026-09-23 — bringing the finished rebuild home (do it THIS way)
 

@@ -4,56 +4,53 @@ What is open, in what order, and who holds the next move. Updated in the same
 commit as the work it describes. `BRING_TO_WORK.md` stays the place for
 step-by-step instructions at the work machine; this is the index above it.
 
-Last updated: 2026-09-20
+Last updated: 2026-09-24
 
-## ▶ Read this before you start the rebuild (Claude, night of 2026-09-20)
+## ▶ Where things stand (Claude, 2026-09-24)
 
-**Pushed to `main` on the night of 2026-09-20** (commit `22a91dc`, 50 commits). At work:
+**On `main`:** everything through `498940f` (pushed the morning of 2026-09-24) — facelift step 1
+and the first two parse fixes. **Next push, today, after its final review:** the IBM Plex fonts and
+the rest of the parse fixes (section G). At work: `git pull`, then the 2026-09-24 section of
+`BRING_TO_WORK.md`. Nothing there needs running except one optional step (the TrimVolts back-fill).
 
-    git pull
+**The rebuild is done** (B2: 168,501 files in 21.8 hours, finished 2026-09-22) and every number
+that rested on a final-test verdict has been re-derived on it (B3).
 
-Then follow the rebuild checklist in `BRING_TO_WORK.md` as written. Optional, ~4 minutes, worth it
-once: `.\.venv\Scripts\python scripts\run_test_gate.py` — the whole test suite, every file OK.
-(PowerShell needs the leading `.\`, and you must `cd C:\dev\laser-trim-ai-system` first.)
-
-### Four fixes that change what the rebuild stores — take these with you
-
-| | What was wrong | Evidence it is right now |
+| Workstream | State | Next move |
 |---|---|---|
-| 1 | **Final tests the station FAILED were stored as PASS.** When a sheet's error column is under 90 % filled (normal when the station ignores more than 10 % of its rows) the app recomputed the errors, divided them by full scale, and graded them against limits still in volts. | Real pipeline, before and after: 3,766 of 3,768 slice tracks unchanged in all 13 fields; of the 12 affected tracks 6 flip, **all PASS → FAIL**; agreement with the station's own verdict **5/12 → 11/12**; no station-PASS became a FAIL. ≈1.3 % of final-test files. |
-| 2 | **Units that were never cut were stored as flawless.** When no cut is made, laser 1 still writes a `Lin Error` sheet — the blank template. The app took it for the final sweep: zero error, linearity PASS. **1,182 tracks** (6126: 455 · 6607: 224 · 8340: 193 · 8232-1: 163 · 1844205: 92). | In your slice the workbook's REAL sweep is out of limits in **111 of 130**. They now load as UNTRIMMED, and no fake laser pass is written for them. Rebuilt slice: 8232-1 laser-1 yield **42.0 % → 39.1 %**; 0 errors in 13,031 files. |
-| 3 | **A race in my own speed fix from this morning** (already on `main`): the ingest workers share two caches with no lock. A collision records a GOOD file as ERROR. | Reproduced (325 exceptions in 6 s under a forced-switch loop), fixed, and a test proves the slow network read still happens outside the lock. |
-| 4 | `999.999` error markers were averaged into the evidence workbook and fed to the drift detector (8856, 2024-07: "mean sigma" **432.99** against a true 0.0012). | One shared definition, both consumers, tests red before and green after. |
+| **A. Processing speed** | the share and the scanner are cleared (A1a); the save is the serial half (A0) | A4 batch the saves, then A3 processes — Claude |
+| **B. More useful information** | rebuild done; findings engine + 6 analyzers shipped; laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
+| **C. Review and refactor** | the review is done (C1) | C2 refactors — Claude |
+| **D. Checks at the shop** | D1, D3, D4, D5, D6 open | James |
+| **E. Backlog upload** | shipped (E1) | — |
+| **F. Facelift** | step 1 shipped; step 2 (the other six pages) designed and planned | Claude, next |
+| **G. Parse fixes** | all built and reviewed | the final review, then the push — Claude |
 
-**After the rebuild expect:** laser yield a little LOWER on models with no-cut files (that is the fake
-passes leaving), a few hundred final-test verdicts moving PASS → FAIL, and ~1,100 more UNTRIMMED records.
+### One thing of mine to own (2026-09-24): the home database was written to
 
-### What is new
+Twice today a verification script run by one of my subagents opened `data/analysis.db` on the Mac
+READ-WRITE — the file I had undertaken never to write. Each called the processor on a test file
+without redirecting its database first, and the processor looks up model specs in the app's
+default database, which on the Mac is that file. Opening it ran the app's start-up migrations.
+**What changed** (every figure from read-only queries): five new, EMPTY columns (`error_reason`,
+`increment_volts`, `increment_volts_first_row`, `increment_volts_truncated`, `initial_trim_value`)
+and two bookkeeping rows in `app_meta`. **Nothing else:** no row in any table carries that day's
+date; the ERROR (237), Unknown-model (381) and laser-3 (547) counts equal what was measured before;
+the start-up unit_id backfill provably had nothing it could change; SQLite's own `quick_check`
+reads "ok". These are the same changes the app makes by itself on its first launch with this code.
+**Your WORK database is untouched** — this was the home copy. **What I did about it:** the Mac file
+is now read-only (`chmod a-w`), so a stray write fails loudly instead of landing, and every brief
+now explains exactly how the processor reaches the database. The app still opens it and reads it.
+**To write to it on the Mac yourself** (running an ingest there, say): `chmod u+w data/analysis.db`.
 
-- **Findings** — a sidebar page ranking every model's findings, a Findings tab on the Model page, a
-  "Refresh process findings" button in Settings → Database. It fills in by itself after each ingest.
-  Three analyzers so far: ink target (held to one laser, one recipe **and one limit table**), recipe
-  change, trim effort / trim avoidance. It says nothing when there is nothing to say, and names an
-  analyzer that crashed instead of going quiet.
-- **One backlog upload** in Settings replaces the active-model and pricing inputs (latest order's price;
-  FAI / LAT / test-unit lines never count; the active list is replaced, prices are merged).
-- **The test suite runs.** It never took 2.5 hours — it HUNG (a test fixture kept a second Tk window
-  alive). **1,7xx tests, 0 failures, ~3 minutes.** New gate: `python scripts/run_test_gate.py`.
-- **The whole-app review you asked for:** `docs/CODE_REVIEW_2026-09-20.md` — 45 findings, ranked by
-  what they cost you, with what was fixed tonight and what needs your decision.
+### Decisions that are yours
 
-### Something you may not know: 17 model/laser combinations are graded against TWO limit tables
+**New since 2026-09-23** — D4 (what the old template's `Start Point` / `End point` means), D5 (what
+"Micro-Lin max. error slope" is for), D6 (were the 8506A/8506B limits loosened by ECN?) — all in
+section D. Plus D1 (which 8232-1 limit table is the intended one), D3 (the QA sweep's one remaining
+red line) and H4 (retire V5).
 
-Within their latest 12 months (a table counted only with 30+ tracks; per track name):
-**8232-1 on laser 1** — 89 graded points until 2025, 45 since, same band; the 45-point table is the one
-final test uses (34 % vs 49 % leave the laser inside limits). **8506A / 8506B on laser 2** — every band
-loosened from ±0.01 V to ±0.0375 V in the first week of July 2025 (83 → 100 %, 70 → 100 %).
-**8340 on laser 1** — the later table is wider at four end positions by up to 0.164 V (34 → 82 %).
-A pass rate is a verdict against a test; every trend across such a change compares two tests. The app
-now reports these as findings (lever: laser limit table, same day). **Were the 8506 limits changed by
-ECN? Which 8232-1 table is the intended one?**
-
-### Decisions that are yours (none blocks the rebuild)
+**Still open from 2026-09-20** (none answered yet):
 
 1. **Ungraded final tests count as PASS** at file level and FAIL at track level. Small overall (0.19 %),
    large per model: 8502 reads 27.6 % FT pass, 15.5 % over files that were really graded.
@@ -66,14 +63,6 @@ ECN? Which 8232-1 table is the intended one?**
 7. Backlog prices are MERGED on upload (a model that drops off the backlog keeps its last price).
 8. A no-cut check sweep is a real measurement of the unit at that moment. Should it count for anything?
 
-### One thing of mine to own
-
-A test I briefed used a real (model, price) pair from your backlog as "example data". It was committed
-locally, never pushed; I rewrote the local history to remove it before pushing. `scripts/check_no_customer_values.py`
-now scans a commit range — every version of every file, and every commit message — for a real price
-beside its model, a customer name or a PO number, and prints only where, never the value. Local
-commit hashes changed as a result of the rewrite.
-
 ## Which laser is which
 
 The shop's numbers do NOT follow the code's letters (James, 2026-09-20):
@@ -83,29 +72,6 @@ The shop's numbers do NOT follow the code's letters (James, 2026-09-20):
 | **Laser 1** | `LTS` | System B | each pass's sweep + that pass's settings |
 | **Laser 2** | `DLTS` | System A | the same, **plus the cut applied, trim current, target output and measured output at every position** |
 | **Laser 3** | `LTS3` | System C | laser 2's sheet format (not laser 1's — corrected 2026-09-24; pinned by `tests/test_laser3_is_read_like_laser2.py`), including the per-position cut data |
-
-## The critical path — read this first
-
-Three workstreams are open, and almost everything in all three waits on **one
-overnight job**, which waits on **one 60-second measurement**:
-
-```
- 1. Probe at work  ──►  2. Pick where the   ──►  3. Fresh-database  ──►  4. Re-derive the numbers,
-    (James, 1 min)         rebuild runs             rebuild overnight       then build the analyzers
-                                                         │
-                                                         └──►  process pool  ·  code review
-```
-
-**The next action is James's: run the speed probe at work** (A1 below).
-
-| Workstream | State | Waiting on |
-|---|---|---|
-| **A. Processing speed** | 2 fixes shipped, 2× faster on the share | the probe at work |
-| **B. More useful information** — the original goal | data capture built and shipped | the rebuild |
-| **C. Review and refactor** | not started, shape agreed | the rebuild |
-| **D. Checks at the shop** | 2 open | James, at the station |
-
----
 
 ## A. Processing speed
 
@@ -407,7 +373,18 @@ screens parts.
       survives pooling; one had no burden to suppress; one inserted the larger cut count first so
       the tie-break rule it meant to pin was never reached). A tie in "normal" now resolves to the
       LARGER count: deterministic, and a coin toss can never manufacture a burden.
-- [ ] **B1a · The `TrimVolts` sheets — laser 1's per-position data, never read.**
+- [x] **B1a · The `TrimVolts` sheets — CAPTURED (2026-09-24, `49f865e`, `b80c457`), back-fill yours.**
+      Every NEW laser-1 `Trim N` pass stores its sheet as `increment_volts` (one curve per engaged
+      position), `increment_volts_first_row` and `increment_volts_truncated`. Column *k* is the
+      position at row (*start* + *k*) of `Trim N`, where *start* is `Points From Start` when the
+      file names both `Points From Start` and `Points From End`, else `Initial Points Ignored` —
+      **held against the machine's own `VOLTAGES` sheet it places 6,263 of 6,263 local passes
+      exactly** (the first rule, the ignored counts alone, placed 6,227; the 36 misses were 8340-1
+      files one position off). Passes already stored are filled by
+      `scripts/backfill_increment_volts.py` at work (optional; `BRING_TO_WORK.md`, 2026-09-24, step 7), which
+      checks each capture against `VOLTAGES` before writing and refuses one that disagrees.
+      The history below is how it was found.
+      **The original finding:**
       *(James, 2026-09-21: "i think it does in the trimvolts sheets?" — he was right and
       the spec, this tracker and CLAUDE.md all said laser 2 was the only machine with
       per-position data.)* **Verified:** 25 of 30 real LTS files carry `TrimVolts N`
@@ -427,8 +404,9 @@ screens parts.
       **Layout CONFIRMED and the design settled, 2026-09-23** (4,972 local laser-1 files,
       0 read errors, 32 models): `TrimVolts N` exists if and only if `Trim N` does (4,540
       files, no exception; the 432 without are 431 no-cut templates and 1 touch-up file).
-      Column *k* is the position at row (`Initial Points Ignored` + *k*) of `Trim N`
-      (r = 0.999998; reversed order refuted). Row 0 is read in every column — the only
+      Column *k* is the position at row (*start* + *k*) of `Trim N` — *start* as above; the
+      first version of this line said `Initial Points Ignored` alone, which r = 0.999998 could
+      not tell apart from an off-by-one (reversed order refuted). Row 0 is read in every column — the only
       per-position pre-cut reading a laser-1 file has. Zeros are end padding only. **11
       sheets hit the old .xls 256-column limit and lose positions.** The last reading is NOT
       `Trim N`'s measured value (ratio 0.94–1.23): a live reading during the cut vs the
@@ -475,7 +453,11 @@ screens parts.
       name the changeover month) generalises to each of these without redesign.
       **James, 2026-09-21: operators do not touch these; ENGINEERING can** — so they are
       a real lever, at an engineering lead time rather than same-day.
-      Needs the fresh-database rebuild: the work database predates `trim_setup`.
+      Needs the fresh-database rebuild: the work database predates `trim_setup`. *(Rebuilt
+      2026-09-22 — the data is there now.)* **Ruling (2026-09-23, parse-fixes spec §6):** laser 1's
+      `Response` and laser 2's `Response (Linear or Function)` — probably one setting — stay split in
+      storage; the setting sweep reads both under one name (a write-time alias would reach the 107,600
+      stored rows only through a reprocess).
 - [ ] **B7 · Cut-length model — PROMOTED** (James, 2026-09-20: "i want to do the
       cut length model i feel that is important"). No longer waits for the full
       rebuild: the home slice supplies real data now. Still gets its own design
@@ -496,8 +478,11 @@ screens parts.
 Traps the analyzers must respect (all written into the spec's known limits):
 on laser 1 (LTS) the last captured pass duplicates the one before, so **pass
 counts run one high** · `points_ignored_start/end` are always blank on laser 2 (DLTS)
-and must never be read as 0 · `initial_trim_value` lives inside the recipe
-block, not its own column.
+and must never be read as 0 · `initial_trim_value` has its own column on passes saved
+from 2026-09-24 on (G6) but lives inside `recipe` on every older one — read it through
+`core/trim_passes.initial_trim_values(row, recipe)`, never the bare column · on a two-track
+laser-2 file, track 2's resistance limits are `trim_setup.track2_parameters` (G7), and only on
+files processed from 2026-09-24 on.
 
 ## C. Review and refactor
 
@@ -530,6 +515,22 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
         it because SQLAlchemy calls it. Deleting it turns **foreign-key enforcement off on every
         connection**, silently. Any "unreferenced" scan must skip decorated definitions.
 
+- [ ] **C2 candidates parked by the parse-fixes reviews (2026-09-23/24)** — real, small, none urgent:
+      - `_update_existing_analysis` never calls `_record_processed_file`, so a REPROCESS leaves
+        `processed_files.success` / `error_message` as they were (pre-existing).
+      - Three chart exports default a track's `linearity_pass` to True when it has no error data
+        (`_export_comprehensive_chart`, `_export_single_chart`, `_export_multi_page_pdf`) —
+        unreachable for failed-processing tracks since G1, still a wrong default.
+      - Several `app_qa_sweep.py` check blocks have no try/except, so one exception ends the sweep
+        instead of reporting one FAIL; the ERROR-reason check matches the marker row by exact path.
+      - The TrimVolts back-fill re-selects passes whose file has no usable sheet on every run
+        (`IS NULL` cannot tell "never tried" from "nothing there") — harmless, a little slow.
+      - `save_batch` does not write `trim_passes` (only `save_analysis` does) — fold into A4.
+      - **`get_database()` outside the app opens the production database read-write** (see the
+        2026-09-24 note at the top). A guard in code — refuse the default path unless the app
+        itself asked — would retire the Mac's `chmod`; it needs a survey of which of your scripts
+        rely on the default first.
+
 ## D. Checks at the shop — James
 
 - [ ] **D1 · 8232-1: the laser and final test grade to different limit
@@ -540,9 +541,28 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
       February 2016, many minutes apart on the same day — laser SETUP runs for a new model.
       They carry the parameter, notes and report sheets but no sweep sheet at all. The
       production variant 8706-3 has its `SEC1 TRK1` sheets and parses.
-- [ ] **D3 · After the rebuild, expect the QA sweep's two red lines to
-      change.** They pick "the newest 4,000 rows" by id, and a fresh database
-      renumbers. Means nothing; see `BRING_TO_WORK.md`.
+- [ ] **D3 · The QA sweep's one remaining red line — yours to run or leave.** On the rebuild
+      (full sweep on a copy, 2026-09-24: 291 checks, 1 FAIL, 8 WARN) it is *trim/FT link points at
+      the day's FINAL trim attempt*: **4 final-test links** point at an earlier trim attempt of
+      the same unit on the same day. The remedy exists — `.\.venv\Scripts\python
+      scripts\repair_trim_ft_links.py data\analysis.db` (it re-reads each trim file's clock time
+      from its name, then re-points EVERY final-test link — a full rematch, so a long run; it asks
+      before writing; snapshot with `scripts\snapshot_db.py` first) — and until it runs,
+      escapes/overkills on those units are close but not exact. Four links: not urgent.
+- [ ] **D4 · Laser 1's old template: which starting point does `TrimVolts` follow?** The older
+      template of 6607 and 8232-1 labels the slot `Start Point` / `End point` ("points from start
+      for reading/measuring" — not trimming). It equals `Initial Points Ignored` on every local
+      file, so no workbook here can say which the machine follows when they differ — and they do on
+      1,223 old (2011–2016) files on the work database, holding 14 stored `Trim N` passes. The
+      capture uses the ignored counts there. **Nothing to do unless the back-fill (B1a) lists one
+      of those files under "placement disagrees"** — it checks every curve against the file's own
+      `VOLTAGES` sheet and refuses one that does not match, so a wrong rule cannot land silently.
+- [ ] **D5 · What is "Micro-Lin max. error slope" for?** A setting/check on about 1% of laser-2
+      (DLTS) files, found in the 2026-09-24 survey of what those files carry. Not read today. If it
+      is a real acceptance check at the machine, it is worth capturing; if it is a leftover, not.
+- [ ] **D6 · 8506A / 8506B on laser 2: were the limits loosened by ECN?** Every band went from
+      ±0.01 V to ±0.0375 V in the first week of July 2025 (pass rate 83 → 100 %, 70 → 100 %). The
+      limit-table analyzer reports it as a change of TEST, never as a yield gain.
 
 ## E. Settings: one backlog upload instead of two inputs
 
@@ -551,7 +571,9 @@ simplify this and allow me to upload a current backlog to get active models and 
 all in one." A backlog export is in `Work Files/` (gitignored — it holds customer names,
 PO numbers and prices, and must never be committed).
 
-- [ ] **E1 · Design, then build.** What a first look at the file showed: one sheet, one row
+- [x] **E1 · SHIPPED 2026-09-20 (`90f66f0`)** — one upload in Settings sets the active models
+      (replaced on each upload) and the prices (merged — decision 7 above). The design, as built:
+      What a first look at the file showed: one sheet, one row
       per open order line, with `Item ID`, `Balance`, `Unit Price`, `Need Date`. 178 distinct
       items have an open balance; **98 are models the app knows, and they hold 95% of the
       open units**. The other 80 are mostly variants (`… FAI`, `… LAT`, `… TEST UNITS`) or
@@ -613,27 +635,38 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       Windows call itself (faked — this Mac can't take that branch for real). See
       `BRING_TO_WORK.md` for what James will see and how to confirm it at the work machine.
 - [ ] **F3… · Relayout each remaining page**, one design round each: Model, Home,
-      Dashboard, Triage, Process, Settings. Order to be agreed after F2 ships.
+      Dashboard, Triage, Process, Settings. **Designed and planned 2026-09-24** (rulings, yours to
+      overturn once you have seen the pages): `docs/superpowers/specs/2026-09-24-facelift-step2-pages-design.md`,
+      plan `docs/superpowers/plans/2026-09-24-facelift-step2-pages.md`. Next to build.
 
-## G. Parse fixes — found 2026-09-23, planned, not yet built
+## G. Parse fixes — found 2026-09-23, BUILT 2026-09-23/24
 
 Design (rulings, James's to overturn): `docs/superpowers/specs/2026-09-23-parse-fixes-design.md`.
-Plan: `docs/superpowers/plans/2026-09-23-parse-fixes.md`. Runs after F2.
+Plan: `docs/superpowers/plans/2026-09-23-parse-fixes.md`. Every item below was made to fail
+first and reviewed; the whole test suite is the gate.
 
-- [ ] **G1 · A track that failed processing was counted as a linearity FAIL.** A track with
+- [x] **G1 · A track that failed processing was counted as a linearity FAIL — FIXED** (`b4f640f`,
+      `97a8dd4`, `e04f93e`): it carries no verdict now, and one stored the old way reads back with
+      none, whatever is stored — no reprocess needed. A track with
       fewer than 10 points is stored ERROR *and* `linearity_pass = 0`, and four Findings
       analyzers count every non-empty verdict. **8856 on laser 2 (DLTS) reads 27.7% when its
       graded tracks pass 49.0%; 8856-1 57.0% vs 72.1%.** Plan Task 1.
-- [ ] **G2 · V5's Settings → Apply ML would rewrite verdicts.** Its bulk update grades
+- [x] **G2 · V5's Settings → Apply ML would rewrite verdicts.** Its bulk update grades
       status as "both pass → PASS, both fail → FAIL, else WARNING": one click would turn up
       to 1,701 linearity FAILs into WARNING, take all 235 ERRORs out of ERROR and make 6,973
       untrimmed sweeps WARNING. **Not run on the rebuild** (checked). Only V5 has the button.
-      Plan Task 2.
-- [ ] **G3 · No ERROR says why.** None of the 237 on the rebuild carries a reason the app can
+      Plan Task 2. **FIXED** (`3bc371c`): Apply moves sigma, never the linearity verdict, and
+      leaves ERROR and UNTRIMMED alone.
+- [x] **G3 · No ERROR says why — FIXED** (`96e2dba`, `c3b9f33`). None of the 237 on the rebuild carries a reason the app can
       show; the words exist on the tracks (140 bad limit columns, 94 too few points) or on a
-      separate marker row (3). Plan Task 3 stores one reason and shows it on the Model page.
-- [ ] **G4 · Laser 1's `TrimVolts` capture** (B1a) and its back-fill. Plan Tasks 4–5.
-- [ ] **G5 · The database path does not travel — and two small ones.** `config.yaml` stores
+      separate marker row (3). Plan Task 3 stores one reason and shows it on the Model page — the
+      unit list's empty linearity cell reads "not graded: <reason>"; 234 of the 237 explained
+      today, the other 3 when next reprocessed.
+- [x] **G4 · Laser 1's `TrimVolts` capture** (B1a) and its back-fill. Plan Tasks 4–5 — BUILT;
+      the back-fill is yours to run at work (optional).
+- [x] **G5 · The database path does not travel — and two small ones. FIXED** (`d391f6a`,
+      on `main` since the morning of 2026-09-24): the path is saved relative to the app folder, and one written by the other
+      operating system falls back to the default with a warning. `config.yaml` stores
       the path absolute (`C:\dev\…\data\analysis.db`). **On the Mac that string is a relative
       FILE NAME, so the app opens a junk database in the repo folder instead of the rebuilt
       one** (checked 2026-09-23: it would open `C:\dev\…\analysis.db` relative to the current
@@ -642,13 +675,31 @@ Plan: `docs/superpowers/plans/2026-09-23-parse-fixes.md`. Runs after F2.
       final-test rows written by a local test run, nothing of yours — delete it when
       convenient. Also: `Unknown` (381 test files) is returned as a known model; floats are
       written into two integer columns (measured impact zero). Plan Task 6.
+- [x] **G6 · The initial trim value per position gets its own column** (`744df1a`, found by the
+      2026-09-24 survey of what laser 2 / laser 3 files carry): laser 2's pass sheets record, per
+      position, the trim target, the INITIAL trim value and the final one; the initial was being
+      stored inside the pass's `recipe` blob. New passes store it in `initial_trim_value`; the
+      ~83,000 existing laser-2/3 passes keep it in `recipe` (no start-up rewrite) and one helper
+      reads both the same way (83,264 of 83,488 carry a value; none was lost in the move).
+- [x] **G7 · Track 2's own setup on two-track laser-2 files** (`9bb8e40`, same survey): the
+      `Track Parameters` sheet carries TRACK 2's whole setup in column C, and it was dropped, so
+      Findings judged a track-2 track against TRACK 1's resistance limits. Stored now as
+      `trim_setup.track2_parameters` (112 local files, 57 models), and Findings uses it.
+      **Not back-filled: the 1,868 two-track analyses already in the database are judged against
+      track 1's limits until they are next processed.** Laser 3 (LTS3): 0 of its 547 analyses
+      are two-track.
+- [x] **G8 · The customer-value guard cried wolf** (`595d49c`): a real 5-digit PO number
+      happened to be the last digits of a long measured decimal in a test baseline. A short PO
+      now matches only as a whole number; the whole history stays clean.
 
 ## Housekeeping
 
-- [ ] **H1 · `CLAUDE.md` step 1 breaks the git remote.** There is no `.env`, so
+- [x] **H1 · `CLAUDE.md` step 1 breaks the git remote — FIXED (`fce84ee`):** the step now runs
+      only when `.env` exists and holds a token. There is no `.env`, so
       the command sets the remote to `https://@github.com/…` and the next push
       fails. The plain URL plus the keychain works. *James's call to delete it.*
-- [ ] **H2 · Leftovers from July, never committed:**
+- [x] **H2 · Leftovers from July — DONE (`ede629e`):** the script is kept, its stale renders
+      are ignored. Were:
       `docs/chart_rep_review_2026-07-16/` and `scripts/chart_rep_review.py`.
       Keep, commit or delete?
 - [ ] **H3 · The decision logs: READ (2026-09-20), do NOT delete yet.** All five ledgers were
@@ -694,6 +745,17 @@ Plan: `docs/superpowers/plans/2026-09-23-parse-fixes.md`. Runs after F2.
   (`scripts/atp_spec_audit.py`).
 
 ## Done recently
+
+**2026-09-23/24** (every item made to fail first and reviewed; the whole suite green at each step):
+
+- **Facelift step 1 finished** (F2 + fonts): the dark theme, readable text, the Findings page grouped
+  by issue, and IBM Plex bundled — loaded privately on Windows, no install; charts use it everywhere.
+- **Parse fixes G1–G8** (section G): a failed track is never a FAIL, V5's Apply keeps verdicts, every
+  ERROR says why, laser 1's TrimVolts captured with a back-fill ready, the database path travels,
+  the initial trim value and track 2's own setup stored, the customer guard no longer cries wolf.
+- **B3 re-derived on the rebuild**, **D2 answered** (8706's skipped files are laser setup runs).
+- **The home database was written to by two of my scripts** — schema and bookkeeping only, proven;
+  the file is read-only on the Mac now. See the top of this file.
 
 **The night of 2026-09-20** (one session; every item tested, each fix made to fail first):
 
