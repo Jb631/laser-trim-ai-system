@@ -148,3 +148,103 @@ def test_the_tab_view_hides_empty_groups(tk_root):
     v = FindingsView(tk_root, ThemeManager(), include_empty=False)
     v.set_findings([cut("6607", 182.0)])
     assert "What changed" not in _texts(v)
+
+
+# ---- Each row opens ITS OWN evidence (final review, 2026-09-24) ----------------------------------
+
+def lt(track):
+    """limit_tables writes one finding per (laser, track), and its title names neither."""
+    return {"analyzer": "limit_tables", "model": "6607", "category": "Limit table",
+            "title": "Laser 1 (LTS): the limit table changed", "summary": f"the evidence for {track}",
+            "systems": ["B"], "n_units": 100, "evidence": {"track": track}}
+
+
+def _invisible_but_mapped(root):
+    """Tk delivers a real event only to a VIEWABLE window -- event_generate dispatches nothing
+    under the withdrawn tk_root -- so map it, but where nobody sees it: fully transparent, and
+    far off-screen where the window manager allows it (macOS clamps +20000+20000 back into a
+    corner of the screen; alpha 0 is what hides it there)."""
+    try:
+        root.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    root.geometry("1100x700+20000+20000")
+    root.deiconify()
+    root.update_idletasks()
+    root.update()
+
+
+def _click(row):
+    """A REAL <Button-1> on the statement label's inner Tk label -- dispatched by Tk through the
+    bindings blocks.row() installed, never by calling view.toggle(key) or a test hook."""
+    import tkinter
+
+    def leaves(w):
+        kids = tkinter.Misc.winfo_children(w)
+        if not kids:
+            yield w
+        for c in kids:
+            yield from leaves(c)
+    target = [w for w in leaves(row) if isinstance(w, tkinter.Label)
+              and w.cget("text").startswith("Laser 1 (LTS)")][0]
+    target.event_generate("<Button-1>", x=2, y=2)
+    target.update()
+
+
+def _opened_summary(view):
+    return [c.cget("text") for c in view._detail.winfo_children() if isinstance(c, ctk.CTkLabel)][0]
+
+
+def test_each_of_two_rows_that_read_alike_opens_its_own_evidence_on_a_real_click(tk_root):
+    v = FindingsView(tk_root, ThemeManager(), on_open=lambda m: None, include_empty=False)
+    v.pack(fill="both", expand=True)
+    v.set_findings([lt("Track A"), lt("Track B")])
+    _invisible_but_mapped(tk_root)
+    try:
+        assert len(v.row_widgets) == 2
+        by_track = {v._rows[k].findings[0]["evidence"]["track"]: w for k, w in v.row_widgets.items()}
+        for track in ("Track A", "Track B", "Track A"):
+            row = by_track[track]
+            _click(row)
+            assert v._detail is not None, f"clicking {track}'s row opened nothing"
+            assert _opened_summary(v) == f"the evidence for {track}"
+            order = v.pack_slaves()
+            assert order.index(v._detail) == order.index(row) + 1, "the detail opened under another row"
+    finally:
+        tk_root.withdraw()
+
+
+def test_the_open_row_stays_the_same_track_when_a_refresh_reorders_the_findings(tk_root):
+    v = FindingsView(tk_root, ThemeManager(), on_open=lambda m: None, include_empty=False)
+    v.set_findings([lt("Track A"), lt("Track B")])
+    key_a = [k for k, r in v._rows.items() if r.findings[0]["evidence"]["track"] == "Track A"][0]
+    v.toggle(key_a)
+    v.set_findings([lt("Track B"), lt("Track A")])        # the same findings, the other order
+    assert _opened_summary(v) == "the evidence for Track A"
+
+
+def _history(pct_before, pct_after, **tables):
+    return {"analyzer": "recipe_change", "model": "7715", "category": "Setting change",
+            "title": "Laser 1 (LTS): recipe changed from 1 cut (cut length 2950) to 2 cuts (cut length 2950, 4500)",
+            "summary": "s", "systems": ["B"], "n_units": 400,
+            "evidence": {"before": {"trim_pass_pct": pct_before},
+                         "after": {"trim_pass_pct": pct_after, "first": "2025-01-13"}, **tables}}
+
+
+def test_a_move_across_a_table_change_is_drawn_without_colour_and_says_different_test(tk_root):
+    t = ThemeManager()
+    v = FindingsView(tk_root, t, include_empty=False)
+    v.set_findings([_history(58.0, 80.0, limit_table_changed=True, limit_tables_mixed=True)])
+    row = next(iter(v.row_widgets.values()))
+    readout = [w for w in row.winfo_children() if isinstance(w, ctk.CTkLabel) and w.cget("text") == "+22"][0]
+    assert readout.cget("text_color") == t.TEXT_PRIMARY          # neither PASS green nor coral
+    assert "different test" in _texts(row)
+
+
+def test_a_like_for_like_move_is_still_green_or_coral(tk_root):
+    t = ThemeManager()
+    v = FindingsView(tk_root, t, include_empty=False)
+    v.set_findings([_history(58.0, 80.0, limit_table_changed=False, limit_tables_mixed=False)])
+    row = next(iter(v.row_widgets.values()))
+    readout = [w for w in row.winfo_children() if isinstance(w, ctk.CTkLabel) and w.cget("text") == "+22"][0]
+    assert readout.cget("text_color") == t.PASS_FG and "different test" not in _texts(row)

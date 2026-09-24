@@ -15,9 +15,22 @@ def f(analyzer, model="M", **kw):
     return base
 
 
-def cut(model="M", best=6800.0, current=6900.0, tpy=100.0, grade="two_periods", track="Track A", **kw):
+def cut(model="M", best=6800.0, current=6900.0, tpy=100.0, grade="two_periods", track="Track A",
+        ev=None, **kw):
+    """A cut_setting finding. `ev` adds evidence keys (table, stale, ran_on_laser_since...)."""
     return f("cut_setting", model, category="Cut setting", tpy=tpy,
-             evidence={"best": best, "current": current, "grade": grade, "track": track}, **kw)
+             evidence={"best": best, "current": current, "grade": grade, "track": track, **(ev or {})},
+             **kw)
+
+
+def lt(track, model="6607", title="Laser 1 (LTS): the limit table changed"):
+    """limit_tables writes one finding per (laser, track); its title names neither."""
+    return f("limit_tables", model, category="Limit table", title=title, evidence={"track": track},
+             summary=f"the evidence for {track}")
+
+
+def rows_of(groups, key):
+    return [g for g in groups if g.spec.key == key][0].rows
 
 
 def test_every_analyzer_the_engine_runs_has_a_group():
@@ -60,8 +73,8 @@ def test_laser_time_readouts_count_tracks(category, field, value):
 def test_a_history_readout_is_the_pass_rate_move():
     x = f("recipe_change", evidence={"before": {"trim_pass_pct": 80.0}, "after": {"trim_pass_pct": 58.0}})
     assert P.readout(x) == pytest.approx(-22.0)
-    assert P.value_text("history", -22.0) == "-22" and P.value_tone("history", -22.0) == "down"
-    assert P.value_tone("history", 21.0) == "up"
+    assert P.value_text("history", -22.0) == "-22" and P.value_tone("history", -22.0, [x]) == "down"
+    assert P.value_tone("history", 21.0, [x]) == "up"
 
 
 def test_two_tracks_saying_the_same_thing_become_one_row():
@@ -117,3 +130,124 @@ def test_the_caption_counts_rows_after_merging_and_dates_portably():
 
 def test_value_text_for_counts():
     assert P.value_text("laser_time", 1008.0) == "1,008" and P.value_text("check", 22.0) == "22"
+
+
+# ---- Every row has its own key (final review, 2026-09-24) ----------------------------------------
+# limit_tables writes one finding per (laser, track) and its title names neither; the row key was
+# (group, model, statement), so two tracks made two identical rows under ONE key -- clicking the
+# first opened the second's detail, and Track A's evidence could never be opened.
+
+def test_two_findings_that_read_the_same_are_two_rows_each_naming_its_track():
+    rows = rows_of(P.arrange([lt("Track A"), lt("Track B")]), "check")
+    assert len(rows) == 2 and len({r.key for r in rows}) == 2
+    assert sorted(r.statement for r in rows) == ["Laser 1 (LTS) · Track A: the limit table changed",
+                                                 "Laser 1 (LTS) · Track B: the limit table changed"]
+
+
+def test_a_row_keeps_its_own_key_whatever_order_the_findings_arrive_in():
+    # A refresh can return the same findings in another order. A key that only numbered the twins
+    # would hand Track A's key to Track B -- and the open row would silently become the other one.
+    a, b = lt("Track A"), lt("Track B")
+    first = {r.findings[0]["evidence"]["track"]: r.key for r in rows_of(P.arrange([a, b]), "check")}
+    again = {r.findings[0]["evidence"]["track"]: r.key for r in rows_of(P.arrange([b, a]), "check")}
+    assert first == again
+
+
+def test_naming_the_track_does_not_change_a_rows_key():
+    # The key is the statement as first worded: a row keeps its key when a same-reading sibling
+    # appears (and its displayed statement gains the track).
+    alone = rows_of(P.arrange([lt("Track A")]), "check")[0]
+    assert alone.statement == "Laser 1 (LTS): the limit table changed"        # nothing to tell apart
+    with_twin = [r for r in rows_of(P.arrange([lt("Track A"), lt("Track B")]), "check")
+                 if r.findings[0]["evidence"]["track"] == "Track A"][0]
+    assert with_twin.key == alone.key
+
+
+def test_multi_pass_twins_name_their_track_and_their_cut():
+    # pass_burden splits one track by first cut -- its facts label is "Laser 1 (LTS) · Track A · cut 4000".
+    def pb(track, cut_setting):
+        return f("pass_burden", "8340", category="Multi-pass burden",
+                 title="Laser 1 (LTS): 34% of tracks need more than the 1 cut the recipe asks for",
+                 evidence={"facts": {"tracks_over_recipe": 50, "cut_setting": cut_setting}, "track": track})
+    rows = rows_of(P.arrange([pb("Track A", 4000.0), pb("Track A", 4100.0)]), "laser_time")
+    assert len({r.key for r in rows}) == 2
+    assert sorted(r.statement for r in rows) == [
+        "Laser 1 (LTS) · Track A · cut 4000: 34% of tracks need more than the 1 cut the recipe asks for",
+        "Laser 1 (LTS) · Track A · cut 4100: 34% of tracks need more than the 1 cut the recipe asks for"]
+
+
+def test_rows_nothing_tells_apart_still_get_a_key_each():
+    # A cache written before the track was stored, or an analyzer this page does not know: the same
+    # words twice and no identity at all. Each row must still open ITSELF, never its twin.
+    x = f("brand_new", title="the same words", summary="one")
+    y = f("brand_new", title="the same words", summary="two")
+    rows = rows_of(P.arrange([x, y]), "other")
+    assert len(rows) == 2 and len({r.key for r in rows}) == 2
+
+
+# ---- A pass-rate move across a limit-table change is not coloured (final review, item 4) ----------
+
+@pytest.mark.parametrize("tables", [
+    {"limit_table_changed": True, "limit_tables_mixed": True},      # the busiest table changed
+    {"limit_table_changed": False, "limit_tables_mixed": True},     # a mix of tables on a side
+    {"limit_table_changed": True},                                   # either flag alone is enough
+])
+def test_a_move_across_a_limit_table_change_keeps_its_number_but_no_colour(tables):
+    x = f("recipe_change", evidence={"before": {"trim_pass_pct": 80.0},
+                                     "after": {"trim_pass_pct": 58.0, "first": "2025-01-13"}, **tables})
+    row = rows_of(P.arrange([x]), "history")[0]
+    assert row.value == pytest.approx(-22.0)                 # the recorded move is still shown
+    assert P.value_tone("history", row.value, row.findings) is None
+    assert "different test" in row.tags
+
+
+def test_a_like_for_like_move_keeps_its_colour_and_no_tag():
+    x = f("recipe_change", evidence={"before": {"trim_pass_pct": 58.0},
+                                     "after": {"trim_pass_pct": 80.0, "first": "2025-01-13"},
+                                     "limit_table_changed": False, "limit_tables_mixed": False})
+    row = rows_of(P.arrange([x]), "history")[0]
+    assert P.value_tone("history", row.value, row.findings) == "up"
+    assert "different test" not in row.tags
+
+
+# ---- cut_setting merges only one TEST's tracks (final review, item 5) -----------------------------
+
+def test_one_track_on_two_limit_tables_is_two_rows_never_both_tracks():
+    rows = rows_of(P.arrange([cut(ev={"table": "t1"}), cut(ev={"table": "t2"})]), "yield")
+    assert len(rows) == 2 and not any("both tracks" in r.tags for r in rows)
+    assert len({r.key for r in rows}) == 2
+
+
+def test_two_tracks_graded_on_different_tables_are_not_merged():
+    rows = rows_of(P.arrange([cut(track="Track A", ev={"table": "t1"}),
+                              cut(track="Track B", ev={"table": "t2"})]), "yield")
+    assert len(rows) == 2
+
+
+def test_two_tracks_on_the_same_table_still_merge():
+    rows = rows_of(P.arrange([cut(track="Track A", ev={"table": "t1"}),
+                              cut(track="Track B", ev={"table": "t1"})]), "yield")
+    assert len(rows) == 1 and "both tracks" in rows[0].tags
+
+
+def test_one_track_is_never_merged_with_itself_even_without_a_table():
+    # A cache written after the track was stored but before the table was: nothing but the track
+    # says these are one track on two tables -- which is enough never to call them "both tracks".
+    rows = rows_of(P.arrange([cut(track="Track A"), cut(track="Track A")]), "yield")
+    assert len(rows) == 2 and not any("both tracks" in r.tags for r in rows)
+
+
+def test_a_table_the_model_moved_on_from_says_so_in_its_row():
+    moved = cut(ev={"stale": True, "ran_on_laser_since": True, "last_ran": "2026-01-12", "table": "t1"})
+    assert P.statement(moved) == ("Laser 1 (LTS): 6800 did better than 6900, Track A last ran on "
+                                  "that limit table Jan 2026")
+    gone = cut(ev={"stale": True, "ran_on_laser_since": False, "last_ran": "2025-04-02", "table": "t1"})
+    assert P.statement(gone) == "Laser 1 (LTS): 6800 did better than 6900, last run Apr 2025"
+
+
+def test_two_tracks_whose_rows_would_say_different_things_are_not_merged():
+    moved = cut(track="Track A", ev={"stale": True, "ran_on_laser_since": True, "last_ran": "2026-01-12",
+                                     "table": "t1"})
+    gone = cut(track="Track B", ev={"stale": True, "ran_on_laser_since": False, "last_ran": "2026-01-12",
+                                    "table": "t1"})
+    assert len(rows_of(P.arrange([moved, gone]), "yield")) == 2

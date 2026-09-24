@@ -75,10 +75,21 @@ class Row:
     findings: List[Dict[str, Any]]
     tags: List[str] = field(default_factory=list)
     when: Optional[str] = None                      # ISO date, history rows
+    base: str = ""          # the statement as first worded, before arrange() named a track in it
+    ident: Tuple = ()       # what tells this row's findings apart from another's (_identity)
 
     @property
-    def key(self) -> Tuple[str, str, str]:
-        return (self.group, self.model, self.statement)
+    def key(self) -> Tuple:
+        """Unique within one arrange(), and the same across renders of the same findings.
+
+        Not the displayed text alone (final review, 2026-09-24): limit_tables writes one finding
+        per track with a title naming neither, so two tracks gave two identical rows under ONE
+        key -- clicking the first opened the second's detail, and the first's evidence could never
+        be opened at all. The findings' own identity (laser, track, table...) is part of the key,
+        and so is the statement as first worded, not after a track was named in it -- so a row's
+        key does not change when a same-reading sibling comes or goes.
+        """
+        return (self.group, self.model, self.base or self.statement, self.ident)
 
     @property
     def merged(self) -> bool:
@@ -110,6 +121,37 @@ def _month(iso) -> str:
         return datetime.fromisoformat(str(iso)[:10]).strftime("%b %Y")
     except (TypeError, ValueError):
         return ""
+
+
+def _track(finding) -> Optional[str]:
+    """The track a finding is about, from its evidence -- None when it does not say (an analyzer
+    that is not per track, or a cache written before the track was stored)."""
+    t = (finding.get("evidence") or {}).get("track")
+    return None if t in (None, "") else str(t)
+
+
+def _identity(finding) -> Tuple:
+    """What tells one finding from another of the same model and analyzer that reads the same:
+    its laser and track, and where an analyzer splits a track further, the limit table
+    (cut_setting) or the recipe's first cut (pass_burden); a recipe change's first date. None
+    wherever a finding -- or a cache written before these were stored -- does not carry one."""
+    ev = finding.get("evidence") or {}
+    facts = ev.get("facts") if isinstance(ev.get("facts"), dict) else {}
+    return (tuple(finding.get("systems") or ()), _track(finding), ev.get("table"),
+            facts.get("cut_setting"), (ev.get("after") or {}).get("first"))
+
+
+def _ran_on_laser_since(ev) -> bool:
+    """cut_setting: the model kept running on this laser after this (track, limit table) went
+    quiet -- the analyzer's own decision, stored with the finding."""
+    return bool(ev.get("ran_on_laser_since"))
+
+
+def _different_test(finding) -> bool:
+    """A recipe change whose two sides were graded against different limit tables, or a mix of
+    them (recipe_change stores both). CLAUDE.md: never compare pass rates across a table change."""
+    ev = finding.get("evidence") or {}
+    return bool(ev.get("limit_table_changed") or ev.get("limit_tables_mixed"))
 
 
 def readout(finding: Dict[str, Any]) -> Optional[float]:
@@ -146,6 +188,11 @@ def statement(finding: Dict[str, Any]) -> str:
     if finding.get("analyzer") == "cut_setting" and _num(ev.get("best")) is not None \
             and _num(ev.get("current")) is not None:
         best, current = float(ev["best"]), float(ev["current"])
+        if ev.get("stale") and _ran_on_laser_since(ev) and _track(finding):
+            # Not "last run <month>": the MODEL is still running on this laser, only this track
+            # on this limit table stopped (final review, 2026-09-24).
+            return (f"{_laser(finding)}: {best:g} did better than {current:g}, {_track(finding)} "
+                    f"last ran on that limit table {_month(ev.get('last_ran'))}")
         if ev.get("stale"):
             return f"{_laser(finding)}: {best:g} did better than {current:g}, last run {_month(ev.get('last_ran'))}"
         return f"{_laser(finding)}: cut {current:g} → try {best:g}"
@@ -158,14 +205,29 @@ def statement(finding: Dict[str, Any]) -> str:
 
 
 def _merge_key(finding) -> Optional[Tuple]:
-    """Same model, analyzer and recommendation, differing only by track -> one row."""
+    """Same model, analyzer and recommendation, differing only by track -> one row.
+
+    "Only by track" includes the TEST: cut_setting groups by (laser, track, limit table), so the
+    table is part of the key -- two tracks graded against different tables are two rows, and
+    one track's two tables are never shown as "both tracks". A cache written before the table
+    was stored has None there for every finding, which keeps the old behaviour for it.
+    """
     if finding.get("analyzer") != "cut_setting":
         return None
     ev = finding.get("evidence") or {}
     if _num(ev.get("best")) is None or _num(ev.get("current")) is None:
         return None
     return (finding.get("model"), tuple(finding.get("systems") or ()),
-            float(ev["best"]), float(ev["current"]), bool(ev.get("stale")))
+            float(ev["best"]), float(ev["current"]), bool(ev.get("stale")),
+            _ran_on_laser_since(ev), ev.get("table"))
+
+
+def _shares_a_track(row: "Row", finding) -> bool:
+    """Would merging `finding` into `row` put one track in it twice? Never merge that: a merged
+    row claims "both tracks". (With the table in _merge_key this can only happen on a cache that
+    stored the track but not yet the table.) An unknown track cannot be said to repeat."""
+    t = _track(finding)
+    return t is not None and any(_track(f) == t for f in row.findings)
 
 
 def _tags(members: Sequence[Dict[str, Any]]) -> List[str]:
@@ -178,7 +240,57 @@ def _tags(members: Sequence[Dict[str, Any]]) -> List[str]:
     grades = [g for g in grades if g in _GRADE_TAG]
     if grades:
         tags.append(_GRADE_TAG[min(grades, key=_GRADE_ORDER.index)])   # the weakest, honestly
+    if group_key(members[0]) == "history" and any(_different_test(m) for m in members):
+        tags.append("different test")        # its move is not coloured either -- see value_tone
     return tags
+
+
+def _scope(r: "Row") -> str:
+    """What a row is about below its laser: its track(s) -- and for a multi-pass burden finding
+    the recipe's first cut as well, since pass_burden splits one track by cut (its facts label
+    reads "Laser 1 (LTS) · Track A · cut 4000")."""
+    tracks = sorted({t for t in (_track(f) for f in r.findings) if t})
+    parts = [" · ".join(tracks)] if tracks else []
+    first = r.findings[0]
+    if first.get("analyzer") == "pass_burden":
+        cut = _num(((first.get("evidence") or {}).get("facts") or {}).get("cut_setting"))
+        if cut is not None:
+            parts.append(f"cut {cut:g}")
+    return " · ".join(parts)
+
+
+def _name_what_differs(rows: List["Row"]) -> None:
+    """Rows of one group and model that would read IDENTICALLY -- limit_tables writes one
+    finding per track and its title names neither -- say what tells them apart, right after the
+    laser: "Laser 1 (LTS) · Track A: the limit table changed". A row that reads uniquely is left
+    exactly as worded."""
+    same: Dict[Tuple[str, str], List[Row]] = {}
+    for r in rows:
+        same.setdefault((r.model, r.statement), []).append(r)
+    for twins in same.values():
+        if len(twins) < 2:
+            continue
+        for r in twins:
+            scope = _scope(r)
+            if not scope:
+                continue
+            laser = _laser(r.findings[0])
+            if laser and r.statement.startswith(laser + ":"):
+                r.statement = f"{laser} · {scope}:{r.statement[len(laser) + 1:]}"
+            else:
+                r.statement = f"{scope} · {r.statement}"
+
+
+def _unique_keys(rows: List["Row"]) -> None:
+    """Last resort. Two rows that NOTHING in their evidence tells apart (a cache written before the
+    track was stored, an analyzer this page does not know) still get a key each -- numbered in the
+    order they arrived -- so clicking one opens that one, never its twin."""
+    seen: Dict[Tuple, int] = {}
+    for r in rows:
+        n = seen.get(r.key, 0)
+        seen[r.key] = n + 1
+        if n:
+            r.ident = r.ident + (("twin", n),)
 
 
 def _sum(values: Iterable[Optional[float]]) -> Optional[float]:
@@ -209,13 +321,15 @@ def arrange(findings: Sequence[Dict[str, Any]], *, include_empty: bool = True) -
         if g == OTHER.key:
             unmapped.add(str(fnd.get("analyzer")))
         mk = _merge_key(fnd)
-        if mk is not None and mk in merged:
+        if mk is not None and mk in merged and not _shares_a_track(merged[mk], fnd):
             merged[mk].findings.append(fnd)
             continue
         ev = fnd.get("evidence") or {}
-        r = Row(group=g, model=str(fnd.get("model") or ""), statement=statement(fnd), value=None,
-                findings=[fnd], when=(ev.get("after") or {}).get("first") if g == "history" else None)
-        if mk is not None:
+        text = statement(fnd)
+        r = Row(group=g, model=str(fnd.get("model") or ""), statement=text, value=None,
+                findings=[fnd], when=(ev.get("after") or {}).get("first") if g == "history" else None,
+                base=text)
+        if mk is not None and mk not in merged:
             merged[mk] = r
         buckets[g].append(r)
     if unmapped:
@@ -227,6 +341,10 @@ def arrange(findings: Sequence[Dict[str, Any]], *, include_empty: bool = True) -
         for r in rows:
             r.value = _sum(readout(x) for x in r.findings)
             r.tags = _tags(r.findings)
+            # Sorted, so a refresh that returns the merged findings in another order keeps the key.
+            r.ident = tuple(sorted((_identity(x) for x in r.findings), key=repr))
+        _name_what_differs(rows)
+        _unique_keys(rows)
         _sort(spec.key, rows)
         if rows or (include_empty and spec is not OTHER):
             out.append(Group(spec, rows))
@@ -262,7 +380,16 @@ def value_text(group: str, value: Optional[float]) -> str:
     return f"{value:,.0f}"
 
 
-def value_tone(group: str, value: Optional[float]) -> Optional[str]:
+def value_tone(group: str, value: Optional[float],
+               findings: Sequence[Dict[str, Any]]) -> Optional[str]:
+    """Green up, coral down -- for a pass-rate move measured on ONE test. When the recipe change's
+    evidence says the limit table changed (or was mixed) across it, the row keeps its recorded
+    move but gets no colour and a "different test" tag (see _tags): part of that move may be a
+    change of test, not of parts, and CLAUDE.md's rule -- never compare pass rates across a
+    table change -- outranks the mockup's colour. `findings` is required on purpose: a caller
+    that forgot it would colour every move."""
     if group != "history" or value is None or value == 0:
+        return None
+    if any(_different_test(f) for f in findings):
         return None
     return "up" if value > 0 else "down"

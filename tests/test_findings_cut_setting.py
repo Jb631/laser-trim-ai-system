@@ -280,3 +280,64 @@ def test_the_evidence_names_its_track_and_its_grade():
     f = only(cut_setting.analyze("M", two_blocks(0.6, 0.3), label)[1])
     assert f.evidence["track"] == "Track A"
     assert f.evidence["grade"] == "two_periods"
+
+
+# ---- A quiet TABLE is not a quiet LASER (final review, 2026-09-24) -------------------------------
+# A group is one (laser, track, limit table). 8232-1's laser 1 Track A had a table last used
+# 2026-01-12 while the model kept running on laser 1 under its current table through 2026-09-17 --
+# and the finding said "This model has not run on this laser since January 2026".
+
+def _moved_on_to_another_table(system="B"):
+    """two_blocks' finding on TAB (Jan-Nov 2024), then a year of the same track on OTHER with one
+    setting only (so OTHER makes no finding of its own), on `system`."""
+    later = block(5000, datetime(2025, 1, 1), 200, 2.0, 0.3, 0.3, tab=OTHER, system=system)
+    return two_blocks(0.6, 0.3) + later
+
+
+def test_a_table_that_went_quiet_while_the_model_ran_on_says_so_not_that_the_laser_did():
+    tracks = _moved_on_to_another_table()
+    now = max(t.file_date for t in tracks) + timedelta(days=10)
+    f = only(cut_setting.analyze("M", tracks, label, now=now)[1])
+    assert f.evidence["stale"] is True and f.evidence["ran_on_laser_since"] is True
+    assert "Track A on this limit table has not run since Nov 2024" in f.title
+    assert f.summary.startswith("Track A on this limit table has not run since November 2024, so "
+                                "nothing here is running now — it is the record of what worked on "
+                                "that test. ")
+    assert "has not run on this laser" not in f.summary
+    assert f.evidence["laser_last_ran"] == max(t.file_date for t in tracks).date().isoformat()
+    assert f.expected_gain_points is None and f.tracks_per_year is None       # still claims no rate
+
+
+def test_a_model_gone_from_the_laser_keeps_the_laser_wording():
+    tracks = two_blocks(0.6, 0.3)
+    now = max(t.file_date for t in tracks) + timedelta(days=400)
+    f = only(cut_setting.analyze("M", tracks, label, now=now)[1])
+    assert f.evidence["ran_on_laser_since"] is False
+    assert f.summary.startswith("This model has not run on this laser since November 2024")
+
+
+def test_running_on_ANOTHER_laser_afterwards_does_not_count_as_running_on_this_one():
+    # The model moved to laser 2 (DLTS); laser 1's finding must still say laser 1 went quiet.
+    tracks = two_blocks(0.6, 0.3) + block(5000, datetime(2025, 1, 1), 200, 0.75, 0.3, 0.3, system="A")
+    now = max(t.file_date for t in tracks) + timedelta(days=10)
+    f = [x for x in cut_setting.analyze("M", tracks, label, now=now)[1] if x.systems == ("B",)][0]
+    assert f.evidence["ran_on_laser_since"] is False
+    assert f.summary.startswith("This model has not run on this laser since")
+
+
+def test_the_evidence_names_its_limit_table():
+    f = only(cut_setting.analyze("M", two_blocks(0.6, 0.3), label)[1])
+    tracks = two_blocks(0.6, 0.3)
+    assert f.evidence["table"] == tracks[0].limit_table.key
+
+
+def test_one_track_on_two_limit_tables_keeps_both_in_the_facts():
+    # Groups run biggest first, and both used to write to "Laser 1 (LTS) · Track A" -- so the
+    # SMALLER table's settings replaced the bigger one's on the model's Findings tab.
+    big = two_blocks(0.6, 0.3)                                                  # 240 tracks on TAB
+    small = (block(2000, START, 100, 1.0, 0.6, 0.6, tab=OTHER)
+             + block(3000, days(START, 201)[-1], 100, 2.0, 0.3, 0.3, tab=OTHER))  # 200 on OTHER
+    facts, _ = cut_setting.analyze("M", big + small, label)
+    assert set(facts) == {"Laser 1 (LTS) · Track A", "Laser 1 (LTS) · Track A · 12-point limit table"}
+    assert facts["Laser 1 (LTS) · Track A"]["n"] == 240
+    assert facts["Laser 1 (LTS) · Track A · 12-point limit table"]["n"] == 200

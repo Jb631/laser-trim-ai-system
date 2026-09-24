@@ -110,5 +110,9 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
                 strength_value=f["unplanned_passes_per_100_tracks"],
                 expected_gain_points=None,        # capacity, not yield points
                 scope_annual_tracks=f["n"],
-                evidence={"facts": f, "share_of_laser": round(share_of_laser, 1)}))
+                # The track travels with the finding (it is in the facts LABEL, not in `f`): two
+                # tracks' findings can read identically, and the Findings page tells their rows
+                # apart -- and names the track in each -- by it.
+                evidence={"facts": f, "share_of_laser": round(share_of_laser, 1),
+                          "track": track_name}))
     return facts, findings

@@ -186,6 +186,23 @@ def _span_days(rows) -> int:
     return (max(t.file_date for t in rows) - min(t.file_date for t in rows)).days
 
 
+def _facts_label(facts: Dict[str, Any], base: str, rows) -> str:
+    """`base` ("Laser 1 (LTS) · Track A") -- unless that track already has an entry from ANOTHER
+    limit table, and then the table is named, so the second group never writes over the first.
+
+    Groups are keyed by (laser, track, limit table), but this label used to carry only the first
+    two: a track graded against two tables kept only the SMALLER table's settings in the facts
+    (groups run biggest first), and the bigger one vanished from the model's Findings tab.
+    """
+    if base not in facts:
+        return base
+    points = rows[0].limit_table.graded            # one table per group, so one point count
+    label, n = f"{base} · {points}-point limit table", 2
+    while label in facts:                           # two tables with the same point count
+        label, n = f"{base} · {points}-point limit table ({n})", n + 1
+    return label
+
+
 def _describe_group(rows, by_setting: Dict[float, List]) -> Dict[str, Any]:
     return {"n": len(rows), "window": _span(rows),
             "days_with_more_than_one_setting_pct": _overlap_share(rows),
@@ -220,14 +237,14 @@ def analyze(model: str, tracks, laser_label,
             groups.setdefault(key, []).append(t)
 
     for key, rows in sorted(groups.items(), key=lambda kv: -len(kv[1])):
-        system, track_name, _table = key
+        system, track_name, table = key
         by_setting: Dict[float, List] = {}
         for t in rows:
             by_setting.setdefault(_setting(t), []).append(t)
         live = {s: g for s, g in by_setting.items() if len(g) >= MIN_PER_SETTING}
         if len(live) < 2 or len(rows) < MIN_TOTAL:
             continue
-        label = f"{laser_label(system)} · {track_name}"
+        label = _facts_label(facts, f"{laser_label(system)} · {track_name}", rows)
         facts[label] = _describe_group(rows, live)
 
         # What the laser is set to NOW -- the only setting a recommendation can replace.
@@ -313,7 +330,18 @@ def analyze(model: str, tracks, laser_label,
         # "now" is the FLEET's newest trim file, not this group's own -- a model that has
         # not been on this laser in months must not be reported as "now running".
         stale = now is not None and newest < now - timedelta(days=STALE_DAYS)
-        if stale:
+        # A group is one (laser, track, LIMIT TABLE). It can go quiet while the model carries on
+        # running on this laser -- under a newer table, or on another track -- and then "this
+        # model has not run on this laser" is false (the final review found 8232-1's laser 1
+        # Track A: a table last used 2026-01-12, the model still running through 2026-09-17).
+        laser_newest = max((t.file_date for t in tracks
+                            if t.system == system and t.file_date is not None), default=newest)
+        ran_on_laser_since = laser_newest > newest
+        if stale and ran_on_laser_since:
+            title = (f"{laser_label(system)}: cut {best:g} passed {gain:.0f} points more often "
+                     f"than {current:g} — {track_name} on this limit table has not run since "
+                     f"{newest:%b %Y}")
+        elif stale:
             title = (f"{laser_label(system)}: cut {best:g} passed {gain:.0f} points more often "
                      f"than {current:g}, the setting it last ran at ({newest:%b %Y})")
         else:
@@ -328,7 +356,11 @@ def analyze(model: str, tracks, laser_label,
             f"{halves['median_resistance']:g} ohm, {halves['above']['best_pct']:.0f}% vs "
             f"{halves['above']['current_pct']:.0f}% above), so the ink does not explain it. "
             + strength)
-        if stale:
+        if stale and ran_on_laser_since:
+            summary = (f"{track_name} on this limit table has not run since {newest:%B %Y}, so "
+                       "nothing here is running now — it is the record of what worked on that "
+                       "test. " + summary)
+        elif stale:
             summary = (f"This model has not run on this laser since {newest:%B %Y}, so nothing "
                        "here is running now -- it is the record of what worked. " + summary)
         findings.append(Finding(
@@ -350,5 +382,11 @@ def analyze(model: str, tracks, laser_label,
                       "months_side_by_side": both_months, "months_total": all_months,
                       "changeover": _changeover(rows, best, current),
                       "track": track_name, "grade": grade, "stale": stale,
-                      "last_ran": newest.date().isoformat()}))
+                      "last_ran": newest.date().isoformat(),
+                      # The group's limit table (its content fingerprint): the Findings page
+                      # merges two tracks into one row only when they were graded on the SAME
+                      # test (findings/presentation._merge_key).
+                      "table": table,
+                      "ran_on_laser_since": ran_on_laser_since,
+                      "laser_last_ran": laser_newest.date().isoformat()}))
     return facts, findings

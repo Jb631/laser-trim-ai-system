@@ -139,3 +139,10 @@ def test_tracks_that_were_never_cut_are_not_counted_as_a_zero_cut_recipe():
     assert findings == []
     assert facts["Laser 1 (LTS) · default · cut 1"]["n"] == 300
     assert "0" not in facts["Laser 1 (LTS) · default · cut 1"]["cut_counts"]
+
+
+def test_the_finding_names_its_track():
+    # Two tracks' findings can read identically; the Findings page tells their rows apart by this.
+    tracks = run(0, 300, lambda k: 2 if k % 3 == 0 else 1, name="Track B")
+    _, findings = pass_burden.analyze("M", tracks, label)
+    assert findings[0].evidence["track"] == "Track B"

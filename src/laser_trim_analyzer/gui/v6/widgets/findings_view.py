@@ -78,7 +78,7 @@ class FindingsView(ctk.CTkFrame):
                 continue
             shown = group.rows if spec.key in self._expanded else group.rows[:P.ROWS_PER_GROUP]
             for r in shown:
-                tone = P.value_tone(spec.key, r.value)
+                tone = P.value_tone(spec.key, r.value, r.findings)
                 color = t.PASS_FG if tone == "up" else t.CHECK if tone == "down" else None
                 w = blocks.row(self, t, r.model, r.statement, P.value_text(spec.key, r.value),
                                tags=r.tags, on_click=lambda k=r.key: self.toggle(k), value_color=color)
