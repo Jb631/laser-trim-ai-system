@@ -2604,6 +2604,8 @@ def check_track2_setup_on_database(raw) -> None:
          "copy carry a captured Track 2 block (0 is CORRECT before a reprocess -- "
          "no back-fill by design; see task-9-report.md)",
          f"captured={captured} total={total}")
+    if not captured:
+        return      # the WARN above says so; a PASS over zero blocks would prove nothing
     bad = []
     for aid, model, t2_raw in rows:
         if not t2_raw:
