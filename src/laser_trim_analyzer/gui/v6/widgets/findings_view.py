@@ -12,6 +12,13 @@ from laser_trim_analyzer.findings import presentation as P
 from laser_trim_analyzer.gui.v6.widgets import blocks
 
 
+def _join_cells(cells, fmt) -> str:
+    """Join one value per track with ' · ', in the given (already-matched) order. A missing
+    slot -- a track with no entry for this setting -- reads "—" in its OWN place, never
+    silently dropped, so the joined string always has one part per track."""
+    return " · ".join("—" if c is None else fmt(c) for c in cells)
+
+
 class FindingsView(ctk.CTkFrame):
     def __init__(self, master, theme, *, on_open: Optional[Callable[[str], None]] = None,
                  include_empty: bool = True, **kwargs):
@@ -85,21 +92,34 @@ class FindingsView(ctk.CTkFrame):
             self.toggle(was_open)
 
     def _draw_detail(self, r: P.Row) -> ctk.CTkFrame:
+        """Spec §3 'Opening a row': (1) the finding's own summary; (2) for cut_setting, ONE
+        settings table -- setting, tracks, in spec -- one column per track when merged; (3)
+        Open {model}. Review ruling 2026-09-24: the shipped first draft drew a heading +
+        summary + a separate table PER finding; the approved mockup draws ONE narrative and
+        ONE table whose cells join both tracks' numbers with " · "."""
         t = self.theme
         d = ctk.CTkFrame(self, fg_color=t.CARD, corner_radius=t.RADIUS_LG, border_width=1,
                          border_color=t.BORDER)
-        for f in r.findings:
-            ev = f.get("evidence") or {}
-            if r.merged and ev.get("track"):
-                ctk.CTkLabel(d, text=str(ev["track"]), font=t.font(t.SIZE_BODY, "bold"),
-                             text_color=t.TEXT_PRIMARY, anchor="w").pack(fill="x", padx=t.SPACE_LG,
-                                                                         pady=(t.SPACE_MD, 0))
-            ctk.CTkLabel(d, text=str(f.get("summary") or ""), font=t.font(t.SIZE_BODY),
-                         text_color=t.TEXT_PRIMARY, anchor="w", justify="left", wraplength=960
-                         ).pack(fill="x", padx=t.SPACE_LG, pady=(t.SPACE_SM, 0))
-            settings = ((ev.get("group") or {}).get("settings")) if f.get("analyzer") == "cut_setting" else None
-            if settings:
-                self._settings_table(d, settings)
+        # ONE summary for the row: the first finding's. The row's findings are already in
+        # readout order (get_process_findings orders by tracks_per_year DESC, and arrange()
+        # preserves that order as it merges), so "first" is the same finding a lone,
+        # unmerged row would show -- not an arbitrary pick.
+        first = r.findings[0]
+        ctk.CTkLabel(d, text=str(first.get("summary") or ""), font=t.font(t.SIZE_BODY),
+                     text_color=t.TEXT_PRIMARY, anchor="w", justify="left", wraplength=960
+                     ).pack(fill="x", padx=t.SPACE_LG, pady=(t.SPACE_MD, 0))
+        if first.get("analyzer") == "cut_setting":
+            setting_rows = self._merged_settings(r.findings)
+            if setting_rows:
+                if r.merged:
+                    # The table's cells below join each track's number in THIS order --
+                    # name it, so the joined numbers are never ambiguous.
+                    names = " · ".join(str((f.get("evidence") or {}).get("track") or "?")
+                                       for f in r.findings)
+                    ctk.CTkLabel(d, text=names, font=t.font(t.SIZE_CAPTION),
+                                 text_color=t.TEXT_SECONDARY, anchor="w"
+                                 ).pack(fill="x", padx=t.SPACE_LG, pady=(t.SPACE_SM, 0))
+                self._settings_table(d, setting_rows)
         if self._on_open is not None:
             blocks.primary_button(d, t, f"Open {r.model}", lambda m=r.model: self._on_open(m)
                                   ).pack(anchor="w", padx=t.SPACE_LG, pady=t.SPACE_MD)
@@ -107,19 +127,41 @@ class FindingsView(ctk.CTkFrame):
             ctk.CTkFrame(d, height=t.SPACE_SM, fg_color="transparent").pack()
         return d
 
-    def _settings_table(self, parent, settings) -> None:
+    @staticmethod
+    def _merged_settings(findings) -> List[Dict[str, Any]]:
+        """One row per distinct cut setting across `findings`, in first-seen order (each
+        finding's own evidence.group.settings, in that finding's own order). Each row's
+        'cells' holds one entry per finding, MATCHED BY SETTING VALUE -- never by list
+        position: two merged tracks can list their settings in a different order, or one can
+        lack a setting the other has (that slot is None there, drawn as "—")."""
+        per_finding: List[Dict[Any, Dict[str, Any]]] = []
+        for f in findings:
+            ev = f.get("evidence") or {}
+            by_setting = {s.get("setting"): s for s in (ev.get("group") or {}).get("settings") or []}
+            per_finding.append(by_setting)
+        order: List[Any] = []
+        seen: Set[Any] = set()
+        for by_setting in per_finding:
+            for setting in by_setting:
+                if setting not in seen:
+                    seen.add(setting)
+                    order.append(setting)
+        return [{"setting": setting, "cells": [by_setting.get(setting) for by_setting in per_finding]}
+                for setting in order]
+
+    def _settings_table(self, parent, setting_rows) -> None:
         t = self.theme
         grid = ctk.CTkFrame(parent, fg_color="transparent")
         grid.pack(anchor="w", padx=t.SPACE_LG, pady=(t.SPACE_SM, 0))
-        for c, head in enumerate(("cut", "tracks", "in spec", "ran")):
+        for c, head in enumerate(("cut", "tracks", "in spec")):
             ctk.CTkLabel(grid, text=head, font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
                          anchor="w").grid(row=0, column=c, sticky="w", padx=(0, t.SPACE_XL))
-        for i, s in enumerate(settings, start=1):
-            pct = s.get("pass_pct")
-            cells = (f"{s.get('setting'):g}" if isinstance(s.get("setting"), (int, float)) else str(s.get("setting")),
-                     f"{int(s.get('n') or 0):,}", "—" if pct is None else f"{pct:.0f}%",
-                     str(s.get("window") or ""))
-            for c, text in enumerate(cells):
-                ctk.CTkLabel(grid, text=text, font=t.mono(t.SIZE_BODY) if c < 3 else t.font(t.SIZE_CAPTION),
-                             text_color=t.TEXT_PRIMARY if c < 3 else t.TEXT_SECONDARY, anchor="w"
-                             ).grid(row=i, column=c, sticky="w", padx=(0, t.SPACE_XL))
+        for i, row in enumerate(setting_rows, start=1):
+            setting, cells = row["setting"], row["cells"]
+            cut_text = f"{setting:g}" if isinstance(setting, (int, float)) else str(setting)
+            tracks_text = _join_cells(cells, lambda s: f"{int(s.get('n') or 0):,}")
+            spec_text = _join_cells(
+                cells, lambda s: "—" if s.get("pass_pct") is None else f"{s.get('pass_pct'):.0f}%")
+            for c, text in enumerate((cut_text, tracks_text, spec_text)):
+                ctk.CTkLabel(grid, text=text, font=t.mono(t.SIZE_BODY), text_color=t.TEXT_PRIMARY,
+                             anchor="w").grid(row=i, column=c, sticky="w", padx=(0, t.SPACE_XL))

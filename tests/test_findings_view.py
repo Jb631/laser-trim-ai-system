@@ -16,6 +16,16 @@ def cut(model, tpy, best=6800.0, current=6900.0, track="Track A"):
                              {"setting": current, "n": 1283, "pass_pct": 60.4, "window": "c .. d"}]}}}
 
 
+def cut_track(model, tpy, track, settings, best=6800.0, current=6900.0):
+    """Like cut(), but with an explicit per-track settings list -- for testing how a merged
+    row's settings table combines two tracks (join by setting value, not list position)."""
+    return {"analyzer": "cut_setting", "model": model, "category": "Cut setting", "title": "t",
+            "summary": f"summary for {model} {track}", "systems": ["B"], "n_units": 100,
+            "tracks_per_year": tpy,
+            "evidence": {"best": best, "current": current, "grade": "two_periods", "track": track,
+                         "group": {"settings": settings}}}
+
+
 def _texts(w):
     out = []
     for c in w.winfo_children():
@@ -70,7 +80,61 @@ def test_a_merged_row_opens_with_each_track_named(tk_root):
     assert len(v.row_widgets) == 1
     v.toggle(next(iter(v.row_widgets)))
     texts = _texts(v)
-    assert "Track A" in texts and "Track B" in texts and "~300" in texts
+    # Both tracks are named in ONE line (the order the table's joined cells use below it),
+    # not a separate heading per track -- see test_a_merged_row_draws_one_settings_table_*.
+    assert "Track A · Track B" in texts and "~300" in texts
+
+
+def test_a_merged_row_draws_one_settings_table_with_joined_cells(tk_root):
+    """Spec section 3 / the approved mockup: a merged row's settings table is ONE table --
+    setting, tracks, in spec, no 'ran' column -- whose cells join both tracks' numbers with
+    ' · ' (the mockup's real example: 813 · 766, 87% · 89%)."""
+    v = FindingsView(tk_root, ThemeManager(), on_open=lambda m: None)
+    v.set_findings([
+        cut_track("6607", 182.0, "Track A",
+                  [{"setting": 6800.0, "n": 813, "pass_pct": 87.1},
+                   {"setting": 6900.0, "n": 1283, "pass_pct": 60.4}]),
+        cut_track("6607", 118.0, "Track B",
+                  [{"setting": 6800.0, "n": 766, "pass_pct": 89.0},
+                   {"setting": 6900.0, "n": 1207, "pass_pct": 70.0}]),
+    ])
+    v.toggle(next(iter(v.row_widgets)))
+    texts = _texts(v)
+    assert "813 · 766" in texts and "1,283 · 1,207" in texts
+    assert "87% · 89%" in texts and "60% · 70%" in texts
+    assert texts.count("cut") == 1                 # exactly ONE table, not one per track
+    assert "ran" not in texts                       # the window column is gone
+
+
+def test_a_merged_rows_settings_line_up_by_setting_not_by_list_position(tk_root):
+    """A naive positional zip would cross-match Track B's 6900 row with Track A's 6800 numbers
+    here, since Track B lists its two settings in the OPPOSITE order."""
+    v = FindingsView(tk_root, ThemeManager(), on_open=lambda m: None)
+    v.set_findings([
+        cut_track("6607", 182.0, "Track A",
+                  [{"setting": 6800.0, "n": 813, "pass_pct": 87.1},
+                   {"setting": 6900.0, "n": 1283, "pass_pct": 60.4}]),
+        cut_track("6607", 118.0, "Track B",
+                  [{"setting": 6900.0, "n": 1207, "pass_pct": 70.0},
+                   {"setting": 6800.0, "n": 766, "pass_pct": 89.0}]),
+    ])
+    v.toggle(next(iter(v.row_widgets)))
+    texts = _texts(v)
+    assert "813 · 766" in texts and "1,283 · 1,207" in texts
+
+
+def test_a_merged_rows_track_missing_a_setting_shows_a_dash(tk_root):
+    v = FindingsView(tk_root, ThemeManager(), on_open=lambda m: None)
+    v.set_findings([
+        cut_track("6607", 182.0, "Track A",
+                  [{"setting": 6800.0, "n": 813, "pass_pct": 87.1},
+                   {"setting": 6900.0, "n": 1283, "pass_pct": 60.4}]),
+        cut_track("6607", 118.0, "Track B",
+                  [{"setting": 6800.0, "n": 766, "pass_pct": 89.0}]),      # never ran 6900
+    ])
+    v.toggle(next(iter(v.row_widgets)))
+    texts = _texts(v)
+    assert "1,283 · —" in texts and "60% · —" in texts
 
 
 def test_an_empty_group_says_what_would_fill_it(tk_root):

@@ -85,8 +85,6 @@ class FindingsPage(PageBase):
                           f"Findings could not be loaded ({data['failed']}). This is an error, not an "
                           f"empty list — the log has the details.").pack(fill="x", pady=t.SPACE_SM)
             return
-        if not self._view.winfo_ismapped():
-            self._view.pack(fill="x")
         if data.get("errors_failed"):
             blocks.banner(self._notices, t,
                           f"Whether any model failed on the last refresh could not be checked "
@@ -108,6 +106,10 @@ class FindingsPage(PageBase):
             self._view.set_findings([])
             self._view.pack_forget()
             return
+        # Only reached with real rows to show -- no wasted pack-then-immediately-forget
+        # cycle on the empty/failed paths above (review, 2026-09-24).
+        if not self._view.winfo_ismapped():
+            self._view.pack(fill="x")
         self.set_caption(P.caption(P.arrange(rows), rows))
         self._view.set_findings(rows)
 
