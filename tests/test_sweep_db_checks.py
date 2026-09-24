@@ -123,3 +123,65 @@ def test_initial_trim_value_never_passes_over_rows_it_does_not_have(tmp_path):
     results = _itv(_run_check(db, "check_initial_trim_value_on_database", tmp_path))
     assert [r[0] for r in results] == ["PASS"] * 3, results
     assert not any("reads back each column value" in r[1] for r in results), results
+
+
+# ================================================= check_increment_volts_on_database
+
+LTS_FIXTURE = REPO / "tests" / "fixtures" / "trim" / "lts_8232-1_193.xls"   # TrimVolts1 has readings
+
+
+def _laser1_passes(tmp_path, passes):
+    """passes: (captured?, processed after the capture started?, file_path or None).
+    The scratch database records its own capture start at its first start-up, exactly
+    as a work database does; a pass 'before' it is dated 2020."""
+    from sqlalchemy import null as sql_null
+    from laser_trim_analyzer.database.models import TrimPass
+    db = _scratch_db(tmp_path)
+    with db.session() as s:
+        for i, (captured, after, path) in enumerate(passes, start=1):
+            tr = _track(s, system="B", model="9994", serial=str(i),
+                        file_path=str(path) if path else None)
+            row = TrimPass(track_result_id=tr.id, pass_index=1, sheet="Trim 1",
+                           increment_volts=[[0.111, 0.222]] if captured else sql_null(),
+                           increment_volts_first_row=2 if captured else None,
+                           increment_volts_truncated=False if captured else None)
+            if not after:
+                row.created_date = datetime(2020, 1, 1)
+            s.add(row)
+    return db
+
+
+def _iv(results):
+    return [r for r in results if r[1].startswith("increment volts")]
+
+
+def test_increment_volts_never_passes_over_zero_passes_processed_since(tmp_path):
+    """Today's copy: every laser-1 pass predates the capture. There is nothing to hold,
+    so the carry-check is a WARN with the counts -- the old code printed PASS."""
+    db = _laser1_passes(tmp_path, [(True, False, None), (False, False, None)])
+    results = _iv(_run_check(db, "check_increment_volts_on_database", tmp_path))
+    carries = [r for r in results if "carries its TrimVolts curves" in r[1]]
+    assert carries == [], f"no PASS/FAIL over zero passes: {results}"
+    warned = [r for r in results if r[0] == "WARN" and "no laser-1 Trim N pass processed" in r[1]]
+    assert len(warned) == 1, results
+    assert "0 processed since the capture started" in warned[0][2], warned
+    assert "2 predate it (1 back-filled, 1 not yet)" in warned[0][2], warned
+
+
+def test_increment_volts_passes_when_a_pass_processed_since_carries_its_curves(tmp_path):
+    db = _laser1_passes(tmp_path, [(False, False, None), (True, True, None)])
+    results = _iv(_run_check(db, "check_increment_volts_on_database", tmp_path))
+    carries = [r for r in results if "carries its TrimVolts curves" in r[1]]
+    assert [r[0] for r in carries] == ["PASS"], results
+    assert "1 processed since the capture started: 1 carry their curves" in carries[0][2]
+
+
+def test_increment_volts_still_fails_on_a_missed_pass(tmp_path):
+    """Processed since the capture started, no curves stored, and its workbook HAS a
+    TrimVolts reading beside `Trim 1` (the real fixture): missed -- a FAIL."""
+    assert LTS_FIXTURE.is_file()
+    db = _laser1_passes(tmp_path, [(True, True, None), (False, True, LTS_FIXTURE)])
+    results = _iv(_run_check(db, "check_increment_volts_on_database", tmp_path))
+    carries = [r for r in results if "carries its TrimVolts curves" in r[1]]
+    assert [r[0] for r in carries] == ["FAIL"], results
+    assert f"{LTS_FIXTURE.name} Trim 1" in carries[0][2], carries

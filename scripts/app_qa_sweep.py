@@ -2167,14 +2167,22 @@ def check_increment_volts_on_database(raw) -> None:
     """On the copy: every laser-1 `Trim N` pass processed since THIS database started
     capturing (its own app_meta record) carries its TrimVolts curves. Rows that predate it
     are skipped (the back-fill's job, not a failure). Until a pass is processed on a
-    machine running this code there is nothing to check here, and the detail says so; the
-    fixture half above carries the teeth."""
+    machine running this code there is nothing to check here: that is a WARN carrying the
+    counts, never a PASS over zero passes (2026-09-24 final review -- the same pattern
+    e801e16 fixed for track 2); the fixture half above carries the teeth meanwhile."""
     since = _increment_volts_since(raw)
     check("increment volts: the database records when it started capturing TrimVolts",
           since is not None,
           f"since={since}" if since else
           "no app_meta record: its start-up migration did not run, or could not record it")
     a = _increment_volts_audit(raw, since)
+    processed_since = (a["captured"] + a["no_sheet"] + len(a["missed"])
+                       + len(a["unverified"]))
+    if not processed_since:
+        warn("increment volts: no laser-1 Trim N pass processed since the capture started "
+             "-- nothing to hold to it yet (0 is correct until this code ingests a laser-1 "
+             "file)", _increment_volts_counts(a))
+        return
     check("increment volts: every laser-1 Trim N pass processed since the capture started "
           "carries its TrimVolts curves",
           not a["missed"],
