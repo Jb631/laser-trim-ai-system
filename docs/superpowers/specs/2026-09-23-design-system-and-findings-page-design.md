@@ -32,7 +32,7 @@ identical to the smallest fact on the list.
 | body text on a card | 11.1 | 13.4 |
 | secondary text on a card (most explanatory writing) | 5.4 | 8.0 |
 | secondary text on the page | 6.8 | 9.7 |
-| **dimmed text on the page** | **2.8** | 5.0 |
+| **dimmed text on the page** | **2.8** | 6.7 |
 | **accent colour on a card** | **3.5** | 8.0 |
 | **out-of-control drift tier on its own background** | **4.2** | 6.2 |
 
@@ -82,7 +82,7 @@ already read their colours from the theme.
 | `ACCENT_HOVER` / `ACCENT_PRESSED` | `#60a5fa` / `#2563eb` | `#74e0c8` / `#36b99c` |
 | `TEXT_PRIMARY` | `#e8eef5` | `#f3f6fa` |
 | `TEXT_SECONDARY` | `#9ca8bd` | `#b6c2d2` |
-| `TEXT_DISABLED` | `#5a6478` | `#7b8aa0` |
+| `TEXT_DISABLED` | `#5a6478` | `#93a1b6` |
 | `TEXT_INVERSE` | `#1a1f2e` | `#0b1f1b` (dark text for teal fills) |
 | `DIVIDER` / `BORDER` | `#2a3142` / `#3a4456` | `#26344b` / `#34465f` |
 
@@ -104,6 +104,12 @@ most severe drift signal in the app, at 4.2:1 on `TIER_OOC_BG` and 3.8:1 bare on
 it changes `#ef4444` → **`#ff7a7a`** (6.2:1 on `#3d1818`, 5.7:1 on a card). It sits close to
 the FAIL coral in hue; that is acceptable because out-of-control appears on drift views and
 FAIL on verdict badges, and every badge carries its word.
+
+**`TEXT_DISABLED` corrected while planning (2026-09-23):** the first value, `#7b8aa0`, passed on
+the page (5.0:1) but FAILED on a card (4.1:1) and on a hovered row (3.5:1). This app uses
+"dimmed" for real information — chart tick labels, the volume axis — not only for disabled
+controls, so it must read everywhere. `#93a1b6` measures 6.7 on the page, 5.5 on a card and
+4.7 on `ELEVATED`, and is still 1.5× dimmer than `TEXT_SECONDARY`.
 
 **`TEXT_INVERSE` is safe to change:** all 18 uses in `gui/v6` sit on `ACCENT`-filled buttons
 (checked 2026-09-23), where the new dark value measures 9.5:1 on the new teal.
@@ -141,8 +147,14 @@ and never a rejection, so it must not look like a FAIL.
 | `SIZE_DISPLAY` | 28 | 30 |
 | `SIZE_READOUT` *(new, mono)* | — | 20 |
 
-The **32 hard-coded font sizes** outside `theme.py` move onto this scale, so nothing stays
-small when everything else grows.
+**Chart text gets its own scale** (corrected while planning, 2026-09-23). The "32 hard-coded
+font sizes" were really 30 matplotlib chart sizes (6–9 points) and 2 table column widths
+(`stats_table.py` `minsize=190`/`78`, not fonts, left alone). Matplotlib sizes are points, not
+the app's pixel scale, so they move onto `CHART_FONT_SMALL` 8 / `CHART_FONT` 9 /
+`CHART_FONT_LARGE` 10 — one step up from 6–7.5 / 8 / 9, the same bump as everything else.
+matplotlib reads font files directly, so charts get IBM Plex on every machine. The three
+per-laser line colours become `SERIES_A/B/C` (`#6aa8ff` / `#b39cff` / `#f28dc6`): laser 2's
+old green would have read as PASS and laser 3's amber as SIGMA WATCH.
 
 ### Spacing and radii
 
