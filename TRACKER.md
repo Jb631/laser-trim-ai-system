@@ -208,11 +208,11 @@ screens parts.
       settings, and on laser 2 (DLTS) the per-position cut length, trim current,
       target output and measured output. 17 commits, `adcc1ce..5f94dc4`. Proven to
       change nothing that existed: 645 real files, 26 stored columns.
-- [ ] **B2 · Fresh-database rebuild, overnight.** *James.* Checklist: the
-      2026-09-18 section of `BRING_TO_WORK.md`. Needs **12 GB free**. Blocked on
-      A1. It also re-grades every final-test record — **98.5% of them (148,776
-      of 151,111) are still on the old grading** — so do NOT start the separate
-      15-hour re-grade; the rebuild replaces it.
+- [x] **B2 · Fresh-database rebuild — DONE** (James, finished 2026-09-22; carried home and
+      verified 2026-09-23 with `scripts/verify_rebuild.py`: 6.23 GB, a fresh database, so all
+      151,793 final-test records were graded by the current code). The copy home took three
+      tries through OneDrive; `scripts/snapshot_db.py`
+      now makes the one-file copy that avoids a torn journal.
 - [x] **B2a · Working from home without the rebuild** (2026-09-20).
       `scripts/pull_model_slice.ps1` copies a few models' folders down the VPN
       (default 8232-1 and 8340-1, ~3 years); `scripts/build_dev_db.py` turns any
@@ -221,10 +221,18 @@ screens parts.
       exists on the Mac: `Work Files/dev_db/sample.db`, built in 69 s, 0 errors,
       839 captured trim passes. **8232-1 is the model to go deep on: 86% of its
       tracks need a second pass.**
-- [ ] **B3 · Re-derive every number that rests on a final-test verdict.** After
-      B2. The resistance-target figures (8232-1 correlation −0.63, yield
-      10% → 73%) were computed on the old grading. **Do not set ink targets off
-      them until this is done.**
+- [x] **B3 · Re-derive every number that rests on a final-test verdict — DONE 2026-09-23**
+      on the rebuilt database. **The resistance-target figures were laser-side numbers**
+      (laser linearity verdict AND trimmed resistance inside the station's window), not
+      final-test ones, so the re-grade could not move them — and they reproduce: **8232-1
+      −0.63** over 30 months (best 2024-11, incoming 4,171 Ω → 73%; worst 2023-11, 4,550 Ω →
+      10%), 8340-3 +0.54 (was +0.56), 6607 +0.35 (was +0.38); 6952, 8340-1 and 8202-1 still
+      weak. **One changed: 8397-2 is now +0.25 (was −0.45)** — weak, and the other way.
+      Against the re-graded FINAL TEST the link is weaker (8232-1 −0.34) — consistent with its
+      failures being made at the laser and rescued by hand trim. Unchanged caveat: 8232-1's
+      best months coincide with the one-cut → two-cut recipe change, which `ink_target`
+      already holds constant. Nothing on the app's screens rests on a pre-rebuild final-test
+      number; they compute live.
 - [ ] **B4 · Four cheap questions about the trim passes, before any model.**
       *First look at question 1, 2026-09-20 — sample database, laser 2 (DLTS) only,
       482 tracks pooled across ~240 models, measured as error spread (max − min,
@@ -416,6 +424,22 @@ screens parts.
       model James most wants a cut-length model for has been producing the right data all
       along, into sheets nobody read. Needs: confirm the layout across models (column
       counts vary), decide the stored shape, then capture. Laser 3 unchecked.
+      **Layout CONFIRMED and the design settled, 2026-09-23** (4,972 local laser-1 files,
+      0 read errors, 32 models): `TrimVolts N` exists if and only if `Trim N` does (4,540
+      files, no exception; the 432 without are 431 no-cut templates and 1 touch-up file).
+      Column *k* is the position at row (`Initial Points Ignored` + *k*) of `Trim N`
+      (r = 0.999998; reversed order refuted). Row 0 is read in every column — the only
+      per-position pre-cut reading a laser-1 file has. Zeros are end padding only. **11
+      sheets hit the old .xls 256-column limit and lose positions.** The last reading is NOT
+      `Trim N`'s measured value (ratio 0.94–1.23): a live reading during the cut vs the
+      verification sweep after it. `VOLTAGES`/`ERRORS` repeat what is already read;
+      `TRIMDATA` is real but unexplained, so it is not captured. Design:
+      `docs/superpowers/specs/2026-09-23-parse-fixes-design.md` §4; build: the parse-fixes
+      plan, Tasks 4 (capture as `increment_volts` on each pass row) and 5 (a resumable
+      back-fill for stored files, for James to run at work).
+      **Laser 3 checked, 2026-09-23:** all 773 laser-3 (LTS3) passes carry cut length, trim
+      current and used delta per position (99.8% live values in a 400-pass sample) — the same
+      capture as laser 2, whose sheets laser 3 writes. Nothing more to read there.
 - [x] **B1b · What the cut PATTERN says — investigated 2026-09-21** (James: "im more
       interested if the cut length or patterns can tell us anything… there is a lot of
       data available that might be able to help us"). Three answers, all on 8232-1's
@@ -511,9 +535,11 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
 - [ ] **D1 · 8232-1: the laser and final test grade to different limit
       tables.** The only customer-facing mismatch of 36 found; James believes
       one station is set wrong. Same-day fix at the laser if so.
-- [ ] **D2 · Model 8706: 41 files skipped, only 2 parsed** — the reverse of
-      every other model. Open one and look for `SEC1 TRK…` sheets. If they are
-      there, the parser is wrongly rejecting the model; tell Claude.
+- [x] **D2 · Model 8706: 41 files skipped, only 2 parsed** — ANSWERED 2026-09-23 from the
+      files themselves: **the parser is right.** All 47 skipped 8706 files are serial `0`,
+      February 2016, many minutes apart on the same day — laser SETUP runs for a new model.
+      They carry the parameter, notes and report sheets but no sweep sheet at all. The
+      production variant 8706-3 has its `SEC1 TRK1` sheets and parses.
 - [ ] **D3 · After the rebuild, expect the QA sweep's two red lines to
       change.** They pick "the newest 4,000 rows" by id, and a fresh database
       renumbers. Means nothing; see `BRING_TO_WORK.md`.
@@ -563,6 +589,34 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       running" must mean now — which retires 8397-2's "+48 points").
 - [ ] **F3… · Relayout each remaining page**, one design round each: Model, Home,
       Dashboard, Triage, Process, Settings. Order to be agreed after F2 ships.
+
+## G. Parse fixes — found 2026-09-23, planned, not yet built
+
+Design (rulings, James's to overturn): `docs/superpowers/specs/2026-09-23-parse-fixes-design.md`.
+Plan: `docs/superpowers/plans/2026-09-23-parse-fixes.md`. Runs after F2.
+
+- [ ] **G1 · A track that failed processing was counted as a linearity FAIL.** A track with
+      fewer than 10 points is stored ERROR *and* `linearity_pass = 0`, and four Findings
+      analyzers count every non-empty verdict. **8856 on laser 2 (DLTS) reads 27.7% when its
+      graded tracks pass 49.0%; 8856-1 57.0% vs 72.1%.** Plan Task 1.
+- [ ] **G2 · V5's Settings → Apply ML would rewrite verdicts.** Its bulk update grades
+      status as "both pass → PASS, both fail → FAIL, else WARNING": one click would turn up
+      to 1,701 linearity FAILs into WARNING, take all 235 ERRORs out of ERROR and make 6,973
+      untrimmed sweeps WARNING. **Not run on the rebuild** (checked). Only V5 has the button.
+      Plan Task 2.
+- [ ] **G3 · No ERROR says why.** None of the 237 on the rebuild carries a reason the app can
+      show; the words exist on the tracks (140 bad limit columns, 94 too few points) or on a
+      separate marker row (3). Plan Task 3 stores one reason and shows it on the Model page.
+- [ ] **G4 · Laser 1's `TrimVolts` capture** (B1a) and its back-fill. Plan Tasks 4–5.
+- [ ] **G5 · The database path does not travel — and two small ones.** `config.yaml` stores
+      the path absolute (`C:\dev\…\data\analysis.db`). **On the Mac that string is a relative
+      FILE NAME, so the app opens a junk database in the repo folder instead of the rebuilt
+      one** (checked 2026-09-23: it would open `C:\dev\…\analysis.db` relative to the current
+      folder). Workaround until the fix: set `database: path:` in `data/config.yaml` to
+      `data/analysis.db`. The junk file in the Mac repo root holds 1 processed file and 6
+      final-test rows written by a local test run, nothing of yours — delete it when
+      convenient. Also: `Unknown` (381 test files) is returned as a known model; floats are
+      written into two integer columns (measured impact zero). Plan Task 6.
 
 ## Housekeeping
 
