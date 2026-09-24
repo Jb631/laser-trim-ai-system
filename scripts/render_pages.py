@@ -34,9 +34,14 @@ true for that comparison to mean anything, both confirmed empirically before thi
      new one and grid_forgets the rest 100 ms later); a tab nobody has ever selected was never gridded
      at all and sits at that same (1x1) placeholder no matter how much text it holds. Reporting that
      as a clip would be pure noise, so find_clipped_text_widgets skips anything `winfo_ismapped()`
-     says is not currently on screen -- which also means --audit only ever sees the Findings tab of
-     the Model page, not its other six tabs; those are unchanged from before this facelift and were
-     not in this task's scope.
+     says is not currently on screen. In practice this means --audit reliably sees the Findings tab
+     (this run always selects it) plus whichever OTHER tabs happen to have been mapped at least once
+     -- empirically, that is also Drift Metrics (CTkTabview's construction-time default, before this
+     run ever switches away) and Trim vs Final Test (its chart draw realizes it independently) on this
+     app, probed directly with winfo_ismapped()/winfo_manager() down each one's ancestor chain. A tab
+     that was NEVER gridded (Smoothness, Units, Final Test Units, History, in this run) reads
+     alloc=(1,1) and is correctly skipped -- proven in tests/test_render_pages_audit.py. Auditing the
+     remaining tabs on purpose, every time, was out of this task's scope (see the task report).
 
 Mirrors scripts/refresh_findings.py for the database guard and the double global injection.
 """
