@@ -2472,6 +2472,128 @@ def check_initial_trim_value_on_database(raw) -> None:
           helper_real == recipe_real, f"helper={helper_real} recipe={recipe_real}")
 
 
+def check_track2_setup_fixtures() -> None:
+    """Through the real pipeline, into a throwaway database (--only track2-setup):
+    a two-track DLTS fixture's TRK2 track is judged against Track 2's OWN resistance
+    limits (never Track 1's), `parameters` never carries the internal `_track2` key
+    the parser hands the writer, and a single-track fixture stores a real SQL NULL
+    for `track2_parameters` -- never the JSON text 'null'.
+
+    Falsify before trusting (2026-09-24): make `trim_setup.read_track2_keyvalue`
+    always return {} -- the first check below goes FAIL (TRK2 reads TRK1's number).
+    Stop popping `_track2` out of `setup` in `_write_trim_setup` -- the second check
+    FAILs (`_track2` leaks into `parameters`). Make `_write_trim_setup` write
+    `sql_null()` unconditionally -- the first and third checks both FAIL.
+    """
+    import json as _json
+    import shutil
+    import tempfile
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    from laser_trim_analyzer.findings.data import load_model_tracks
+    import laser_trim_analyzer.database as _dbpkg
+
+    both = REPO / "tests" / "fixtures" / "trim" / "dlts_8074_18.xls"      # TRK1 + TRK2
+    single = REPO / "tests" / "fixtures" / "trim" / "dlts_8232-1_242.xls"  # single-track
+    check("track2 setup: both fixtures are present", both.exists() and single.exists(),
+          f"both={both.exists()} single={single.exists()}")
+    if not (both.exists() and single.exists()):
+        return
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None))
+    tmp = Path(tempfile.mkdtemp(prefix="track2_setup_sweep_"))
+    fdb = None
+    try:
+        fdb = _mgr.DatabaseManager(tmp / "t2.db")
+        _mgr._db_manager = fdb                 # BOTH globals: a Processor must never
+        _dbpkg._db_manager = fdb               # reach the configured database.
+        proc = Processor(use_ml=False)
+        for f in (both, single):
+            fdb.save_analysis(proc.process_file(f))
+
+        tracks = {t.track_name: t for t in load_model_tracks(fdb, "8074")}
+        t1 = tracks.get("TRK1")
+        t2 = tracks.get("TRK2")
+        ok = (t1 is not None and t2 is not None
+              and t1.initial_r_low is not None and t2.initial_r_low is not None
+              and t1.initial_r_low != t2.initial_r_low)
+        check("track2 setup: TRK2 is judged against ITS OWN initial resistance limit, "
+              "not TRK1's",
+              ok,
+              f"TRK1={t1 and t1.initial_r_low} TRK2={t2 and t2.initial_r_low}")
+
+        conn = sqlite3.connect(f"file:{tmp / 't2.db'}?mode=ro", uri=True)
+        try:
+            row_both = conn.execute(
+                "SELECT s.parameters, s.track2_parameters FROM trim_setup s "
+                "JOIN analysis_results a ON a.id = s.analysis_id "
+                "WHERE a.filename = ?", (both.name,)).fetchone()
+            row_single = conn.execute(
+                "SELECT s.track2_parameters, typeof(s.track2_parameters) FROM trim_setup s "
+                "JOIN analysis_results a ON a.id = s.analysis_id "
+                "WHERE a.filename = ?", (single.name,)).fetchone()
+        finally:
+            conn.close()
+        parameters = (_json.loads(row_both[0]) if row_both and row_both[0] else {})
+        check("track2 setup: parameters never carries the internal _track2 key",
+              "_track2" not in parameters)
+        check("track2 setup: track2_parameters is populated on the two-track fixture",
+              bool(row_both and row_both[1]))
+        check("track2 setup: a single-track fixture stores a real SQL NULL for "
+              "track2_parameters (never the JSON text 'null')",
+              row_single is not None and row_single[0] is None and row_single[1] == "null",
+              f"{row_single}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("track2 setup: the fixtures run through the pipeline", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        _mgr._db_manager, _dbpkg._db_manager = saved
+        if fdb is not None:
+            fdb.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_track2_setup_on_database(raw) -> None:
+    """On the copy: how many two-track System A/C analyses have (not yet) been
+    reprocessed under this feature, and every one that HAS carries a Track 2 block
+    that actually yields a real resistance limit.
+
+    No back-fill (ruling, task-9-brief.md): existing two-track analyses are judged
+    against Track 1's limits until reprocessed, so 0 captured today is the CORRECT
+    state, not a failure -- this reports the count rather than asserting a fraction,
+    the same shape as `check_track2_setup_fixtures` covering the code path itself.
+
+    Falsify before trusting (2026-09-24): hand-build a `track2_parameters` blob with
+    every value None (no real limit) -- the second check goes FAIL.
+    """
+    import json as _json
+    from laser_trim_analyzer.core.trim_setup import resistance_limits
+
+    rows = raw.execute(
+        "SELECT a.id, a.model, s.track2_parameters "
+        "FROM analysis_results a LEFT JOIN trim_setup s ON s.analysis_id = a.id "
+        "WHERE a.system IN ('A', 'C') AND a.has_multi_tracks = 1").fetchall()
+    total = len(rows)
+    if total == 0:
+        warn("track2 setup: no two-track System A/C analyses on this copy to check")
+        return
+    captured = sum(1 for _aid, _model, t2_raw in rows if t2_raw)
+    check(f"track2 setup: {captured} of {total} two-track System A/C analyses on this "
+          "copy carry a captured Track 2 block (0 is CORRECT before a reprocess -- "
+          "no back-fill by design; see task-9-report.md)",
+          True, f"captured={captured} total={total}")
+    bad = []
+    for aid, model, t2_raw in rows:
+        if not t2_raw:
+            continue
+        block = _json.loads(t2_raw) if isinstance(t2_raw, str) else t2_raw
+        limits = resistance_limits(block)
+        if not any(v is not None for v in limits.values()):
+            bad.append((aid, model))
+    check("track2 setup: every captured Track 2 block yields at least one real "
+          "resistance limit",
+          not bad, f"{bad[:5]}")
+
+
 def main() -> int:
     # REQUIRED DB-path argv (2026-08-31; was optional with a production
     # default). The sweep opens its target read-write, and the old default —
@@ -3313,6 +3435,8 @@ def main() -> int:
     check_increment_volts_on_database(raw)
     check_initial_trim_value_fixtures()
     check_initial_trim_value_on_database(raw)
+    check_track2_setup_fixtures()
+    check_track2_setup_on_database(raw)
 
     # Ingest guard fires on a synthetic corrupt track.
     guard_track = TrackData(
@@ -3942,7 +4066,8 @@ STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
               "findings": check_findings_fixtures,
               "increment-volts": lambda: (check_increment_volts_fixtures(),
                                           check_increment_volts_corpus()),
-              "initial-trim-value": check_initial_trim_value_fixtures}
+              "initial-trim-value": check_initial_trim_value_fixtures,
+              "track2-setup": check_track2_setup_fixtures}
 
 
 if __name__ == "__main__":

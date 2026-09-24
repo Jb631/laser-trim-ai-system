@@ -192,15 +192,25 @@ class ExcelParser:
                 if sheet not in sheet_names:
                     continue
                 try:
-                    got = _ts.read_keyvalue(
-                        pd.read_excel(xl, sheet_name=sheet, header=None),
-                        label_col=label_col, value_col=value_col)
+                    sheet_df = pd.read_excel(xl, sheet_name=sheet, header=None)
+                    got = _ts.read_keyvalue(sheet_df, label_col=label_col, value_col=value_col)
                 except Exception:
                     continue
                 # A layout that produced nothing was the wrong layout for this file.
                 if len(got) >= 3:
                     for k, v in got.items():
                         trim_setup.setdefault(k, v)
+                    # Track 2's own block sits in column C of this SAME System
+                    # A 'Track Parameters' sheet (trim_setup.read_track2_keyvalue
+                    # decides whether it's real; a plain template column C
+                    # returns {} and adds nothing here). Never for "Model
+                    # Parameters" or the System B/C value-first layout -- both
+                    # are per-FILE, not per-track, so a second column there
+                    # means something else entirely.
+                    if sheet == "Track Parameters" and value_col == 1:
+                        track2 = _ts.read_track2_keyvalue(sheet_df, label_col=label_col)
+                        if track2:
+                            trim_setup["_track2"] = track2
 
             # Extract track data (needs xl)
             tracks = self._extract_tracks(

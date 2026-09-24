@@ -698,6 +698,23 @@ class TrimSetup(Base):
     points_ignored_end = Column(Integer)
 
     parameters = Column(SafeJSON, nullable=True)
+
+    # Track 2's own setup block, System A two-track files only (2026-09-24).
+    # `parameters`/the PROMOTED columns above are always Track 1's -- one
+    # `trim_setup` row stays one per analysis (`analysis_id` is UNIQUE), so a
+    # second track's block cannot get its own promoted columns without a
+    # table rebuild. Column C of the 'Track Parameters' sheet, normalised the
+    # same way as `parameters` (`trim_setup.read_track2_keyvalue`, same
+    # `read_keyvalue`, value_col=2), stored only when that column is judged a
+    # real Track 2 block -- NULL (a real SQL NULL, never the JSON text
+    # 'null'; see _write_trim_setup) on every single-track file. Read by
+    # `findings/data.py::load_model_tracks` for a track whose track_id is
+    # 'TRK2'; use `core.trim_setup.resistance_limits` to pull the four
+    # PROMOTED resistance fields out of it rather than re-typing PROMOTED's
+    # alias precedence. No back-fill: existing two-track analyses (34 models,
+    # judged against Track 1's limits) get this only when reprocessed.
+    track2_parameters = Column(SafeJSON, nullable=True)
+
     created_date = Column(DateTime, default=utc_now, nullable=False)
 
     __table_args__ = (

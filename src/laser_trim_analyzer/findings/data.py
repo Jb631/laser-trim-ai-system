@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from .grading import in_limits
 from ..core.model_stats import _FAILED_PROCESSING
+from ..core.trim_setup import resistance_limits as _track2_resistance_limits
 
 # Status NAMES, as SQLAlchemy stores the enum. The one definition, never re-typed.
 _FAILED_SQL = ", ".join(f"'{name}'" for name in _FAILED_PROCESSING)
@@ -117,6 +118,17 @@ def _arr(js) -> Optional[Tuple]:
     return tuple(v) if isinstance(v, list) else None
 
 
+def _dict(js) -> Optional[Dict[str, Any]]:
+    """Same job as `_arr`, for a JSON OBJECT column (`trim_setup.track2_parameters`)."""
+    if js is None:
+        return None
+    try:
+        v = json.loads(js) if isinstance(js, (str, bytes)) else js
+    except ValueError:
+        return None
+    return v if isinstance(v, dict) else None
+
+
 def _date(v) -> Optional[datetime]:
     if isinstance(v, datetime):
         return v
@@ -146,7 +158,8 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
             "SELECT t.id, a.file_date, a.system, t.untrimmed_errors, t.untrimmed_resistance, "
             "       t.trimmed_resistance, t.error_data, t.upper_limits, t.lower_limits, t.linearity_pass, "
             "       s.initial_resistance_low, s.initial_resistance_high, "
-            "       s.final_resistance_low, s.final_resistance_high, t.track_id, t.position_data "
+            "       s.final_resistance_low, s.final_resistance_high, t.track_id, t.position_data, "
+            "       s.track2_parameters "
             "FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
             "LEFT JOIN trim_setup s ON s.analysis_id = a.id "
             "WHERE a.model = :m AND a.system IN ('A','B','C') "
@@ -169,14 +182,33 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
         verdict = None if r[9] is None else bool(r[9])
         if _is_blank_template(final_errors):
             final_errors, verdict = None, None        # the limits stay: they ARE the table in service
+        track_name = str(r[14]) if r[14] else "default"
+        initial_r_low, initial_r_high, final_r_low, final_r_high = r[10], r[11], r[12], r[13]
+        # A TRK2 track is judged against ITS OWN resistance limits when the
+        # setup row captured Track 2's block (two-track System A files only;
+        # see TrimSetup.track2_parameters) -- per field, so a block that only
+        # gives some of the four still corrects the ones it has. Absent or
+        # incomplete, this is a no-op and r[10:14] (Track 1's/the file's) are
+        # what get used, unchanged from before this feature existed.
+        if track_name == "TRK2":
+            t2 = _track2_resistance_limits(_dict(r[16]))
+            if t2["initial_resistance_low"] is not None:
+                initial_r_low = t2["initial_resistance_low"]
+            if t2["initial_resistance_high"] is not None:
+                initial_r_high = t2["initial_resistance_high"]
+            if t2["final_resistance_low"] is not None:
+                final_r_low = t2["final_resistance_low"]
+            if t2["final_resistance_high"] is not None:
+                final_r_high = t2["final_resistance_high"]
         out.append(TrackView(
             track_id=r[0], file_date=d, system=str(r[2]),
             untrimmed_errors=_arr(r[3]), untrimmed_resistance=r[4], trimmed_resistance=r[5],
             final_errors=final_errors, final_upper=_arr(r[7]), final_lower=_arr(r[8]),
             linearity_pass=verdict,
-            initial_r_low=r[10], initial_r_high=r[11], final_r_low=r[12], final_r_high=r[13],
+            initial_r_low=initial_r_low, initial_r_high=initial_r_high,
+            final_r_low=final_r_low, final_r_high=final_r_high,
             passes=tuple(passes.get(r[0], ())),
-            track_name=str(r[14]) if r[14] else "default", final_positions=_arr(r[15])))
+            track_name=track_name, final_positions=_arr(r[15])))
     return out
 
 

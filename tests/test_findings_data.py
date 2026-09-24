@@ -7,7 +7,8 @@ FIXTURES = sorted(Path("tests/fixtures/trim").glob("*.xls"))
 
 @pytest.fixture
 def fixture_db(tmp_path, monkeypatch):
-    """The four real 8232-1 workbooks through the real pipeline into a throwaway database."""
+    """Every real fixture in tests/fixtures/trim/ (the four 8232-1 workbooks plus the
+    two-track DLTS fixtures) through the real pipeline into a throwaway database."""
     from laser_trim_analyzer.core.processor import Processor
     from laser_trim_analyzer.database import manager as mgr
     import laser_trim_analyzer.database as dbpkg
@@ -20,9 +21,14 @@ def fixture_db(tmp_path, monkeypatch):
     return db
 
 
-def test_the_four_fixtures_are_present():
-    assert [f.name for f in FIXTURES] == ["dlts_8232-1_242.xls", "dlts_8232-1_243.xls",
-                                          "lts_8232-1_193.xls", "lts_8232-1_194.xls"]
+def test_the_expected_fixtures_are_present():
+    """The original four 8232-1 workbooks, plus the two-track DLTS fixtures added for
+    Task 9 (`dlts_8074_18.xls`, `dlts_7553_10B.xls`) -- different models, so they do
+    not change any assertion below that queries model "8232-1" specifically."""
+    assert [f.name for f in FIXTURES] == [
+        "dlts_7553_10B.xls", "dlts_8074_18.xls",
+        "dlts_8232-1_242.xls", "dlts_8232-1_243.xls",
+        "lts_8232-1_193.xls", "lts_8232-1_194.xls"]
 
 
 def test_loader_returns_real_cuts_only(fixture_db):

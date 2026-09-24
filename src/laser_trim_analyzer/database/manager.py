@@ -961,6 +961,32 @@ class DatabaseManager:
                         logger.warning(f"initial_trim_value migration warning: {e}")
                     session.rollback()
 
+            # Migration: track2_parameters gets its own column on trim_setup
+            # (2026-09-24; see TrimSetup.track2_parameters). Metadata-only ADD
+            # COLUMN -- no data is moved, and there is nothing to move: this
+            # column never existed under another name. `trim_setup` stays one
+            # row per analysis (analysis_id is UNIQUE) -- dropping that would
+            # need a table rebuild, the same shape as the sigma-nullable
+            # migration above, for a column most files never populate. No
+            # back-fill either: two-track files that already exist in this
+            # database are re-read on reprocess, not updated here -- the
+            # column is simply NULL on every row until then.
+            try:
+                session.execute(text("SELECT track2_parameters FROM trim_setup LIMIT 1"))
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                logger.info("Running migration: Adding track2_parameters column")
+                try:
+                    session.execute(text(
+                        "ALTER TABLE trim_setup ADD COLUMN track2_parameters JSON"))
+                    session.commit()
+                    logger.info("Migration completed: Added track2_parameters column")
+                except Exception as e:
+                    if ("duplicate column" not in str(e).lower()
+                            and "already exists" not in str(e).lower()):
+                        logger.warning(f"track2_parameters migration warning: {e}")
+                    session.rollback()
+
             # Migration: Add measured_electrical_angle column to track_results
             try:
                 session.execute(text("SELECT measured_electrical_angle FROM track_results LIMIT 1"))
@@ -3840,19 +3866,33 @@ class DatabaseManager:
     def _write_trim_setup(self, session, analysis_id: int, setup) -> None:
         """Replace this analysis's setup row. Idempotent.
 
-        `parameters` always gets the raw `setup` dict, untouched. A promoted
-        column whose SQL type is Integer (`points_ignored_start/end`) gets a
-        Python `int` when the value is a whole number, else `None` -- never a
-        fractional value written into an Integer column. The raw value is not
-        lost: it stays in `parameters` either way.
+        `parameters` always gets the raw `setup` dict, minus `_track2`
+        (below) -- otherwise untouched. A promoted column whose SQL type is
+        Integer (`points_ignored_start/end`) gets a Python `int` when the
+        value is a whole number, else `None` -- never a fractional value
+        written into an Integer column. The raw value is not lost: it stays
+        in `parameters` either way.
+
+        `_track2` (2026-09-24), when `core/parser.py` found one
+        (`core.trim_setup.read_track2_keyvalue`), is Track 2's own block on a
+        two-track System A file -- popped OUT of `setup` before it becomes
+        `parameters`, so `parameters` is exactly what it was before this
+        feature existed, and stored in its own `track2_parameters` column
+        instead. `sql_null()`, not a plain `None` through SafeJSON's
+        encoding, on every single-track file -- same convention
+        `increment_volts`/`initial_trim_value` use on TrimPass.
         """
+        from sqlalchemy import null as sql_null
         from laser_trim_analyzer.core.trim_setup import PROMOTED
         from laser_trim_analyzer.database.models import TrimSetup
         if not setup:
             return
+        setup = dict(setup)
+        track2 = setup.pop("_track2", None)
         session.query(TrimSetup).filter(
             TrimSetup.analysis_id == analysis_id).delete(synchronize_session=False)
-        row = TrimSetup(analysis_id=analysis_id, parameters=setup)
+        row = TrimSetup(analysis_id=analysis_id, parameters=setup,
+                         track2_parameters=track2 if track2 else sql_null())
         for key, column in PROMOTED.items():
             if key in setup and getattr(row, column, None) is None:
                 value = setup[key]
