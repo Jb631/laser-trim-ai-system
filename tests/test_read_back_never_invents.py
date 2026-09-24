@@ -60,6 +60,33 @@ def _error_track() -> TrackData:
     return t
 
 
+def _legacy_error_track() -> TrackData:
+    """The shape on the REAL work database's 94 pre-Task-1 ERROR rows: written
+    before b4f640f changed what _create_failed_track stores, they hold
+    linearity_pass=0 and sigma_pass=0 -- not NULL. Task 1 only changed what gets
+    written GOING FORWARD; it did not backfill the rows already on disk. A track
+    that failed processing is not a measurement and needs no backfill either --
+    _map_db_to_track must return None/None for these regardless of what is
+    stored, the same as for a post-Task-1 row."""
+    return TrackData(
+        track_id="default",
+        status=AnalysisStatus.ERROR,
+        travel_length=0.001,
+        linearity_spec=0.01,
+        sigma_gradient=999.999,
+        sigma_threshold=0.001,
+        sigma_pass=False,
+        optimal_offset=0.0,
+        linearity_error=999.999,
+        linearity_pass=False,
+        linearity_fail_points=0,
+        failure_probability=1.0,
+        risk_category=RiskCategory.UNKNOWN,
+        is_anomaly=True,
+        anomaly_reason="Insufficient data points",
+    )
+
+
 def _graded_track(status, sigma_gradient, sigma_threshold, sigma_pass,
                    linearity_error, linearity_pass, fail_points=0) -> TrackData:
     """A normally-graded track with real measurement arrays behind its verdict."""
@@ -180,6 +207,34 @@ def test_get_historical_data_error_track_has_no_invented_verdict_or_number(db):
     assert passed.sigma_gradient == pytest.approx(0.01)
 
 
+def test_get_analysis_legacy_error_track_verdict_is_never_trusted_as_stored(db):
+    """Review fix, round 1 (2026-09-24): the 94 real pre-Task-1 ERROR rows on the
+    work database stored linearity_pass=0/sigma_pass=0, not NULL. "Left exactly
+    as stored" (the first version of this fix) read those back as an invented
+    FAIL. Controller ruling: a failed-processing track's verdict is None
+    WHATEVER is stored -- no backfill needed, because "a record that failed
+    processing is not a measurement" in the first place."""
+    error_id = db.save_analysis(_wrap(_legacy_error_track(), AnalysisStatus.ERROR, "ERR-LEGACY-1"))
+
+    err = db.get_analysis(error_id).tracks[0]
+    assert err.linearity_pass is None
+    assert err.sigma_pass is None
+    assert err.linearity_error is None
+    assert err.sigma_gradient is None
+    assert err.sigma_threshold is None
+
+
+def test_get_historical_data_legacy_error_track_verdict_is_never_trusted_as_stored(db):
+    db.save_analysis(_wrap(_legacy_error_track(), AnalysisStatus.ERROR, "ERR-LEGACY-2"))
+
+    err = db.get_historical_data(model=MODEL, days_back=3650, limit=10)[0].tracks[0]
+    assert err.linearity_pass is None
+    assert err.sigma_pass is None
+    assert err.linearity_error is None
+    assert err.sigma_gradient is None
+    assert err.sigma_threshold is None
+
+
 # ---------------------------------------------------------------------------
 # gui/pages/analyze.py (V5 Analyze page)
 # ---------------------------------------------------------------------------
@@ -209,6 +264,25 @@ def test_analyze_page_display_metrics_error_track_is_not_graded(db):
     assert "SIGMA ANALYSIS" not in stub.text  # the numeric block is skipped entirely
     assert "✗ FAIL" not in stub.text     # '✗ FAIL'
     assert "✓ PASS" not in stub.text     # '✓ PASS'
+
+
+def test_analyze_page_display_metrics_legacy_error_track_is_not_graded(db):
+    """Same as above, but on the pre-Task-1 shape (stored linearity_pass=0/
+    sigma_pass=0) -- this is the one the review round 1 fix addresses."""
+    from laser_trim_analyzer.gui.pages.analyze import AnalyzePage
+
+    error_id = db.save_analysis(_wrap(_legacy_error_track(), AnalysisStatus.ERROR, "ERR-LEGACY-3"))
+    analysis = db.get_analysis(error_id)
+
+    stub = _MetricsStub()
+    AnalyzePage._display_metrics(stub, analysis)  # must not raise
+
+    assert stub.text is not None
+    assert "999.999" not in stub.text
+    assert "not graded" in stub.text.lower()
+    assert "SIGMA ANALYSIS" not in stub.text
+    assert "✗ FAIL" not in stub.text
+    assert "✓ PASS" not in stub.text
 
 
 def test_analyze_page_display_metrics_graded_fail_track_still_shows_numbers(db):
@@ -294,6 +368,26 @@ def test_analyze_page_plot_status_display_error_track_is_not_graded():
     assert "STATUS: NOT GRADED" in joined.upper()
 
 
+def test_analyze_page_plot_status_display_legacy_error_track_is_not_graded(db):
+    """Same as above, but a legacy row whose sigma_pass/linearity_pass were
+    stored as False/0, not NULL -- this must still render NOT GRADED, never
+    FAIL, since a failed-processing track's verdict is never trusted as stored."""
+    from laser_trim_analyzer.gui.pages.analyze import AnalyzePage
+    from matplotlib.figure import Figure
+
+    error_id = db.save_analysis(_wrap(_legacy_error_track(), AnalysisStatus.ERROR, "ERR-LEGACY-4"))
+    track = db.get_analysis(error_id).tracks[0]
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    AnalyzePage._plot_status_display(None, ax, track, result=None)  # must not raise
+
+    joined = "\n".join(t.get_text() for t in ax.texts)
+    assert "STATUS: FAIL" not in joined
+    assert "STATUS: PASS" not in joined
+    assert "STATUS: NOT GRADED" in joined.upper()
+
+
 def test_analyze_page_plot_status_display_graded_tracks_still_show_pass_and_fail():
     """Regression guard for the two branches either side of the new one."""
     from laser_trim_analyzer.gui.pages.analyze import AnalyzePage
@@ -354,6 +448,23 @@ def test_export_page_plot_status_display_error_track_is_not_graded():
     assert "STATUS: NOT GRADED" in joined.upper()
 
 
+def test_export_page_plot_status_display_legacy_error_track_is_not_graded(db):
+    from laser_trim_analyzer.gui.pages.export import ExportPage
+    from matplotlib.figure import Figure
+
+    error_id = db.save_analysis(_wrap(_legacy_error_track(), AnalysisStatus.ERROR, "ERR-LEGACY-5"))
+    track = db.get_analysis(error_id).tracks[0]
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    ExportPage._plot_status_display(None, ax, track, result=None)  # must not raise
+
+    joined = "\n".join(t.get_text() for t in ax.texts)
+    assert "STATUS: FAIL" not in joined
+    assert "STATUS: PASS" not in joined
+    assert "STATUS: NOT GRADED" in joined.upper()
+
+
 def test_export_page_plot_status_display_graded_tracks_still_show_pass_and_fail():
     from laser_trim_analyzer.gui.pages.export import ExportPage
     from matplotlib.figure import Figure
@@ -383,6 +494,26 @@ def test_excel_export_single_result_error_track_is_not_graded(db, tmp_path):
     analysis = db.get_analysis(error_id)
 
     out = tmp_path / "error_track.xlsx"
+    export_single_result(analysis, out)  # must not raise
+
+    ws = openpyxl.load_workbook(out)["Track Details"]
+    values = [c.value for row in ws.iter_rows() for c in row if c.value is not None]
+
+    assert not any(v == 999.999 for v in values if isinstance(v, (int, float)))
+    assert not any(isinstance(v, str) and v.strip().upper() == "NO" for v in values)
+    assert any(isinstance(v, str) and "not graded" in v.lower() for v in values)
+
+
+def test_excel_export_single_result_legacy_error_track_is_not_graded(db, tmp_path):
+    """Same as above, but the pre-Task-1 stored shape (linearity_pass=0,
+    sigma_pass=0) -- must render the same "not graded" note, never "NO"."""
+    from laser_trim_analyzer.export.excel import export_single_result
+    import openpyxl
+
+    error_id = db.save_analysis(_wrap(_legacy_error_track(), AnalysisStatus.ERROR, "ERR-LEGACY-6"))
+    analysis = db.get_analysis(error_id)
+
+    out = tmp_path / "legacy_error_track.xlsx"
     export_single_result(analysis, out)  # must not raise
 
     ws = openpyxl.load_workbook(out)["Track Details"]

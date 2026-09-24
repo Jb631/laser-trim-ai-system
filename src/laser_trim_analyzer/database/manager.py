@@ -3880,9 +3880,15 @@ class DatabaseManager:
         # must never be stored"). Its numeric columns may still hold the
         # analyzer's 999.999 saturation marker (_create_failed_track) rather
         # than a real NULL -- that marker is not a reading either, so it is
-        # dropped here too, and its verdict columns (already NULL since Task
-        # 1's fix to _create_failed_track / enforce_measurement_backed_verdict)
-        # are never defaulted to False or recomputed from the marker.
+        # dropped here too. Its verdict columns are forced to None WHATEVER is
+        # stored, not just when the stored value happens to be NULL: Task 1
+        # (b4f640f) only changed what _create_failed_track writes GOING
+        # FORWARD, so the real work database still carries 94 pre-Task-1 ERROR
+        # rows with linearity_pass=0/sigma_pass=0 on disk. "A record that
+        # failed processing is not a measurement" needs no backfill -- the
+        # status alone is enough to say the verdict was never earned, so it is
+        # never trusted as stored, and never recomputed from a marker that was
+        # never a reading either (review round 1, 2026-09-24).
         is_untrimmed = status == AnalysisStatus.UNTRIMMED
         is_failed_processing = failed_processing(status)
         sigma_gradient = db_track.sigma_gradient
@@ -3892,8 +3898,7 @@ class DatabaseManager:
         if is_failed_processing:
             sigma_gradient = None
             sigma_threshold = None
-            # sigma_pass is left exactly as stored (None, per Task 1) -- never
-            # recomputed from a marker that was never a reading.
+            sigma_pass = None
         elif not is_untrimmed:
             if sigma_gradient is None:
                 logger.warning(f"Track {db_track.track_id} has None sigma_gradient, using 0.0")
@@ -3914,15 +3919,20 @@ class DatabaseManager:
             linearity_pass_val = None
             optimal_offset_val = None  # No trim ran → no offset was applied.
         else:
-            # NULL verdict stays None -- never invent a FAIL (previously
-            # `... if ... is not None else False`, which every `is not None`
-            # consumer then counted as an actual linearity/sigma rejection).
-            linearity_pass_val = db_track.linearity_pass
             optimal_offset_val = db_track.optimal_offset or 0.0
             if is_failed_processing:
-                # Same 999.999-is-not-a-reading rule as sigma_gradient above.
+                # Same "never trust a failed-processing verdict, whatever is
+                # stored" rule as sigma_pass above -- covers both a NULL
+                # (post-Task-1) and a stored False/0 (the real work database's
+                # pre-Task-1 rows) alike.
                 linearity_error_val = None
+                linearity_pass_val = None
             else:
+                # NULL verdict stays None -- never invent a FAIL (previously
+                # `... if ... is not None else False`, which every
+                # `is not None` consumer then counted as an actual linearity
+                # rejection).
+                linearity_pass_val = db_track.linearity_pass
                 linearity_error_val = (
                     None if db_track.final_linearity_error_shifted is None
                     else abs(db_track.final_linearity_error_shifted)
