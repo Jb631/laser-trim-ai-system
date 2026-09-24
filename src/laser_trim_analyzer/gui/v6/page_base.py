@@ -59,12 +59,19 @@ class PageBase(ctk.CTkFrame):
                          anchor="w", justify="left", wraplength=1000).pack(fill="x")
 
     def set_caption(self, text: str) -> None:
-        """One line under the page title -- a page's headline in words. '' hides it."""
+        """One line under the page title -- a page's headline in words. '' hides it.
+
+        Keyed on the geometry manager's own state (winfo_manager() == "pack"), not
+        winfo_ismapped(): ismapped is false whenever the page itself is merely hidden (not the
+        PageContainer's current tab) -- not only under a withdrawn test root -- so a caption
+        cleared on a hidden page would have kept a blank line packed, and one set on a hidden
+        page would have re-packed an already-packed label every call."""
         self._caption.configure(text=text or "")
-        if text and not self._caption.winfo_ismapped():
+        packed = self._caption.winfo_manager() == "pack"
+        if text and not packed:
             self._caption.pack(side="top", fill="x", padx=self.theme.SPACE_LG,
                                before=self._content, pady=(0, self.theme.SPACE_SM))
-        elif not text and self._caption.winfo_ismapped():
+        elif not text and packed:
             self._caption.pack_forget()
 
     # ---- thread-safe UI update (foundations §2.4, reworked 2026-07-06) ----

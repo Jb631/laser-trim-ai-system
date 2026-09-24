@@ -92,7 +92,10 @@ def test_no_v6_heading_is_shouting():
     allowed = {"PASS", "FAIL", "UNTRIMMED", "NOT GRADED", "SIGMA WATCH"}
     shouting = []
     for p in root.rglob("*.py"):
-        for m in re.finditer(r'"([A-Z][A-Z \',&/—-]{8,})"', p.read_text()):
+        # Widened 2026-09-23 (fix round 1) to include digits and parentheses -- the original
+        # class let "CUTS THE RECIPE DID NOT ASK FOR (LAST YEAR)" (findings_tab.py) slip past,
+        # since the '(' broke the match before it ever reached the closing quote.
+        for m in re.finditer(r'"([A-Z][A-Z0-9 \',&/()—-]{8,})"', p.read_text()):
             if m.group(1).strip() not in allowed:
                 shouting.append(f"{p.name}: {m.group(1)}")
     assert not shouting, shouting

@@ -229,7 +229,13 @@ def test_page_base_lifecycle_hooks(tk_root):
 
 
 def test_page_base_set_caption_shows_and_clears(tk_root):
-    """set_caption packs a caption line under the title bar on text, and clears it on ""."""
+    """set_caption packs a caption line under the title bar on text, and clears it on "".
+
+    winfo_manager(), NOT winfo_ismapped(): under the withdrawn test root nothing is ever
+    mapped, so an ismapped assertion would pass vacuously (test_focus_list_zone.py) -- and in
+    the real app ismapped is ALSO false whenever the page itself is merely hidden (not the
+    PageContainer's current tab), which is not what set_caption should key off either.
+    """
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
@@ -238,14 +244,22 @@ def test_page_base_set_caption_shows_and_clears(tk_root):
         def build_content(self, parent): pass
 
     p = _P(tk_root, theme=ThemeManager())
-    # winfo_manager(), NOT winfo_ismapped(): under the withdrawn test root nothing is
-    # ever mapped, so an ismapped assertion would pass vacuously (test_focus_list_zone.py).
     assert p._caption.winfo_manager() == ""
+
     p.set_caption("Two models need a look this week")
     assert p._caption.cget("text") == "Two models need a look this week"
     assert p._caption.winfo_manager() == "pack"
+
     p.set_caption("")
     assert p._caption.cget("text") == ""
+    assert p._caption.winfo_manager() == ""
+
+    p.set_caption("Back again")
+    assert p._caption.cget("text") == "Back again"
+    assert p._caption.winfo_manager() == "pack"
+    slaves = p.pack_slaves()
+    assert slaves.count(p._caption) == 1                            # packed once, not duplicated
+    assert slaves.index(p._caption) < slaves.index(p._content)      # before the content frame
 
 
 def test_page_container_add_get_show(tk_root):

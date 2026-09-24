@@ -71,7 +71,7 @@ class FindingsTab(ctk.CTkFrame):
                            f"{_pct(tab.get('trim_pass_pct'))} left the laser inside limits", muted=True)
         burden = facts.get("pass_burden") or {}
         if burden:
-            self._heading("CUTS THE RECIPE DID NOT ASK FOR (LAST YEAR)")
+            self._heading("Cuts the recipe did not ask for (last year)")
             for group, g in sorted(burden.items()):
                 self._line(f"{group} · {_num(g.get('n'))} tracks · the recipe's normal is "
                            f"{_num(g.get('normal_cuts'))} cut(s) · "
