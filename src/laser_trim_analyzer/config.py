@@ -12,13 +12,30 @@ DESIGN DECISION: Self-contained deployment
 
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 import yaml
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _is_foreign_absolute_db_path(raw: str) -> bool:
+    """True when `raw` is an absolute path written by the OTHER operating
+    system's path family.
+
+    `data/` travels between James's Windows work laptop and this Mac, config
+    file included. `Config.save()` used to write the absolute path it
+    resolved at run time (e.g. `C:\\dev\\laser-trim-ai-system\\data\\analysis.db`);
+    read on the Mac, that string is a RELATIVE POSIX filename, so the app
+    opened (and created) a junk database under the repo root instead of the
+    real one (verified 2026-09-23). A same-OS absolute path is left alone --
+    only a path from the other family is foreign here.
+    """
+    if os.name == "nt":
+        return raw.startswith("/")
+    return bool(PureWindowsPath(raw).drive)
 
 
 def get_app_directory() -> Path:
@@ -268,7 +285,20 @@ class Config:
                     for key, value in data["database"].items():
                         if hasattr(config.database, key):
                             if key == "path":
-                                value = Path(os.path.expandvars(str(value)))
+                                raw_path = os.path.expandvars(str(value))
+                                if _is_foreign_absolute_db_path(raw_path):
+                                    logger.warning(
+                                        "database.path in %s is %r -- an absolute "
+                                        "path from another operating system, "
+                                        "carried here inside data/. Ignoring it "
+                                        "and using the default (%s) instead.",
+                                        config_path, raw_path, config.database.path,
+                                    )
+                                    continue
+                                path_value = Path(raw_path)
+                                if not path_value.is_absolute():
+                                    path_value = get_app_directory() / path_value
+                                value = path_value
                             setattr(config.database, key, value)
 
                 if "processing" in data:
@@ -331,9 +361,22 @@ class Config:
 
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # A path inside the app folder is written RELATIVE, forward-slashed,
+        # so it means the same thing after data/ is carried to the other OS
+        # (an absolute path resolved here, e.g. `C:\dev\...`, is meaningless
+        # -- or worse, silently valid as a junk relative name -- there). A
+        # path the user deliberately keeps outside the app folder is written
+        # as-is; they set it again on the other machine.
+        db_path = Path(self.database.path)
+        try:
+            db_path_str = db_path.resolve().relative_to(
+                get_app_directory().resolve()).as_posix()
+        except ValueError:
+            db_path_str = str(db_path)
+
         data = {
             "database": {
-                "path": str(self.database.path),
+                "path": db_path_str,
                 "echo": self.database.echo,
             },
             "processing": {

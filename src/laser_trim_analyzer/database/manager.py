@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
 from contextlib import contextmanager
 
 from sqlalchemy import (create_engine, exists, func, and_, or_, desc, text, case, select,
-                        cast, Text)
+                        cast, Text, Integer)
 from sqlalchemy.orm import sessionmaker, Session, joinedload, subqueryload
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -74,6 +74,24 @@ def _as_float(v):
     except (TypeError, ValueError):
         return None
 
+
+def _as_int_or_none(v):
+    """Int when `_as_float(v)` is a whole number, else None.
+
+    For Integer columns fed from parameter-sheet values (`_write_trim_setup`):
+    `7.0` becomes `7`; `7.5` becomes `None` rather than truncating or writing
+    a fractional value into an Integer column. Never loses the raw value --
+    the caller stores it unmodified in `parameters` regardless.
+    """
+    f = _as_float(v)
+    return int(f) if f is not None and f.is_integer() else None
+
+
+# The parser's sentinel for "could not determine a model name" (core/parser.py).
+# Never a real model -- `get_known_models()` must not report it as one (381
+# analyses carry it on the rebuilt work DB, from test files such as
+# "..._spike_..." and "BLUE TEST EVERY HALF DEGREE...").
+UNKNOWN_MODEL_SENTINEL = "Unknown"
 
 # app_meta key: how many "Unknown" model rows the re-parse migration last
 # looked at (post-fix). Its whole job is to keep that migration from redoing
@@ -497,9 +515,10 @@ class DatabaseManager:
 
     def get_known_models(self) -> set:
         """Every model name the app has ever seen: DISTINCT model from analysis_results
-        (trim data) union'd with Final Test results, NULLs dropped. Read-only. Used by
-        the Settings backlog upload to decide which backlog Item IDs are models the
-        app knows (see core/backlog.py / gui/v6/sections/backlog.py)."""
+        (trim data) union'd with Final Test results, NULLs and the parser's "Unknown"
+        sentinel dropped. Read-only. Used by the Settings backlog upload to decide
+        which backlog Item IDs are models the app knows (see core/backlog.py /
+        gui/v6/sections/backlog.py)."""
         from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
         with self.session() as session:
             trim = (session.query(DBAnalysisResult.model)
@@ -508,7 +527,8 @@ class DatabaseManager:
             ft = (session.query(DBFinalTestResult.model)
                   .filter(DBFinalTestResult.model.isnot(None))
                   .distinct().all())
-        return {m[0] for m in trim if m[0]} | {m[0] for m in ft if m[0]}
+        return ({m[0] for m in trim if m[0]} | {m[0] for m in ft if m[0]}) \
+            - {UNKNOWN_MODEL_SENTINEL}
 
     @staticmethod
     def _meta_get(session, key: str) -> Optional[str]:
@@ -3656,7 +3676,14 @@ class DatabaseManager:
             ))
 
     def _write_trim_setup(self, session, analysis_id: int, setup) -> None:
-        """Replace this analysis's setup row. Idempotent."""
+        """Replace this analysis's setup row. Idempotent.
+
+        `parameters` always gets the raw `setup` dict, untouched. A promoted
+        column whose SQL type is Integer (`points_ignored_start/end`) gets a
+        Python `int` when the value is a whole number, else `None` -- never a
+        fractional value written into an Integer column. The raw value is not
+        lost: it stays in `parameters` either way.
+        """
         from laser_trim_analyzer.core.trim_setup import PROMOTED
         from laser_trim_analyzer.database.models import TrimSetup
         if not setup:
@@ -3667,8 +3694,12 @@ class DatabaseManager:
         for key, column in PROMOTED.items():
             if key in setup and getattr(row, column, None) is None:
                 value = setup[key]
-                setattr(row, column, value if column == "indexing_method"
-                        else _as_float(value))
+                if column == "indexing_method":
+                    setattr(row, column, value)
+                elif isinstance(TrimSetup.__table__.columns[column].type, Integer):
+                    setattr(row, column, _as_int_or_none(value))
+                else:
+                    setattr(row, column, _as_float(value))
         session.add(row)
 
     @staticmethod
