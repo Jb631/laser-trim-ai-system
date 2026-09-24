@@ -186,19 +186,23 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
         initial_r_low, initial_r_high, final_r_low, final_r_high = r[10], r[11], r[12], r[13]
         # A TRK2 track is judged against ITS OWN resistance limits when the
         # setup row captured Track 2's block (two-track System A files only;
-        # see TrimSetup.track2_parameters) -- per field, so a block that only
-        # gives some of the four still corrects the ones it has. Absent or
-        # incomplete, this is a no-op and r[10:14] (Track 1's/the file's) are
-        # what get used, unchanged from before this feature existed.
+        # see TrimSetup.track2_parameters) -- as PAIRS: the initial window is
+        # replaced only when the block gives BOTH its limits, and the same for
+        # the final window. A block with one side of a window leaves that window
+        # exactly as the file has it: overriding per field paired Track 2's low
+        # limit with Track 1's high one (2026-09-24 review), a window neither
+        # track was graded against, and one side alone could even invert it
+        # (low above high). Absent or incomplete, r[10:14] (Track 1's/the
+        # file's) are used, unchanged from before this feature existed.
         if track_name == "TRK2":
             t2 = _track2_resistance_limits(_dict(r[16]))
-            if t2["initial_resistance_low"] is not None:
+            if (t2["initial_resistance_low"] is not None
+                    and t2["initial_resistance_high"] is not None):
                 initial_r_low = t2["initial_resistance_low"]
-            if t2["initial_resistance_high"] is not None:
                 initial_r_high = t2["initial_resistance_high"]
-            if t2["final_resistance_low"] is not None:
+            if (t2["final_resistance_low"] is not None
+                    and t2["final_resistance_high"] is not None):
                 final_r_low = t2["final_resistance_low"]
-            if t2["final_resistance_high"] is not None:
                 final_r_high = t2["final_resistance_high"]
         out.append(TrackView(
             track_id=r[0], file_date=d, system=str(r[2]),

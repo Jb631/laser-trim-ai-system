@@ -245,6 +245,63 @@ def test_load_model_tracks_gives_trk1_and_trk2_their_own_limits(tmp_path, monkey
     assert (tracks["TRK2"].final_r_low, tracks["TRK2"].final_r_high) == (12350.0, 13650.0)
 
 
+def _edit_track2_block(db, filename, edit):
+    """Rewrite one analysis's stored Track 2 block in place -- `edit(block)` mutates it."""
+    with db.session() as s:
+        sid, raw = s.execute(sa.text(
+            "SELECT s.id, s.track2_parameters FROM trim_setup s "
+            "JOIN analysis_results a ON a.id = s.analysis_id WHERE a.filename = :f"),
+            {"f": filename}).one()
+        block = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        edit(block)
+        s.execute(sa.text("UPDATE trim_setup SET track2_parameters = :b WHERE id = :i"),
+                  {"b": json.dumps(block), "i": sid})
+
+
+def _drop_and_set(drop, **values):
+    def edit(block):
+        block.pop(drop)
+        block.update(values)
+    return edit
+
+
+# Track 1's (the file's) pairs on this fixture: initial 10350/11650, final 12350/13650.
+# Track 2's own block: initial 4000/6000, final 12350/13650 -- so the final cases give the
+# block invented, DIFFERENT finals, or an override could not be told from no override.
+@pytest.mark.skipif(not DLTS_BOTH_TRACKS.exists(), reason="two-track DLTS fixture")
+@pytest.mark.parametrize("edit, want_initial, want_final", [
+    # Only the LOW initial limit: the old per-field override paired Track 2's 4000 with
+    # Track 1's 11650 -- a window neither track was ever graded against.
+    (_drop_and_set("initial_resistance_upper_limit",
+                   final_resistance_lower_limit=12000, final_resistance_upper_limit=14000),
+     (10350.0, 11650.0), (12000.0, 14000.0)),
+    # Only the HIGH initial limit: per field, Track 1's 10350 over Track 2's 6000 -- an
+    # INVERTED window, low above high.
+    (_drop_and_set("initial_resistance_lower_limit",
+                   final_resistance_lower_limit=12000, final_resistance_upper_limit=14000),
+     (10350.0, 11650.0), (12000.0, 14000.0)),
+    # The same two cases on the FINAL pair, the initial pair complete (so still Track 2's).
+    (_drop_and_set("final_resistance_upper_limit", final_resistance_lower_limit=7000),
+     (4000.0, 6000.0), (12350.0, 13650.0)),
+    (_drop_and_set("final_resistance_lower_limit", final_resistance_upper_limit=9000),
+     (4000.0, 6000.0), (12350.0, 13650.0)),
+], ids=["initial-low-only", "initial-high-only", "final-low-only", "final-high-only"])
+def test_a_half_pair_in_the_track2_block_keeps_the_files_pair(
+        tmp_path, monkeypatch, edit, want_initial, want_final):
+    """Track 2's limits replace the file's as PAIRS: a block that gives only one side of
+    a window leaves that window exactly as the file has it, never half Track 2's and
+    half Track 1's; a complete pair beside it is still Track 2's own."""
+    from laser_trim_analyzer.findings.data import load_model_tracks
+
+    db = _process_into(tmp_path, monkeypatch, DLTS_BOTH_TRACKS)
+    _edit_track2_block(db, DLTS_BOTH_TRACKS.name, edit)
+    tracks = {t.track_name: t for t in load_model_tracks(db, "8074")}
+    trk2 = tracks["TRK2"]
+    assert (trk2.initial_r_low, trk2.initial_r_high) == want_initial
+    assert (trk2.final_r_low, trk2.final_r_high) == want_final
+    assert (tracks["TRK1"].initial_r_low, tracks["TRK1"].initial_r_high) == (10350.0, 11650.0)
+
+
 @pytest.mark.skipif(not DLTS_TRK2_ONLY.exists(), reason="TRK2-only DLTS fixture")
 def test_a_file_whose_only_track_is_trk2_still_gets_its_own_block(tmp_path, monkeypatch):
     """Track 1 and Track 2 are cut in SEPARATE files for this shop number (10A/10B);
