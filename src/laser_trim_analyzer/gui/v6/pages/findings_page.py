@@ -107,8 +107,10 @@ class FindingsPage(PageBase):
             self._view.pack_forget()
             return
         # Only reached with real rows to show -- no wasted pack-then-immediately-forget
-        # cycle on the empty/failed paths above (review, 2026-09-24).
-        if not self._view.winfo_ismapped():
+        # cycle on the empty/failed paths above (review, 2026-09-24). winfo_manager(), not
+        # winfo_ismapped(): "is it laid out" is the question, and a window that is minimised
+        # (or withdrawn, as in the tests) has nothing mapped whether the view is packed or not.
+        if self._view.winfo_manager() == "":
             self._view.pack(fill="x")
         self.set_caption(P.caption(P.arrange(rows), rows))
         self._view.set_findings(rows)

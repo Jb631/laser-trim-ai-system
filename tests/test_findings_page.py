@@ -71,7 +71,11 @@ def test_an_empty_cache_says_so(make_app):
     page = app.page_container.get_page("findings")
     page.reload_now()
     assert page._view.row_widgets == {}
-    assert not page._view.winfo_ismapped()
+    # winfo_manager(), not winfo_ismapped(): make_app WITHDRAWS the window, so nothing in it is ever
+    # mapped and "not mapped" was true whether or not the view was hidden (final review: with
+    # pack_forget made a no-op both tests still passed -- and the page then showed four empty groups
+    # saying "Nothing here yet" under the error banner, a failure drawn as a result).
+    assert page._view.winfo_manager() == ""
     assert any("No findings yet" in x for x in _labels(page._notices))
     assert page._caption.cget("text") == ""
 
@@ -87,7 +91,28 @@ def test_a_load_failure_is_an_error_not_an_empty_list(make_app, monkeypatch):
     text = " | ".join(_labels(page._notices))
     assert "could not be loaded" in text and "RuntimeError: database is locked" in text
     assert "No findings yet" not in text
-    assert not page._view.winfo_ismapped()
+    assert page._view.winfo_manager() == ""          # hidden -- see test_an_empty_cache_says_so
+
+
+def test_a_good_load_after_a_failed_one_shows_the_list_again(make_app, monkeypatch):
+    """The failed load hid the view; the next good load must put it back (findings_page._apply
+    re-packs it only when it is not laid out -- winfo_manager(), which a withdrawn test window
+    cannot fake the way it fakes "not mapped")."""
+    app = make_app()
+    app.db.replace_process_findings("BIG", {"tracks": 1, "errors": {}}, [_finding("BIG", "the big one", 500.0)])
+    page = app.page_container.get_page("findings")
+    real = app.db.get_process_findings
+
+    def boom():
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(app.db, "get_process_findings", boom)
+    page.reload_now()
+    assert page._view.winfo_manager() == ""
+    monkeypatch.setattr(app.db, "get_process_findings", real)
+    page.reload_now()
+    assert page._view.winfo_manager() == "pack"
+    assert len(page._view.row_widgets) == 1
+    assert not any("could not be loaded" in x for x in _labels(page._notices))
 
 
 def test_models_whose_analyzers_failed_are_named_under_the_list(make_app):
