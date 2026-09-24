@@ -2453,19 +2453,32 @@ def check_initial_trim_value_fixtures() -> None:
 
 
 def check_initial_trim_value_on_database(raw) -> None:
-    """On the copy: every laser-2/3 Trim pass whose `recipe` blob already carries a real
-    `initial_trim_value` reads that SAME value back through `trim_passes.initial_trim_values`.
+    """On the copy: every laser-2/3 Trim pass carries its initial trim value capture -- in
+    its own `trim_passes.initial_trim_value` column (rows written from 2026-09-24 on) OR
+    inside its `recipe` blob (the ~83,000 rows written before; the migration adds the
+    column but writes no data into it, by design -- no start-up backfill of that many
+    rows) -- and `trim_passes.initial_trim_values` reads the same value back from each.
 
-    An unmigrated copy's rows are ALL "old rows" -- the migration adds the column but writes
-    no data into it, by design (no start-up backfill of ~83,000 rows) -- so this exercises
-    the recipe-fallback path at full production scale, not just a synthetic test row. FAIL
-    only when the helper LOSES a value its row's recipe already had -- never on the small
-    residual of passes whose sheet genuinely had nothing there (measured on the research
-    corpus at 0.1-0.3% of laser-2/3 passes). Asserting 0 there would fail on real data for a
-    reason that is not a bug -- exactly the trap this file's own docstring warns against.
+    Three rules, each held only where it applies:
+      * coverage, on EVERY row: the capture is in the column or in `recipe`. A laser-2/3
+        pass always yields it -- a position-aligned list, all None on the rare pass whose
+        sheet genuinely had nothing there (224 of 83,488 on the work database, 0.3%) --
+        so a row with neither lost it. The all-None rows are captured, just empty, and
+        are counted, never failed: asserting a real number there would fail on real data
+        for a reason that is not a bug.
+      * recipe agreement, on rows whose column is NULL only: the helper never loses a
+        value the recipe had, and reads no phantom one. A row whose value lives in the
+        column (written by today's code) has nothing in `recipe` to agree with --
+        holding it there made the first ingest of a laser-2/3 file after this pull read
+        FAIL "helper=7 recipe=5" (2026-09-24 final review).
+      * column read-back, on rows that have one: the helper returns that row's own value.
+    A rule with no rows to hold is not run -- a PASS over zero rows proves nothing; the
+    coverage line carries every count.
 
-    Falsify before trusting (2026-09-24): make the helper ignore `recipe` -- every row with
-    a real recipe value but no column value reads back None, and `lost` stops being 0.
+    Falsify before trusting (2026-09-24): make the helper ignore `recipe` -- every
+    column-less row with a real recipe value reads back None and `lost` stops being 0.
+    Make it ignore the column -- the read-back check FAILs on any new row. Stop the
+    writer storing the capture anywhere -- the coverage check FAILs ("neither").
     """
     import json as _json
     from laser_trim_analyzer.core.trim_passes import initial_trim_values
@@ -2479,24 +2492,48 @@ def check_initial_trim_value_on_database(raw) -> None:
     if total == 0:
         warn("initial trim value: no laser-2/3 Trim passes on this copy to check")
         return
-    recipe_real = helper_real = lost = 0
+
+    def _real(values):
+        return bool(values) and any(v is not None for v in values)
+
+    col_rows = col_real = col_misread = neither = 0
+    recipe_rows = recipe_real = helper_real = lost = 0
     for raw_value, recipe_raw in rows:
         recipe = _json.loads(recipe_raw) if recipe_raw else None
         row_value = _json.loads(raw_value) if raw_value is not None else None
-        recipe_values = recipe.get("initial_trim_value") if isinstance(recipe, dict) else None
-        recipe_has_real = bool(recipe_values) and any(v is not None for v in recipe_values)
         helper_values = initial_trim_values(row_value, recipe)
-        helper_has_real = bool(helper_values) and any(v is not None for v in helper_values)
+        if row_value is not None:               # its own column holds the capture
+            col_rows += 1
+            col_real += int(_real(row_value))
+            col_misread += int(helper_values != row_value)
+            continue
+        if not (isinstance(recipe, dict) and "initial_trim_value" in recipe):
+            neither += 1                        # captured nowhere: lost
+            continue
+        recipe_rows += 1
+        recipe_has_real = _real(recipe["initial_trim_value"])
+        helper_has_real = _real(helper_values)
         recipe_real += int(recipe_has_real)
         helper_real += int(helper_has_real)
         lost += int(recipe_has_real and not helper_has_real)
-    check("initial trim value: the helper never loses a value its row's recipe already had "
-          f"({recipe_real} of {total} laser-2/3 Trim passes on this copy carry a real "
-          "value in recipe)",
-          lost == 0, f"lost={lost}")
-    check("initial trim value: the helper's coverage matches the recipe's exactly "
-          "(no under-reading, no phantom reads)",
-          helper_real == recipe_real, f"helper={helper_real} recipe={recipe_real}")
+    check("initial trim value: every laser-2/3 Trim pass carries its capture, in its own "
+          "column or in recipe",
+          neither == 0,
+          f"{total} passes: {col_rows} in the column ({col_real} with a real value), "
+          f"{recipe_rows} in recipe ({recipe_real} with a real value), "
+          f"{col_rows - col_real + recipe_rows - recipe_real} whose sheet had none, "
+          f"{neither} in neither place")
+    if recipe_rows:
+        check("initial trim value: the helper never loses a value its row's recipe already "
+              f"had ({recipe_real} of the {recipe_rows} passes with no column value carry "
+              "a real one in recipe)",
+              lost == 0, f"lost={lost}")
+        check("initial trim value: on passes with no column value, the helper's coverage "
+              "matches the recipe's exactly (no under-reading, no phantom reads)",
+              helper_real == recipe_real, f"helper={helper_real} recipe={recipe_real}")
+    if col_rows:
+        check("initial trim value: the helper reads back each column value exactly",
+              col_misread == 0, f"misread={col_misread} of {col_rows}")
 
 
 def check_track2_setup_fixtures() -> None:
