@@ -8,10 +8,10 @@ Last updated: 2026-09-24
 
 ## ▶ Where things stand (Claude, 2026-09-24)
 
-**On `main`:** everything through `498940f` (pushed the morning of 2026-09-24) — facelift step 1
-and the first two parse fixes. **Next push, today, after its final review:** the IBM Plex fonts and
-the rest of the parse fixes (section G). At work: `git pull`, then the 2026-09-24 section of
-`BRING_TO_WORK.md`. Nothing there needs running except one optional step (the TrimVolts back-fill).
+**On `main`:** everything through `422da7a` (pushed the afternoon of 2026-09-24) — facelift step 1
+with the IBM Plex fonts, and every parse fix (section G), after a whole-branch review and its fix
+round. At work: `git pull`, then the 2026-09-24 section of `BRING_TO_WORK.md`. Nothing there needs
+running except one optional step (the TrimVolts back-fill). **Being built now:** facelift step 2.
 
 **The rebuild is done** (B2: 168,501 files in 21.8 hours, finished 2026-09-22) and every number
 that rested on a final-test verdict has been re-derived on it (B3).
@@ -23,8 +23,8 @@ that rested on a final-test verdict has been re-derived on it (B3).
 | **C. Review and refactor** | the review is done (C1) | C2 refactors — Claude |
 | **D. Checks at the shop** | D1, D3, D4, D5, D6 open | James |
 | **E. Backlog upload** | shipped (E1) | — |
-| **F. Facelift** | step 1 shipped; step 2 (the other six pages) designed and planned | Claude, next |
-| **G. Parse fixes** | all built and reviewed | the final review, then the push — Claude |
+| **F. Facelift** | step 1 shipped; step 2 (the other six pages) being built | Claude, now |
+| **G. Parse fixes** | all built, reviewed and pushed (`422da7a`) | — (the back-fill is yours, optional) |
 
 ### One thing of mine to own (2026-09-24): the home database was written to
 
