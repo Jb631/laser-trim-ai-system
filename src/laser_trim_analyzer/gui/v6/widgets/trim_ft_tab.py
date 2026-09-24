@@ -1,4 +1,4 @@
-"""Model page — 'Trim vs Final Test' tab.
+"""Model page — 'Trim vs final test' tab.
 
 Test-pass vs trim-pass, escapes (passed trim but failed final test — a bad unit that got
 through), overkills (failed trim but passed final test — unnecessarily rejected), agreement,

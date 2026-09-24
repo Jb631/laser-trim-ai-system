@@ -345,7 +345,13 @@ def compute_trim_necessity(db, model: str,
         GROUP BY a.id""")
     params = {"model": model}
     if cutoff is not None:
-        params["cutoff"] = cutoff
+        # Bound as a string, not a raw datetime: text() does not apply SQLAlchemy's own
+        # DATETIME bind_processor (that only fires for ORM-typed columns), so a bare datetime
+        # falls back to sqlite3's own adapter registry -- deprecated since 3.12. file_date is
+        # stored in exactly this format ("%Y-%m-%d %H:%M:%S.%f", fixed-width and zero-padded,
+        # SQLAlchemy's sqlite DATETIME default), so a plain string comparison sorts
+        # identically to a chronological one (same fix as findings/engine.py's _fleet_latest).
+        params["cutoff"] = f"{cutoff:%Y-%m-%d %H:%M:%S.%f}"
     with db.session() as s:
         rows = s.execute(sql, params).fetchall()
 

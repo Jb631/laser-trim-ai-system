@@ -11,6 +11,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.core.models import laser_label
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
 
 
@@ -69,7 +70,7 @@ class FindingsTab(ctk.CTkFrame):
                        "that is a result, not a gap.", muted=True)
         tables = facts.get("limit_tables") or []
         if len(tables) > 1:             # one table is the unremarkable case; two is something to look at
-            self._heading("Limit tables this model has been graded against")
+            self._group_heading("Limit tables this model has been graded against", len(tables))
             for tab in tables:
                 self._line(f"{laser_label(tab.get('system'))} · {_txt(tab.get('track'))} · "
                            f"{_num(tab.get('graded'))} graded points of {_num(tab.get('rows'))} rows · "
@@ -77,7 +78,7 @@ class FindingsTab(ctk.CTkFrame):
                            f"{_pct(tab.get('trim_pass_pct'))} left the laser inside limits", muted=True)
         burden = facts.get("pass_burden") or {}
         if burden:
-            self._heading("Cuts the recipe did not ask for (last year)")
+            self._group_heading("Cuts the recipe did not ask for (last year)", len(burden))
             for group, g in sorted(burden.items()):
                 self._line(f"{group} · {_num(g.get('n'))} tracks · the recipe's normal is "
                            f"{_num(g.get('normal_cuts'))} cut(s) · "
@@ -87,7 +88,7 @@ class FindingsTab(ctk.CTkFrame):
                            muted=True)
         cuts = facts.get("cut_setting") or {}
         if cuts:
-            self._heading("Cut settings this model has been run at")
+            self._group_heading("Cut settings this model has been run at", len(cuts))
             for group, g in sorted(cuts.items()):
                 current = g.get("current_setting")
                 mixed = g.get("days_with_more_than_one_setting_pct")
@@ -102,7 +103,7 @@ class FindingsTab(ctk.CTkFrame):
                                f"{_txt(s_.get('window'))}{mark}", muted=True)
         history = facts.get("recipe_history") or []
         if history:
-            self._heading("Recipe history")
+            self._group_heading("Recipe history", len(history))
             for run in history:
                 self._line(f"{laser_label(run.get('system'))} · {_txt(run.get('first'))} → "
                            f"{_txt(run.get('last'))} · {_txt(run.get('recipe'))} · {_num(run.get('n'))} tracks · "
@@ -118,6 +119,18 @@ class FindingsTab(ctk.CTkFrame):
         t = self.theme
         ctk.CTkLabel(self._body, text=text, font=t.font(t.SIZE_HEADING, "bold"),
                      text_color=t.TEXT_PRIMARY, anchor="w").pack(fill="x", pady=(t.SPACE_XL, t.SPACE_SM))
+
+    def _group_heading(self, title: str, count: int) -> None:
+        """A FACT section's own heading (step 1's spec, design doc §1 item 6): the same
+        `blocks.group_header` the Findings page and this tab's own FindingsView use for a
+        group of rows, so a count of "how many" reads the same everywhere in the app --
+        instead of the bare `_heading()` label these four sections used to draw. `count` is
+        always the number of rows the section lists right below it (one table, one recipe
+        run, one cut-setting group, one pass-burden group), never a separately-computed
+        number that could drift from what is actually drawn under it."""
+        t = self.theme
+        blocks.group_header(self._body, t, title, count
+                            ).pack(fill="x", pady=(t.SPACE_XL, t.SPACE_SM))
 
     def _line(self, text: str, *, muted: bool = False) -> None:
         t = self.theme

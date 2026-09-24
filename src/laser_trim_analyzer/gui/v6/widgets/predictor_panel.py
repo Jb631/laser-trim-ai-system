@@ -25,11 +25,20 @@ def _default_load(db):
                 if isinstance(obj, dict):
                     return obj.get(key)
                 return getattr(obj, key, None)
-            lines = [f"Failure predictor for {model} — trained on final-test outcomes."]
+            # design doc 2026-09-24-facelift-step2-pages-design.md §1 item 7: say what this
+            # panel IS, in one line, before anything else -- the old opener ("Failure
+            # predictor for {model}") named the predictor's TARGET, not its ACCURACY, and
+            # read like the app itself was calling units failed. AUC is the predictor's own
+            # accuracy measure (how well its ranking separates real pass from real fail), not
+            # a verdict on any one unit, so it is the one number worth leading with; the rest
+            # of the line makes explicit that this grades nothing.
+            auc = _g(m, "auc_roc")
+            auc_txt = f" (AUC {auc:.2f})" if auc else ""
+            lines = [f"How well the final-test predictor would have called these units{auc_txt}. "
+                    "It grades nothing."]
             perf = []
             for key, label, fmt in (("accuracy", "accuracy", "{:.0%}"),
-                                    ("f1", "F1", "{:.2f}"),
-                                    ("auc_roc", "AUC", "{:.2f}")):
+                                    ("f1", "F1", "{:.2f}")):
                 v = _g(m, key)
                 if v:
                     perf.append(f"{label} " + fmt.format(v))

@@ -85,6 +85,38 @@ def test_trim_necessity_respects_cutoff_and_empty(tmp_path):
     assert compute_trim_necessity(db, "NOPE") is None
 
 
+def test_trim_necessity_does_not_use_the_deprecated_datetime_adapter(tmp_path):
+    """compute_trim_necessity binds its cutoff as a formatted string, not a raw datetime, so
+    it never falls back to sqlite3's own adapter registry (deprecated as of Python 3.12 --
+    text() bypasses SQLAlchemy's own DATETIME bind_processor, which is what the ORM path
+    uses). Design doc 2026-09-24-facelift-step2-pages-design.md §1 "Also:" line; same fix,
+    same test shape, as findings/engine.py's _fleet_latest
+    (test_fleet_latest_does_not_use_the_deprecated_datetime_adapter)."""
+    import warnings
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, StatusType, SystemType)
+    from laser_trim_analyzer.core.yield_stats import compute_trim_necessity
+
+    db = DatabaseManager(tmp_path / "tndw.db")
+    when = datetime(2025, 6, 2)
+    with db.session() as s:
+        a = _unit(s, "TNDW", "1", when, 0, DBAR, SystemType, StatusType)
+        s.add(DBTR(analysis_id=a.id, track_id="T1", status=StatusType.PASS,
+                   untrimmed_error_max=0.01, linearity_spec=0.05,
+                   trim_pass_count=1, resistance_change_percent=12.0))
+        s.commit()
+
+    with warnings.catch_warnings():
+        # ONLY the datetime adapter: a blanket "error" filter would fail this test the day
+        # some library on this path deprecates something unrelated (e.g. pydantic's).
+        warnings.filterwarnings("error", message=r".*datetime adapter.*", category=DeprecationWarning)
+        # A cutoff is required to exercise the bind at all -- compute_trim_necessity(db,
+        # model) with no cutoff never adds the "cutoff" param.
+        tn = compute_trim_necessity(db, "TNDW", cutoff=datetime(2024, 1, 1))
+    assert tn is not None and tn["trimmed_units"] == 1     # the bind worked either way
+
+
 def test_offset_feasibility_opposing_points():
     """The 7845 case (James, 2026-07-14): one visible fail point that 'looks
     adjustable', but an opposing point already near the OTHER limit makes any

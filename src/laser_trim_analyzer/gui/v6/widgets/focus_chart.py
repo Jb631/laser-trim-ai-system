@@ -105,7 +105,11 @@ class FocusChart(ctk.CTkFrame):
         ax, t = self._ax, self.theme
         ax.clear()
         self._style()
-        ax.set_title(metric_label(metric))
+        # pad=18 (default ~6) leaves the "▲ N off-scale" note its own band between the title
+        # and the axes -- set here, unconditionally, so the title sits at the same height
+        # whether or not this render ends up needing that band (2026-09-24 facelift step 2
+        # Task 3; see the note's own comment below for why it moved).
+        ax.set_title(metric_label(metric), pad=18)
         if not dates or not values:
             ax.text(0.5, 0.5, "No measurements for this metric in the selected window.",
                     transform=ax.transAxes, ha="center", va="center", color=t.TEXT_SECONDARY)
@@ -264,10 +268,22 @@ class FocusChart(ctk.CTkFrame):
         if off_vals:
             # Name how far the worst excursion actually reaches — a clamped marker
             # alone hides magnitude, which is exactly what a QA reviewer needs.
+            #
+            # Its OWN band above the axes (2026-09-24 facelift step 2 Task 3), not the old
+            # (0.99, 0.97) -- inside the top-right corner of the plot itself. Two problems
+            # lived there: the legend's loc="best" only avoids overlapping DATA, never this
+            # text, and on real data (8340-1, 6607) it regularly landed on top of it; and on
+            # a model whose baseline spans mixed history (`limits_off_scale` below, drawn at
+            # the top-LEFT) the two notes could themselves collide once anything narrowed the
+            # axes to make room for a legend -- checked directly on 8340-1's full history
+            # (both notes present, 326 off-scale): moving this one out settles both at once,
+            # since nothing drawn INSIDE the axes (data, markers, a legend wherever "best"
+            # puts it) can ever reach a point above the axes' own top edge. va="bottom" so the
+            # text grows UPWARD from the axes edge, into the gap the title's pad=18 leaves.
             ext = max(off_vals, key=abs)
-            ax.text(0.99, 0.97, f"▲ {len(off_vals)} off-scale (max {t.fmt_measure(ext, 3)})",
-                    transform=ax.transAxes, ha="right", va="top", fontsize=t.CHART_FONT,
-                    color=mark_color)
+            ax.text(1.0, 1.0, f"▲ {len(off_vals)} off-scale (max {t.fmt_measure(ext, 3)})",
+                    transform=ax.transAxes, ha="right", va="bottom", clip_on=False,
+                    fontsize=t.CHART_FONT, color=mark_color)
         # ---- Explicit x-window (2026-07-08). Autoscale is LAZY and, on this
         # reused axes, held the widest range ever rendered: after viewing
         # 'All' (stretched to 2015 by one stray file), switching back to
@@ -281,6 +297,12 @@ class FocusChart(ctk.CTkFrame):
         ax.set_xlim(d0 - xpad, d1 + xpad)
         ax.legend(loc="best", fontsize=t.CHART_FONT, facecolor=t.CARD, edgecolor=t.BORDER, labelcolor=t.TEXT_SECONDARY)
         self._fig.tight_layout()
+        # tight_layout already makes room for the off-scale note above (checked on 8340-1's
+        # full history, 326 off-scale points: axes top landed at 0.824) -- this is a floor for
+        # the rare case it doesn't (a very short title, a different figsize), same
+        # "tight_layout() then override" order as set_spc_series's bottom-margin fix below.
+        if off_vals and self._ax.get_position().y1 > 0.85:
+            self._fig.subplots_adjust(top=0.85)
         self.canvas.draw_idle()
 
     def set_spc_series(self, series: SpcSeries, *,

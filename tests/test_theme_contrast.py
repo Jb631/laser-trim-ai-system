@@ -285,9 +285,12 @@ def test_no_v6_dropdown_or_switch_is_built_with_the_defective_colour():
     """Static backstop, same idea as the segmented-button/checkbox one below.
 
     CTkOptionMenu/CTkComboBox: flagged only when EXPLICITLY given the wrong colour, not when
-    button_color is left unset -- `widgets/history_tab.py`'s menu never sets it at all and reads
-    fine (CTkOptionMenu's own un-themed default text_color/button_color measure 7.47:1; checked
-    separately, not touched by this fix, since it never had the defect).
+    button_color is left unset -- CTkOptionMenu's own un-themed default text_color/button_color
+    measures 7.47:1, so an unstyled site is still SAFE, just inconsistent with the rest of the
+    app's teal. `widgets/history_tab.py`'s menu used to be exactly that -- the one dropdown left
+    unstyled after step 1's review fixed the other seven -- until facelift step 2 Task 3 themed
+    it too (controller ruling); the `themed` count below pins that all seven-now-eight
+    CTkOptionMenu sites carry the token outright, not merely "not wrong".
     CTkSwitch: the one construction site must carry the token outright -- there is no already-safe
     default to fall back on here (ctk_switch.py's own default button_color measured 1.27:1 against
     progress_color=ACCENT).
@@ -299,7 +302,9 @@ def test_no_v6_dropdown_or_switch_is_built_with_the_defective_colour():
     permissive = {"CTkOptionMenu": ("button_color", "SEGMENT_SELECTED"),
                   "CTkComboBox": ("button_color", "SEGMENT_SELECTED")}
     required = {"CTkSwitch": ("button_color", "TEXT_PRIMARY")}
-    bad, seen = [], {name: 0 for name in (*permissive, *required)}
+    bad = []
+    seen = {name: 0 for name in (*permissive, *required)}
+    themed = {name: 0 for name in (*permissive, *required)}       # has_token, not just "not wrong"
     for path in root.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             if not isinstance(node, ast.Call):
@@ -312,15 +317,22 @@ def test_no_v6_dropdown_or_switch_is_built_with_the_defective_colour():
             given = {k.arg: k.value for k in node.keywords}
             value = given.get(keyword)
             has_token = isinstance(value, ast.Attribute) and value.attr == token
+            if has_token:
+                themed[name] += 1
             if name in required and not has_token:
                 bad.append(f"{path.name}:{node.lineno} {name} without {keyword}=<theme>.{token}")
             elif name in permissive and value is not None and not has_token:
                 wrong = value.attr if isinstance(value, ast.Attribute) else ast.dump(value)
                 bad.append(f"{path.name}:{node.lineno} {name} styled with {keyword}={wrong}, want {token}")
     # Floors: model_page (combo box + 2 option menus) + dashboard_page (2) + unit_chart_modal (2)
-    # + history_tab (1, unstyled -- see docstring) = 7 CTkOptionMenu; model_page + per_model_specs
-    # = 2 CTkComboBox; unit_chart_modal = 1 CTkSwitch.
+    # + history_tab (1, now themed too -- facelift step 2 Task 3) = 7 CTkOptionMenu; model_page
+    # + per_model_specs = 2 CTkComboBox; unit_chart_modal = 1 CTkSwitch.
     assert seen["CTkOptionMenu"] >= 7 and seen["CTkComboBox"] >= 2 and seen["CTkSwitch"] >= 1, seen
+    # Every CTkOptionMenu site the walk found is now EXPLICITLY themed -- no more "unstyled but
+    # safe" holdout (history_tab.py was the last one; this fails again the day a new dropdown
+    # is added unstyled, the same way the old permissive-only check let history_tab.py through).
+    assert themed["CTkOptionMenu"] == seen["CTkOptionMenu"], (themed, seen)
+    assert not bad, "\n".join(bad)
     assert not bad, "\n".join(bad)
 
 

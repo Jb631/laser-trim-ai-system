@@ -37,7 +37,7 @@ def test_showing_a_model_without_a_tab_request_leaves_the_tab_alone(make_app):
     page._reload = lambda **kw: None
     app.show_page("model")
     del page._reload
-    assert page._tabs.get() == "Drift Metrics"   # CTkTabview's own default: the first tab added
+    assert page._tabs.get() == "Drift metrics"   # CTkTabview's own default: the first tab added
 
 
 def test_an_unknown_tab_name_is_ignored_not_a_crash(make_app):
@@ -47,7 +47,33 @@ def test_an_unknown_tab_name_is_ignored_not_a_crash(make_app):
     page._reload = lambda **kw: None
     app.show_page("model")                       # must not raise
     del page._reload
-    assert page._tabs.get() == "Drift Metrics"
+    assert page._tabs.get() == "Drift metrics"
+
+
+def test_the_seven_tabs_are_sentence_case_in_their_established_order(make_app):
+    """Facelift step 2 Task 3, design doc §1 item 6: sentence case, same order as before --
+    only the multi-word Title Case names change ("Units"/"History"/"Findings" are already
+    one word, so sentence case leaves them alone). _name_list is CTkTabview's own record of
+    tab names in the order add() was called, which is the order the segmented button shows
+    them in."""
+    app = make_app()
+    app.set_model_route("HOT")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    assert page._tabs._name_list == [
+        "Drift metrics", "Smoothness", "Units", "Final test units",
+        "Trim vs final test", "History", "Findings"]
+    # Step 1(b): the rename must not disturb the Findings-tab route (consume_model_tab ->
+    # _select_tab) -- already pinned by test_showing_a_model_selects_the_requested_tab
+    # above ("Findings" is one word, untouched by sentence-casing), re-asserted here so this
+    # test alone documents both halves of the step 1(b) requirement in one place.
+    app.set_model_route("HOT", tab="findings")
+    page._reload = lambda **kw: None
+    page.on_show()
+    del page._reload
+    assert page._tabs.get() == "Findings"
 
 
 def test_track_metric_columns_public_and_linearity_maps_to_shifted():
@@ -64,7 +90,7 @@ def test_themed_tab_view(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.tab_view import ThemedTabView
     tv = ThemedTabView(tk_root, theme=ThemeManager())
-    assert tv.add("Drift Metrics") is not None
+    assert tv.add("Drift metrics") is not None
     tv.add("Units"); tv.set("Units")
     assert tv.get() == "Units"
 
@@ -137,6 +163,44 @@ def test_focus_chart_empty_no_crash(tk_root):
     from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
     chart = FocusChart(tk_root, theme=ThemeManager())
     chart.set_series(metric="linearity_error", dates=[], values=[])  # empty state, no raise
+
+
+def test_focus_chart_legend_does_not_cover_the_off_scale_note(tk_root):
+    """8340-1 and 6607 (design doc 2026-09-24-facelift-step2-pages-design.md §1 item 5): the
+    legend used loc="best", which only avoids DATA -- it never saw the "▲ N off-scale" text
+    drawn separately, so on real data the two boxes overlapped. Rendered on a fresh Agg canvas
+    (the widget's own TkAgg canvas has no live window to size against in a headless test) so
+    get_window_extent() returns real, comparable pixel boxes for both artists."""
+    from datetime import datetime, timedelta
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(20, 0, -1)]     # oldest -> newest
+    # A gentle DOWNWARD trend keeps the newest (rightmost) points low, so the top-right
+    # corner -- where the off-scale note is drawn -- stays clear of real data; only the
+    # single outlier (forced to the OLDEST/leftmost date) is clamped up to the window top.
+    values = [0.0119 - 0.0001 * i for i in range(20)]
+    values[0] = 5.0
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005)
+
+    canvas = FigureCanvasAgg(chart._fig)
+    canvas.draw()
+    renderer = canvas.get_renderer()
+
+    legend = chart._ax.get_legend()
+    assert legend is not None, "the off-scale scenario above must still produce a legend"
+    legend_box = legend.get_window_extent(renderer)
+
+    notes = [txt for txt in chart._ax.texts if "off-scale" in txt.get_text()]
+    assert notes, "the outlier above must trigger the '▲ N off-scale' note"
+    note_box = notes[0].get_window_extent(renderer)
+
+    assert not legend_box.overlaps(note_box), (
+        f"legend {legend_box.bounds} overlaps the off-scale note {note_box.bounds}")
 
 
 # ---- Task 5: DriftMetricsTab ----------------------------------------------

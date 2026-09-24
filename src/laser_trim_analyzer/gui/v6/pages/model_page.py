@@ -271,7 +271,7 @@ class ModelPage(PageBase):
         # not limited to it either).
         self._tabs = ThemedTabView(self._body, theme=t, height=520)
         self._tabs.pack(side="top", fill="both", expand=True)
-        self._drift_tab = DriftMetricsTab(self._tabs.add("Drift Metrics"), theme=t,
+        self._drift_tab = DriftMetricsTab(self._tabs.add("Drift metrics"), theme=t,
                                           on_requalify=self._on_requalify,
                                           on_metric_select=self._on_pill_click)
         self._drift_tab.pack(fill="both", expand=True)
@@ -282,13 +282,13 @@ class ModelPage(PageBase):
                                    on_export_charts=self._on_export_charts,
                                    on_search=self._on_unit_search)
         self._units_tab.pack(fill="both", expand=True)
-        self._ft_units_tab = FtUnitsTab(self._tabs.add("Final Test Units"), theme=t,
+        self._ft_units_tab = FtUnitsTab(self._tabs.add("Final test units"), theme=t,
                                         on_unit_click=self._on_ft_unit_click,
                                         on_export_charts=self._on_export_ft_charts)
         # pack was missing — the tab constructed but never mapped, so it
         # rendered permanently EMPTY (code-review finding #5, 2026-07-13).
         self._ft_units_tab.pack(fill="both", expand=True)
-        self._trimft_tab = TrimFtTab(self._tabs.add("Trim vs Final Test"), theme=t)
+        self._trimft_tab = TrimFtTab(self._tabs.add("Trim vs final test"), theme=t)
         self._trimft_tab.pack(fill="both", expand=True)
         self._history_tab = HistoryTab(self._tabs.add("History"), theme=t)
         self._history_tab.pack(fill="both", expand=True)

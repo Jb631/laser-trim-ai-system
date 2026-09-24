@@ -35,8 +35,14 @@ class HistoryTab(ctk.CTkFrame):
         bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
         ctk.CTkLabel(bar, text="Measure:", font=theme.font(theme.SIZE_BODY),
                      text_color=theme.TEXT_SECONDARY).pack(side="left", padx=(0, theme.SPACE_SM))
+        # Themed like the other seven Task 1 dropdowns (facelift step 2 Task 3, controller
+        # ruling): this one used to rely on CTkOptionMenu's own un-themed default -- safe to
+        # look at (7.47:1) but not consistent with the rest of the app's teal.
         self._menu = ctk.CTkOptionMenu(bar, values=["—"], width=220, command=self._on_pick,
-                                       font=theme.font(theme.SIZE_BODY))
+                                       font=theme.font(theme.SIZE_BODY), fg_color=theme.CARD,
+                                       button_color=theme.SEGMENT_SELECTED,
+                                       button_hover_color=theme.SEGMENT_SELECTED_HOVER,
+                                       text_color=theme.TEXT_PRIMARY)
         self._menu.pack(side="left")
         self._stats = ctk.CTkLabel(bar, text="", font=theme.font(theme.SIZE_CAPTION),
                                    text_color=theme.TEXT_SECONDARY, anchor="w")

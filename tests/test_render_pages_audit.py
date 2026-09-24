@@ -241,10 +241,10 @@ def test_the_walk_reaches_every_tab_name(tk_root):
     import customtkinter as ctk
 
     tv = ctk.CTkTabview(tk_root)
-    tv.add("Drift Metrics")
-    tv.add("Final Test Units")
+    tv.add("Drift metrics")
+    tv.add("Final test units")
     texts = {w.cget("text") for w in _iter_widgets(tv) if isinstance(w, tkinter.Label)}
-    assert {"Drift Metrics", "Final Test Units"} <= texts
+    assert {"Drift metrics", "Final test units"} <= texts
 
 
 def test_the_forced_failure_pass_only_counts_a_banner_showing_what_failed(tk_root):

@@ -164,6 +164,54 @@ def test_more_than_one_limit_table_gets_its_own_section_and_one_does_not(tk_root
     assert "the limit tables" in text and "RuntimeError: bad table" in text
 
 
+def test_fact_sections_draw_their_heading_through_group_header_with_a_matching_count(tk_root):
+    """Step 1(c) (design doc 2026-09-24-facelift-step2-pages-design.md §1 item 6): the four
+    enumerable fact sections -- limit tables, the pass-burden group, the cut-setting group,
+    recipe history -- draw their heading through blocks.group_header (the same block the
+    Findings page's own groups use), not the tab's bare _heading() label, so the row count
+    sits next to the title exactly like every other list in the app.
+
+    group_header's shape is title-label + count-pill-label as SIBLINGS inside a small "top"
+    frame nested under a "wrap" frame; _heading()'s old shape was a single bare label packed
+    straight into the tab's scrollable body. Checking the count sits next to the title (not
+    merely "somewhere in the tab") and that the title's parent is no longer the body itself
+    tells the two apart structurally -- it fails on the old bare-label code, not only on
+    missing text."""
+    tab = _tab(tk_root)
+    two_tables = [{"system": "B", "track": "Track A", "rows": 111, "graded": 89, "n": 1649,
+                   "first": "2023-09-22", "last": "2026-01-12", "trim_pass_pct": 34.0},
+                  {"system": "B", "track": "Track A", "rows": 57, "graded": 45, "n": 823,
+                   "first": "2023-10-05", "last": "2026-09-11", "trim_pass_pct": None}]
+    burden = {"B": {"n": 40, "normal_cuts": 1, "share_over_recipe": 12.0,
+                    "unplanned_passes": 5, "unplanned_passes_per_100_tracks": 12.5}}
+    cuts = {"B": {"n": 40, "window": "2023-09 → 2026-09", "current_setting": 2950,
+                  "days_with_more_than_one_setting_pct": None,
+                  "settings": [{"setting": 2950, "n": 40, "pass_pct": 34.0,
+                                "median_incoming_resistance": 4600.0, "window": "…"}]}}
+    tab.set_data({"facts": dict(FACTS, limit_tables=two_tables, pass_burden=burden, cut_setting=cuts),
+                  "findings": []})
+
+    def _count_beside(heading_text, expected_count):
+        label = None
+        def walk(w):
+            nonlocal label
+            for c in w.winfo_children():
+                if isinstance(c, ctk.CTkLabel) and c.cget("text") == heading_text:
+                    label = c
+                walk(c)
+        walk(tab)
+        assert label is not None, f"no heading {heading_text!r} found"
+        assert label.master is not tab._body, (
+            f"{heading_text!r} is packed straight into the body -- still a bare _heading() label")
+        siblings = [c.cget("text") for c in label.master.winfo_children() if isinstance(c, ctk.CTkLabel)]
+        assert f"{expected_count:,}" in siblings, (heading_text, siblings)
+
+    _count_beside("Limit tables this model has been graded against", len(two_tables))
+    _count_beside("Cuts the recipe did not ask for (last year)", len(burden))
+    _count_beside("Cut settings this model has been run at", len(cuts))
+    _count_beside("Recipe history", len(FACTS["recipe_history"]))
+
+
 def test_the_tab_draws_findings_with_the_same_groups_as_the_page(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.findings_tab import FindingsTab
