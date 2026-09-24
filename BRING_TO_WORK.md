@@ -80,10 +80,14 @@ Findings page rebuilt. No schema change, nothing to retrain, nothing to click on
    (`increment_volts`, `increment_volts_first_row`, `increment_volts_truncated`) — nothing
    else in the database changes, not even the `Trim N` sweep sitting right beside them.
 
-   **Snapshot first** — unlike the QA harnesses above, this one writes to the database you
-   give it directly (same as `regrade_final_tests.py`):
+   **Snapshot first, onto LOCAL disk right next to the database** — unlike the QA harnesses
+   above, this one writes to the database you give it directly (same as
+   `regrade_final_tests.py`), and this is a 6+ GB file: **not OneDrive** — this page already
+   says to keep `data\` out of it, and queuing this database's own size for upload just for a
+   safety net is the same mistake in a new place. `snapshot_db.py` refuses to overwrite an
+   existing file, so re-running this is always safe:
 
-       .\.venv\Scripts\python scripts\snapshot_db.py data\analysis.db "$env:OneDrive\analysis_pre_tv_backfill.db"
+       .\.venv\Scripts\python scripts\snapshot_db.py data\analysis.db data\analysis_pre_tv_backfill.db
 
    Then a small rehearsal — a couple of minutes, reading the share at roughly the same
    per-file cost as an ingest:
@@ -92,13 +96,16 @@ Findings page rebuilt. No schema change, nothing to retrain, nothing to click on
 
    It prints how many files it found in total *before* it touches anything, then a running
    files/second and an ETA every 200 files — so the first couple of minutes at work tell you
-   whether the full run is a lunch break or an overnight job. (Read-only count on the home
-   copy of this database, 2026-09-24: **41,174 candidate passes across 35,041 files** — your
-   work copy may have a few more if you've ingested since. At the share's own measured cost of
-   about 0.6 s per file, that many files is roughly six hours — plan on leaving it overnight,
-   the same as the rebuild. The Mac cannot measure this directly: every one of those files is
-   on the work share, so a Mac trial only ever reports them "missing", fast, and that speed
-   means nothing about the real run.) Drop `--limit` for the full run.
+   whether the full run is a lunch break or an overnight job. It works **newest file first**
+   (by the file's own date, not by when it happened to be ingested), so a `--limit` rehearsal
+   or a run you stop partway fills the recent data the cut-length model actually wants first,
+   rather than spending its time on decade-old workbooks. (Read-only count on the home copy of
+   this database, 2026-09-24: **41,174 candidate passes across 35,041 files** — your work copy
+   may have a few more if you've ingested since. At the share's own measured cost of about
+   0.6 s per file, that many files is roughly six hours — plan on leaving it overnight, the
+   same as the rebuild. The Mac cannot measure this directly: every one of those files is on
+   the work share, so a Mac trial only ever reports them "missing", fast, and that speed means
+   nothing about the real run.) Drop `--limit` for the full run.
 
    **It is safe to stop and safe to resume.** It commits every 200 files, so Ctrl-C (or a
    dropped VPN, or going home for the night) keeps everything already written. Running the

@@ -27,11 +27,12 @@ file for how small that set is expected to be.
 Unlike the QA harnesses (`chart_qa_render_all.py`, `app_qa_sweep.py`), this script does NOT
 refuse `data/analysis.db` -- filling in three columns of your own database, from your own
 files, is the whole point, the same as `regrade_final_tests.py` and the other `backfill_*.py`
-scripts in this folder. TAKE A SNAPSHOT FIRST anyway; the columns this writes cannot be
-recovered from the database itself if something goes wrong reading a share full of files over
-several hours:
+scripts in this folder. TAKE A SNAPSHOT FIRST anyway, onto LOCAL disk next to the database --
+never a cloud-synced folder, which would queue the database's own size for upload just for a
+safety net (`BRING_TO_WORK.md` already says to keep `data\\` out of OneDrive for exactly this
+reason). `snapshot_db.py` refuses to overwrite an existing file:
 
-    python scripts/snapshot_db.py data\\analysis.db "$env:OneDrive\\analysis_pre_tv_backfill.db"
+    python scripts/snapshot_db.py data/analysis.db data/analysis_pre_tv_backfill.db
 
 Usage
 -----
@@ -43,12 +44,19 @@ DB_PATH is REQUIRED -- there is no default, so this can never land on the wrong 
 through an empty command line. Progress prints every 200 files (files/second and an ETA);
 writes commit every 200 files, so a stopped run (Ctrl-C, a dropped VPN, going home for the
 night) keeps everything already committed. Running the same command again continues: it
-re-selects exactly the passes still missing their curves, oldest file first (`analysis_
-results.id` ascending -- this database's own established meaning of "oldest first" for a
-resumable repair pass; see `DatabaseManager.get_final_tests_for_regrade`'s docstring).
+re-selects exactly the passes still missing their curves, NEWEST file first (`analysis_
+results.file_date` descending, `id` descending as the tie-break). Deliberately NOT the
+oldest-first order `id` ascending alone would give: `DatabaseManager.
+get_final_tests_for_regrade`'s docstring learned this the hard way (2026-09-14) and abandoned
+it for the same reason it applies here -- id/insertion order is oldest-file-first, and a run
+measured in hours that walks the database that way spends its first stretch on 2010-era
+workbooks while every screen in this app, and the cut-length model this capture feeds, reads
+from the last year or two. A stopped or `--limit`-bounded run must leave the RECENT data
+filled, not the oldest slice of it.
 """
 import argparse
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -117,7 +125,21 @@ class BackfillReport:
 
 def _select_candidates(db) -> List[FileWork]:
     """Every laser-1 `Trim N` pass with `increment_volts IS NULL`, grouped one entry per
-    file, oldest file first.
+    file, NEWEST file first (`file_date` descending, `id` descending as the tie-break for
+    same-dated or undated rows -- stable across runs, which is what lets a stopped run
+    resume somewhere sensible instead of re-shuffling).
+
+    Newest first, not oldest: `id` ascending alone is INGEST order, which is oldest-file-
+    first, and `DatabaseManager.get_final_tests_for_regrade`'s docstring already tells this
+    exact story (2026-09-14) -- walking a multi-hour database pass that way spent the first
+    hour and a half on 2010-era workbooks while every number the app shows, and the
+    cut-length model this capture feeds, comes from the last year or two. A stopped or
+    `--limit`-bounded run has to leave the USEFUL rows filled.
+
+    `file_date` descending puts a NULL date LAST, not first: SQLite treats NULL as smaller
+    than any value, so ASC sorts it first and DESC sorts it last -- which is right here too,
+    the same as the regrade's own ordering: a row with no date is the one whose recency
+    cannot be claimed, so it must never jump the queue ahead of a row that can.
 
     `sheet.ilike('trim %')` excludes `Lin Error` (which never carries TrimVolts and would
     otherwise be re-selected, forever, on every single run) and matches only what `core.
@@ -134,7 +156,8 @@ def _select_candidates(db) -> List[FileWork]:
             .filter(AnalysisResult.system == SystemType.B)
             .filter(TrimPass.increment_volts.is_(None))
             .filter(TrimPass.sheet.ilike("trim %"))
-            .order_by(AnalysisResult.id.asc(), TrimPass.id.asc())
+            .order_by(AnalysisResult.file_date.desc(), AnalysisResult.id.desc(),
+                     TrimPass.id.asc())
             .all()
         )
 
@@ -351,7 +374,19 @@ def backfill(db, *, dry_run: bool = False, limit: Optional[int] = None,
 # ---------------------------------------------------------------------------
 
 def _snapshot_hint(db_path: Path) -> str:
-    return f"    python scripts/snapshot_db.py {db_path} {db_path}.snapshot-<today>.db"
+    """The exact command to run first -- right next to the database, on LOCAL disk, never a
+    cloud-synced folder: `BRING_TO_WORK.md` already tells James to keep `data\\` out of
+    OneDrive, and queuing this database's own size for upload as a "just in case" copy is
+    the same mistake in a new place. `snapshot_db.py` refuses to overwrite an existing
+    file, which is worth saying here rather than let that refusal be the first anyone hears
+    of it. `os.name` picks the form: PowerShell on the Windows machine this script actually
+    runs on, plain POSIX for testing here on the Mac.
+    """
+    dst = db_path.with_name(db_path.stem + "_pre_tv_backfill" + db_path.suffix)
+    note = "    (refuses to overwrite -- if that name is already there, pick another)"
+    if os.name == "nt":
+        return f"    .\\.venv\\Scripts\\python scripts\\snapshot_db.py {db_path} {dst}\n{note}"
+    return f"    python scripts/snapshot_db.py {db_path} {dst}\n{note}"
 
 
 def _print_names(label: str, names: List[str]) -> None:

@@ -9,14 +9,22 @@ independent, fresh `ExcelParser().parse_file(...)` call, not just to the DB's ow
 write).
 
 Six behaviours, each a test group below:
-  1. refuses without a DB path, and tells you to snapshot first
-  2. selects laser-1 (system 'B') Trim-N passes with increment_volts IS NULL, oldest file
+  1. refuses without a DB path, and tells you to snapshot first (onto local disk)
+  2. selects laser-1 (system 'B') Trim-N passes with increment_volts IS NULL, NEWEST file
      first; opens each file read-only; reads only Model Parameters + TrimVolts N; matches by
      (track_result_id, sheet)
   3. resumable, --limit bounds a run, progress every N files with a rate and an ETA
   4. a missing/unreadable file is counted and named, never fatal, and changes nothing else
   5. --dry-run reads and reports without writing
   6. commits in batches (files, not passes)
+
+Controller fix round 1 (see task-5-report.md): selection was originally oldest-file-first
+(`analysis_results.id` ascending), citing `get_final_tests_for_regrade` as precedent -- that
+docstring actually explains why it ABANDONED oldest-first, for the same reason it matters
+here: a run measured in hours must leave the RECENT data filled if stopped early, not spend
+its budget on 2010-era workbooks. Selection is now `file_date` descending, `id` descending as
+the tie-break; `test_selection_orders_newest_file_first` and
+`test_a_null_file_date_sorts_last_not_first` pin it.
 """
 import contextlib
 import json
@@ -249,6 +257,91 @@ def test_laser_2_and_lin_error_rows_are_never_candidates_or_touched(tmp_path, mo
             "WHERE a.filename = :fn AND p.sheet = 'Lin Error'"), {"fn": LTS.name}).all()
     assert dlts_rows and all(r[0] is None for r in dlts_rows)
     assert lin_error_rows and all(r[0] is None for r in lin_error_rows)
+
+
+def test_selection_orders_newest_file_first(tmp_path, monkeypatch):
+    """A stopped or --limit-bounded run must leave the RECENT data filled -- what a
+    cut-length model, and every screen in the app, actually reads from -- not whatever
+    happened to be oldest. See the module docstring's 'Controller fix round 1' note: this
+    replaced an `analysis_results.id` ascending (oldest-file-first) order."""
+    db = _build_db(tmp_path, monkeypatch, [LTS, LTS_194])
+    _null_out(db)
+    with db.session() as s:
+        s.execute(sa.text("UPDATE analysis_results SET file_date = :d WHERE filename = :fn"),
+                 {"d": "2020-01-01 00:00:00", "fn": LTS.name})
+        s.execute(sa.text("UPDATE analysis_results SET file_date = :d WHERE filename = :fn"),
+                 {"d": "2025-06-01 00:00:00", "fn": LTS_194.name})
+
+    candidates = biv._select_candidates(db)
+    assert [Path(f.file_path).name for f in candidates] == [LTS_194.name, LTS.name]
+
+
+def test_a_null_file_date_sorts_last_not_first(tmp_path, monkeypatch):
+    """SQLite treats NULL as smaller than any value, so DESC puts it last, not first -- a
+    row with no date is the one whose recency cannot be claimed, so it must never jump the
+    queue ahead of a row that can. The same rule `get_final_tests_for_regrade` relies on.
+
+    Built LTS_194 FIRST (the lower `id`) and NULLs its date, LTS second (the higher `id`)
+    with a real one -- the opposite of `id` order, on purpose: an `id`-ascending fallback
+    (Task 5's original mutation, `.order_by(AnalysisResult.id.asc(), ...)`) would put the
+    NULL-dated, lower-id file FIRST, which disagrees with the assertion below and so is
+    actually caught, rather than passing by the accident of which fixture happened to save
+    first."""
+    db = _build_db(tmp_path, monkeypatch, [LTS_194, LTS])
+    _null_out(db)
+    with db.session() as s:
+        s.execute(sa.text("UPDATE analysis_results SET file_date = NULL WHERE filename = :fn"),
+                 {"fn": LTS_194.name})
+        s.execute(sa.text("UPDATE analysis_results SET file_date = :d WHERE filename = :fn"),
+                 {"d": "2020-01-01 00:00:00", "fn": LTS.name})
+
+    candidates = biv._select_candidates(db)
+    assert [Path(f.file_path).name for f in candidates] == [LTS.name, LTS_194.name], \
+        "the dated (2020) file must come before the undated one"
+
+
+def test_same_file_date_breaks_the_tie_by_id_descending(tmp_path, monkeypatch):
+    """Two files sharing one `file_date` (a whole ingest folder run the same day, routinely)
+    still need a STABLE order -- id descending, the newer row wins, same direction as the
+    primary sort. Exercises the tie-break specifically: the other ordering tests always give
+    the two fixtures distinct dates, so a mutated tie-break (id ascending) would pass them
+    even though the rule itself is wrong."""
+    db = _build_db(tmp_path, monkeypatch, [LTS, LTS_194])  # LTS built first -> the lower id
+    _null_out(db)
+    with db.session() as s:
+        s.execute(sa.text("UPDATE analysis_results SET file_date = :d"),
+                 {"d": "2024-03-01 00:00:00"})    # both rows, same date
+
+    candidates = biv._select_candidates(db)
+    assert [Path(f.file_path).name for f in candidates] == [LTS_194.name, LTS.name], \
+        "same file_date: the higher id (LTS_194, saved second) must come first"
+
+
+def test_a_limited_run_backfills_the_newer_file_first_end_to_end(tmp_path, monkeypatch):
+    """The ordering rule proven through the real `backfill()` entry point, not just the
+    selection query: with --limit 1, the file that gets filled is the newer one."""
+    db = _build_db(tmp_path, monkeypatch, [LTS, LTS_194])
+    _null_out(db)
+    with db.session() as s:
+        s.execute(sa.text("UPDATE analysis_results SET file_date = :d WHERE filename = :fn"),
+                 {"d": "2020-01-01 00:00:00", "fn": LTS.name})
+        s.execute(sa.text("UPDATE analysis_results SET file_date = :d WHERE filename = :fn"),
+                 {"d": "2025-06-01 00:00:00", "fn": LTS_194.name})
+
+    report = biv.backfill(db, limit=1)
+    assert report.files_run == 1
+
+    def _filled(filename):
+        with db.session() as s:
+            rows = s.execute(sa.text(
+                "SELECT p.increment_volts FROM trim_passes p "
+                "JOIN track_results t ON t.id = p.track_result_id "
+                "JOIN analysis_results a ON a.id = t.analysis_id "
+                "WHERE a.filename = :fn AND p.sheet LIKE 'Trim %'"), {"fn": filename}).all()
+        return rows and all(r[0] is not None for r in rows)
+
+    assert _filled(LTS_194.name), "the newer (2025) file must be the one --limit 1 reaches"
+    assert not _filled(LTS.name), "the older (2020) file must still be untouched"
 
 
 # ==================================================================== 3. resume, limit, ETA
