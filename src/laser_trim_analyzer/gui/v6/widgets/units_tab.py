@@ -226,7 +226,8 @@ class _UnitRow(ctk.CTkFrame):
             self._chk = ctk.CTkCheckBox(self, text="", width=26, checkbox_width=16,
                                         checkbox_height=16, fg_color=theme.ACCENT,
                                         font=theme.font(theme.SIZE_BODY),
-                                        hover_color=theme.ACCENT_HOVER, command=self._toggled)
+                                        hover_color=theme.ACCENT_HOVER,
+                                        checkmark_color=theme.TEXT_INVERSE, command=self._toggled)
             if selected:
                 self._chk.select()
             self._chk.pack(side="left", padx=(theme.SPACE_SM, 0))

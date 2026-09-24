@@ -52,8 +52,9 @@ class TriagePage(PageBase):
         t = self.theme
         self._scope = ctk.CTkSegmentedButton(
             parent, values=["Active", "All models"], command=self._on_scope_change,
-            fg_color=t.CARD, selected_color=t.ACCENT, selected_hover_color=t.ACCENT_HOVER,
-            unselected_color=t.CARD, text_color=t.TEXT_PRIMARY)
+            fg_color=t.CARD, selected_color=t.SEGMENT_SELECTED,
+            selected_hover_color=t.SEGMENT_SELECTED_HOVER, unselected_color=t.CARD,
+            unselected_hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY)
         self._scope.set("All models" if self._show_all else "Active")
         self._scope.pack(side="left")
 

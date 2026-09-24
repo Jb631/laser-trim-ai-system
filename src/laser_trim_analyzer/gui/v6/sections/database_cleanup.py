@@ -107,7 +107,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
         var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(parent, text=label, variable=var, font=t.font(t.SIZE_BODY),
                         text_color=t.TEXT_PRIMARY, fg_color=t.ACCENT,
-                        hover_color=t.ACCENT_HOVER).pack(side="top", anchor="w", pady=1)
+                        hover_color=t.ACCENT_HOVER, checkmark_color=t.TEXT_INVERSE
+                        ).pack(side="top", anchor="w", pady=1)
         cvars[key] = var
 
     date_row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -115,7 +116,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
     date_var = ctk.BooleanVar(value=False)
     ctk.CTkCheckBox(date_row, text="Before date (YYYY-MM-DD):", variable=date_var,
                     font=t.font(t.SIZE_BODY), text_color=t.TEXT_PRIMARY, fg_color=t.ACCENT,
-                    hover_color=t.ACCENT_HOVER).pack(side="left")
+                    hover_color=t.ACCENT_HOVER, checkmark_color=t.TEXT_INVERSE).pack(side="left")
     date_entry = ctk.CTkEntry(date_row, width=120, fg_color=t.SURFACE, border_color=t.BORDER,
                               text_color=t.TEXT_PRIMARY)
     date_entry.pack(side="left", padx=(t.SPACE_SM, 0))

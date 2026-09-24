@@ -22,6 +22,13 @@ class ThemeManager:
     # Accent -- teal means "act here"
     ACCENT: str = "#4fd6b8"; ACCENT_HOVER: str = "#74e0c8"; ACCENT_PRESSED: str = "#36b99c"
     ACCENT_TINT: str = "#123a37"
+    # A selected tab or segment. CTkSegmentedButton (and so every CTkTabview) draws ALL its
+    # segments' text in ONE colour, so the selected fill must carry the same light text as the
+    # unselected CARD segments: TEXT_PRIMARY on ACCENT was 1.66:1. On this darker teal it is
+    # 4.8:1, and the fill is still 2.8:1 away from CARD, so the selection shows. The hover steps
+    # DARKER (more contrast for light text), as ACCENT_HOVER steps lighter for dark text: 5.4:1
+    # text, 2.5:1 from CARD. Measured with tests/test_theme_contrast.py's own contrast().
+    SEGMENT_SELECTED: str = "#1d7a68"; SEGMENT_SELECTED_HOVER: str = "#1b7161"
     # Text
     TEXT_PRIMARY: str = "#f3f6fa"; TEXT_SECONDARY: str = "#b6c2d2"
     TEXT_DISABLED: str = "#93a1b6"; TEXT_INVERSE: str = "#0b1f1b"   # INVERSE = text on teal

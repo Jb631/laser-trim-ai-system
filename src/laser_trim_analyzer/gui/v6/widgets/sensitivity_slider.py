@@ -14,8 +14,8 @@ class SensitivitySlider(ctk.CTkFrame):
         self.theme = theme
         self._on_change = on_change
         self._seg = ctk.CTkSegmentedButton(self, values=_PRESETS, command=on_change,
-                                           fg_color=theme.CARD, selected_color=theme.ACCENT,
-                                           selected_hover_color=theme.ACCENT_HOVER,
+                                           fg_color=theme.CARD, selected_color=theme.SEGMENT_SELECTED,
+                                           selected_hover_color=theme.SEGMENT_SELECTED_HOVER,
                                            unselected_color=theme.CARD, unselected_hover_color=theme.ELEVATED,
                                            text_color=theme.TEXT_PRIMARY, corner_radius=theme.RADIUS_SM)
         self._seg.pack(side="top", fill="x")

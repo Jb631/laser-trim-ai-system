@@ -39,7 +39,8 @@ class ProcessPage(PageBase):
         self._incremental = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(parent, text="Incremental mode (skip already-processed files)",
                         variable=self._incremental, font=t.font(t.SIZE_BODY), text_color=t.TEXT_PRIMARY,
-                        fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER)\
+                        fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
+                        checkmark_color=t.TEXT_INVERSE)\
             .pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
         self._start_button = ctk.CTkButton(parent, text="Start processing", state="disabled",
                                            fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,

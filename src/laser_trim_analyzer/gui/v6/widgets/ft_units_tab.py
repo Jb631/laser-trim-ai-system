@@ -131,7 +131,7 @@ class FtUnitsTab(RowBudgetMixin, ctk.CTkFrame):
         chk = ctk.CTkCheckBox(row, text="", width=26, checkbox_width=16,
                               checkbox_height=16, fg_color=t.ACCENT,
                               font=t.font(t.SIZE_BODY),
-                              hover_color=t.ACCENT_HOVER,
+                              hover_color=t.ACCENT_HOVER, checkmark_color=t.TEXT_INVERSE,
                               command=lambda: self._toggle_select(u, bool(chk.get())))
         chk.pack(side="left", padx=(t.SPACE_SM, 0))
         vals = [str(u.get("serial") or "—"),

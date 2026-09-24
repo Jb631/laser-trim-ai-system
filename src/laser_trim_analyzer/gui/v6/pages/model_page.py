@@ -221,8 +221,9 @@ class ModelPage(PageBase):
         self._chart_toggle = ctk.CTkSegmentedButton(
             chart_head, values=[_VIEW_LOTS, _VIEW_UNITS], width=200,
             command=self._on_chart_view_change,
-            fg_color=t.CARD, selected_color=t.ACCENT, selected_hover_color=t.ACCENT_HOVER,
-            unselected_color=t.CARD, text_color=t.TEXT_PRIMARY)
+            fg_color=t.CARD, selected_color=t.SEGMENT_SELECTED,
+            selected_hover_color=t.SEGMENT_SELECTED_HOVER, unselected_color=t.CARD,
+            unselected_hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY)
         self._chart_toggle.set(_VIEW_LOTS if self._chart_view == "lots" else _VIEW_UNITS)
         self._chart_toggle.pack(side="right")
         ctk.CTkLabel(chart_head,
