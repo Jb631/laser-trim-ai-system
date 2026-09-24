@@ -3,7 +3,7 @@
 ## Session Checklist
 
 **Before starting work:**
-1. **Set up Git credentials** - Run: `source .env 2>/dev/null && git remote set-url origin https://${GITHUB_TOKEN}@github.com/Jb631/laser-trim-ai-system.git 2>/dev/null` (silent if no token)
+1. **Set up Git credentials** - Only if a token really exists: `[ -f .env ] && . ./.env && [ -n "$GITHUB_TOKEN" ] && git remote set-url origin "https://${GITHUB_TOKEN}@github.com/Jb631/laser-trim-ai-system.git"`. There is normally NO `.env` — then do nothing: the remote stays `https://github.com/Jb631/laser-trim-ai-system.git` and the macOS keychain authenticates it. (The old one-liner could leave the remote as `https://@github.com/…` with an empty token, and the next push failed — TRACKER H1, amended 2026-09-24.)
 2. Read `TRACKER.md` FIRST — what is open, in what order, and whose move it
    is. Update it in the same commit as any work that changes an item; a
    finished item is ticked and moved to "Done recently", a new one is added
