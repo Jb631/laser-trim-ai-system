@@ -60,16 +60,22 @@ Findings page rebuilt. No schema change, nothing to retrain, nothing to click on
    Either way, delete the copy when you're done — `Remove-Item $env:TEMP\qa_copy.db` — and
    never point either command at `data\analysis.db` itself (it refuses on purpose, but don't
    test that).
-5. **Fonts are on the system fallback, not Plex yet** — Segoe UI for text, Cascadia Mono for
-   the numbers, or **Consolas** on a machine without Cascadia Mono (Windows 11 ships it;
-   Windows 10 may not). Either is fine. Bundling IBM Plex needs your yes to download six small
-   files, under 1 MB, all under the SIL Open Font Licence: `IBMPlexSans-Regular.ttf`,
-   `IBMPlexSans-Medium.ttf` and `license.txt` from IBM's own repository (github.com/IBM/plex,
-   `packages/plex-sans/fonts/complete/ttf/`), and `IBMPlexMono-Regular.ttf`,
-   `IBMPlexMono-Medium.ttf` and `OFL.txt` from Google's (github.com/google/fonts,
-   `ofl/ibmplexmono/`). (Google's Sans folder now carries only a variable font, so the Sans
-   files come from IBM.) Say the word and it ships; until then the fallback is by design,
-   nothing is broken.
+5. **Fonts are IBM Plex now, not the fallback** — you said yes in chat on 2026-09-24, so the
+   six files (under 1 MB, SIL Open Font Licence: `IBMPlexSans-Regular.ttf`,
+   `IBMPlexSans-Medium.ttf`, `license.txt` from IBM's own repository; `IBMPlexMono-Regular.ttf`,
+   `IBMPlexMono-Medium.ttf`, `OFL.txt` from Google's) are bundled in
+   `src/laser_trim_analyzer/gui/v6/fonts/` and load privately for this process only — no
+   install, no admin, nothing system-wide. **What you'll see:** page text and headings in IBM
+   Plex Sans (a bit more open than Segoe UI), and **the numbers are IBM Plex Mono** — sigma
+   values, resistance readouts, table figures — instead of Cascadia Mono/Consolas.
+   **How to tell it actually loaded** (Plex Mono and Cascadia Mono look close at a glance, so
+   don't just eyeball it): with the app closed, run
+
+       .\.venv\Scripts\python -c "import tkinter; tkinter.Tk(); from laser_trim_analyzer.gui.v6.font_loader import load_bundled_fonts; print(load_bundled_fonts()); import tkinter.font as tf; print('IBM Plex Mono' in tf.families())"
+
+   Every file should report `'tk': True`, and the last line should print `True`. If any say
+   `False`, the app still runs fine on the fallback fonts (Segoe UI / Cascadia Mono) — tell
+   Claude exactly what it printed.
 6. **OPTIONAL — back-fill laser 1's TrimVolts curves onto files already in your database.**
    Skip this whenever you like; nothing on screen depends on it today, and it only ever feeds
    a future cut-length model. This pull's parser change (`49f865e`) reads laser 1's (LTS)

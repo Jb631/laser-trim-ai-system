@@ -53,7 +53,12 @@ class ThemeManager:
     # Typography. On Windows (GDI) Plex Medium is its OWN family, not a weight of Plex Sans,
     # so "bold" is mapped onto it in font()/mono() when it is available.
     FONT_FAMILY: Tuple[str, ...] = ("IBM Plex Sans", "Segoe UI", "system-ui")
-    FONT_FAMILY_MEDIUM: Tuple[str, ...] = ("IBM Plex Sans Medium",)
+    # Two spellings: the bundled file's real legacy family (name ID 1), read with fontTools,
+    # is the abbreviated "IBM Plex Sans Medm" -- GDI truncates it, Plex Mono Medium is not
+    # truncated the same way. "IBM Plex Sans Medium" is kept first for anything (tests, a
+    # future re-export) that reports the unabbreviated name; _pick() takes whichever this
+    # machine's Tk actually has. See tests/test_font_loader.py.
+    FONT_FAMILY_MEDIUM: Tuple[str, ...] = ("IBM Plex Sans Medium", "IBM Plex Sans Medm")
     MONO_FAMILY: Tuple[str, ...] = ("IBM Plex Mono", "Cascadia Mono", "Consolas", "Menlo", "Courier")
     MONO_FAMILY_MEDIUM: Tuple[str, ...] = ("IBM Plex Mono Medium",)
     SIZE_CAPTION: int = 12; SIZE_BODY: int = 14; SIZE_HEADING: int = 17

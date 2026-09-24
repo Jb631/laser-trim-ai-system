@@ -39,6 +39,10 @@ class V6App(ctk.CTk):
         ctk_patches.apply()
 
         self.config = config
+        # Fonts first: the theme resolves its families from what Tk can see, so Plex must be
+        # loaded before the ThemeManager is built (font_loader explains the Windows detail).
+        from laser_trim_analyzer.gui.v6.font_loader import load_bundled_fonts
+        load_bundled_fonts()
         self.theme = ThemeManager()
         # Share ONE DatabaseManager with the rest of the app. Production: db is None ->
         # get_database() (same singleton Processor uses). Tests inject an isolated one.

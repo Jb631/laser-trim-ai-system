@@ -600,11 +600,18 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       past-the-edge text, the real settings and the tab names, and writes before teardown;
       plus the minors (local caption date, Home wraps and notices, four shouting strings).
       Its one open line: at 1280×720 the Triage model list gets no room (left for Triage's step).
-      **One piece still open: Task 4, bundled IBM Plex fonts.** Downloading five files
-      (~0.8 MB, `github.com/google/fonts`, OFL 1.1) needs James's yes — asked, not yet
-      answered. Every family tuple in `theme.py` was always written as a fallback chain with
-      Plex first, so nothing is broken by waiting: text and numbers render in Segoe UI /
-      Cascadia Mono (Windows) until he says go. See `BRING_TO_WORK.md` for what to look at.
+      **Task 4, bundled IBM Plex fonts — DONE** (James said yes in chat, 2026-09-24). Six
+      files (~0.9 MB, four TTFs plus IBM's `license.txt` and Google's `OFL.txt`, both SIL OFL
+      1.1) live in `gui/v6/fonts/`. `font_loader.py` loads them privately for Tk on Windows
+      (CustomTkinter's `windows_load_font(..., enumerable=True)` — its own default hides the
+      family from `tkinter.font.families()`) and into matplotlib everywhere; a missing or
+      failed file logs a warning and stays on the fallback, never raises. `theme.py`'s
+      `FONT_FAMILY_MEDIUM` now carries two spellings, because the bundled Medium file's real
+      legacy family (read with fontTools) is the abbreviated `"IBM Plex Sans Medm"`, not
+      `"IBM Plex Sans Medium"`. `tests/test_font_loader.py` (7 tests) pins file/licence
+      presence, the family match against the actual files, the graceful-fallback path, and the
+      Windows call itself (faked — this Mac can't take that branch for real). See
+      `BRING_TO_WORK.md` for what James will see and how to confirm it at the work machine.
 - [ ] **F3… · Relayout each remaining page**, one design round each: Model, Home,
       Dashboard, Triage, Process, Settings. Order to be agreed after F2 ships.
 
