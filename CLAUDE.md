@@ -224,15 +224,22 @@ System C.** When writing to James, say "laser 2 (DLTS)" — never translate A/B/
   predicted/used delta, target and measured output at each position. Captured since
   2026-09-18 — and the cut-length column turned out to carry no signal (near-constant
   within a pass, correlation +0.02 with the change in error there).
-* **Laser 1 (LTS)** puts it in the **`TrimVolts N` sheets**, which the parser has NEVER
-  read — zero occurrences of "TrimVolts" in `core/`. Layout: one COLUMN per trim
-  position, one ROW per successive laser increment, holding the output voltage after
-  each. 25 of 30 real LTS files carry them; 0 of 30 DLTS files do. Measured on
-  `lts_8232-1_193.xls`: 49 positions, 1-25 live readings each (mean 14.7), each column
-  climbing steadily (e.g. 0.4682 → 0.4845). Across real files: 49-120 columns,
-  14-103 rows. So laser 1 records the material's RESPONSE CURVE to being cut, which is
-  richer than laser 2's near-constant scalar — and it is exactly what a cut-length model
-  needs. Laser 3 is unchecked (it writes laser 2's sheet format, so probably has none).
+* **Laser 1 (LTS)** puts it in the **`TrimVolts N` sheets** — **captured since 2026-09-24**
+  as `trim_passes.increment_volts` (one list per engaged position, zero padding dropped;
+  `[]` = a position the pass never reached; SQL NULL = not captured), with
+  `increment_volts_first_row` and `increment_volts_truncated` (`core/trim_passes.py`).
+  Layout (measured on all 6,264 local sheets): one COLUMN per engaged position, one ROW
+  per laser increment, each cell the output voltage after it; `TrimVolts N` exists iff
+  `Trim N` does. **Column k is position (start + k)**, where start is `Points From Start`
+  when the file names both `Points From Start` and `Points From End`, else `Initial
+  Points Ignored` — the machine's own `VOLTAGES` sheet confirms it on 6,263 of 6,263
+  passes (the ignored-count rule alone misplaced 36 passes of 8340-1 by one). The last
+  reading is the LIVE value during the cut, NOT `Trim N`'s verification sweep (ratio
+  0.94-1.23) — never use them interchangeably. 11 local sheets hit the old .xls
+  256-column limit and are flagged truncated. So laser 1 records the material's RESPONSE
+  CURVE to being cut — exactly what a cut-length model needs. Files stored before
+  2026-09-24 get their curves from `scripts/backfill_increment_volts.py` (James runs it
+  at work). Laser 3 has laser 2's per-position columns instead (checked 2026-09-23).
 
 **And laser 3 writes laser 2's sheets, not laser 1's** (James, 2026-09-20: "laser 2 & 3
 use the same style sheet not 1 & 3"). Several comments in this repo claimed the opposite.
