@@ -19,7 +19,7 @@ FINDING = {"model": "HOT", "analyzer": "ink_target", "title": "Incoming resistan
 def _texts(widget):
     out = []
     for c in widget.winfo_children():
-        if isinstance(c, ctk.CTkLabel):
+        if isinstance(c, (ctk.CTkLabel, ctk.CTkButton)):
             out.append(c.cget("text"))
         out.extend(_texts(c))
     return [x for x in out if x]          # CTkScrollableFrame owns one empty label of its own
@@ -45,14 +45,19 @@ def test_no_findings_reads_as_nothing_to_act_on_not_as_a_gap(tk_root):
     assert "18%" in text and "52%" in text and "Recipe history" in text
 
 
-def test_a_finding_shows_its_lever_lead_time_and_gain(tk_root):
+def test_findings_render_through_the_shared_view_not_a_card(tk_root):
+    """The tab no longer draws its own finding cards (lever/lead-time/gain layout) -- that
+    job moved to FindingsView (Task 7), already covered by tests/test_findings_view.py. Here
+    we only need: findings replace "Nothing to act on", and the shared view's own group
+    heading is the one that shows up."""
     tab = _tab(tk_root)
     tab.set_data({"facts": FACTS, "findings": [FINDING, {**FINDING, "title": "Recipe changed",
                                                          "tracks_per_year": None,
                                                          "expected_gain_points": None}]})
     text = " | ".join(_texts(tab))
     assert "Nothing to act on" not in text
-    assert "34 tracks a year" in text and "no rate claimed" in text and "next lot" in text
+    assert "Incoming resistance: aim lower" in text and "Recipe changed" in text
+    assert "Change a setting to raise yield" in text
 
 
 def test_a_model_the_yardstick_cannot_vouch_for_says_why(tk_root):
@@ -136,7 +141,7 @@ def test_a_value_that_is_not_there_reads_as_a_dash_never_as_zero_and_never_crash
     assert "Recipe history" in text                     # it rendered all the way to the last section
     assert "median incoming — Ω" in text and "0 Ω" not in text
     assert "— tracks cut" in text and "()" not in text
-    assert "rests on — tracks" in text and "no rate claimed" in text
+    assert "Incoming resistance: aim lower" in text      # the finding itself still rendered, via the shared view
     assert "None" not in text
 
 
@@ -157,3 +162,17 @@ def test_more_than_one_limit_table_gets_its_own_section_and_one_does_not(tk_root
                   "findings": []})
     text = " | ".join(_texts(tab))
     assert "the limit tables" in text and "RuntimeError: bad table" in text
+
+
+def test_the_tab_draws_findings_with_the_same_groups_as_the_page(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.findings_tab import FindingsTab
+    tab = FindingsTab(tk_root, ThemeManager())
+    cut = {"analyzer": "cut_setting", "model": "6607", "category": "Cut setting", "title": "t",
+           "summary": "s", "systems": ["B"], "n_units": 1, "tracks_per_year": 182.0,
+           "evidence": {"best": 6800.0, "current": 6900.0, "grade": "two_periods", "track": "Track A"}}
+    tab.set_data({"facts": {"tracks": 10, "errors": {}}, "findings": [cut]})
+    texts = _texts(tab)
+    assert "Change a setting to raise yield" in texts
+    assert "What changed" not in texts                  # empty groups hidden on one model's tab
+    assert not any(x.startswith("Open ") for x in texts)  # already on the model

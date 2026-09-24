@@ -11,6 +11,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.core.models import laser_label
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
 
 
 def _pct(v) -> str:
@@ -45,6 +46,7 @@ class FindingsTab(ctk.CTkFrame):
 
     # ---- public ----
     def set_data(self, data: Optional[Dict[str, Any]]) -> None:
+        t = self.theme
         for child in self._body.winfo_children():
             child.destroy()
         facts = (data or {}).get("facts")
@@ -56,11 +58,15 @@ class FindingsTab(ctk.CTkFrame):
         self._heading("What was measured")
         self._facts(facts)
         self._heading("What to do about it")
-        if not findings:
+        if findings:
+            # Same widget the Findings page uses (Task 7): no Open button -- we are already
+            # on this model -- and empty groups hidden, since one model rarely has all four.
+            view = FindingsView(self._body, t, on_open=None, include_empty=False)
+            view.pack(fill="x")
+            view.set_findings(findings)
+        else:
             self._line("Nothing to act on. No analyzer found a lever worth pulling on this model — "
                        "that is a result, not a gap.", muted=True)
-        for f in findings:
-            self._card(f)
         tables = facts.get("limit_tables") or []
         if len(tables) > 1:             # one table is the unremarkable case; two is something to look at
             self._heading("Limit tables this model has been graded against")
@@ -152,26 +158,3 @@ class FindingsTab(ctk.CTkFrame):
                 self._line(f"    tracks given more than one cut ({_num(f['multi_cut_n'])}): "
                            f"{_pct(f.get('multi_in_limits_after_first_pct'))} inside limits after the first → "
                            f"{_pct(f.get('multi_in_limits_after_last_pct'))} after the last", muted=True)
-
-    def _card(self, f: Dict[str, Any]) -> None:
-        t = self.theme
-        card = ctk.CTkFrame(self._body, fg_color=t.CARD, corner_radius=8)
-        card.pack(fill="x", pady=(0, t.SPACE_SM))
-        ctk.CTkLabel(card, text=f.get("title", ""), font=t.font(t.SIZE_BODY, "bold"), anchor="w",
-                     justify="left", wraplength=880, text_color=t.TEXT_PRIMARY
-                     ).pack(fill="x", padx=t.SPACE_MD, pady=(t.SPACE_SM, 0))
-        tpy, points = f.get("tracks_per_year"), f.get("expected_gain_points")
-        gain = (f"{points:+.1f} yield points ≈ {tpy:,.0f} tracks a year"
-                if tpy is not None and points is not None else "no rate claimed")
-        ctk.CTkLabel(card, text=f"{f.get('category', '')}  ·  lever: {f.get('lever_label', '')} "
-                                f"({f.get('lead_time', '')})  ·  {gain}",
-                     font=t.font(t.SIZE_CAPTION), anchor="w", text_color=t.ACCENT
-                     ).pack(fill="x", padx=t.SPACE_MD)
-        ctk.CTkLabel(card, text=f.get("summary", ""), font=t.font(t.SIZE_BODY), anchor="w", justify="left",
-                     wraplength=880, text_color=t.TEXT_PRIMARY).pack(fill="x", padx=t.SPACE_MD, pady=(2, 0))
-        strength = f.get("strength_value")
-        ctk.CTkLabel(card, text=f"{f.get('strength_name', '')}: "
-                                f"{'—' if strength is None else format(strength, '.2f')}  ·  "
-                                f"rests on {_num(f.get('n_units'))} tracks",
-                     font=t.font(t.SIZE_CAPTION), anchor="w", text_color=t.TEXT_SECONDARY
-                     ).pack(fill="x", padx=t.SPACE_MD, pady=(0, t.SPACE_SM))
