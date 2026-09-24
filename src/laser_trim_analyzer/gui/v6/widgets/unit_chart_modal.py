@@ -292,15 +292,22 @@ class UnitChartModal(ctk.CTkToplevel):
         # Track selector (packed only when the unit has multiple tracks).
         self._track_menu = ctk.CTkOptionMenu(
             bar, values=["Track"], width=140, command=self._on_track_change,
-            fg_color=theme.CARD, button_color=theme.ACCENT,
-            button_hover_color=theme.ACCENT_HOVER, text_color=theme.TEXT_PRIMARY)
+            fg_color=theme.CARD, button_color=theme.SEGMENT_SELECTED,
+            button_hover_color=theme.SEGMENT_SELECTED_HOVER, text_color=theme.TEXT_PRIMARY)
         # Trim / Trim + FT. The overlay was V5 Compare's alone until now; it is
         # OFF by default so the unit chart still opens as the trim chart it is.
         self._show_ft = False
         self._ft_overlay = None
+        # progress_color (the ON track) is SEGMENT_SELECTED, not ACCENT: the knob has to clear
+        # 3:1 against BOTH the on and off track, and a light knob against ACCENT measured 1.27:1
+        # -- ACCENT and the un-themed OFF track are only 4.7:1 apart, too close for anything to
+        # sit 3:1 from both (review finding, final review 2026-09-24). button_color/
+        # button_hover_color give the knob itself TEXT_PRIMARY, the same light colour every other
+        # knob-shaped control in the app uses.
         self._ft_toggle = ctk.CTkSwitch(
             bar, text="Final test overlay", command=self._on_ft_toggle,
-            progress_color=theme.ACCENT, text_color=theme.TEXT_PRIMARY,
+            progress_color=theme.SEGMENT_SELECTED, button_color=theme.TEXT_PRIMARY,
+            button_hover_color=theme.TEXT_PRIMARY, text_color=theme.TEXT_PRIMARY,
             font=theme.font(theme.SIZE_CAPTION))
         self._ft_toggle.deselect()
         self._ft_toggle.configure(state="disabled")   # until a link is found
@@ -597,8 +604,8 @@ class FtUnitChartModal(ctk.CTkToplevel):
         self._save_btn.pack(side="right")
         self._track_menu = ctk.CTkOptionMenu(
             bar, values=["Track"], width=140, command=self._on_track_change,
-            fg_color=theme.CARD, button_color=theme.ACCENT,
-            button_hover_color=theme.ACCENT_HOVER, text_color=theme.TEXT_PRIMARY)
+            fg_color=theme.CARD, button_color=theme.SEGMENT_SELECTED,
+            button_hover_color=theme.SEGMENT_SELECTED_HOVER, text_color=theme.TEXT_PRIMARY)
         # Reconciliation banner: when the applied offset clears a sweep the FT
         # station recorded as FAIL, the note keeps that stored disposition visible
         # instead of the chart reading as a silent clean PASS (packs above the bar).

@@ -114,8 +114,9 @@ class ModelPage(PageBase):
         t = self.theme
         self._model_selector = ctk.CTkComboBox(parent, values=[], width=200,
                                                 command=self._on_model_selected, fg_color=t.CARD,
-                                                border_color=t.BORDER, button_color=t.ACCENT,
-                                                button_hover_color=t.ACCENT_HOVER, text_color=t.TEXT_PRIMARY)
+                                                border_color=t.BORDER, button_color=t.SEGMENT_SELECTED,
+                                                button_hover_color=t.SEGMENT_SELECTED_HOVER,
+                                                text_color=t.TEXT_PRIMARY)
         self._model_selector.set("Select model…")
         # Typing a model number + Enter must load it — the combobox command
         # only fires on dropdown picks, and scrolling 279 entries to reach a
@@ -137,7 +138,8 @@ class ModelPage(PageBase):
         self._model_selector.pack(side="left", padx=(0, t.SPACE_SM))
         self._window_menu = ctk.CTkOptionMenu(parent, values=list(_WINDOW_DAYS), width=80,
                                               command=self._on_window_change, fg_color=t.CARD,
-                                              button_color=t.ACCENT, button_hover_color=t.ACCENT_HOVER,
+                                              button_color=t.SEGMENT_SELECTED,
+                                              button_hover_color=t.SEGMENT_SELECTED_HOVER,
                                               text_color=t.TEXT_PRIMARY)
         self._window_menu.set(self._window_choice)
         self._window_menu.pack(side="left", padx=(0, t.SPACE_SM))
@@ -148,8 +150,8 @@ class ModelPage(PageBase):
         # into "is THIS run different".
         self._lot_menu = ctk.CTkOptionMenu(parent, values=[_ALL_HISTORY], width=210,
                                            command=self._on_lot_change, fg_color=t.CARD,
-                                           button_color=t.ACCENT,
-                                           button_hover_color=t.ACCENT_HOVER,
+                                           button_color=t.SEGMENT_SELECTED,
+                                           button_hover_color=t.SEGMENT_SELECTED_HOVER,
                                            text_color=t.TEXT_PRIMARY)
         self._lot_menu.set(_ALL_HISTORY)
         self._lot_menu.pack(side="left", padx=(0, t.SPACE_SM))

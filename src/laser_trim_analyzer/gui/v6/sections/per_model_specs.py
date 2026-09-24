@@ -87,8 +87,8 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
     # app startup ON the main thread — blocked the whole UI whenever a worker
     # (batch save, training) held the DB lock.
     model_box = ctk.CTkComboBox(parent, values=[], fg_color=t.SURFACE,
-                                border_color=t.BORDER, button_color=t.ACCENT,
-                                button_hover_color=t.ACCENT_HOVER, text_color=t.TEXT_PRIMARY,
+                                border_color=t.BORDER, button_color=t.SEGMENT_SELECTED,
+                                button_hover_color=t.SEGMENT_SELECTED_HOVER, text_color=t.TEXT_PRIMARY,
                                 command=lambda choice: _load(choice))
     model_box.set("")
     model_box.pack(side="top", fill="x", pady=(0, t.SPACE_SM))

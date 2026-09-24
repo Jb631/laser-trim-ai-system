@@ -188,6 +188,142 @@ def test_every_checkbox_the_app_draws_shows_its_checkmark(make_app):
     assert not bad, "\n".join(bad)
 
 
+# ---- CTkOptionMenu / CTkComboBox / CTkSwitch (Facelift step 2, Task 1) ---------------------------
+# Step 1's review left these: 8 dropdowns whose arrow (ctk_optionmenu.py / ctk_combobox.py both
+# fill their "dropdown_arrow" canvas item with text_color) sits on a button_color panel of
+# ACCENT -- TEXT_PRIMARY on ACCENT is the same 1.66:1 the segmented buttons had -- and the Final
+# Test overlay switch's knob (button_color, drawn as "slider_parts") sat on its ON track
+# (progress_color=ACCENT) at 1.27:1. Same method as the two tests above: build the real widgets,
+# read the colours they were actually configured with.
+
+def _dropdown_menus(*roots):
+    """De-duplicated: the two chart modals are built with master=app, and tkinter counts a
+    Toplevel as one of its master's winfo_children() -- so walking `app` already reaches them,
+    and walking them again by name would otherwise double every entry."""
+    import customtkinter as ctk
+    out, seen = [], set()
+    for r in roots:
+        for w in _walk(r):
+            if isinstance(w, (ctk.CTkOptionMenu, ctk.CTkComboBox)) and id(w) not in seen:
+                seen.add(id(w))
+                out.append(w)
+    return out
+
+
+def test_every_dropdown_arrow_the_app_draws_is_readable(make_app):
+    """The two unit-chart modals are Toplevels built on demand (opened from a unit row), not at
+    app start-up, so -- same reasoning as the checkbox test filling unit rows above -- build them
+    directly to reach their track-selector dropdowns too."""
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import FtUnitChartModal, UnitChartModal
+
+    app = make_app()
+    pages = app.page_container
+    for name in ("model", "dashboard", "settings"):
+        pages.get_page(name)          # per_model_specs' combo box lives on settings
+
+    unit_modal = UnitChartModal(app, app.theme, app.db, {
+        "serial": "S1", "overall_status": "PASS", "file_date": "2026-01-01",
+        "analysis_id": None, "model": "M1", "system": "B"})
+    ft_modal = FtUnitChartModal(app, app.theme, app.db, {
+        "serial": "S1", "result": "PASS", "file_date": None,
+        "id": None, "model": "M1", "system": "B"})
+    try:
+        menus = _dropdown_menus(app, unit_modal, ft_modal)
+        named = {"the Model page's model selector": pages.get_page("model")._model_selector,
+                 "the Model page's window menu": pages.get_page("model")._window_menu,
+                 "the Model page's lot menu": pages.get_page("model")._lot_menu,
+                 "the Dashboard's window menu": pages.get_page("dashboard")._window_menu,
+                 "the Dashboard's trend-period menu": pages.get_page("dashboard")._trend_period_menu,
+                 "the unit-chart modal's track menu": unit_modal._track_menu,
+                 "the FT-chart modal's track menu": ft_modal._track_menu}
+        for name, w in named.items():
+            assert w in menus, f"the walk never reached {name}"
+        # per_model_specs' own combo box, reached only through the walk (it has no public name):
+        assert len(menus) >= len(named) + 1, "per_model_specs' model combo box was never reached"
+
+        bad = []
+        for w in menus:
+            arrow = _hex(w, w.cget("text_color"))
+            for state, fill in (("", w.cget("button_color")), (", hovered", w.cget("button_hover_color"))):
+                ratio = contrast(arrow, _hex(w, fill))
+                if ratio < 3.0:
+                    bad.append(f"{w}{state}: arrow {arrow} on {_hex(w, fill)} = {ratio:.2f}:1")
+        assert not bad, "\n".join(bad)
+    finally:
+        unit_modal.destroy()
+        ft_modal.destroy()
+
+
+def test_the_final_test_overlay_switch_knob_is_readable(make_app):
+    """CTkSwitch's knob (button_color / button_hover_color, "slider_parts") can sit on either the
+    ON track (progress_color, "progress_parts") or the OFF track (fg_color, "inner_parts") --
+    ctk_switch.py's own _draw() colours both regardless of state. Must clear 3:1 against both,
+    in both the resting and hovered knob colour."""
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import UnitChartModal
+
+    app = make_app()
+    modal = UnitChartModal(app, app.theme, app.db, {
+        "serial": "S1", "overall_status": "PASS", "file_date": "2026-01-01",
+        "analysis_id": None, "model": "M1", "system": "B"})
+    try:
+        sw = modal._ft_toggle
+        tracks = {"on-track": _hex(sw, sw.cget("progress_color")),
+                  "off-track": _hex(sw, sw.cget("fg_color"))}
+        bad = []
+        for state, knob in (("", sw.cget("button_color")), (", hovered", sw.cget("button_hover_color"))):
+            k = _hex(sw, knob)
+            for track_name, track in tracks.items():
+                ratio = contrast(k, track)
+                if ratio < 3.0:
+                    bad.append(f"knob{state} {k} on the {track_name} {track} = {ratio:.2f}:1")
+        assert not bad, "\n".join(bad)
+    finally:
+        modal.destroy()
+
+
+def test_no_v6_dropdown_or_switch_is_built_with_the_defective_colour():
+    """Static backstop, same idea as the segmented-button/checkbox one below.
+
+    CTkOptionMenu/CTkComboBox: flagged only when EXPLICITLY given the wrong colour, not when
+    button_color is left unset -- `widgets/history_tab.py`'s menu never sets it at all and reads
+    fine (CTkOptionMenu's own un-themed default text_color/button_color measure 7.47:1; checked
+    separately, not touched by this fix, since it never had the defect).
+    CTkSwitch: the one construction site must carry the token outright -- there is no already-safe
+    default to fall back on here (ctk_switch.py's own default button_color measured 1.27:1 against
+    progress_color=ACCENT).
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "src/laser_trim_analyzer/gui/v6"
+    permissive = {"CTkOptionMenu": ("button_color", "SEGMENT_SELECTED"),
+                  "CTkComboBox": ("button_color", "SEGMENT_SELECTED")}
+    required = {"CTkSwitch": ("button_color", "TEXT_PRIMARY")}
+    bad, seen = [], {name: 0 for name in (*permissive, *required)}
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", getattr(node.func, "id", None))
+            if name not in seen:
+                continue
+            seen[name] += 1
+            keyword, token = (permissive.get(name) or required.get(name))
+            given = {k.arg: k.value for k in node.keywords}
+            value = given.get(keyword)
+            has_token = isinstance(value, ast.Attribute) and value.attr == token
+            if name in required and not has_token:
+                bad.append(f"{path.name}:{node.lineno} {name} without {keyword}=<theme>.{token}")
+            elif name in permissive and value is not None and not has_token:
+                wrong = value.attr if isinstance(value, ast.Attribute) else ast.dump(value)
+                bad.append(f"{path.name}:{node.lineno} {name} styled with {keyword}={wrong}, want {token}")
+    # Floors: model_page (combo box + 2 option menus) + dashboard_page (2) + unit_chart_modal (2)
+    # + history_tab (1, unstyled -- see docstring) = 7 CTkOptionMenu; model_page + per_model_specs
+    # = 2 CTkComboBox; unit_chart_modal = 1 CTkSwitch.
+    assert seen["CTkOptionMenu"] >= 7 and seen["CTkComboBox"] >= 2 and seen["CTkSwitch"] >= 1, seen
+    assert not bad, "\n".join(bad)
+
+
 def test_no_v6_segmented_control_or_checkbox_is_built_without_its_readable_colours():
     """The two app-level tests above see only what the app builds at start-up (plus the unit
     rows they fill in). A control added later, somewhere they never open, would slip past them --

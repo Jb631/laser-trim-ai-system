@@ -35,7 +35,8 @@ class DashboardPage(PageBase):
         t = self.theme
         self._window_menu = ctk.CTkOptionMenu(parent, values=list(_WINDOW_DAYS), width=90,
                                               command=self._on_window_change, fg_color=t.CARD,
-                                              button_color=t.ACCENT, button_hover_color=t.ACCENT_HOVER,
+                                              button_color=t.SEGMENT_SELECTED,
+                                              button_hover_color=t.SEGMENT_SELECTED_HOVER,
                                               text_color=t.TEXT_PRIMARY)
         self._window_menu.set(self._window_choice)
         self._window_menu.pack(side="left")
@@ -68,7 +69,7 @@ class DashboardPage(PageBase):
         self._trend_period_menu = ctk.CTkOptionMenu(
             trend_hdr, values=list(_TREND_PERIODS), width=100,
             command=self._on_trend_period_change, fg_color=t.CARD,
-            button_color=t.ACCENT, button_hover_color=t.ACCENT_HOVER,
+            button_color=t.SEGMENT_SELECTED, button_hover_color=t.SEGMENT_SELECTED_HOVER,
             text_color=t.TEXT_PRIMARY)
         self._trend_period_menu.set(self._trend_period_choice)
         self._trend_period_menu.pack(side="right")
