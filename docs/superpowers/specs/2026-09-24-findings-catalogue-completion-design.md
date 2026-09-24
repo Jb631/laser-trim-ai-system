@@ -39,12 +39,16 @@ failure must reach `facts["errors"]`. `insufficient` and `aligned` say nothing �
 
 ## 2. Where the loss is made (#3) — a fact, and a finding only when strong
 
-**Ruling 2:** per laser, how well the INCOMING measurement (the untrimmed sweep's best-offset
-worst point, and the incoming resistance) separates tracks that end the laser inside limits from
+**Ruling 2:** per laser, how well the INCOMING measurement (the untrimmed sweep's largest error
+magnitude, and the incoming resistance) separates tracks that end the laser inside limits from
 those that do not, as an AUC on the latest year. Stored in `facts["loss_origin"]` for the Model
 page's Findings tab, always. A finding (Change a setting group, lever `deposition`, no gain) only
-when the AUC is ≥ 0.70 on ≥ 300 tracks: "{laser}: incoming linearity predicts the laser verdict
-(AUC 0.73) — the loss starts before the laser". A weak AUC is a fact, not a finding: the other
+when the AUC is ≥ 0.70 on ≥ 300 tracks with at least 50 of each outcome: "{laser}: incoming
+linearity predicts the laser verdict (AUC 0.74) — the loss starts before the laser". Measured
+2026-09-24 (latest year): 6607 on laser 1 (LTS) 0.74 over 1,290 tracks (465 fail) — the one
+model that qualifies of eight checked; 8232-1 0.57 and 8340-1 0.57 (made at the laser, as the
+2026-09-17 study found); 8202-1 0.71 but only 27 failures, which the 50-per-outcome floor
+excludes. A weak AUC is a fact, not a finding: the other
 analyzers already cover the laser's own levers. The Model page's predictor panel reports the ML
 predictor's AUC on final test; the two sit together on the tab — why: this routes James to the
 right lever and never grades a part — cost if wrong: one sentence on a tab.
