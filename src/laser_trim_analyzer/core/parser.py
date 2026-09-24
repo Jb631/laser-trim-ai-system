@@ -179,9 +179,11 @@ class ExcelParser:
             # exactly one layout.
             #
             # Read BEFORE the tracks (2026-09-24): laser 1's `TrimVolts N`
-            # sheets are indexed by this block's ignored-point counts, and
-            # reading it once here is cheaper than reading the sheet twice.
-            # It reads only its own sheets, so the order changes no value.
+            # sheets are indexed by this block's trim window (Points From
+            # Start/End, else the ignored-point counts; see
+            # trim_passes.increment_volts_frame), and reading it once here is
+            # cheaper than reading the sheet twice. It reads only its own
+            # sheets, so the order changes no value.
             trim_setup: Dict[str, Any] = {}
             for sheet, label_col, value_col in (
                     ("Track Parameters", 0, 1),     # System A

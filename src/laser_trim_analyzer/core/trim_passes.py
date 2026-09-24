@@ -255,25 +255,46 @@ def _whole_count(v: Any) -> Optional[int]:
 def increment_volts_frame(setup: Optional[Dict[str, Any]]) -> Tuple[Optional[int], Optional[int]]:
     """(first_row, window) for a laser-1 file's `TrimVolts` sheets.
 
-    From the file's own `Model Parameters`, as `trim_setup.normalise_key`
-    spells them: `first_row` is `Initial Points Ignored` -- the position index
-    of column 0 -- and `window` is how many columns the sheet SHOULD have,
-    `Number of Readings (Lin)` - initial - ending ignored + 1. Measured on all
-    6,264 local laser-1 TrimVolts sheets (2026-09-24): exact on 6,198; the
-    other 66 are all NARROWER -- 11 at the .xls column cap, 55 that logged
-    fewer columns (mostly 1x1 sheets, one off-by-one). `first_row` needs only
-    its own field; `window` needs all three, and is None rather than a
-    nonsense count when they disagree.
+    From the file's own `Model Parameters`, as `trim_setup.normalise_key` spells them.
+    `first_row` is the position index of column 0 and `window` is how many columns the
+    sheet SHOULD have. Both come from ONE pair of fields, never a mix:
+
+    * `Points From Start` / `Points From End` when the file carries both -- in the
+      machine's own words on that sheet, "how many points from start to begin
+      reading/trimming". Every local laser-1 template has them except 6607's and
+      8232-1's, and 27,204 of the work database's 45,143 laser-1 setup blocks.
+    * otherwise `Initial Points Ignored` / `Ending points Ignored`.
+
+    window = `Number of Readings (Lin)` - start - end + 1 (None without all three, or
+    when that is not a positive count).
+
+    Measured 2026-09-24 against the machine's OWN placement -- its VOLTAGES sheet puts
+    column k's last reading at row (first_row + k) -- on all 6,263 local laser-1 sheets
+    that have a VOLTAGES sheet: this rule places 6,263 of 6,263. Initial Points Ignored
+    alone placed 6,227: on 36 passes (27 8340-1 files, Initial Points Ignored 1, Points
+    From Start 2) every curve sat on the neighbouring position, and a touch-up's
+    120-column sheet was called truncated against a window of 122 (Points From Start/End
+    give exactly 120). On the work database 4,311 laser-1 files, across many models, carry
+    a Points From Start/End that differs from the ignored counts.
+
+    The older template (6607, 8232-1) has `Start Point` / `End point` in the same slot,
+    described as "points from start for reading/measuring" -- not trimming -- and it is
+    NOT used here: it equals the ignored counts on every local file, so no workbook here
+    can say which of the two the machine follows when they differ (1,223 old files on the
+    work database, 2011-2016, holding 14 stored `Trim N` passes).
     """
     setup = setup or {}
-    first_row = _whole_count(setup.get("initial_points_ignored"))
-    ending = _whole_count(setup.get("ending_points_ignored"))
+    start = _whole_count(setup.get("points_from_start"))
+    end = _whole_count(setup.get("points_from_end"))
+    if start is None or end is None:
+        start = _whole_count(setup.get("initial_points_ignored"))
+        end = _whole_count(setup.get("ending_points_ignored"))
     readings = _whole_count(setup.get("number_of_readings_lin"))
     window = None
-    if first_row is not None and ending is not None and readings is not None:
-        span = readings - first_row - ending + 1
+    if start is not None and end is not None and readings is not None:
+        span = readings - start - end + 1
         window = span if span >= 1 else None
-    return first_row, window
+    return start, window
 
 
 def read_increment_volts(df: pd.DataFrame, first_row: Optional[int],
@@ -284,15 +305,21 @@ def read_increment_volts(df: pd.DataFrame, first_row: Optional[int],
     text or a TRUE/FALSE flag (the same refusals as `_col`).
 
     Curve k belongs to the pass's `positions[first_row + k]`. `first_row` is the position
-    index of column 0 (the file's Initial Points Ignored); `window` is how many columns the
-    file SHOULD have. A sheet at the .xls column limit, or narrower than its window, has
-    lost positions and says so.
+    index of column 0 and `window` is how many columns the file SHOULD have -- both from
+    `increment_volts_frame` (Points From Start/End, else the ignored-point counts). A
+    sheet at the .xls column limit, or narrower than its window, has lost positions and
+    says so.
 
     A column with no reading at all -- blank at the top, with only zero padding or nothing
     below -- is a position the pass never reached, and stays in the list as [] so every
     curve keeps its index. Measured 2026-09-24: 1,897 such columns in 574 of the 6,264
     local sheets, always one trailing block (573 of the 574 are 8232-1), and not one
     reading anywhere below a leading blank.
+
+    A sheet with no reading AT ALL (no columns, or columns that never read) is no capture:
+    all three values come back empty/None, so every writer stores all three NULL -- the
+    same as a pass with no sheet -- rather than a first_row and a truncated flag for
+    nothing. Not seen in any of the 6,264 local sheets; a guard.
     """
     curves: List[List[float]] = []
     for col in range(df.shape[1]):
@@ -306,6 +333,9 @@ def read_increment_volts(df: pd.DataFrame, first_row: Optional[int],
                 break                 # NaN blank or zero padding
             readings.append(f)
         curves.append(readings)
+    if not any(curves):
+        return {"increment_volts": [], "increment_volts_first_row": None,
+                "increment_volts_truncated": None}
     n = df.shape[1]
     truncated = n >= XLS_MAX_COLUMNS or (window is not None and n < window)
     return {"increment_volts": curves, "increment_volts_first_row": first_row,

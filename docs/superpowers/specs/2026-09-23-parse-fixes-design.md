@@ -95,13 +95,29 @@ the file-level `errors`, exactly as today.
 
 - `TrimVolts N` exists if and only if `Trim N` exists — 4,540 files, zero exceptions. The 432
   files without one are 431 no-cut templates and 1 touch-up file.
-- Column *k* is the position at row (`Initial Points Ignored` + *k*) of `Trim N` (r = 0.999998;
-  reversed order refuted at r = −0.9999). Each row is one more laser increment; each cell is
-  the output voltage after it. Row 0 is non-zero in every engaged column — **the only
-  per-position pre-cut reading a laser-1 file carries**. Zeros are end padding only (no
+- Column *k* is the position at row (*start* + *k*) of `Trim N`, where *start* is the file's
+  `Points From Start` when it names both `Points From Start` and `Points From End` ("how many
+  points from start to begin reading/trimming"), else its `Initial Points Ignored`.
+  *Corrected 2026-09-24 (Task 4 review):* this bullet first said `Initial Points Ignored`
+  alone. Held against the machine's own placement (its `VOLTAGES` sheet puts column *k*'s
+  last reading at row *start* + *k*, exactly), that placed 6,227 of 6,263 local passes; the
+  36 misses are 8340-1 files with `Initial Points Ignored` 1 and `Points From Start` 2, every
+  curve one position off. The corrected rule places 6,263 of 6,263. r alone could not see it:
+  a straight ramp correlates with any shift of itself (reversed order is still refuted, at
+  r = −0.9999). On the work database 4,311 laser-1 files, across many models, carry a Points
+  From Start/End that differs from the ignored counts. Each row is one more laser increment;
+  each cell is the output voltage after it. Row 0 is non-zero in every engaged column — **the
+  only per-position pre-cut reading a laser-1 file carries**. Zeros are end padding only (no
   zero between two readings in any of 107 passes).
-- The column count is `Number of Readings (Lin)` − initial − ending ignored + 1 in 83% of
-  sheets; 11 sheets hit the old .xls **256-column limit and are cut short**.
+- The column count is `Number of Readings (Lin)` − *start* − *end* + 1 (the same pair of
+  fields), exact on 6,198 of 6,263 local sheets; the rest are all narrower, 11 of them at the
+  old .xls **256-column limit, cut short**. (The first version, with the ignored counts only,
+  also called a touch-up's full 120-column sheet truncated against a window of 122.)
+- The older template of 6607 and 8232-1 labels the same slot `Start Point` / `End point`
+  ("points from start for reading/measuring" — not trimming). It equals the ignored counts on
+  every local file, so no local workbook can say which one the machine follows when they
+  differ; they do on 1,223 old (2011–2016) files on the work database, holding 14 stored
+  `Trim N` passes. Not used — an open question for James, not a ruling.
 - The last reading is **not** `Trim N`'s measured value (ratio 0.94–1.23, smooth within a file):
   it is the live reading during the cut, `Trim N` is the verification sweep after it. They must
   never be used interchangeably.

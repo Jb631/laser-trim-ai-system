@@ -1935,12 +1935,23 @@ def check_ingest_group() -> None:
 
 
 # ---- laser 1's TrimVolts capture (2026-09-24) --------------------------------
-# The day the capture shipped. A laser-1 `Trim N` pass row created before it
+# A laser-1 `Trim N` pass row created before the database started capturing
 # cannot carry `increment_volts` -- filling those is the back-fill's job (design
-# doc ruling 4c) or a reprocess's, never a failure here. `created_date` is
-# stored UTC as 'YYYY-MM-DD HH:MM:SS.ffffff', so a string compare is a date
-# compare.
-INCREMENT_VOLTS_SINCE = "2026-09-24"
+# doc ruling 4c) or a reprocess's, never a failure here. WHEN that was is the
+# database's own record (app_meta, written by its start-up migration), not a
+# date typed in here. `created_date` and that record are both UTC
+# 'YYYY-MM-DD HH:MM:SS.ffffff', so a string compare is a time compare.
+
+
+def _increment_volts_since(conn):
+    """The database's own record of when it started capturing TrimVolts, or None."""
+    from laser_trim_analyzer.database.manager import INCREMENT_VOLTS_SINCE_KEY
+    try:
+        row = conn.execute("SELECT value FROM app_meta WHERE key = ?",
+                           (INCREMENT_VOLTS_SINCE_KEY,)).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
 
 
 def _laser1_pass_number(sheet):
@@ -1955,12 +1966,15 @@ def _file_has_trimvolts(path, n):
     None: it cannot be opened here (a work-share path on the Mac, a moved file).
 
     Deliberately NOT the parser's own sheet lookup: a check that asks the code
-    under test whether the sheet exists agrees with that code's bugs."""
+    under test whether the sheet exists agrees with that code's bugs. Never raises:
+    a row with no file_path at all is simply unverifiable."""
     import pandas as _pd
-    p = Path(path)
-    if not p.exists():
+    if not path:
         return None
     try:
+        p = Path(path)
+        if not p.exists():
+            return None
         xl = _pd.ExcelFile(p)
         names = [s for s in xl.sheet_names
                  if s.replace(" ", "").lower() == f"trimvolts{n}"]
@@ -1973,19 +1987,24 @@ def _file_has_trimvolts(path, n):
 
 
 def _increment_volts_audit(conn, since, max_files=20):
-    """Every laser-1 `Trim N` pass row in `conn`, sorted by whether it carries its curves.
+    """Every laser-1 `Trim N` pass row in `conn`, sorted into buckets that add up.
 
-    A pass processed since `since` WITHOUT them is settled against its own
-    workbook: the sheet is there, so the capture missed it (`missed`, a FAIL);
-    the sheet is not (a touch-up file -- 1 in 4,972 locally) or is empty
-    (`no_sheet`, correct); or the file cannot be opened (`unverified`). At most
-    `max_files` workbooks are opened; beyond that a row counts as unverified.
+    Created before `since` (the database's own record, `_increment_volts_since`):
+    `old_captured` (back-filled) or `old_uncaptured` (the back-fill's job).
+    Created since: `captured`, or settled against the pass's own workbook -- the
+    sheet is there, so the capture missed it (`missed`, a FAIL); the sheet is not
+    (a touch-up file -- 1 in 4,972 locally) or holds no reading (`no_sheet`,
+    correct); or the file cannot be opened (`unverified`). At most `max_files`
+    workbooks are opened; beyond that a row counts as unverified. With no
+    `since` at all, every row is held to "must carry".
+    passes == old_captured + old_uncaptured + captured + no_sheet
+              + len(missed) + len(unverified).
     Raw SQL on purpose, and `IS NULL` is exact here: the writer stores a real SQL
     NULL for "no capture", never SafeJSON's 'null' text.
     """
     import re as _re
-    out = {"passes": 0, "captured": 0, "predates": 0, "no_sheet": 0,
-           "missed": [], "unverified": []}
+    out = {"passes": 0, "old_captured": 0, "old_uncaptured": 0, "captured": 0,
+           "no_sheet": 0, "missed": [], "unverified": []}
     verdicts = {}
     for sheet, created, has, path in conn.execute(
             "SELECT p.sheet, p.created_date, p.increment_volts IS NOT NULL, a.file_path "
@@ -1996,17 +2015,18 @@ def _increment_volts_audit(conn, since, max_files=20):
         if n is None:
             continue
         out["passes"] += 1
+        if since is not None and (created or "") < since:
+            out["old_captured" if has else "old_uncaptured"] += 1
+            continue
         if has:
             out["captured"] += 1
-            continue
-        if (created or "") < since:
-            out["predates"] += 1
             continue
         key = (path, n)
         if key not in verdicts:
             verdicts[key] = (_file_has_trimvolts(path, n)
                              if len(verdicts) < max_files else None)
-        name = _re.split(r"[\\/]", path or "")[-1]    # a UNC path on any OS
+        name = (_re.split(r"[\\/]", path)[-1]         # a UNC path on any OS
+                if path else "(no file_path)")
         where = f"{name} {sheet}"
         if verdicts[key] is True:
             out["missed"].append(where)
@@ -2025,7 +2045,8 @@ def check_increment_volts_fixtures() -> None:
 
     Falsify before trusting (2026-09-24): make `_write_trim_passes` store `sql_null()` for
     increment_volts, or skip `_increment_volts_for` in the parser -- the first and last
-    checks here go FAIL (0 of 4 captured; the rule names all 4 passes as missed).
+    checks here go FAIL (0 of 4 captured; the rule names all 4 passes as missed). Stop
+    the migration recording its app_meta start and the last check goes FAIL (since=None).
     """
     import json as _json
     import shutil
@@ -2062,7 +2083,8 @@ def check_increment_volts_fixtures() -> None:
                 "p.increment_volts_truncated, p.recipe FROM trim_passes p "
                 "JOIN track_results t ON t.id = p.track_result_id "
                 "JOIN analysis_results a ON a.id = t.analysis_id").fetchall()
-            audit = _increment_volts_audit(conn, INCREMENT_VOLTS_SINCE)
+            since = _increment_volts_since(conn)
+            audit = _increment_volts_audit(conn, since)
         finally:
             conn.close()
         got, leaked, in_recipe = {}, [], []
@@ -2085,11 +2107,14 @@ def check_increment_volts_fixtures() -> None:
               f"{len(rows)} pass rows; leaked={leaked[:3]}")
         check("increment volts: never folded into the recipe blob", not in_recipe,
               f"{in_recipe[:3]}")
-        check("increment volts: the database rule finds the fixtures' 4 passes captured",
-              audit["passes"] == 4 and audit["captured"] == 4 and not audit["missed"]
-              and not audit["unverified"],
-              f"passes={audit['passes']} captured={audit['captured']} "
-              f"missed={audit['missed'][:3]} unverified={audit['unverified'][:3]}")
+        # A new database records when it started capturing at its first start-up, so
+        # every fixture pass saved after that is held to "must carry" -- none predates.
+        check("increment volts: the database rule finds the fixtures' 4 passes captured, "
+              "processed since the start this database recorded",
+              since is not None and audit["passes"] == 4 and audit["captured"] == 4
+              and not audit["missed"] and not audit["unverified"],
+              f"since={since}; missed={audit['missed'][:3]}; "
+              + _increment_volts_counts(audit))
     except Exception as e:                      # an exception is a FAIL, never a skip
         check("increment volts: the fixtures run through the pipeline", False,
               f"{type(e).__name__}: {e}")
@@ -2100,24 +2125,169 @@ def check_increment_volts_fixtures() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _increment_volts_counts(a):
+    """One line in which the numbers add up to a['passes']."""
+    new = a["captured"] + a["no_sheet"] + len(a["missed"]) + len(a["unverified"])
+    return (f"{new} processed since the capture started: {a['captured']} carry their "
+            f"curves, {a['no_sheet']} whose workbook has no TrimVolts reading, "
+            f"{len(a['unverified'])} unverifiable here, {len(a['missed'])} missed; "
+            f"{a['old_captured'] + a['old_uncaptured']} predate it "
+            f"({a['old_captured']} back-filled, {a['old_uncaptured']} not yet) "
+            f"-- {a['passes']} laser-1 Trim N passes in all")
+
+
 def check_increment_volts_on_database(raw) -> None:
-    """On the copy: every laser-1 `Trim N` pass processed since the capture shipped carries
-    its TrimVolts curves. Rows that predate it are skipped (the back-fill's job, not a
-    failure). Until a pass is processed on a machine running this code there is nothing
-    to check here, and the detail says so; the fixture half above carries the teeth."""
-    a = _increment_volts_audit(raw, INCREMENT_VOLTS_SINCE)
-    since = a["passes"] - a["predates"]
-    check(f"increment volts: every laser-1 Trim N pass processed since "
-          f"{INCREMENT_VOLTS_SINCE} carries its TrimVolts curves",
+    """On the copy: every laser-1 `Trim N` pass processed since THIS database started
+    capturing (its own app_meta record) carries its TrimVolts curves. Rows that predate it
+    are skipped (the back-fill's job, not a failure). Until a pass is processed on a
+    machine running this code there is nothing to check here, and the detail says so; the
+    fixture half above carries the teeth."""
+    since = _increment_volts_since(raw)
+    check("increment volts: the database records when it started capturing TrimVolts",
+          since is not None,
+          f"since={since}" if since else
+          "no app_meta record: its start-up migration did not run, or could not record it")
+    a = _increment_volts_audit(raw, since)
+    check("increment volts: every laser-1 Trim N pass processed since the capture started "
+          "carries its TrimVolts curves",
           not a["missed"],
-          f"missed={a['missed'][:3]} ({len(a['missed'])})" if a["missed"] else
-          f"{since} processed since ({a['captured']} carry them, {a['no_sheet']} whose "
-          f"workbook has no TrimVolts sheet); {a['predates']} of {a['passes']} predate "
-          f"the capture (skipped: back-fill)")
+          (f"missed={a['missed'][:3]}; " if a["missed"] else "") + _increment_volts_counts(a))
     if a["unverified"]:
         warn("increment volts: passes processed since the capture WITHOUT curves whose "
              "workbook cannot be opened here to settle it",
              f"{len(a['unverified'])}: {a['unverified'][:3]}")
+
+
+def _trimvolts_placement_one(path):
+    """One laser-1 workbook: the parser's TrimVolts capture held against the machine's OWN
+    placement. Laser 1 writes each `TrimVolts N` column's last reading into its `VOLTAGES`
+    sheet, column N, at the position row of that column -- so curve k must end in
+    VOLTAGES[first_row + k, N], exactly. The one allowance, measured on every local sheet
+    (2026-09-24): the LAST non-empty curve's cell may be blank (55 passes); no other.
+
+    The parser supplies only what is under test (curves, first_row). The sheet census and
+    VOLTAGES are read here, independently. Module level so a process pool can run it.
+    """
+    import re as _re
+    import pandas as _pd
+    from laser_trim_analyzer.core.parser import ExcelParser, drop_cached_bytes
+    out = {"file": Path(path).name, "checked": 0, "placed": 0, "blank_last": 0,
+           "uncheckable": 0, "misplaced": [], "uncaptured": [], "error": None}
+    try:
+        try:
+            parsed = ExcelParser().parse_file(Path(path))
+        finally:
+            drop_cached_bytes(Path(path))
+        passes = {str(p.get("sheet", "")).strip().lower(): p
+                  for t in parsed.get("tracks") or [] for p in t.get("trim_passes") or []}
+        with _pd.ExcelFile(path) as xl:
+            names = xl.sheet_names
+            tv = {}
+            for s in names:
+                m = _re.fullmatch(r"trimvolts(\d+)", s.replace(" ", "").lower())
+                if m:
+                    tv.setdefault(int(m.group(1)), []).append(s)
+            volts = (_pd.read_excel(xl, sheet_name="VOLTAGES", header=None)
+                     if "VOLTAGES" in names else None)
+            for s in names:
+                m = _re.fullmatch(r"trim\s+(\d+)", s.strip(), _re.I)
+                if not m or len(tv.get(int(m.group(1)), [])) != 1:
+                    continue           # no TrimVolts beside it (a touch-up), or ambiguous
+                n = int(m.group(1))
+                p = passes.get(s.strip().lower())
+                if p is None:
+                    continue           # the pass itself was never read: not this check's
+                where = f"{out['file']} {s}"
+                curves = p.get("increment_volts") or []
+                if not any(curves):
+                    raw = _pd.read_excel(xl, sheet_name=tv[n][0], header=None)
+                    if any(isinstance(v, (int, float)) and not isinstance(v, bool)
+                           and v == v and v != 0 for v in raw.to_numpy().ravel()):
+                        out["uncaptured"].append(where)
+                    continue
+                out["checked"] += 1
+                fr = p.get("increment_volts_first_row")
+                if volts is None or volts.shape[1] <= n:
+                    out["uncheckable"] += 1
+                    continue
+                if fr is None:
+                    out["misplaced"].append(f"{where}: no first_row")
+                    continue
+                live = [k for k, c in enumerate(curves) if c]
+                bad = matched = blank_last = 0
+                for k in live:
+                    r = fr + k
+                    v = volts.iat[r, n] if r < volts.shape[0] else None
+                    if not isinstance(v, (int, float)) or isinstance(v, bool) or v != v:
+                        if k == live[-1] and r < volts.shape[0]:
+                            blank_last = 1
+                            continue
+                        bad += 1
+                    elif float(v) != curves[k][-1]:
+                        bad += 1
+                    else:
+                        matched += 1
+                # At least one cell must MATCH: a one-curve sheet whose only cell is blank
+                # proves nothing, and without this a 1x1 sheet read one row off passed on
+                # the blank-last allowance alone (every local pass matches at least one).
+                if bad or not matched:
+                    out["misplaced"].append(
+                        f"{where}: first_row {fr}, {bad} of {len(live)} off, {matched} matched")
+                else:
+                    out["placed"] += 1
+                    out["blank_last"] += blank_last
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}: {str(exc)[:80]}"
+    return out
+
+
+def check_increment_volts_corpus() -> None:
+    """Every captured laser-1 pass in the LOCAL corpus sits where the machine put it
+    (--only increment-volts). Reads workbooks only, never a database.
+
+    Why it exists (2026-09-24 review): `first_row` was Initial Points Ignored, and on 36 of
+    6,263 local passes the machine had started at Points From Start instead -- every curve
+    on them one position off, invisible to the fixtures (8232-1 has no Points From Start).
+    Falsify before trusting: make `increment_volts_frame` ignore points_from_start again
+    and this goes FAIL with those 36 passes (37 with the tracked touch-up fixture).
+    """
+    import os as _os
+    from concurrent.futures import ProcessPoolExecutor
+    roots = [REPO / "Work Files" / "home_slice" / "LTS",
+             REPO / "Work Files" / "Sample_Base_2026-04-10" / "LTS"]
+    corpus = sorted(str(p) for r in roots if r.is_dir() for p in r.rglob("*.xls"))
+    tracked = (sorted(str(p) for p in (REPO / "tests" / "fixtures" / "trim").glob("lts_*.xls"))
+               + sorted(str(p) for p in (REPO / "tests" / "fixtures" / "trimvolts").glob("*.xls")))
+    if not corpus:
+        warn("increment volts: no local laser-1 corpus (Work Files/.../LTS) on this machine",
+             f"the placement check below ran on the {len(tracked)} tracked fixtures only")
+    files = corpus + tracked
+    workers = max(1, min(8, (_os.cpu_count() or 2) - 1))
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            res = list(pool.map(_trimvolts_placement_one, files, chunksize=16))
+    except Exception as exc:                    # an exception is a FAIL, never a skip
+        check("increment volts: the corpus placement check runs", False,
+              f"{type(exc).__name__}: {exc}")
+        return
+    parsed = [r for r in res if r["error"] is None]
+    checked = sum(r["checked"] for r in parsed)
+    misplaced = [m for r in parsed for m in r["misplaced"]]
+    uncaptured = [u for r in parsed for u in r["uncaptured"]]
+    errors = [f"{r['file']}: {r['error']}" for r in res if r["error"] is not None]
+    check("increment volts: every captured laser-1 pass sits where the machine's own "
+          "VOLTAGES sheet puts it (corpus)",
+          checked > 0 and not misplaced,
+          (f"misplaced={misplaced[:3]} ({len(misplaced)}); " if misplaced else "")
+          + f"{checked} passes checked in {len(parsed)} workbooks "
+          f"({sum(r['placed'] for r in parsed)} placed, {sum(r['blank_last'] for r in parsed)} "
+          f"with the allowed blank last cell, {sum(r['uncheckable'] for r in parsed)} "
+          f"without a VOLTAGES column to hold them to); {len(errors)} workbooks did not "
+          f"parse or read: {errors[:2]}")
+    check("increment volts: every Trim N with a TrimVolts reading beside it is captured "
+          "(corpus)", not uncaptured,
+          f"uncaptured={uncaptured[:3]} ({len(uncaptured)})" if uncaptured
+          else f"all of them, across {len(parsed)} workbooks")
 
 
 def main() -> int:
@@ -2957,6 +3127,7 @@ def main() -> int:
     check_ft_graded_window()
     check_ingest_group()
     check_increment_volts_fixtures()
+    check_increment_volts_corpus()
     check_increment_volts_on_database(raw)
 
     # Ingest guard fires on a synthetic corrupt track.
@@ -3585,7 +3756,8 @@ STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
               "ft-window": check_ft_graded_window,
               "ingest": check_ingest_group,
               "findings": check_findings_fixtures,
-              "increment-volts": check_increment_volts_fixtures}
+              "increment-volts": lambda: (check_increment_volts_fixtures(),
+                                          check_increment_volts_corpus())}
 
 
 if __name__ == "__main__":

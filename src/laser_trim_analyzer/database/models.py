@@ -630,14 +630,17 @@ class TrimPass(Base):
     # Laser 1 only (2026-09-24): its `TrimVolts N` sheet, one list per engaged
     # position of the output voltage after each laser increment -- the
     # position's response curve to being cut. List k belongs to
-    # positions[increment_volts_first_row + k]. `increment_volts_truncated`
-    # is true when the sheet hit the .xls 256-column cap or is narrower than
-    # the file's window, i.e. positions are missing. SQL NULL (never the JSON
-    # text 'null'; see _write_trim_passes) on laser 2/3, on `Lin Error`, and
-    # on rows written before the capture. Never named `trim_volts`: that is
-    # the Trim Parameters SETTING, stored as `trim_voltage` below. The last
-    # reading is NOT this pass's measured value at that position (live
-    # reading vs the verification sweep).
+    # positions[increment_volts_first_row + k]; first_row is the file's
+    # Points From Start when it names both Points From Start and End, else its
+    # Initial Points Ignored (trim_passes.increment_volts_frame -- the ignored
+    # count alone put 36 local passes one position off). `increment_volts_truncated` is true
+    # when the sheet hit the .xls 256-column cap or is narrower than the
+    # file's trim window, i.e. positions are missing. All three are SQL NULL
+    # (never the JSON text 'null'; see _write_trim_passes) on laser 2/3, on
+    # `Lin Error`, on a sheet with no reading, and on rows written before the
+    # capture. Never named `trim_volts`: that is the Trim Parameters SETTING,
+    # stored as `trim_voltage` below. The last reading is NOT this pass's
+    # measured value at that position (live reading vs the verification sweep).
     increment_volts = Column(SafeJSON, nullable=True)
     increment_volts_first_row = Column(Integer)
     increment_volts_truncated = Column(Boolean)

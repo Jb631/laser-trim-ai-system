@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import threading
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
 from contextlib import contextmanager
@@ -106,6 +106,13 @@ UNKNOWN_MODEL_SENTINEL = "Unknown"
 # looked at (post-fix). Its whole job is to keep that migration from redoing
 # work the parser has already refused, on every launch, forever.
 UNKNOWN_REPARSE_COUNT_KEY = "unknown_model_reparse.last_count"
+
+# app_meta key: when THIS database started capturing laser 1's TrimVolts
+# (UTC, in trim_passes.created_date's own format). A laser-1 `Trim N` pass
+# created before it cannot carry `increment_volts` -- the back-fill's job, not
+# a defect -- and one created after it must. Per database, so no reader has to
+# guess the day the code shipped (the QA sweep's first version did).
+INCREMENT_VOLTS_SINCE_KEY = "trim_passes.increment_volts.since"
 
 # How many re-graded final tests `apply_final_test_regrades` puts in ONE
 # transaction. See that method for why per-row commits cost thirty hours; 200
@@ -908,6 +915,23 @@ class DatabaseManager:
                             and "already exists" not in str(e).lower()):
                         logger.warning(f"trim_passes.{col_name} migration warning: {e}")
                     session.rollback()
+            # ...and WHEN this database started capturing (INCREMENT_VOLTS_SINCE_KEY):
+            # recorded once, by the first start-up that finds the column in place
+            # with nothing recorded -- the one whose ALTER above just added it, or a
+            # new database's first start-up (create_all made the column). A database
+            # migrated by the first version of this code, which recorded nothing, gets
+            # its record at its next start-up; the passes written in between carry
+            # their curves anyway. Never recorded while the column is missing.
+            try:
+                has_column = any(
+                    r[1] == "increment_volts" for r in session.execute(
+                        text("PRAGMA table_info(trim_passes)")).fetchall())
+            except Exception:
+                session.rollback()
+                has_column = False
+            if has_column and self._meta_get(session, INCREMENT_VOLTS_SINCE_KEY) is None:
+                self._meta_set(session, INCREMENT_VOLTS_SINCE_KEY,
+                               datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f"))
 
             # Migration: Add measured_electrical_angle column to track_results
             try:
@@ -3703,11 +3727,12 @@ class DatabaseManager:
                      "used_deltas", "trim_target", "final_trim_value")
         # Laser 1's TrimVolts capture: its own columns, never folded into the
         # `recipe` blob (which must stay exactly what it was before the capture).
-        # A pass with no capture (laser 2/3, Lin Error, no TrimVolts sheet)
-        # stores a real SQL NULL in `increment_volts` -- NOT the JSON text
-        # 'null' that SafeJSON writes for None (which is why `cut_lengths IS
-        # NULL` never matches a laser-1 row). So `increment_volts IS NULL`
-        # means "not captured" in raw SQL, for these rows and for the rows
+        # A pass with no capture (laser 2/3, Lin Error, no TrimVolts sheet, a
+        # sheet with no reading) stores a real SQL NULL in ALL THREE columns --
+        # never the JSON text 'null' that SafeJSON writes for None (which is why
+        # `cut_lengths IS NULL` never matches a laser-1 row), and never a
+        # first_row or truncated flag beside no curves. So `increment_volts IS
+        # NULL` means "not captured" in raw SQL, for these rows and for the rows
         # that predate the column alike; the ORM reads both back as [].
         from sqlalchemy import null as sql_null
         increment = ("increment_volts", "increment_volts_first_row",
@@ -3757,8 +3782,10 @@ class DatabaseManager:
                 upper_limits=p.get("upper_limits"), lower_limits=p.get("lower_limits"),
                 **{k: p.get(k) for k in per_point},
                 increment_volts=curves if curves else sql_null(),
-                increment_volts_first_row=p.get("increment_volts_first_row"),
-                increment_volts_truncated=p.get("increment_volts_truncated"),
+                increment_volts_first_row=(p.get("increment_volts_first_row")
+                                           if curves else None),
+                increment_volts_truncated=(p.get("increment_volts_truncated")
+                                           if curves else None),
                 laser_cut_length=_as_float(p.get("laser_cut_length_mm")
                                            or p.get("laser_cut_length")),
                 laser_speed_high=_as_float(p.get("laser_speed_high")),

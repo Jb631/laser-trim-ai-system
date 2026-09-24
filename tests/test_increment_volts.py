@@ -21,6 +21,11 @@ from laser_trim_analyzer.core.trim_passes import (
 LTS = Path("tests/fixtures/trim/lts_8232-1_193.xls")
 LTS_194 = Path("tests/fixtures/trim/lts_8232-1_194.xls")
 DLTS = Path("tests/fixtures/trim/dlts_8232-1_243.xls")
+# A real laser-1 touch-up (8340-1, 2026) whose file names a trim window that differs from
+# its ignored-point counts: Initial/Ending Points Ignored 1/1, Points From Start/End 2/2,
+# 123 readings, a 120-column TrimVolts1. Kept out of tests/fixtures/trim, which the noop
+# baseline and the sweep's pinned table glob.
+PFS = Path("tests/fixtures/trimvolts/lts_8340-1_32.xls")
 KEYS = ("increment_volts", "increment_volts_first_row", "increment_volts_truncated")
 
 # Readings per pass, counted cell by cell on the fixtures' own TrimVolts sheets
@@ -102,6 +107,41 @@ def test_the_window_comes_from_the_files_own_model_parameters():
     assert increment_volts_frame({**base, "initial_points_ignored": 10 ** 400}) == (None, None)
     assert increment_volts_frame({**base, "ending_points_ignored": float("inf")}) == (2, None)
     assert increment_volts_frame({**base, "number_of_readings_lin": [57]}) == (2, None)
+
+
+def test_the_window_is_the_files_points_from_start_and_end_when_it_names_them():
+    """Laser 1 starts TrimVolts at Points From Start ("how many points from start to begin
+    reading/trimming"), not at Initial Points Ignored, whenever the file carries both
+    Points From Start and Points From End -- measured against the machine's own VOLTAGES
+    placement on 6,263 of 6,263 local sheets, where the ignored count alone placed 36 passes
+    one position off (2026-09-24 review)."""
+    ignored = {"initial_points_ignored": 1, "ending_points_ignored": 1,
+               "number_of_readings_lin": 123}
+    named = {**ignored, "points_from_start": 2, "points_from_end": 2}
+    assert increment_volts_frame(named) == (2, 120)             # 123 - 2 - 2 + 1
+    assert increment_volts_frame(ignored) == (1, 122)           # today's rule without them
+    # One pair or the other, never a mix: both fields, readable as counts, or neither.
+    assert increment_volts_frame({**ignored, "points_from_start": 2}) == (1, 122)
+    assert increment_volts_frame({**ignored, "points_from_end": 2}) == (1, 122)
+    assert increment_volts_frame({**named, "points_from_end": "n/a"}) == (1, 122)
+    assert increment_volts_frame({**named, "points_from_start": 2.0}) == (2, 120)
+    assert increment_volts_frame({k: v for k, v in named.items()
+                                  if k != "number_of_readings_lin"}) == (2, None)
+    # The older template's `Start Point` is NOT the trim window: it is never read.
+    assert increment_volts_frame({**ignored, "start_point": 5, "end_point": 5}) == (1, 122)
+
+
+def test_a_sheet_with_no_reading_at_all_is_no_capture():
+    """Never (NULL, first_row, truncated): a first_row and a truncated flag for nothing."""
+    empty = {"increment_volts": [], "increment_volts_first_row": None,
+             "increment_volts_truncated": None}
+    assert read_increment_volts(pd.DataFrame(), first_row=2, window=49) == empty
+    assert read_increment_volts(pd.DataFrame([[0.0, float("nan")], [0.0, 0.0]]),
+                                first_row=2, window=49) == empty
+    # One reading anywhere is a capture, with its trailing empty curves kept.
+    got = read_increment_volts(pd.DataFrame([[0.3, float("nan")]]), first_row=2, window=2)
+    assert got == {"increment_volts": [[0.3], []], "increment_volts_first_row": 2,
+                   "increment_volts_truncated": False}
 
 
 def test_trimvolts_sheets_are_found_by_pass_number_and_an_ambiguous_number_is_not_guessed():
@@ -190,6 +230,37 @@ def test_the_mapping_is_the_one_the_machine_itself_uses():
         for shift in (-1, 1):
             off = volts.iloc[fr + shift:fr + shift + k, n].to_numpy(dtype=float)
             assert np.nanmax(np.abs(off - last)) > 0.1, f"offset {fr + shift} also matched"
+
+
+def test_a_file_that_names_points_from_start_is_placed_where_the_machine_put_it():
+    """The 2026-09-24 review's case, on a real file. Laser 1 put TrimVolts1 column 0 at
+    Points From Start (2), not Initial Points Ignored (1) -- its own VOLTAGES sheet says so,
+    120 curves of 120 exact at row 2 + k and none at 1 + k -- and the sheet's 120 columns
+    are its whole window (123 - 2 - 2 + 1), not a truncation of 122."""
+    from laser_trim_analyzer.core.parser import ExcelParser
+    assert PFS.exists(), f"{PFS} is a tracked fixture"
+    parsed = ExcelParser().parse_file(PFS)
+    setup = parsed["trim_setup"]
+    assert (setup["initial_points_ignored"], setup["ending_points_ignored"]) == (1, 1)
+    assert (setup["points_from_start"], setup["points_from_end"]) == (2, 2)
+    passes = _trim_passes(parsed)
+    assert [p["sheet"] for p in passes] == ["Trim 1"]
+    p = passes[0]
+    curves = p["increment_volts"]
+    assert len(curves) == 120 and all(curves)
+    assert sum(len(c) for c in curves) == 929
+    assert p["increment_volts_first_row"] == 2
+    assert p["increment_volts_truncated"] is False
+
+    volts = pd.read_excel(PFS, sheet_name="VOLTAGES", header=None)
+    last = [c[-1] for c in curves]
+
+    def exact_at(first_row):
+        col = volts.iloc[first_row:first_row + len(last), 1].tolist()
+        return sum(1 for a, b in zip(last, col) if a == b)
+
+    assert exact_at(2) == 120
+    assert exact_at(1) == 0 and exact_at(3) == 0
 
 
 # ------------------------------------------------------ never at the cost of the pass
@@ -342,11 +413,95 @@ def test_the_start_up_migration_adds_the_columns_to_an_existing_database(tmp_pat
     assert old == ("Trim 1", "[1.0, 2.0]", '{"label": "pass1"}',
                    "2026-09-20 14:09:53.805395", None, None, None)
 
-    # Idempotent, and the migrated table takes a real save.
+    # The database recorded WHEN it started capturing, in created_date's own UTC format,
+    # so the old row compares as before it -- a string compare is a time compare.
+    since = _since(path)
+    assert since is not None and len(since) == len("2026-09-20 14:09:53.805395")
+    assert old[3] < since
+
+    # Idempotent (the record is not moved by a second start-up), and the migrated table
+    # takes a real save whose rows compare as after the record.
     mgr.DatabaseManager(path).close()
+    assert _since(path) == since
     db.save_analysis(Processor(use_ml=False).process_file(LTS))
     conn = sqlite3.connect(path)
     got = conn.execute("SELECT COUNT(*) FROM trim_passes WHERE increment_volts IS NOT NULL "
-                       "AND increment_volts_first_row = 2").fetchone()[0]
+                       "AND increment_volts_first_row = 2 AND created_date >= ?",
+                       (since,)).fetchone()[0]
     conn.close()
     assert got == 2
+
+
+def _since(path):
+    import sqlite3
+    from laser_trim_analyzer.database.manager import INCREMENT_VOLTS_SINCE_KEY
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute("SELECT value FROM app_meta WHERE key = ?",
+                           (INCREMENT_VOLTS_SINCE_KEY,)).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def test_a_new_database_records_when_it_started_capturing(tmp_path):
+    """create_all makes the columns, so the migration's ALTER adds nothing -- the record is
+    still written, at the first start-up, before any pass exists."""
+    from laser_trim_analyzer.database import manager as mgr
+    path = tmp_path / "new.db"
+    mgr.DatabaseManager(path).close()
+    first = _since(path)
+    assert first is not None
+    mgr.DatabaseManager(path).close()
+    assert _since(path) == first
+
+
+def test_the_start_is_not_recorded_until_the_column_really_exists(tmp_path, monkeypatch):
+    """An ALTER that fails (for any reason but "duplicate column") leaves the column
+    missing, and recording a start then would claim a capture the database cannot hold.
+    The next start-up that does add the column records it."""
+    import sqlite3
+    import sqlalchemy
+    from laser_trim_analyzer.database import manager as mgr
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(_PRE_CAPTURE_TRIM_PASSES)
+    conn.close()
+
+    real_text = mgr.text
+
+    def sabotaged(sql, *a, **k):
+        if str(sql).startswith("ALTER TABLE trim_passes ADD COLUMN"):
+            return real_text("SELECT no_such_function()")          # fails, not a duplicate
+        return real_text(sql, *a, **k)
+
+    monkeypatch.setattr(mgr, "text", sabotaged)
+    mgr.DatabaseManager(path).close()
+    conn = sqlite3.connect(path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(trim_passes)")}
+    conn.close()
+    assert "increment_volts" not in cols
+    assert _since(path) is None
+
+    monkeypatch.setattr(mgr, "text", real_text)
+    mgr.DatabaseManager(path).close()
+    assert _since(path) is not None
+
+
+def test_a_pass_with_no_curves_stores_three_nulls(tmp_path, monkeypatch):
+    """Whatever the pass dict says beside it, no curves means no capture in ALL three columns."""
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as mgr
+    db = mgr.DatabaseManager(tmp_path / "t.db")
+    _inject(monkeypatch, db)
+    result = Processor(use_ml=False).process_file(LTS)
+    trim1 = next(p for t in result.tracks for p in t.trim_passes if p["sheet"] == "Trim 1")
+    trim1.update({"increment_volts": [], "increment_volts_first_row": 2,
+                  "increment_volts_truncated": True})
+    db.save_analysis(result)
+    with db.session() as s:
+        rows = dict((r[0], r[1:]) for r in s.execute(sa.text(
+            "SELECT sheet, increment_volts, increment_volts_first_row, "
+            "increment_volts_truncated FROM trim_passes")).all())
+    assert rows["Trim 1"] == (None, None, None)
+    assert rows["Trim 2"][1:] == (2, 0)        # the pass beside it is untouched
