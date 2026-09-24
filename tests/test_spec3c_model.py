@@ -203,6 +203,73 @@ def test_focus_chart_legend_does_not_cover_the_off_scale_note(tk_root):
         f"legend {legend_box.bounds} overlaps the off-scale note {note_box.bounds}")
 
 
+# ---- Facelift step 2 Task 3b (2026-09-24) ---------------------------------
+# Chart QA sweep + two reviews found defects on the Investigate page's charts
+# and the unit chart it opens, none of them Task 3's. James then looked at
+# qa_output/focus_6607_linearity_error.png ("that chart looks horrible" --
+# 487 individual off-scale dots crowning the ceiling) and asked for the
+# per-UNIT view to be redesigned in the same pass.
+
+def _scatter_window_extent(coll, ax, renderer):
+    """A scatter PathCollection's own get_window_extent() can come back an
+    all-inf Bbox (nothing in its `_offsets` path ever sets a datalim for a
+    collection built this way) -- build a real one from its transformed
+    offsets plus the marker's own rendered half-size instead."""
+    from matplotlib.transforms import Bbox
+    offsets = coll.get_offsets()
+    disp = ax.transData.transform(offsets)
+    sizes = coll.get_sizes()
+    size = sizes[0] if len(sizes) else 0.0
+    radius_px = (size ** 0.5) / 2.0 * (renderer.dpi / 72.0)
+    xs, ys = disp[:, 0], disp[:, 1]
+    return Bbox([[xs.min() - radius_px, ys.min() - radius_px],
+                [xs.max() + radius_px, ys.max() + radius_px]])
+
+
+def test_off_scale_note_never_touches_an_off_scale_marker(tk_root):
+    """Task 3 gave the note its own band above the plot; on real data
+    (focus_6607_linearity_error.png, 2023-2024) that band's bottom edge
+    touched the row of off-scale markers drawn at the ceiling. The newest
+    (rightmost) point here is the outlier, so its marker lands at the
+    top-right -- exactly where the note also lives."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(20, 0, -1)]     # oldest -> newest
+    # Same shape as test_focus_chart_legend_does_not_cover_the_off_scale_note's
+    # fixture, mirrored: a gentle trend keeps every OTHER point comfortably
+    # inside the percentile-fit window, and only the newest (rightmost) point
+    # is the outlier -- so its marker lands at the top-right, where the note
+    # also lives, and nothing else registers as off-scale or "beyond limits"
+    # to muddy the picture.
+    values = [0.0119 - 0.0001 * i for i in range(20)]
+    values[-1] = 5.0
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005)
+
+    canvas = FigureCanvasAgg(chart._fig)
+    canvas.draw()
+    renderer = canvas.get_renderer()
+
+    # "▲ " (not just "off-scale") to name only the marker-count note -- a
+    # SEPARATE, unrelated note can also mention "off-scale" in its own
+    # sentence (the baseline-spans-mixed-history disclosure) when a fixture
+    # also happens to trigger it.
+    notes = [t for t in chart._ax.texts if t.get_text().startswith("▲")]
+    assert notes, "the outlier above must trigger the off-scale note"
+    note_box = notes[0].get_window_extent(renderer)
+
+    markers = [c for c in chart._ax.collections if c.get_label() == "Off-scale"]
+    assert markers, "the outlier above must draw an aggregated off-scale marker"
+    for coll in markers:
+        marker_box = _scatter_window_extent(coll, chart._ax, renderer)
+        assert not note_box.overlaps(marker_box), (
+            f"note {note_box.bounds} overlaps the off-scale marker {marker_box.bounds}")
+
+
 def test_y_tick_labels_resolve_to_plex_mono_once_loaded():
     """Numbers in Plex Mono (step 1's spec); the fonts review found no chart
     actually asked for it -- tick labels were Sans everywhere. Agg so
@@ -232,6 +299,142 @@ def test_y_tick_labels_resolve_to_plex_mono_once_loaded():
     assert labels, "expected y tick labels to draw"
     assert all(lbl.get_fontname() == "IBM Plex Mono" for lbl in labels), (
         [lbl.get_fontname() for lbl in labels])
+
+
+def _long_history_with_outliers(n_years=3, outlier_every=15):
+    """~3 years of daily data on a trained baseline, with roughly 1 in
+    `outlier_every` points forced off-scale -- the 6607 shape (hundreds of
+    off-scale points spread over many months), built small enough to stay a
+    fast unit test. `outlier_every` must keep the outlier fraction under the
+    10th/90th-percentile y-window's own tail (10%) or the window widens to
+    include them instead of clamping them off-scale -- 15 (~6.7%) has margin."""
+    start = datetime.now() - timedelta(days=365 * n_years)
+    dates, values = [], []
+    d = start
+    while d < datetime.now():
+        dates.append(d)
+        i = len(dates)
+        values.append(50.0 if i % outlier_every == 0 else 0.01 + 0.0001 * (i % 7))
+        d += timedelta(days=1)
+    return dates, values
+
+
+def test_units_view_opens_on_the_last_12_months_when_more_exists(tk_root):
+    """James: "that chart looks horrible" on 6607's whole-history render.
+    default_window_days is the Model page's opt-in for the Units toggle
+    (model_page.py's _UNITS_VIEW_DEFAULT_DAYS) -- exercised directly here."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    dates, values = _long_history_with_outliers()
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005, default_window_days=366)
+
+    import matplotlib.dates as mdates
+    x0, x1 = chart._ax.get_xlim()
+    span_days = (mdates.num2date(x1) - mdates.num2date(x0)).days
+    # 366 days of data plus the function's own small x-axis padding (2% of
+    # the span, or 1 day) -- comfortably under a year and a half, nowhere
+    # near the ~3 years actually handed in.
+    assert span_days <= 400, f"the view should open on ~12 months, not {span_days} days"
+
+
+def test_units_view_shows_the_full_range_when_the_model_has_less(tk_root):
+    """The other half of the same contract: a model with less than 12
+    months of history is shown whole, not padded out or truncated."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(60, 0, -5)]     # ~60 days
+    values = [0.01 + 0.0001 * i for i in range(len(dates))]
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     default_window_days=366)
+
+    import matplotlib.dates as mdates
+    x0, x1 = chart._ax.get_xlim()
+    span_days = (mdates.num2date(x1) - mdates.num2date(x0)).days
+    assert span_days < 70, f"a 60-day history should not be widened: got {span_days} days"
+
+
+def test_smoothness_tabs_chart_never_gets_the_units_view_default_window():
+    """SmoothnessTab's embedded FocusChart states "the chart always sees
+    every record" -- default_window_days is opt-in and None by default so
+    that contract cannot be silently narrowed by this change."""
+    import inspect
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+    sig = inspect.signature(FocusChart.set_series)
+    assert sig.parameters["default_window_days"].default is None
+
+
+def test_off_scale_markers_are_aggregated_to_at_most_one_per_month_shown(tk_root):
+    """487 individual dots crowning the ceiling (6607) read as a solid bar,
+    not as data. Aggregated to one marker per (calendar month, edge) that
+    has any -- with every off-scale point forced ABOVE here, marker count
+    must not exceed the number of distinct months actually drawn."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    dates, values = _long_history_with_outliers(n_years=2)
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005, default_window_days=366)
+
+    x0, x1 = chart._ax.get_xlim()
+    import matplotlib.dates as mdates
+    shown = [d for d in dates if mdates.date2num(d) >= x0]
+    months_shown = len({(d.year, d.month) for d in shown})
+
+    markers = [c for c in chart._ax.collections if c.get_label() == "Off-scale"]
+    n_offscale_markers = sum(len(c.get_offsets()) for c in markers)
+    assert n_offscale_markers >= 1, "the fixture must actually produce off-scale markers"
+    assert n_offscale_markers <= months_shown, (
+        f"{n_offscale_markers} off-scale markers for only {months_shown} months shown")
+
+
+def test_off_scale_note_states_the_true_total(tk_root):
+    """The note keeps the total even though the markers no longer do --
+    "▲ N off-scale ... the chart" must name every off-scale point in the
+    current window, not just the (now aggregated) markers drawing it."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    dates, values = _long_history_with_outliers(n_years=1)
+    n_expected_offscale = sum(1 for v in values if v == 50.0)
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005)
+
+    notes = [t for t in chart._ax.texts if "off-scale" in t.get_text()]
+    assert notes, "expected an off-scale note"
+    assert str(n_expected_offscale) in notes[0].get_text(), notes[0].get_text()
+
+
+def test_legend_leaves_the_axes_data_area(tk_root):
+    """The old loc="best" legend sat on top of the data as often as not.
+    Whatever it draws now, its box must sit entirely outside the axes'
+    own data rectangle -- above it, never inside."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    dates, values = _long_history_with_outliers(n_years=1)
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005)
+
+    canvas = FigureCanvasAgg(chart._fig)
+    canvas.draw()
+    renderer = canvas.get_renderer()
+
+    legend = chart._ax.get_legend()
+    assert legend is not None
+    legend_box = legend.get_window_extent(renderer)
+    axes_box = chart._ax.get_window_extent(renderer)
+    assert not legend_box.overlaps(axes_box), (
+        f"legend {legend_box.bounds} overlaps the axes data area {axes_box.bounds}")
 
 
 # ---- Task 5: DriftMetricsTab ----------------------------------------------

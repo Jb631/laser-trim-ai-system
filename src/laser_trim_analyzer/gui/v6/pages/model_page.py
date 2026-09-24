@@ -50,6 +50,15 @@ _VIEW_LOTS, _VIEW_UNITS = "Lots · SPC", "Units"
 # choice, not an absence of one.
 _ALL_HISTORY = "All history (no lot)"
 
+# The Units chart view's own default framing (facelift step 2 Task 3b, James:
+# "that chart looks horrible" on 6607's whole-history render). The window
+# control below (_WINDOW_DAYS: 30d/90d/365d/All) is untouched and still
+# decides what data reaches the chart at all -- three of its four choices
+# already span <= 366 days, so only "All" can ever exceed this, and the
+# chart opens on just the newest year of it rather than the model's whole
+# multi-year record. See FocusChart.set_series's own docstring.
+_UNITS_VIEW_DEFAULT_DAYS = 366
+
 # Default focus metric when no alert-triggered focus is supplied. The headline
 # element-production drift signal (post-trim sigma_gradient is no longer
 # watched — see drift_types.WATCHED_METRICS / the D-SIGMA rationale).
@@ -704,7 +713,8 @@ class ModelPage(PageBase):
             return
         metric, dates, values, baseline = self._unit_series
         self._focus_chart.set_series(metric=metric, dates=dates, values=values,
-                                     baseline_mean=baseline[0], baseline_std=baseline[1])
+                                     baseline_mean=baseline[0], baseline_std=baseline[1],
+                                     default_window_days=_UNITS_VIEW_DEFAULT_DAYS)
 
     # ---- loaders (all materialize to plain values inside the session — I8) ----
     def _window_cutoff(self, model: Optional[str] = None,

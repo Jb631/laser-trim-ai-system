@@ -309,17 +309,39 @@ def main(out_dir: str, db_path: Path) -> int:
             f"WINDOW-SWITCH REGRESSION: 90d xlim spans {narrow_span:.0f} days "
             f"(data {data_span:.0f}d; previous All render {wide_span:.0f}d) — "
             "x-axis is holding the old window")
-    # Red out-of-limit markers must be NAMED in the legend (unexplained red
-    # dots finding, 2026-07-08). 8340-1/untrimmed_error_max has off-scale
-    # points, so the entry must be present.
+    # Red/flagged out-of-limit markers must be NAMED in the legend
+    # (unexplained red dots finding, 2026-07-08). 8340-1/untrimmed_error_max
+    # has off-scale points, so ONE of the two entries that can name them must
+    # be present -- "Beyond ±3σ" for a point flagged AT its own position,
+    # "Off-scale" for the monthly-aggregated marker at the ceiling/floor
+    # (facelift step 2 Task 3b split the old single "Beyond ±3σ / off-scale"
+    # label into these two, so a real dataset can legitimately carry either
+    # or both depending on whether any flagged point also stayed in-window).
     leg = fc._ax.get_legend()
     leg_texts = [t_.get_text() for t_ in (leg.get_texts() if leg else [])]
-    if not any("Beyond ±3σ" in t_ for t_ in leg_texts):
+    if not any(t_ in ("Beyond ±3σ", "Off-scale") for t_ in leg_texts):
         raise AssertionError(f"legend misses the red-marker entry: {leg_texts}")
     _save(fc, out / "focus_8340-1_window_switch.png", manifest,
           f"FocusChart window-switch: All(xlim {wide_span:.0f}d) -> 90d(xlim {narrow_span:.0f}d) — axis tracks the window; red markers in legend")
 
-    # ---- 1c. SPC lot p-chart (2026-08-29 FOCUS redesign) ----
+    # ---- 1c. The Units view's own default (facelift step 2 Task 3b, James:
+    # "that chart looks horrible" on focus_6607_linearity_error.png above --
+    # 487 off-scale dots crowning the whole 2011-2026 history). That render
+    # (and every other one in section 1) calls set_series() the way this
+    # harness always has, with NO default_window_days -- it shows what the
+    # page's window control would show on "All". The Model page's Units
+    # toggle passes default_window_days=366 (model_page.py's
+    # _UNITS_VIEW_DEFAULT_DAYS); rendered here on the SAME two models so the
+    # "before" (above) and "after" (here) are directly comparable.
+    for model, metric in [(DENSE, "linearity_error"), ("8340-1", "untrimmed_error_max")]:
+        d, v, (bm, bs) = series(model, metric)
+        fc = _focus()
+        fc.set_series(metric, d, v, baseline_mean=bm, baseline_std=bs, default_window_days=366)
+        _save(fc, out / f"focus_{model}_{metric}_units_view.png", manifest,
+              f"FocusChart {model}/{metric}, Units view (default_window_days=366) — "
+              f"compare against focus_{model}_{metric}.png / _window_switch")
+
+    # ---- 1d. SPC lot p-chart (2026-08-29 FOCUS redesign) ----
     # The view the Model page opens on and the FOCUS list links to. Rendered
     # per variant because the shapes that break it are data shapes: a model
     # with too few lots (no band at all), a one-lot model, a stale model whose
