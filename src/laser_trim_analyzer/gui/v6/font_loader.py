@@ -28,14 +28,23 @@ _DONE: Optional[Dict[str, Dict[str, bool]]] = None
 
 
 def _load_tk(path: Path) -> bool:
+    """One clear warning line per failure -- not two. windows_load_font can fail two ways:
+    it can return a falsy result (AddFontResourceEx just declined, no exception), or raise.
+    Both are logged HERE, once, so load_bundled_fonts() doesn't also have to check and log
+    the same failure a second time.
+    """
     if not sys.platform.startswith("win"):
         return False
     try:
         from customtkinter import FontManager
-        return bool(FontManager.windows_load_font(str(path), private=True, enumerable=True))
+        ok = bool(FontManager.windows_load_font(str(path), private=True, enumerable=True))
     except Exception:
-        logger.exception("could not load %s for the window", path.name)
+        logger.warning("bundled font %s did not load for the window; using the fallback",
+                        path.name, exc_info=True)
         return False
+    if not ok:
+        logger.warning("bundled font %s did not load for the window; using the fallback", path.name)
+    return ok
 
 
 def _load_matplotlib(path: Path) -> bool:
@@ -62,8 +71,6 @@ def load_bundled_fonts() -> Dict[str, Dict[str, bool]]:
             result[name] = {"tk": False, "matplotlib": False}
             continue
         result[name] = {"tk": _load_tk(path), "matplotlib": _load_matplotlib(path)}
-        if sys.platform.startswith("win") and not result[name]["tk"]:
-            logger.warning("bundled font %s did not load for the window; using the fallback", name)
     if any(r["matplotlib"] for r in result.values()):
         import matplotlib
         matplotlib.rcParams["font.family"] = ["IBM Plex Sans", "DejaVu Sans"]

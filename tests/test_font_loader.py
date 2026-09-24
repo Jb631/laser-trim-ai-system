@@ -103,6 +103,52 @@ def test_windows_tk_load_failure_is_logged_not_raised(monkeypatch, caplog):
     assert any("IBMPlexSans-Regular.ttf" in rec.getMessage() for rec in caplog.records)
 
 
+def test_a_clean_false_from_windows_still_warns_and_falls_back(monkeypatch, caplog):
+    """windows_load_font can fail WITHOUT raising -- AddFontResourceEx just declines -- and
+    that path is only reachable through load_bundled_fonts() itself (not _load_tk() called
+    directly), since it is load_bundled_fonts() that owns FILES and _DONE. Every one of the
+    four bundled files must be named in its own warning: this is meant to be per-file, not
+    one warning for the whole batch.
+    """
+    monkeypatch.setattr(font_loader, "_DONE", None)
+
+    class DecliningFontManager:
+        @staticmethod
+        def windows_load_font(path, private, enumerable):
+            return False           # no exception -- AddFontResourceEx just said no
+
+    monkeypatch.setitem(sys.modules, "customtkinter",
+                         types.SimpleNamespace(FontManager=DecliningFontManager))
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    with caplog.at_level(logging.WARNING):
+        result = font_loader.load_bundled_fonts()
+
+    assert all(not r["tk"] for r in result.values())
+    messages = [rec.getMessage() for rec in caplog.records]
+    for name in font_loader.FILES:
+        assert any(name in m and "did not load for the window" in m for m in messages), name
+
+
+def test_a_corrupt_bundled_file_falls_back_and_logs_not_raises(tmp_path, monkeypatch, caplog):
+    """A file that EXISTS but is not a real font (disk corruption, a bad download) is a
+    different failure from a missing one -- matplotlib's own parser is what discovers it,
+    at addfont() time, and _load_matplotlib's try/except is what stands between that and an
+    app-crashing exception. Every bundled name is written as junk so this test cannot pass
+    by accident on the "missing file" branch instead.
+    """
+    for name in font_loader.FILES:
+        (tmp_path / name).write_bytes(b"not a real font file, deliberately corrupt for this test")
+    monkeypatch.setattr(font_loader, "FONT_DIR", tmp_path)
+    monkeypatch.setattr(font_loader, "_DONE", None)
+
+    with caplog.at_level(logging.WARNING):
+        result = font_loader.load_bundled_fonts()          # must not raise
+
+    assert all(not r["tk"] and not r["matplotlib"] for r in result.values())
+    assert any("IBMPlexSans-Regular.ttf" in rec.getMessage() for rec in caplog.records)
+
+
 def test_matplotlib_can_use_plex_on_any_machine():
     import matplotlib.font_manager as fm
     font_loader.load_bundled_fonts()
