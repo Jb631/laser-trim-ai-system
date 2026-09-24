@@ -70,6 +70,41 @@ Findings page rebuilt. No schema change, nothing to retrain, nothing to click on
    `ofl/ibmplexmono/`). (Google's Sans folder now carries only a variable font, so the Sans
    files come from IBM.) Say the word and it ships; until then the fallback is by design,
    nothing is broken.
+6. **OPTIONAL — back-fill laser 1's TrimVolts curves onto files already in your database.**
+   Skip this whenever you like; nothing on screen depends on it today, and it only ever feeds
+   a future cut-length model. This pull's parser change (`49f865e`) reads laser 1's (LTS)
+   `TrimVolts N` sheets — the material's own response curve to each laser increment — onto
+   every NEW `Trim N` pass row it saves. Files already sitting in your database were processed
+   before that existed, so their `Trim N` rows have nothing there yet. This script re-opens
+   each one, **read-only against the share**, and writes in just three columns
+   (`increment_volts`, `increment_volts_first_row`, `increment_volts_truncated`) — nothing
+   else in the database changes, not even the `Trim N` sweep sitting right beside them.
+
+   **Snapshot first** — unlike the QA harnesses above, this one writes to the database you
+   give it directly (same as `regrade_final_tests.py`):
+
+       .\.venv\Scripts\python scripts\snapshot_db.py data\analysis.db "$env:OneDrive\analysis_pre_tv_backfill.db"
+
+   Then a small rehearsal — a couple of minutes, reading the share at roughly the same
+   per-file cost as an ingest:
+
+       .\.venv\Scripts\python scripts\backfill_increment_volts.py data\analysis.db --limit 2000
+
+   It prints how many files it found in total *before* it touches anything, then a running
+   files/second and an ETA every 200 files — so the first couple of minutes at work tell you
+   whether the full run is a lunch break or an overnight job. (Read-only count on the home
+   copy of this database, 2026-09-24: **41,174 candidate passes across 35,041 files** — your
+   work copy may have a few more if you've ingested since. At the share's own measured cost of
+   about 0.6 s per file, that many files is roughly six hours — plan on leaving it overnight,
+   the same as the rebuild. The Mac cannot measure this directly: every one of those files is
+   on the work share, so a Mac trial only ever reports them "missing", fast, and that speed
+   means nothing about the real run.) Drop `--limit` for the full run.
+
+   **It is safe to stop and safe to resume.** It commits every 200 files, so Ctrl-C (or a
+   dropped VPN, or going home for the night) keeps everything already written. Running the
+   *exact same command* again continues on its own — it re-selects only the passes still
+   missing their curves and skips everything already filled; you don't need to track where it
+   got to.
 
 ## ⚡ 2026-09-23 — bringing the finished rebuild home (do it THIS way)
 
