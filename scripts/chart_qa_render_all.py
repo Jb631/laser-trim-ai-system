@@ -69,36 +69,18 @@ sys.path.insert(0, str(REPO / "src"))
 
 from datetime import datetime  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
+from laser_trim_analyzer.gui.v6.theme import ThemeManager  # noqa: E402
 
-
-class _Theme:
-    BG="#1a1f2e"; SURFACE="#1e2435"; CARD="#263244"; ELEVATED="#2f3b50"
-    ACCENT="#3b82f6"; ACCENT_HOVER="#60a5fa"; ACCENT_PRESSED="#2563eb"
-    TEXT_PRIMARY="#e8eef5"; TEXT_SECONDARY="#9ca8bd"; TEXT_DISABLED="#5a6478"
-    TEXT_INVERSE="#1a1f2e"; DIVIDER="#2a3142"; BORDER="#3a4456"
-    TIER_STABLE="#1e2435"; TIER_WARNING="#f59e0b"; TIER_DRIFT="#f97316"
-    TIER_OOC="#ef4444"; TIER_WARNING_BG="#3d2f1a"; TIER_DRIFT_BG="#3d2418"
-    TIER_OOC_BG="#3d1818"
-    SPACE_XS=4; SPACE_SM=8; SPACE_MD=14; SPACE_LG=22
-    RADIUS_SM=6; RADIUS_MD=10; SIZE_CAPTION=11; SIZE_BODY=13
-    SIZE_HEADING=15; SIZE_TITLE=18
-    # Chart tokens (theme.py values, verbatim) -- the chart widgets read these
-    # directly (Task 3, 2026-09-23); this stub must carry them too or a
-    # headless render raises AttributeError before it can draw anything.
-    CHART_REFERENCE="#8a9bb3"
-    SERIES_A="#6aa8ff"; SERIES_B="#b39cff"; SERIES_C="#f28dc6"
-    CHART_FONT_SMALL=8.0; CHART_FONT=9.0; CHART_FONT_LARGE=10.0
-    def font(self, *a, **k): return None
-    def series_color(self, system: str) -> str:
-        return {"A": self.SERIES_A, "B": self.SERIES_B,
-                "C": self.SERIES_C}.get(system, self.CHART_REFERENCE)
-    @staticmethod
-    def fmt_measure(v, sig: int = 4) -> str:
-        if v is None: return "—"
-        av = abs(float(v))
-        if av >= 1e7 or (av != 0 and av < 1e-4): return f"{v:.{sig}g}"
-        if av >= 1000: return f"{v:,.0f}"
-        return f"{v:.{sig}g}"
+# The REAL theme, not a hand-copied palette (review finding, 2026-09-23): a
+# second copy of the colours goes stale the moment theme.py's don't -- every
+# Step-5 render then validates colours the app no longer draws (TIER_OOC and
+# ACCENT both drifted this way). ThemeManager() is a clean drop-in under the
+# customtkinter/tkinter fakes above: CTkFont, when constructed, is the stub
+# _W class (accepts and discards any kwargs, so font()/mono() resolve fine,
+# bold weight included), and _available_families() catches the fake
+# tkinter.font module's failure and falls back to the family tuples' last
+# entries. Confirmed empirically, not assumed.
+_Theme = ThemeManager
 
 
 def _focus():
