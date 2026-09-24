@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 
 import math
 
+import pytest
+
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import spc_draw_params
 from laser_trim_analyzer.ml.spc import (
     RECENT_K, build_continuous_series, build_fraction_series)
@@ -165,6 +167,69 @@ def _continuous_history():
     high_day = D0 + timedelta(days=7 * 15)
     out += [(high_day, 4980.0 + j) for j in (-1, 0, 1, 2, -2)]     # above UCL
     return out, high_day
+
+
+# ---- Task 3b (2026-09-24): a fail-rate band never runs past 100% ----------
+
+def test_pchart_band_never_exceeds_100_percent_for_a_small_lot():
+    """A small lot's binomial se blows up (se = sqrt(p(1-p)/n)), so its ucl
+    can exceed 1.0 -- drawn as a shaded "what chance allows" region, that
+    reads as "more than everyone could fail" (seen on 6607). Clipped for the
+    CHART only: the series' own ucl -- what ooc is graded against -- must
+    stay the real, unclamped value."""
+    hist = _make_history(n_lots=10, n_per=20, fails_per=18)   # baseline: 90% fail
+    last_day = hist[-1][0] + timedelta(days=7)
+    hist += _lot_samples(last_day, 3, 3)                      # a 3-unit lot
+    s = build_fraction_series("M", "linearity_fail_fraction", hist, anchor=last_day)
+    assert s.judged
+    last = s.points[-1]
+    assert last.n == 3
+    assert last.ucl > 1.0, "fixture must actually exercise ucl > 1.0"
+    p = spc_draw_params(s)
+    assert p["ucls"][-1] == pytest.approx(1.0)
+    assert s.points[-1].ucl == last.ucl > 1.0    # verdict math untouched
+
+
+def test_pchart_band_clip_never_touches_a_continuous_series():
+    """The clip is fraction-only: a continuous metric's ucl is a physical
+    unit (ohms, volts...), not a rate, and 1.0 means nothing to it."""
+    hist, last = _continuous_history()
+    s = build_continuous_series("8555", "untrimmed_resistance", hist, anchor=last)
+    p = spc_draw_params(s)
+    assert p["ucls"] == [pt.ucl for pt in s.points]
+    assert p["ucls"][-1] > 1.0                    # an ohms-scale limit, unclipped
+
+
+def test_pchart_drawn_band_has_no_vertex_above_1_0_on_the_agg_canvas():
+    """Render check, not just the dict: FocusChart draws the band as a real
+    fill_between PolyCollection -- confirm nothing it actually plots sits
+    above y=1.0."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    hist = _make_history(n_lots=10, n_per=20, fails_per=18)
+    last_day = hist[-1][0] + timedelta(days=7)
+    hist += _lot_samples(last_day, 3, 3)
+    s = build_fraction_series("M", "linearity_fail_fraction", hist, anchor=last_day)
+    assert s.points[-1].ucl > 1.0
+
+    theme = ThemeManager()
+    chart = FocusChart.__new__(FocusChart)
+    chart.theme = theme
+    chart._fig = Figure(figsize=(8, 3), dpi=96, facecolor=theme.CARD)
+    chart._ax = chart._fig.add_subplot(111)
+    chart.canvas = FigureCanvasAgg(chart._fig)
+    chart.set_spc_series(s)
+
+    fills = [c for c in chart._ax.collections if c.get_paths()]
+    assert fills, "expected the shaded band to be drawn"
+    for coll in fills:
+        for path in coll.get_paths():
+            worst = path.vertices[:, 1].max()
+            assert worst <= 1.0 + 1e-9, f"band vertex above 1.0: {worst}"
 
 
 def test_continuous_series_band_is_two_sided_and_flags_both_ways():

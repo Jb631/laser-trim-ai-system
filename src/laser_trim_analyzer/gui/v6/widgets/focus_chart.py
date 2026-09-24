@@ -6,6 +6,7 @@ production runs in lots, so a lot — not a unit — is what goes in or out of
 control. Both live here so the Model page can toggle between them on one widget.
 """
 from datetime import datetime
+from math import isfinite
 from typing import List, Optional
 
 import customtkinter as ctk
@@ -50,13 +51,22 @@ def spc_draw_params(series: SpcSeries, focus_recent: int = RECENT_K) -> dict:
     # work data's 8887 drew "08/20" and then "07/23" for a lot ELEVEN MONTHS
     # later (render check). The year earns its space only when there is one.
     date_fmt = "%m/%d" if len({pt.end.year for pt in points}) <= 1 else "%m/%d/%y"
+    # A small lot's binomial band can run past 100% (se blows up as n shrinks,
+    # seen on 6607) -- drawn, that reads as "more than everyone could fail".
+    # Clipped for the CHART ONLY, fraction metrics only (a continuous metric's
+    # ucl is a physical unit, not a rate, and must never be clamped to 1.0);
+    # the ooc verdict above already compared against the real, unclamped ucl,
+    # so a small lot that failed 100% still alarms. export/evidence.py:~456
+    # clips its own printed column the same way.
+    ucls = ([(min(pt.ucl, 1.0) if isfinite(pt.ucl) else pt.ucl) for pt in points]
+            if fraction else [pt.ucl for pt in points])
     return {
         # Lots are POSITIONS, not dates. A real date axis squashes a week of
         # daily lots into one tick and stretches a quiet month across the page;
         # the question here is "which lot", and the date rides along as a label.
         "xs": list(range(n)),
         "values": [pt.value for pt in points],
-        "ucls": [pt.ucl for pt in points],
+        "ucls": ucls,
         # A fail RATE below baseline is good news, never an alarm, so the shaded
         # region starts at zero. A continuous metric drifts either way, so its
         # band is the real two-sided limit.
@@ -89,13 +99,24 @@ class FocusChart(ctk.CTkFrame):
         self._style()
 
     def _style(self):
+        import matplotlib
+
         ax, t = self._ax, self.theme
         ax.set_facecolor(t.CARD)
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
         for side in ("bottom", "left"):
             ax.spines[side].set_color(t.TEXT_SECONDARY)
-        ax.tick_params(colors=t.TEXT_SECONDARY, labelsize=t.CHART_FONT_LARGE)
+        # Numbers in Plex Mono (step 1's spec; the fonts review found no chart
+        # actually asked for it — tick labels were Sans everywhere). The
+        # theme's own family name, not a new literal (gui/v6/font_loader.py
+        # registers it with matplotlib when the bundled files load); a family
+        # LIST falls back the same way font_loader's own
+        # rcParams["font.family"] does -- silently, to whatever the Sans stack
+        # currently resolves to -- so a machine where the bundled font failed
+        # to load draws exactly the tick labels it drew before this change.
+        ax.tick_params(colors=t.TEXT_SECONDARY, labelsize=t.CHART_FONT_LARGE,
+                       labelfontfamily=[t.MONO_FAMILY[0], *matplotlib.rcParams["font.family"]])
         ax.title.set_color(t.TEXT_PRIMARY)
 
     def set_series(self, metric: str, dates: List[datetime], values: List[float],

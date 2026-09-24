@@ -44,3 +44,19 @@ def test_the_qa_render_script_has_no_copied_palette():
                  if re.search(r'"#[0-9a-fA-F]{6}"', line)]
     assert not offenders, offenders
     assert "ThemeManager" in src
+
+
+def test_the_qa_render_script_loads_the_bundled_fonts():
+    """Facelift step 2 Task 3b (2026-09-24): the harness never called
+    font_loader.load_bundled_fonts(), so its PNGs were DejaVu Sans -- not
+    what the app draws once the bundled fonts load. Read as text (see the
+    note above): the call must sit at true module scope, before any chart
+    gets built, not tucked inside `if __name__ == "__main__":` where
+    importing this module for some other purpose would never trigger it."""
+    src = QA_RENDER_SCRIPT.read_text()
+    assert "from laser_trim_analyzer.gui.v6.font_loader import load_bundled_fonts" in src
+    call_at = src.index("load_bundled_fonts()")
+    guard_at = src.index('if __name__ == "__main__":')
+    first_chart_factory_at = src.index("def _focus(")
+    assert call_at < guard_at, "must run at import time, not only under __main__"
+    assert call_at < first_chart_factory_at, "must load before any chart gets built"

@@ -203,6 +203,37 @@ def test_focus_chart_legend_does_not_cover_the_off_scale_note(tk_root):
         f"legend {legend_box.bounds} overlaps the off-scale note {note_box.bounds}")
 
 
+def test_y_tick_labels_resolve_to_plex_mono_once_loaded():
+    """Numbers in Plex Mono (step 1's spec); the fonts review found no chart
+    actually asked for it -- tick labels were Sans everywhere. Agg so
+    get_fontname() reports the font matplotlib really resolved, not just the
+    fallback list it was asked to try."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from laser_trim_analyzer.gui.v6 import font_loader
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+    from matplotlib.figure import Figure
+
+    font_loader.load_bundled_fonts()
+
+    theme = ThemeManager()
+    chart = FocusChart.__new__(FocusChart)
+    chart.theme = theme
+    chart._fig = Figure(figsize=(8, 3), dpi=96, facecolor=theme.CARD)
+    chart._ax = chart._fig.add_subplot(111)
+    chart.canvas = FigureCanvasAgg(chart._fig)
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(10, 0, -1)]
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates,
+                     values=[0.01 + 0.0001 * i for i in range(10)])
+
+    chart.canvas.draw()
+    labels = chart._ax.get_yticklabels()
+    assert labels, "expected y tick labels to draw"
+    assert all(lbl.get_fontname() == "IBM Plex Mono" for lbl in labels), (
+        [lbl.get_fontname() for lbl in labels])
+
+
 # ---- Task 5: DriftMetricsTab ----------------------------------------------
 
 def test_drift_tab_row_per_metric_and_click(tk_root):

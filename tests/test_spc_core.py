@@ -6,7 +6,7 @@ import pytest
 
 from laser_trim_analyzer.ml.spc import (
     ACTIVE_DAYS, CHRONIC_PBAR, RECENT_K, SERIES_WINDOW,
-    SpcPoint, SpcSeries, build_continuous_series, build_fraction_series)
+    SpcPoint, SpcSeries, _pchart_note, build_continuous_series, build_fraction_series)
 
 D0 = datetime(2026, 1, 5)
 
@@ -46,6 +46,24 @@ def test_ooc_flag_and_note_wording():
     last = s.points[-1]
     assert last.ooc
     assert last.note == f"55% of 20 units failed — expected at most {last.ucl*100:.0f}%"
+
+
+# ---- Task 3b (2026-09-24): the note never contradicts itself -------------
+# "55% of 67 units failed — expected at most 55%" reads as inside the band
+# it is actually beyond, whenever the rate and its limit round to the same
+# integer. `_pchart_note` is the pure formatter build_fraction_series calls;
+# tested directly so the exact float pair from the brief is pinned regardless
+# of what baseline/lot-size combination would be needed to reach it through
+# the full SPC pipeline.
+
+def test_pchart_note_escalates_to_one_decimal_when_integers_would_match():
+    assert (_pchart_note(0.552, 0.548, 67)
+            == "55.2% of 67 units failed — expected at most 54.8%")
+
+
+def test_pchart_note_stays_integer_when_the_rounded_values_differ():
+    assert (_pchart_note(0.60, 0.50, 67)
+            == "60% of 67 units failed — expected at most 50%")
 
 
 def test_membership_window_edge():

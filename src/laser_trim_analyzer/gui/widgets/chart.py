@@ -22,7 +22,33 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6.theme import ThemeManager as _V6Theme
+
 logger = logging.getLogger(__name__)
+
+# Legend theming for the dark unit chart (2026-09-24 facelift step 2 Task 3b).
+# matplotlib's legend facecolor="inherit" (what a bare ax.legend() gets) reads
+# rcParams["axes.facecolor"] -- a GLOBAL, process-wide value, not this axes'
+# own COLORS['background'] that _style_axis() sets directly below. That rcParam
+# only turns dark once SOME ChartWidget has run plt.style.use('dark_background')
+# in _setup_figure() -- so a caller that skips __init__ never sees it turn
+# dark, and the legend drew a LIGHT box with dark text on an axes that was
+# still dark. scripts/chart_qa_render_all.py's _v5chart() does exactly that
+# (ChartWidget.__new__, no __init__), reproducing it on every unit-chart
+# render. Passed explicitly instead, so the legend never depends on
+# process-wide style state or draw order -- the SAME tokens FocusChart's own
+# legend uses (gui/v6/widgets/focus_chart.py), read as class attributes (no
+# Tk root needed, no hex outside theme.py).
+_DARK_LEGEND = dict(facecolor=_V6Theme.CARD, edgecolor=_V6Theme.BORDER,
+                    labelcolor=_V6Theme.TEXT_SECONDARY)
+
+
+def _themed_legend(ax, style, **kwargs) -> None:
+    """ax.legend(**kwargs), with the dark tokens above when style.dark_mode."""
+    if style.dark_mode:
+        kwargs = {**kwargs, **_DARK_LEGEND}
+    ax.legend(**kwargs)
+
 
 # Quality-focused color scheme
 COLORS = {
@@ -297,8 +323,9 @@ class ChartWidget(ctk.CTkFrame):
                 ax.set_ylabel('Error', fontsize=self.style.font_size)
                 # Deterministic placement + translucent frame: loc='best' kept
                 # parking the legend mid-chart on top of the traces.
-                ax.legend(loc='lower right', fontsize=self.style.font_size - 2,
-                          framealpha=0.6, fancybox=True)
+                _themed_legend(ax, self.style, loc='lower right',
+                               fontsize=self.style.font_size - 2,
+                               framealpha=0.6, fancybox=True)
             else:
                 ax.text(
                     0.5, 0.5, 'No measurement data',
@@ -603,11 +630,11 @@ class ChartWidget(ctk.CTkFrame):
         if use_dual_axis and ax2:
             lines1, labels1 = ax.get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
-            ax.legend(lines1 + lines2, labels1 + labels2,
-                     loc='best', fontsize=self.style.font_size - 2)
+            _themed_legend(ax, self.style, handles=lines1 + lines2, labels=labels1 + labels2,
+                          loc='best', fontsize=self.style.font_size - 2)
             ax.set_title(f"{title} (dual scale)", fontsize=self.style.title_size)
         else:
-            ax.legend(loc='best', fontsize=self.style.font_size - 2)
+            _themed_legend(ax, self.style, loc='best', fontsize=self.style.font_size - 2)
             ax.set_title(title, fontsize=self.style.title_size)
 
         # Add SN and date info box in upper right corner (date_label is

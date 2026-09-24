@@ -355,6 +355,59 @@ def test_screen_chart_marks_unmeasured_points_distinctly():
         root.destroy()
 
 
+def test_screen_chart_legend_reads_on_the_dark_theme():
+    """Facelift step 2 Task 3b (2026-09-24): the unit chart's legend used to
+    draw a LIGHT box with dark text on this dark chart. matplotlib's legend
+    facecolor="inherit" (a bare ax.legend()) reads rcParams["axes.facecolor"]
+    -- a GLOBAL, process-wide value, not this axes' own dark background --
+    so a caller that never ran plt.style.use('dark_background') (the chart
+    QA harness's _v5chart(), which builds a ChartWidget via __new__ and skips
+    __init__ entirely) got a light box regardless. Now explicit, and the same
+    tokens FocusChart's own legend uses (gui/v6/widgets/focus_chart.py)."""
+    import customtkinter as ctk
+    import matplotlib.colors as mcolors
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    root = ctk.CTk()
+    try:
+        from laser_trim_analyzer.gui.widgets.chart import ChartWidget
+
+        chart = ChartWidget(root)
+        chart.plot_error_vs_position(
+            positions=[float(i) for i in range(8)],
+            trimmed_errors=_ERRORS, upper_limits=_UPPER, lower_limits=_LOWER,
+            fail_points=_OFFSET_ONLY_FAILS,
+        )
+        chart.figure.canvas.draw()
+        ax = chart.figure.axes[0]
+        legend = ax.get_legend()
+        assert legend is not None, "expected the unit chart to draw a legend"
+
+        theme = ThemeManager()
+        frame = legend.get_frame()
+        assert mcolors.to_hex(frame.get_facecolor()) == theme.CARD
+        assert mcolors.to_hex(frame.get_edgecolor()) == theme.BORDER
+        texts = legend.get_texts()
+        assert texts, "expected labeled entries in the legend"
+        for text in texts:
+            assert mcolors.to_hex(text.get_color()) == theme.TEXT_SECONDARY
+
+        # A widget-level contrast check (>= 4.5:1 text on the legend face) --
+        # the same WCAG minimum tests/test_theme_contrast.py pins for every
+        # other text/surface pair in the app, read off the tokens above.
+        def _lum(hexcolor):
+            h = hexcolor.lstrip("#")
+            c = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+            c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+            return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+        la, lb = sorted((_lum(theme.TEXT_SECONDARY), _lum(theme.CARD)), reverse=True)
+        assert (la + 0.05) / (lb + 0.05) >= 4.5
+    finally:
+        root.destroy()
+
+
 def test_verdict_note_explains_unmeasured_instead_of_blaming_the_offset():
     """A fail made of unmeasured points is not an offset problem.
 

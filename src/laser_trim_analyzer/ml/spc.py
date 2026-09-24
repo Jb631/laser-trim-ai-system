@@ -67,6 +67,19 @@ _MIN_SD = 1e-12
 _NAN = float("nan")
 
 
+def _pchart_note(rate: float, ucl: float, n: int) -> str:
+    """"55% of 67 units failed — expected at most 55%" hides an out-of-control
+    lot the moment the rate and its limit round to the same integer (0.552 vs
+    a 0.548 limit both round to 55) — a lot flagged as beyond its band reads as
+    inside it. Escalating to one decimal ONLY then keeps the sentence honest
+    without cluttering the normal case, where the rounded integers already
+    differ and read fine."""
+    same_int = f"{rate * 100:.0f}" == f"{ucl * 100:.0f}"
+    prec = 1 if same_int else 0
+    return (f"{rate * 100:.{prec}f}% of {n} units failed "
+            f"— expected at most {ucl * 100:.{prec}f}%")
+
+
 @dataclass(frozen=True)
 class SpcPoint:
     """One lot on the chart — and the same numbers the list and export quote."""
@@ -200,8 +213,7 @@ def build_fraction_series(model: str, metric: str,
         ucl = p_base + 3.0 * se
         lcl = max(p_base - 3.0 * se, 0.0)          # a fail rate can't go below 0
         ooc = lot.median > ucl and lot.n >= MIN_LOT_BASELINE_N
-        note = (f"{lot.median * 100:.0f}% of {lot.n} units failed "
-                f"— expected at most {ucl * 100:.0f}%") if ooc else ""
+        note = _pchart_note(lot.median, ucl, lot.n) if ooc else ""
         points.append(SpcPoint(start=lot.start, end=lot.end, value=lot.median,
                                n=lot.n, ucl=ucl, lcl=lcl, center=p_base, ooc=ooc,
                                is_open=(i == last and _is_open(lot, anchor)),

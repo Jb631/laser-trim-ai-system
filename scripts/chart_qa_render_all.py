@@ -70,6 +70,14 @@ sys.path.insert(0, str(REPO / "src"))
 from datetime import datetime  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from laser_trim_analyzer.gui.v6.theme import ThemeManager  # noqa: E402
+from laser_trim_analyzer.gui.v6.font_loader import load_bundled_fonts  # noqa: E402
+
+# This harness never called this before (2026-09-24 facelift step 2 Task 3b
+# review) -- its PNGs were DejaVu Sans, not what the app itself draws once
+# the bundled fonts load. Called once, at import time: font_loader's own
+# result is memoized (_DONE), so every chart built below sees the real
+# family whether it calls this again or not.
+load_bundled_fonts()
 
 # The REAL theme, not a hand-copied palette (review finding, 2026-09-23): a
 # second copy of the colours goes stale the moment theme.py's don't -- every
