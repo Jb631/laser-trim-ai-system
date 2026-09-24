@@ -24,7 +24,7 @@ class SmoothnessTab(RowBudgetMixin, ctk.CTkFrame):
         # overview page, you had to guess which model to select).
         self._models_hint = ctk.CTkLabel(self, text="", font=theme.font(theme.SIZE_CAPTION),
                                          text_color=theme.TEXT_SECONDARY, anchor="w",
-                                         justify="left", wraplength=1200)
+                                         justify="left", wraplength=950)
         self._models_hint.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
         self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)

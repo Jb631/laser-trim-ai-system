@@ -14,6 +14,20 @@ from laser_trim_analyzer.ml.drift_types import (
 
 _COLUMNS = ["Metric", "Tier", "Alert", "Baseline (lot mean±σ)", "Last lot", "Shift (σ)"]
 
+# Two of the six uniform columns need more than an even 1/6 share once the row is
+# squeezed into a narrower window: column 0 (the metric NAME -- "Escape rate (trim
+# PASS -> FT FAIL)", 225px at SIZE_BODY, the longest of drift_types.METRIC_LABELS)
+# and column 3 (baseline mean +/- std, formatted by format_metric_value -- measured
+# up to 152px, e.g. "0.003235 +/- 0.0007776" for untrimmed_sigma_gradient on 8232-1).
+# Applied to BOTH the header row and every _MetricRow: they are separate grid
+# instances (each frame owns its own columns), so giving only one of them a minsize
+# would pull its columns out of alignment with the other's -- shared here so both
+# always agree. Measured, not guessed: every watched metric's rendered width across
+# two real models (8232-1, 6607) stays under these with margin; the other four
+# columns' widest real content (a tier name, an alert type, a smoothness value, a
+# shift) tops out at 64px, so narrowing them a little more to make room is safe.
+_COL_MINSIZE = {0: 240, 3: 175}
+
 
 class DriftMetricsTab(ctk.CTkScrollableFrame):
     def __init__(self, master, theme: ThemeManager, on_metric_select: Callable[[str], None],
@@ -27,7 +41,7 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
         for i in range(len(_COLUMNS)):
-            header.grid_columnconfigure(i, weight=1, uniform="dm")
+            header.grid_columnconfigure(i, weight=1, uniform="dm", minsize=_COL_MINSIZE.get(i, 0))
         for i, col in enumerate(_COLUMNS):
             ctk.CTkLabel(header, text=col, font=theme.font(theme.SIZE_CAPTION, "bold"),
                          text_color=theme.TEXT_SECONDARY, anchor="w")\
@@ -134,13 +148,13 @@ class _MetricRow(ctk.CTkFrame):
                  alert_txt,
                  f"{_fmt(ms.baseline_mean)} ± {_fmt(ms.baseline_std)}", recent, shift_txt]
         for i in range(len(cells)):
-            # Column 0 (the metric NAME, e.g. "Escape rate (trim PASS → FT FAIL)",
-            # the longest entry in drift_types.METRIC_LABELS at 225px/SIZE_BODY) needs
-            # more than an equal 1/6 share once six columns are squeezed into a
-            # narrower window; minsize claims it from the other five, which hold
-            # short fixed-format values ("+1.50σ") with plenty of spare width.
-            kw = {"minsize": 240} if i == 0 else {}
-            self.grid_columnconfigure(i, weight=1, uniform="dm", **kw)
+            # _COL_MINSIZE (module level): columns 0 and 3 need more than an equal
+            # 1/6 share once six columns are squeezed into a narrower window; taken
+            # from the other four, which hold short fixed-format values ("+1.50σ")
+            # with plenty of spare width. Kept in sync with the header row's OWN
+            # grid_columnconfigure call above (a separate grid instance) so the two
+            # stay column-aligned.
+            self.grid_columnconfigure(i, weight=1, uniform="dm", minsize=_COL_MINSIZE.get(i, 0))
         for i, txt in enumerate(cells):
             lbl = ctk.CTkLabel(self, text=txt, font=theme.font(theme.SIZE_BODY),
                                text_color=theme.TEXT_PRIMARY, anchor="w")

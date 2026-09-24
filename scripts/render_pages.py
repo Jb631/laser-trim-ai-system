@@ -4,12 +4,23 @@
     python scripts/render_pages.py <copy.db> <outdir> --audit    # clipped-text widget audit, no capture
     python scripts/render_pages.py <copy.db>          --show     # open on screen, mainloop, no capture
 
-Every mode shows the same set of views: every page in `Sidebar.ITEMS`, plus the Model page loaded
+PNG capture and --show use `build_views`: every page in `Sidebar.ITEMS`, plus the Model page loaded
 for the model with the most cached process findings, with its Findings tab selected (Task 7's own
 navigation: `app.set_model_route(model, tab="findings"); app.show_page("model")`) -- the Sidebar.ITEMS
-pass alone only ever shows the Model page's EMPTY state (no route is set), so this second pass is the
-one that actually exercises the page the facelift spec names as the most likely place for the bigger
-Step 1 text (SIZE_CAPTION 12, BODY 14, HEADING 17, TITLE 22, READOUT 20) to overflow an unchanged layout.
+pass alone only ever shows the Model page's EMPTY state (no route is set).
+
+--audit uses its OWN, richer procedure (`run_audit`), extended in a pre-review fix round (2026-09-24)
+after the first cut only ever saw whichever Model-page TAB happened to already be mapped (see point 2
+below) -- and the facelift spec names the Model page, not any one tab of it, as the most likely place
+for the bigger Step 1 text (SIZE_CAPTION 12, BODY 14, HEADING 17, TITLE 22, READOUT 20) to overflow an
+unchanged layout:
+  * every `Sidebar.ITEMS` page, plain;
+  * the Model page for TWO independently-resolved models -- `resolve_findings_model` (most cached
+    findings) and `resolve_ft_heavy_model` (most final-test rows linked to a trim: a deliberately
+    different data shape, so the sweep is not one model's UI state twice) -- each with EVERY tab its
+    ThemedTabView has registered selected in turn, by NAME, labeled "model:<tab>" / "model2:<tab>";
+  * the Findings PAGE (not the Model page's Findings tab) with its first row opened, the densest
+    layout on that page: a narrative, a settings table, and the "Open <model>" teal button.
 
 Why two modes exist (controller ruling, Task 9, 2026-09-24): PIL.ImageGrab.grab is REFUSED on this
 Mac -- confirmed empirically, see _grab() -- because the process has no Screen Recording permission,
@@ -34,14 +45,16 @@ true for that comparison to mean anything, both confirmed empirically before thi
      new one and grid_forgets the rest 100 ms later); a tab nobody has ever selected was never gridded
      at all and sits at that same (1x1) placeholder no matter how much text it holds. Reporting that
      as a clip would be pure noise, so find_clipped_text_widgets skips anything `winfo_ismapped()`
-     says is not currently on screen. In practice this means --audit reliably sees the Findings tab
-     (this run always selects it) plus whichever OTHER tabs happen to have been mapped at least once
-     -- empirically, that is also Drift Metrics (CTkTabview's construction-time default, before this
-     run ever switches away) and Trim vs Final Test (its chart draw realizes it independently) on this
-     app, probed directly with winfo_ismapped()/winfo_manager() down each one's ancestor chain. A tab
-     that was NEVER gridded (Smoothness, Units, Final Test Units, History, in this run) reads
-     alloc=(1,1) and is correctly skipped -- proven in tests/test_render_pages_audit.py. Auditing the
-     remaining tabs on purpose, every time, was out of this task's scope (see the task report).
+     says is not currently on screen. This is WHY the first cut of --audit only ever saw the Findings
+     tab reliably (plus, incidentally, Drift Metrics and Trim vs Final Test -- probed directly with
+     winfo_ismapped()/winfo_manager() down each tab's ancestor chain: both are CTkScrollableFrame
+     subclasses whose content is embedded onto an internal canvas via create_window(), which does not
+     un-map the same way a plain grid_forgotten child does). `_sweep_model_tabs` now selects every
+     registered tab NAME itself (`page._tabs.set(name)`, CTkTabview's own public API -- the same call
+     `ModelPage._select_tab` makes for the one name it knew) and audits right after, so each tab is
+     measured in the state it is ACTUALLY in when selected, not left to however this quirk happened to
+     leave it mapped. A tab genuinely never selected (impossible now, inside one sweep) would still
+     correctly read alloc=(1,1) and be skipped -- proven in tests/test_render_pages_audit.py.
 
 Mirrors scripts/refresh_findings.py for the database guard and the double global injection.
 """
@@ -154,28 +167,29 @@ def find_clipped_text_widgets(root, *, page: str = "", window_size: str = "") ->
 # ---------------------------------------------------------------------------
 
 def _pump(app, seconds: float = _PUMP_SECONDS) -> None:
-    """Run the Tk event loop for up to `seconds` so background loads land.
+    """Run the Tk event loop for the full `seconds` so background loads land.
 
     Every page loader here runs on a worker thread and posts its result back
     through `app.ui` (UiDispatcher) rather than touching Tk directly (workers
     never call Tk -- see gui/v6/ui_dispatch.py); only `app.update()`, on the
-    main thread, drains that queue. Exits early, after a 1s floor, once the
-    dispatcher's own queue is empty -- most pages settle well under 5s and
-    there are up to 16 of these (8 views x 2 window sizes) in one run.
+    main thread, drains that queue.
+
+    No early exit. This used to return as soon as the dispatcher's queue was
+    empty (after a 1s floor) -- and an EMPTY queue does not mean the worker is
+    DONE; it can just as well mean the worker has not reached its first
+    `self.safe_after(apply)` yet (still doing synchronous DB work), which
+    looks identical from here. Proven wrong empirically in the pre-review fix
+    round (2026-09-24): switching the Model page straight from one model to
+    another (6607, this database's highest-volume model -- see DENSE in
+    chart_qa_render_all.py) took ~3.1s for its stats table to actually
+    update; the old early exit walked the PREVIOUS model's still-displayed
+    content at ~1s and mislabelled it as the new model's. A false negative
+    -- silently auditing the wrong page state -- is worse than the extra
+    wall-clock time always pumping the full budget costs.
     """
     deadline = time.monotonic() + seconds
-    floor = time.monotonic() + min(1.0, seconds)
-    while True:
+    while time.monotonic() < deadline:
         app.update()
-        now = time.monotonic()
-        if now >= deadline:
-            return
-        if now >= floor:
-            try:
-                if app.ui._q.empty():
-                    return
-            except Exception:
-                pass
         time.sleep(0.02)
 
 
@@ -226,6 +240,43 @@ def resolve_findings_model(db) -> Optional[str]:
     return row[0] if row else None
 
 
+def resolve_ft_heavy_model(db, *, exclude: Optional[str] = None) -> Optional[str]:
+    """The model with the most final-test rows LINKED to a trim record on this
+    database -- a deliberately DIFFERENT data shape from resolve_findings_model
+    (final-test match coverage, not findings volume), so the extended --audit
+    sweep (pre-review fix round, 2026-09-24: "coverage is not one model's")
+    exercises a second, independently-chosen page state rather than the same
+    model's UI twice under a different label. Resolved by QUERY, same rule as
+    resolve_findings_model and chart_qa_render_all.py's resolve_unit_fixtures:
+    a hard-coded model name goes stale the day the database is rebuilt.
+
+    `exclude`, when given, is left OUT of consideration first, falling back to
+    including it only if it turns out to be the ONLY model with any linked
+    final-test rows at all. This is what makes "coverage is not one model's" a
+    property of the result, not just of the query: on the real database,
+    resolve_findings_model and the un-excluded form of this query both pick
+    '8232-1' (it is both the most-findings AND the most-FT-linked model, being
+    the highest-volume customer-facing model this repo's data leans on
+    throughout) -- picking a second model genuinely takes this into account
+    rather than re-testing '8232-1' under a second label and calling it two
+    data shapes.
+    """
+    from sqlalchemy import func
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT)
+    with db.session() as s:
+        base = (s.query(DBAR.model, func.count(DBFT.id))
+                .join(DBFT, DBFT.linked_trim_id == DBAR.id)
+                .group_by(DBAR.model))
+        if exclude is not None:
+            row = (base.filter(DBAR.model != exclude)
+                   .order_by(func.count(DBFT.id).desc(), DBAR.model).first())
+            if row is not None:
+                return row[0]
+        row = base.order_by(func.count(DBFT.id).desc(), DBAR.model).first()
+    return row[0] if row else None
+
+
 # Each view: (report label, PNG filename stub, page_container key, setup(app)).
 View = Tuple[str, str, str, Callable]
 
@@ -259,10 +310,75 @@ def _audit_sizes(app) -> List[Tuple[int, int]]:
     return [(app.config.gui.window_width, app.config.gui.window_height), _SMALL_SIZE]
 
 
-def run_audit(app, target_model: Optional[str]) -> List[ClippedWidget]:
-    """Walk every view at every audited size; return every clip found."""
+def _walk_page(app, page_key: str, label: str, size_label: str,
+                clipped: List[ClippedWidget]) -> None:
+    page = app.page_container.get_page(page_key)
+    if page is not None:
+        clipped.extend(find_clipped_text_widgets(page, page=label, window_size=size_label))
+
+
+def _sweep_model_tabs(app, model: str, label_prefix: str, size_label: str,
+                       clipped: List[ClippedWidget]) -> None:
+    """Show the Model page for `model`, then select EVERY tab its ThemedTabView has
+    registered, BY NAME (never hard-coded -- the registered order/set can change),
+    pumping and auditing each in turn, labeled "<label_prefix>:<tab name>".
+
+    Pre-review fix round (2026-09-24): the original --audit only ever saw whichever
+    tab happened to already be mapped (Findings, plus incidentally Drift Metrics and
+    Trim vs Final Test -- see the module docstring). CTkTabview grids only the ACTIVE
+    tab (`.set()` grids the new one and grid_forgets the rest 100ms later), so a tab
+    never selected is a tab never measured -- and the spec names the Model page, not
+    any one tab of it, as the most likely overflow. `page._tabs.set(name)` is
+    CTkTabview's own public API (the same call `ModelPage._select_tab` makes for the
+    one name it knows, "Findings"); calling it directly for every registered name
+    exercises the identical mechanism for all seven.
+
+    Always detours through Home first: `PageContainer.show()` no-ops when the
+    requested page is already current, so calling this twice in a row (a second
+    model, right after the first model's sweep leaves "model" current) would
+    otherwise leave `on_show()` never re-fired and the new model's route unconsumed.
+    """
+    app.show_page("home")
+    app.set_model_route(model)
+    app.show_page("model")
+    page = app.page_container.get_page("model")
+    _pump(app)
+    app.update_idletasks()
+    for name in list(page._tabs._name_list):
+        page._tabs.set(name)
+        _pump(app)
+        app.update_idletasks()
+        clipped.extend(find_clipped_text_widgets(
+            page, page=f"{label_prefix}:{name}", window_size=size_label))
+
+
+def _open_first_findings_row(app) -> bool:
+    """Open the Findings PAGE's first row (not the Model page's Findings tab) --
+    the densest layout on that page: a narrative, the settings table for a
+    cut_setting finding, and the "Open <model>" teal button (FindingsView._draw_
+    detail). True if a row existed to open. `row_widgets` is insertion-ordered by
+    _render() (group order, then each group's own row order), so the first key is
+    the first row a person would actually see, not an arbitrary pick."""
+    page = app.page_container.get_page("findings")
+    view = getattr(page, "_view", None)
+    if view is None or not view.row_widgets:
+        return False
+    view.toggle(next(iter(view.row_widgets)))
+    return True
+
+
+def run_audit(app, target_model: Optional[str], ft_model: Optional[str]) -> List[ClippedWidget]:
+    """Walk every view at every audited size; return every clip found.
+
+    `target_model` (most cached findings) and `ft_model` (most final-test rows
+    linked to a trim -- deliberately a different data shape) each get the FULL
+    Model-page tab sweep, labeled "model:<tab>" and "model2:<tab>" respectively,
+    so the densest page in the app is checked against two independently-chosen
+    real data shapes, not one.
+    """
+    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+
     clipped: List[ClippedWidget] = []
-    views = build_views(target_model)
     for width, height in _audit_sizes(app):
         size_label = f"{width}x{height}"
         # Off-screen but MAPPED -- see the module docstring, point 1.
@@ -274,13 +390,27 @@ def run_audit(app, target_model: Optional[str]) -> List[ClippedWidget]:
         # across a page switch, so it gets one walk per size rather than one
         # per view.
         clipped.extend(find_clipped_text_widgets(app.sidebar, page="sidebar", window_size=size_label))
-        for report_label, _stub, page_key, setup in views:
-            setup(app)
+        for key, _label in Sidebar.ITEMS:
+            app.show_page(key)
             _pump(app)
             app.update_idletasks()
-            page = app.page_container.get_page(page_key)
-            if page is not None:
-                clipped.extend(find_clipped_text_widgets(page, page=report_label, window_size=size_label))
+            _walk_page(app, key, key, size_label, clipped)
+        if target_model:
+            _sweep_model_tabs(app, target_model, "model", size_label, clipped)
+        if ft_model:
+            _sweep_model_tabs(app, ft_model, "model2", size_label, clipped)
+        # Findings PAGE with its first row opened -- the current page is "model"
+        # (or "home", if neither model resolved), never "findings", so this is
+        # always a real transition; no detour needed.
+        app.show_page("findings")
+        _pump(app)
+        if _open_first_findings_row(app):
+            _pump(app)
+            app.update_idletasks()
+            _walk_page(app, "findings", "findings:opened", size_label, clipped)
+        else:
+            print(f"note: the Findings page has no rows to open at {size_label} -- "
+                  "skipping the opened-row audit for this size")
     return clipped
 
 
@@ -288,12 +418,21 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
     app, db = _build_app(db_path)
     try:
         target_model = resolve_findings_model(db)
+        ft_model = resolve_ft_heavy_model(db, exclude=target_model)
         if target_model is None:
             print("note: this database has no findings and no analysis rows -- "
                   "auditing every Sidebar.ITEMS page, but not the Model page's loaded state")
+        if ft_model is None:
+            print("note: this database has no final-test rows linked to a trim -- "
+                  "skipping the second model's tab sweep")
+        elif ft_model == target_model:
+            print(f"note: {target_model!r} is the ONLY model on this database with any "
+                  f"final-test rows linked to a trim, so it is also the most-linked-FT-"
+                  f"rows model even excluding itself -- the second sweep (model2:<tab>) "
+                  f"re-tests it, which is still real coverage, just not a second model")
         app.withdraw()      # never flash on-screen before run_audit positions it off-screen
         n_sizes = len(_audit_sizes(app))
-        clipped = run_audit(app, target_model)
+        clipped = run_audit(app, target_model, ft_model)
     finally:
         app.destroy()
         db.close()
@@ -301,7 +440,8 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
     lines = [c.line() for c in clipped]
     header = (f"{len(clipped)} clipped widget(s) across {n_sizes} window size(s); "
-              f"model under test: {target_model!r}")
+              f"model (most findings): {target_model!r}; "
+              f"model2 (most linked final-test rows): {ft_model!r}")
     (outdir / "audit.txt").write_text(header + "\n" + "\n".join(lines) + ("\n" if lines else ""))
     print(header)
     for line in lines:
