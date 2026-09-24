@@ -76,7 +76,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import pandas as pd
 from sqlalchemy import null as sql_null
@@ -119,11 +119,16 @@ class CaptureResult(NamedTuple):
         contradicts the placement, so it was never added to `captures` and is not written.
     unverified: sheets that ARE in `captures` (written) but could not be checked against
         VOLTAGES (no VOLTAGES sheet, or it does not reach this sheet's column).
+    empty: sheets that ARE in `captures` but whose TrimVolts sheet holds no reading at all
+        -- a capture of nothing, so the writer stores NULL, exactly as a fresh parse does.
+        Counted on their own line, never as filled (2026-09-24 final review: they were
+        counted "Filled" while NULL was written).
     """
     captures: Dict[str, Dict[str, Any]]
     problem: Optional[str]
     disagreed: List[str]
     unverified: List[str]
+    empty: Sequence[str] = ()     # the default for callers that build one by hand
 
 
 class BackfillReport:
@@ -140,12 +145,14 @@ class BackfillReport:
         self.passes_unfilled = 0                            # attempted, but no sheet / unreadable sheet
         self.passes_disagreed = 0                # refused: VOLTAGES contradicts the placement
         self.passes_unverified = 0            # written, but no VOLTAGES sheet to check against
+        self.passes_empty = 0        # a TrimVolts sheet with no reading: NULL written, not filled
         self.files_missing = 0
         self.files_unreadable = 0
         self.missing_files: List[str] = []
         self.unreadable_files: List[str] = []
         self.disagreements: List[str] = []          # "<path> <sheet>", refused, never written
         self.unverified_placements: List[str] = []  # "<path> <sheet>", written, unchecked
+        self.empty_sheets: List[str] = []           # "<path> <sheet>", NULL written, no reading
         self.elapsed_s = 0.0
 
     def __repr__(self) -> str:      # pragma: no cover -- debugging aid only
@@ -154,6 +161,7 @@ class BackfillReport:
                 f"passes_unfilled={self.passes_unfilled}, "
                 f"passes_disagreed={self.passes_disagreed}, "
                 f"passes_unverified={self.passes_unverified}, "
+                f"passes_empty={self.passes_empty}, "
                 f"files_missing={self.files_missing}, "
                 f"files_unreadable={self.files_unreadable})")
 
@@ -262,9 +270,13 @@ def _capture_file(file_path: Optional[str], sheets_needed: List[str]) -> Capture
       - "uncheckable": no VOLTAGES sheet, or it does not reach this sheet's column. Written
         as it always was (Task 4's own behaviour, unchanged), named in `unverified`.
       - "placed": written, nothing special recorded.
-    A capture with nothing live in it (`not any(curves)`, e.g. no TrimVolts sheet at all)
-    has nothing to check and is handled exactly as before Task 5 fix round 2: absent from
-    `captures`, absent from both `disagreed` and `unverified`.
+    A pass with no `TrimVolts N` sheet beside it, or one that fails to read, has no capture
+    at all: absent from `captures` and from every list, left exactly as it was. A sheet that
+    reads but holds no reading at all (`not any(curves)`) has nothing to check: it IS in
+    `captures` -- its capture is all-None, so the writer stores NULL, exactly as a fresh
+    parse would -- and is named in `empty`, so the run counts it on its own line and never
+    as filled. (Until 2026-09-24 this docstring said such a sheet was absent from
+    `captures` while the code added it, and the run reported it "Filled" over a NULL.)
 
     See `CaptureResult` for the full return shape. `problem` is None, "missing" (no such
     file here) or "unreadable" (the file exists but the workbook could not be opened, or
@@ -306,6 +318,7 @@ def _capture_file(file_path: Optional[str], sheets_needed: List[str]) -> Capture
             out: Dict[str, Dict[str, Any]] = {}
             disagreed: List[str] = []
             unverified: List[str] = []
+            empty: List[str] = []
             for sheet in sheets_needed:
                 m = ExcelParser._TRIM_N_RE.match(sheet.strip())
                 if not m:
@@ -336,8 +349,10 @@ def _capture_file(file_path: Optional[str], sheets_needed: List[str]) -> Capture
                         continue                   # refused: never added to `out`
                     if pc.result == "uncheckable":
                         unverified.append(sheet)
+                else:
+                    empty.append(sheet)            # nothing read: written as NULL, not filled
                 out[sheet] = cap
-            return CaptureResult(out, None, disagreed, unverified)
+            return CaptureResult(out, None, disagreed, unverified, empty)
     except Exception:
         # Nothing inside core.trim_passes is documented to raise, but a file this script
         # has never seen before gets no benefit of the doubt: one bad workbook must cost
@@ -426,9 +441,14 @@ def backfill(db, *, dry_run: bool = False, limit: Optional[int] = None,
             touched = False
             disagreed_sheets = set(result.disagreed)
             unverified_sheets = set(result.unverified)
+            empty_sheets = set(result.empty)
             for p in work.passes:
                 cap = result.captures.get(p.sheet)
-                if cap is not None:
+                if cap is not None and p.sheet in empty_sheets:
+                    pending.append((p.pass_id, cap))       # NULL, as a fresh parse stores it
+                    report.passes_empty += 1
+                    report.empty_sheets.append(f"{problem_name} {p.sheet}")
+                elif cap is not None:
                     pending.append((p.pass_id, cap))
                     report.passes_filled += 1
                     touched = True
@@ -576,6 +596,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if report.passes_unfilled:
         print(f"{report.passes_unfilled:,} candidate pass(es) left exactly as they were "
               f"(no TrimVolts sheet found, or it could not be read).")
+    if report.passes_empty:
+        print(f"{report.passes_empty:,} candidate pass(es) whose TrimVolts sheet holds no "
+              f"reading at all -- nothing to capture, written as NULL (not counted as "
+              f"filled); a later run selects them again.")
+        _print_names("with a TrimVolts sheet that holds no reading", report.empty_sheets)
     if report.passes_disagreed:
         print(f"{report.passes_disagreed:,} candidate pass(es) REFUSED -- the workbook's "
               f"own VOLTAGES sheet disagrees with where this run would have placed them. "

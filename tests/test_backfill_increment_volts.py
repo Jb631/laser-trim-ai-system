@@ -45,6 +45,10 @@ from laser_trim_analyzer.core.parser import ExcelParser  # noqa: E402
 LTS = Path("tests/fixtures/trim/lts_8232-1_193.xls")
 LTS_194 = Path("tests/fixtures/trim/lts_8232-1_194.xls")
 DLTS = Path("tests/fixtures/trim/dlts_8232-1_243.xls")
+# The Points-From-Start fixture (8340-1): Initial Points Ignored 1, Points From Start 2 --
+# the one tracked file whose trim window is NOT its ignored-point counts, i.e. the case the
+# first_row rule (and the 4,311 such files on the work database) turns on.
+PFS = Path("tests/fixtures/trimvolts/lts_8340-1_32.xls")
 
 
 # --------------------------------------------------------------------- helpers
@@ -215,7 +219,7 @@ def _counting_session(db, calls):
 
 # ============================================================== 2. selection + real reads
 
-@pytest.mark.parametrize("fixture", [LTS, LTS_194], ids=lambda p: p.name)
+@pytest.mark.parametrize("fixture", [LTS, LTS_194, PFS], ids=lambda p: p.name)
 def test_backfill_matches_a_fresh_parse_of_the_real_file(tmp_path, monkeypatch, fixture):
     db = _build_db(tmp_path, monkeypatch, [fixture])
     before = _target_columns_snapshot(db)
@@ -238,6 +242,8 @@ def test_backfill_matches_a_fresh_parse_of_the_real_file(tmp_path, monkeypatch, 
     fresh = ExcelParser().parse_file(fixture)
     fresh_by_sheet = {p["sheet"]: p for t in fresh["tracks"] for p in t.get("trim_passes", [])
                       if p["sheet"].lower().startswith("trim ")}
+    assert fresh_by_sheet and all(p.get("increment_volts") for p in fresh_by_sheet.values()), \
+        "sanity: every Trim N pass of the real file carries curves in a fresh parse"
     with db.session() as s:
         rows = s.execute(sa.text(
             "SELECT p.sheet, p.increment_volts, p.increment_volts_first_row, "
@@ -245,7 +251,7 @@ def test_backfill_matches_a_fresh_parse_of_the_real_file(tmp_path, monkeypatch, 
             "JOIN track_results t ON t.id = p.track_result_id "
             "JOIN analysis_results a ON a.id = t.analysis_id "
             "WHERE a.filename = :fn AND p.sheet LIKE 'Trim %'"), {"fn": fixture.name}).all()
-    assert len(rows) == 2
+    assert len(rows) == len(fresh_by_sheet)       # 2 on each 8232-1 fixture, 1 on 8340-1
     for sheet, volts, first_row, truncated in rows:
         want = fresh_by_sheet[sheet]
         assert json.loads(volts) == want["increment_volts"]
@@ -437,6 +443,46 @@ def test_a_workbook_with_no_voltages_sheet_is_written_and_counted_unverified(tmp
             "SELECT increment_volts FROM trim_passes WHERE sheet LIKE 'Trim %'")).all()
     assert rows and all(r[0] is not None for r in rows), \
         "a pass this script cannot check is still written -- Task 4's own prior behaviour"
+
+
+def _zero_trimvolts1(sheets):
+    """TrimVolts1 kept, but holding no reading at all -- every cell the zero padding the
+    machine writes after a position converges. Its `Trim 1` still has a real sweep."""
+    sheets["TrimVolts1"] = sheets["TrimVolts1"] * 0.0
+
+
+def test_a_trimvolts_sheet_with_no_reading_is_counted_on_its_own_line(tmp_path, monkeypatch):
+    """Nothing to capture: NULL is written (the same as a fresh parse stores), and the run
+    says so on its own line -- never "Filled", which is what it reported until 2026-09-24
+    while writing NULL (its own docstring said such a sheet was never in `captures`)."""
+    empty = _write_modified_copy(tmp_path / "empty_tv1.xlsx", mutate=_zero_trimvolts1)
+    db = _build_db(tmp_path, monkeypatch, [empty], name="empty_tv1.db")
+    _null_out(db)
+
+    report = biv.backfill(db)
+    assert report.passes_empty == 1
+    assert report.passes_filled == 1, "Trim 2 beside it still fills"
+    assert report.files_updated == 1
+    assert report.passes_unfilled == 0 and report.passes_disagreed == 0
+    assert [n.rsplit(" ", 2)[-2:] for n in report.empty_sheets] == [["Trim", "1"]]
+    assert any("empty_tv1.xlsx" in n for n in report.empty_sheets), report.empty_sheets
+    with db.session() as s:
+        rows = dict(s.execute(sa.text(
+            "SELECT sheet, increment_volts FROM trim_passes WHERE sheet LIKE 'Trim %'")).all())
+    assert rows["Trim 1"] is None, "no reading -> a real SQL NULL, as before"
+    assert rows["Trim 2"] is not None
+
+
+def test_main_names_the_no_reading_sheets_on_their_own_summary_line(tmp_path, monkeypatch, capsys):
+    empty = _write_modified_copy(tmp_path / "empty_tv1.xlsx", mutate=_zero_trimvolts1)
+    _build_db(tmp_path, monkeypatch, [empty])
+    _null_out_path(tmp_path / "t.db")
+
+    assert biv.main([str(tmp_path / "t.db")]) == 0
+    out = capsys.readouterr().out
+    assert "Filled 1 pass(es) across 1 file(s)" in out, out
+    assert "1 candidate pass(es) whose TrimVolts sheet holds no reading at all" in out, out
+    assert "with a TrimVolts sheet that holds no reading" in out and "empty_tv1.xlsx Trim 1" in out
 
 
 # ==================================================================== 3. resume, limit, ETA
