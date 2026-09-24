@@ -7,39 +7,64 @@ Findings page rebuilt. No schema change, nothing to retrain, nothing to click on
 
 1. **`git pull`.**
 2. **Open every page and look at it** — sidebar top to bottom, then a model on the Model page
-   (click through its tabs, including Findings).
+   (click through its tabs, including Findings). **Looking is the check.** The script in step 4
+   is a helper that catches one kind of problem; it cannot see a colour, an overlap inside a
+   chart, or text that fits but reads badly.
 3. **What to check:**
    - **Nothing is cut off.** No text squeezed against the edge of its box, no label wrapped
      somewhere ugly.
    - **The teal is the only accent.** One colour means "act on this"; everything else is
-     text, grey, or a verdict badge (PASS / FAIL / WARNING keep their own colours on purpose
-     — that is not the accent).
+     text, grey, a verdict badge, or a status colour. The verdict badges are PASS, FAIL,
+     UNTRIMMED / NOT GRADED and SIGMA WATCH; a unit's Warning status and the drift tiers are
+     amber-to-red text, not badges. All of them keep their own colours on purpose, and none of
+     them is the accent.
+   - **Tabs and toggles: the selected one is a darker teal with white text** — the bright teal
+     made its own label unreadable. Check you can read the selected tab's name on every tab bar.
    - **Findings: four groups, click a row to open it, "Open <model>" goes to its Findings
      tab.** The page used to be a wall of rows; now it's grouped (change worth testing, laser
      time to save, tests to check, what changed), and opening a row shows the plain-English
      read plus the numbers behind it. From the Model page's own Findings tab, the same rules
-     apply — it's the same view.
-4. **Run the mechanical page check** — catches clipped text without you having to eyeball
-   every page, and on your machine (unlike mine) it can also save a real screenshot of each
-   one. In PowerShell, from the repo folder (don't drop the leading `.\`):
+     apply — it's the same view. Under "What changed", a move tagged **different test** has no
+     green/coral: the limit table changed across that recipe change, so the move is partly a
+     change of test, not of parts.
+4. **Then, if you like, the mechanical helper** — it walks every page and every Model-page tab
+   at your saved window size and at 1280×720, and lists text Tk is cutting off: squeezed
+   narrower than it needs, squeezed out entirely, or pushed past the edge of its box. On your
+   machine (unlike mine) it can also save a real screenshot of each page.
+   **Close the app first.** Then in PowerShell, from the repo folder (don't drop the leading
+   `.\`):
 
-       Copy-Item data\analysis.db $env:TEMP\qa_copy.db
+       .\.venv\Scripts\python scripts\snapshot_db.py data\analysis.db $env:TEMP\qa_copy.db
        .\.venv\Scripts\python scripts\render_pages.py $env:TEMP\qa_copy.db qa_output\pages --audit
 
-   That prints one summary line (clipped widgets found, or 0) and writes `audit.txt` beside
-   it. Drop `--audit` and it does the same walk but SAVES a PNG of every page into
-   `qa_output\pages\` instead — worth doing once, since Windows allows the screen capture my
-   Mac refuses:
+   - **`snapshot_db.py`, not `Copy-Item`:** `Copy-Item` copies only `analysis.db`, and anything
+     still sitting in `analysis.db-wal` is left behind (the 2026-09-23 section below says why
+     that matters). The snapshot folds the journal in and checks the copy.
+   - **It needs about 7 GB free** on the drive `$env:TEMP` is on — the database is ~6.2 GB
+     and the snapshot insists on 10% headroom. It never overwrites: if an old
+     `qa_copy.db` is still there, delete it first.
+   - **The audit takes about 5 minutes and you will see nothing** — its window is deliberately
+     off-screen the whole time. Let it run. It uses your saved settings (so the Home page
+     shows your real folder list) but never saves them.
+   - It prints one summary line (clipped widgets found, or 0) and writes `audit.txt` beside
+     it. **Expect exactly one known line today:** at 1280×720 the Triage page's model list is
+     "squeezed out" — the drifting-now list above it has a fixed height (sized for your
+     1400×900), so a 720-px-tall window leaves the model list no room at all. It is fine at
+     1400×900, and it is left for the Triage page's own redesign. Anything else it lists is new.
+     Drop `--audit` and it does the same walk but SAVES a PNG of every page into
+     `qa_output\pages\` instead — worth doing once, since Windows allows the screen capture
+     my Mac refuses:
 
-       .\.venv\Scripts\python scripts\render_pages.py $env:TEMP\qa_copy.db qa_output\pages
+         .\.venv\Scripts\python scripts\render_pages.py $env:TEMP\qa_copy.db qa_output\pages
 
    Either way, delete the copy when you're done — `Remove-Item $env:TEMP\qa_copy.db` — and
    never point either command at `data\analysis.db` itself (it refuses on purpose, but don't
    test that).
 5. **Fonts are on the system fallback, not Plex yet** — Segoe UI for text, Cascadia Mono for
-   the numbers. Bundling IBM Plex needs your yes (five small files from Google's font repo,
-   about 0.8 MB) — say the word and it ships; until then the fallback is by design, nothing
-   is broken.
+   the numbers, or **Consolas** on a machine without Cascadia Mono (Windows 11 ships it;
+   Windows 10 may not). Either is fine. Bundling IBM Plex needs your yes (five small files
+   from Google's font repo, about 0.8 MB) — say the word and it ships; until then the fallback
+   is by design, nothing is broken.
 
 ## ⚡ 2026-09-23 — bringing the finished rebuild home (do it THIS way)
 

@@ -365,3 +365,17 @@ def test_the_full_width_home_lines_fit_at_1280_by_720(make_app):
         assert not ours, [c.line() for c in ours]
     finally:
         app.withdraw()
+
+
+def test_the_home_notices_sit_above_the_focus_list_never_below_it(make_app):
+    """The focus list expands to fill the page. A notice packed AFTER it got no height at all on a
+    720-px-tall window -- the audit found "70 files are being skipped..." squeezed out entirely."""
+    app = make_app()
+    page = _home(app)
+    page._apply_legacy_ft(12)
+    page._apply_unreadable(70)
+    order = page._focus_header.master.pack_slaves()
+    assert page._legacy_ft_label in order and page._unreadable_label in order
+    assert order.index(page._legacy_ft_label) < order.index(page._focus_header)
+    assert order.index(page._unreadable_label) < order.index(page._focus_header)
+    assert order.index(page._focus_header) < order.index(page._focus)

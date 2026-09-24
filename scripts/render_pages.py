@@ -93,6 +93,9 @@ _SMALL_SIZE = (1280, 720)
 # post their results back through UiDispatcher -- see gui/v6/ui_dispatch.py).
 _PUMP_SECONDS = 5.0
 
+# The forced-failure pass waits up to this long for its banner (see _force_one_loader_failure).
+_BANNER_WAIT_SECONDS = 60.0
+
 
 # ---------------------------------------------------------------------------
 # The detector. Pure tkinter -- no customtkinter or app import required to USE
@@ -144,18 +147,18 @@ def _parent(widget) -> Optional[tk.Misc]:
 
 
 def _squeezed_out(widget) -> Optional[tk.Misc]:
-    """The widget in `widget`'s chain that a geometry manager LAID OUT but did not MAP although its
-    parent is mapped -- the packer and the grid unmap a slave whose allocation comes out at zero,
-    i.e. one squeezed out entirely. None when nothing was: a mapped chain, or one whose unmapped
-    top is simply not laid out (an unselected tab, a pack_forget()ed widget, a withdrawn window)."""
+    """For a widget that is not VIEWABLE: the node of its chain where it stops being on screen --
+    the first one whose parent IS viewable (that node itself is then not mapped). If a geometry
+    manager laid that node out, the manager gave it no room (the packer and the grid unmap a slave
+    whose allocation comes out at zero): squeezed out. If nothing laid it out -- an unselected
+    tab, a pack_forget()ed widget -- it is hidden, not squeezed, and None is returned; likewise
+    when the chain reaches the window itself (withdrawn)."""
     w = widget
     while w is not None:
-        if w.winfo_ismapped():
-            return None
         parent = _parent(w)
         if parent is None:
-            return None                       # the top of the chain is the window itself
-        if parent.winfo_ismapped():
+            return None
+        if parent.winfo_viewable():
             return w if w.winfo_manager() else None
         w = parent
     return None
@@ -201,6 +204,9 @@ def find_clipped_text_widgets(root, *, page: str = "", window_size: str = "") ->
     looking at the pages, not a replacement for it.
     """
     found: List[ClippedWidget] = []
+    # One line per CONTAINER that was squeezed out or that clips its contents -- a list of 106
+    # rows squeezed out together is one layout problem, reported once with a count, not 212 times.
+    by_container: dict = {}
     for widget in _iter_widgets(root):
         if not isinstance(widget, (tk.Label, tk.Button)):
             continue
@@ -211,25 +217,42 @@ def find_clipped_text_widgets(root, *, page: str = "", window_size: str = "") ->
         text = "" if raw_text is None else str(raw_text)
         if not text:
             continue
+        container = None
         try:
             alloc_w, alloc_h = widget.winfo_width(), widget.winfo_height()
             req_w, req_h = widget.winfo_reqwidth(), widget.winfo_reqheight()
-            if not widget.winfo_ismapped():
+            # VIEWABLE, not mapped: a CTkScrollableFrame's content sits on a canvas, and a canvas
+            # window stays winfo_ismapped() while its tab is hidden -- with the geometry of the
+            # last time it WAS shown (measured: a hidden tab's rows kept their 1400-wide layout
+            # after the window shrank to 1280, and read as "past the edge").
+            if not widget.winfo_viewable():
                 dropped = _squeezed_out(widget)
-                why = None if dropped is None else (
-                    "squeezed out" if dropped is widget else f"squeezed out (with {dropped})")
+                why = None if dropped is None else "squeezed out"
+                if dropped is not None and dropped is not widget:
+                    container, why = str(dropped), f"squeezed out (with {dropped})"
             elif (req_w - alloc_w > _TOLERANCE_PX) or (req_h - alloc_h > _TOLERANCE_PX):
                 why = "squeezed"
             else:
                 edge = _past_an_edge(widget)
-                why = None if edge is None else f"past the right edge of {edge[0]} by {edge[1]} px"
+                why = None
+                if edge is not None:
+                    container, why = str(edge[0]), f"past the right edge of {edge[0]} by {edge[1]} px"
         except Exception:
             continue
-        if why is not None:
-            found.append(ClippedWidget(
-                page=page, window_size=window_size, path=str(widget),
-                text=text[:60], alloc=(alloc_w, alloc_h), req=(req_w, req_h), why=why,
-            ))
+        if why is None:
+            continue
+        if container is not None and container in by_container:
+            by_container[container][1].append(text[:30])
+            continue
+        hit = ClippedWidget(page=page, window_size=window_size, path=str(widget),
+                            text=text[:60], alloc=(alloc_w, alloc_h), req=(req_w, req_h), why=why)
+        found.append(hit)
+        if container is not None:
+            by_container[container] = (hit, [])
+    for first, others in by_container.values():
+        if others:
+            named = ", ".join(repr(o) for o in others[:3]) + (", ..." if len(others) > 3 else "")
+            first.why += f" -- and {len(others)} more text widget(s) with it: {named}"
     return found
 
 
@@ -272,6 +295,32 @@ def _refuse_to_save(*_args, **_kwargs) -> None:
     save, so this refuses loudly in the log and changes nothing on disk."""
     raise RuntimeError("render_pages.py: settings are never saved from an app built on a QA copy "
                        "(data/config.yaml is left exactly as it was)")
+
+
+def _pump_until(app, done: Callable[[], bool], seconds: float) -> bool:
+    """Run the event loop until `done()` is true or `seconds` pass; return done()."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        app.update()
+        if done():
+            return True
+        time.sleep(0.02)
+    return done()
+
+
+def _settle_before_destroy(app, seconds: float = 15.0) -> None:
+    """Let the page loaders' worker threads finish, and collect their garbage on THIS thread while
+    Tk is still alive. A worker that drops the last reference to a Tk image runs the image's
+    __del__ on the worker ("main thread is not in main loop", many times per run); after destroy()
+    the same call can reach a deleted interpreter -- one --audit run on this Mac died with SIGSEGV
+    in teardown, before its results were written."""
+    import gc
+    import threading
+    main = threading.main_thread()
+    _pump_until(app, lambda: not any(t is not main and t.is_alive() and t.daemon
+                                     for t in threading.enumerate()), seconds)
+    gc.collect()
+    app.update()
 
 
 def _build_app(db_path: Path):
@@ -601,6 +650,12 @@ def _force_one_loader_failure(app, model: str, size_label: str,
         _pump(app)
         app.update_idletasks()
         page = app.page_container.get_page("model")
+        # The banner is set when the WHOLE reload has applied, and the biggest model's reload
+        # can outlast the fixed pump (the first run of this check caught exactly that: the banner
+        # was not up yet, so the old walk had "passed" having checked nothing). Wait for it --
+        # bounded, and still a failure if it never comes.
+        _pump_until(app, lambda: load_banner_shows(page, "unit list"), _BANNER_WAIT_SECONDS)
+        app.update_idletasks()
         if not load_banner_shows(page, "unit list"):
             return (f"AUDIT FAILURE | {size_label} | the forced unit-list failure never showed in "
                     f"the Model page's load banner -- the banner's text was never checked")
@@ -630,10 +685,16 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
         app.withdraw()      # never flash on-screen before run_audit positions it off-screen
         n_sizes = len(_audit_sizes(app))
         clipped, failures = run_audit(app, target_model, ft_model)
+        # Written BEFORE the teardown below, so a crash in destroy() cannot lose the results.
+        _write_audit(outdir, clipped, failures, n_sizes, target_model, ft_model)
+        _settle_before_destroy(app)
     finally:
         app.destroy()
         db.close()
+    return 1 if (clipped or failures) else 0
 
+
+def _write_audit(outdir: Path, clipped, failures, n_sizes, target_model, ft_model) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     # Failures first: a state this script could not verify at all outranks a
     # confirmed clip -- and either one means the run is not clean, so both
@@ -644,11 +705,10 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
               f"model (most findings): {target_model!r}; "
               f"model2 (most linked final-test rows): {ft_model!r}")
     (outdir / "audit.txt").write_text(header + "\n" + "\n".join(lines) + ("\n" if lines else ""))
-    print(header)
+    print(header, flush=True)
     for line in lines:
         print(line)
-    print(f"-> {outdir / 'audit.txt'}")
-    return 1 if (clipped or failures) else 0
+    print(f"-> {outdir / 'audit.txt'}", flush=True)
 
 
 # ---------------------------------------------------------------------------

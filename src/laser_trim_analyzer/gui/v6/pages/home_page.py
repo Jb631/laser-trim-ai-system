@@ -137,9 +137,14 @@ class HomePage(PageBase):
             font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
         self._unreadable_count = 0
 
-        self._zone_header(parent, "What the app is telling you",
-                          "drifting now, biggest first — one verdict per lot, "
-                          "self-clearing")
+        # The two notices above are packed later, only when they have something to say -- and
+        # always ABOVE this header (_show_notice), never after the focus list below it: that
+        # list expands to fill the page, so on a 720-px-tall window a notice packed after it
+        # got no height at all and vanished (the audit found "70 files are being skipped..."
+        # squeezed out, 2026-09-24).
+        self._focus_header = self._zone_header(parent, "What the app is telling you",
+                                               "drifting now, biggest first — one verdict per "
+                                               "lot, self-clearing")
         self._focus = FocusListZone(parent, theme=t,
                                     on_row_click=self._on_focus_click)
         self._focus.pack(side="top", fill="both", expand=True)
@@ -350,8 +355,7 @@ class HomePage(PageBase):
             self._legacy_ft_label.configure(text="")
             return
         self._legacy_ft_label.configure(text=text)
-        self._legacy_ft_label.pack(side="top", fill="x",
-                                   pady=(0, self.theme.SPACE_SM))
+        self._show_notice(self._legacy_ft_label)
 
     def _apply_unreadable(self, count: int) -> None:
         """Show or hide the skipped-because-unreadable line. Tk thread."""
@@ -362,8 +366,12 @@ class HomePage(PageBase):
             self._unreadable_label.configure(text="")
             return
         self._unreadable_label.configure(text=text)
-        self._unreadable_label.pack(side="top", fill="x",
-                                    pady=(0, self.theme.SPACE_SM))
+        self._show_notice(self._unreadable_label)
+
+    def _show_notice(self, label) -> None:
+        """Pack a notice just above the focus section, where the expanding focus list can never
+        take its room (see build_content)."""
+        label.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM), before=self._focus_header)
 
     def _apply_focus(self, result, last_processed) -> None:
         # Handed to the zone untouched: one computation owns membership,

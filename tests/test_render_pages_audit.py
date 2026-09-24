@@ -63,6 +63,13 @@ def _offscreen(root, width=400, height=200):
     root.update()
 
 
+def _reported(found, text):
+    """Is `text` anywhere in the audit's findings -- as a line's own text, or among the widgets a
+    line groups with it ("... and N more text widget(s) with it: 'a', 'b'")? Every "not reported"
+    check uses this: a text grouped into another line IS reported."""
+    return any(c.text.startswith(text) or repr(text[:30])[:-1] in c.why for c in found)
+
+
 def test_a_label_forced_narrower_than_its_text_is_reported(tk_root):
     import customtkinter as ctk
 
@@ -94,7 +101,7 @@ def test_a_label_that_fits_is_not_reported(tk_root):
 
     found = find_clipped_text_widgets(tk_root, page="p", window_size="400x200")
 
-    assert not any("Fits fine" in c.text for c in found), found
+    assert not _reported(found, "Fits fine"), found
 
 
 def test_a_never_mapped_widget_is_not_reported(tk_root):
@@ -114,7 +121,7 @@ def test_a_never_mapped_widget_is_not_reported(tk_root):
 
     found = find_clipped_text_widgets(tk_root, page="p", window_size="400x200")
 
-    assert not any("Never placed" in c.text for c in found), found
+    assert not _reported(found, "Never placed"), found
 
 
 def _one_finding_row():
@@ -193,8 +200,11 @@ def test_a_grid_cell_pushed_past_its_containers_edge_is_reported(tk_root):
     ctk.CTkLabel(holder, text="Pushed out").grid(row=0, column=1)   # starts beyond the edge
     tk_root.update()
 
-    hits = [c for c in find_clipped_text_widgets(tk_root, page="p") if c.text == "Pushed out"]
-    assert hits, "a label beyond its container's right edge must be reported"
+    found = find_clipped_text_widgets(tk_root, page="p")
+    # Both cells overrun the same container, so they are ONE line (see the grouping test below);
+    # the line names the second cell among the others.
+    hits = [c for c in found if c.text == "Pushed out" or "'Pushed out'" in c.why]
+    assert hits, f"a label beyond its container's right edge must be reported; got {found}"
     assert hits[0].why.startswith("past the right edge")
     assert hits[0].alloc[0] >= hits[0].req[0]      # full size: the size comparison alone passes it
 
@@ -220,7 +230,8 @@ def test_a_label_on_a_tab_nobody_has_selected_is_not_reported(tk_root):
     tk_root.update()
 
     found = find_clipped_text_widgets(tk_root, page="p")
-    assert not any(c.text.startswith("On a tab") for c in found), found
+    assert not _reported(found, "On a tab never selected"), found
+    assert not _reported(found, "On a tab selected and left"), found
 
 
 def test_the_walk_reaches_every_tab_name(tk_root):
@@ -284,3 +295,95 @@ def test_the_audit_app_has_the_saved_settings_and_can_never_save_them(tmp_path, 
     finally:
         app.destroy()
         db.close()
+
+
+def test_a_hidden_tabs_scrolled_content_is_not_reported_however_stale_its_layout(tk_root):
+    """A CTkScrollableFrame's content sits on a canvas, and a canvas window stays winfo_ismapped()
+    while its tab is hidden -- keeping the layout it had when last shown. The first full audit run
+    after the rules above were added reported ~2,000 such widgets at 1280x720: rows of hidden tabs
+    still laid out for 1400 px, "past the edge". Not on screen, so winfo_viewable() is the test."""
+    import customtkinter as ctk
+
+    _offscreen(tk_root, 700, 300)
+    tv = ctk.CTkTabview(tk_root)
+    tv.pack(fill="both", expand=True)
+    tv.add("One")
+    tv.add("Two")
+    sf = ctk.CTkScrollableFrame(tv.tab("Two"))
+    sf.pack(fill="both", expand=True)
+
+    def add_row(text):
+        row = ctk.CTkFrame(sf)
+        row.pack(fill="x")
+        cell = ctk.CTkLabel(row, text=text)
+        cell.pack(side="right")
+        return cell
+
+    add_row("Drawn while shown")
+    tv.set("Two")
+    tk_root.update()
+    tv.set("One")
+    tk_root.after(300)                   # the old tab is grid_forgotten 100 ms after set()
+    tk_root.update()
+    cell = add_row("Right-hand cell")    # a reload re-renders the hidden tab's rows, as the app does
+    tk_root.update()
+    tk_root.geometry("350x300")
+    tk_root.update_idletasks()
+    tk_root.update()
+    inner = cell._label
+    # The trap this test is about, confirmed rather than assumed:
+    assert inner.winfo_ismapped() and not inner.winfo_viewable()
+    assert inner.winfo_rootx() + inner.winfo_width() > tv.winfo_rootx() + tv.winfo_width() + 1
+
+    found = find_clipped_text_widgets(tk_root, page="p")
+    assert not _reported(found, "Right-hand cell"), found
+    assert not _reported(found, "Drawn while shown"), found
+
+
+def test_everything_squeezed_out_with_one_container_is_one_line(tk_root):
+    """106 rows of one list squeezed out together are one layout problem: one line, naming the
+    container, with a count -- not 212 lines."""
+    import customtkinter as ctk
+
+    _offscreen(tk_root)
+    holder = ctk.CTkFrame(tk_root, width=200, height=40)
+    holder.pack_propagate(False)
+    holder.pack()
+    ctk.CTkLabel(holder, text="Fills the holder", height=40).pack(side="top", fill="x")
+    dropped = ctk.CTkFrame(holder)
+    dropped.pack(side="top", fill="x")                        # no height left for it
+    for i in range(3):
+        ctk.CTkLabel(dropped, text=f"Row {i}").pack()
+    tk_root.update()
+
+    rows = [c for c in find_clipped_text_widgets(tk_root, page="p") if c.text.startswith("Row ")]
+    assert len(rows) == 1, rows
+    assert str(dropped) in rows[0].why and "and 2 more text widget(s) with it: 'Row 1', 'Row 2'" in rows[0].why
+
+
+def test_the_results_are_written_before_the_window_is_torn_down(tmp_path, monkeypatch):
+    """One --audit run on this Mac died with SIGSEGV inside destroy() -- after walking every page,
+    before writing a line of audit.txt. The results now go to disk first."""
+    import pytest
+    from scripts import render_pages as rp
+
+    class App:
+        def withdraw(self):
+            pass
+
+        def destroy(self):
+            raise RuntimeError("teardown crashed")
+
+    class Db:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(rp, "_build_app", lambda path: (App(), Db()))
+    monkeypatch.setattr(rp, "resolve_findings_model", lambda db: None)
+    monkeypatch.setattr(rp, "resolve_ft_heavy_model", lambda db, exclude=None: None)
+    monkeypatch.setattr(rp, "_audit_sizes", lambda app: [(1280, 720)])
+    monkeypatch.setattr(rp, "run_audit", lambda app, a, b: ([], []))
+    monkeypatch.setattr(rp, "_settle_before_destroy", lambda app: None)
+    with pytest.raises(RuntimeError, match="teardown crashed"):
+        rp._run_audit_mode(tmp_path / "copy.db", tmp_path / "out")
+    assert (tmp_path / "out" / "audit.txt").read_text().startswith("0 clipped widget(s), 0 audit failure(s)")

@@ -43,12 +43,12 @@ class PageBase(ctk.CTkFrame):
     # ---- shared section chrome (2026-07-13 design pass: James asked for
     # "clear sections for what im looking at and what the app is telling
     # me" — pages mark INTERPRETATION zones vs DATA zones with this). ----
-    def _zone_header(self, parent, title: str, caption: str) -> None:
+    def _zone_header(self, parent, title: str, caption: str) -> ctk.CTkFrame:
         """A section inside a page: sentence-case title, its caption on the line below.
 
         This used to be an 11 px all-caps label in the accent colour -- the hardest text on
         the screen to read, and much of the 'dated' look (spec 2026-09-23). Callers now pass
-        sentence case."""
+        sentence case. Returns the header's frame, so a caller can pack something above it."""
         t = self.theme
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
         wrap.pack(side="top", fill="x", pady=(t.SPACE_SM, t.SPACE_XS))
@@ -57,6 +57,7 @@ class PageBase(ctk.CTkFrame):
         if caption:
             ctk.CTkLabel(wrap, text=caption, font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY,
                          anchor="w", justify="left", wraplength=1000).pack(fill="x")
+        return wrap
 
     def set_caption(self, text: str) -> None:
         """One line under the page title -- a page's headline in words. '' hides it.
