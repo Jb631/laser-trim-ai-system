@@ -80,12 +80,20 @@ rewritten at start-up. Nothing to retrain, nothing to click.
    `False`, the app still runs fine on the fallback fonts (Segoe UI / Cascadia Mono) — tell
    Claude exactly what it printed.
 6. **What the parse fixes change on screen** — only these, so anything else that moved is news:
-   - **Model page → Units:** an ERROR unit's *Linearity error* cell used to be "—"; it now says
-     why, e.g. "not graded: insufficient data points" (234 of the 237 ERROR units today; the
-     other 3 when next reprocessed).
+   - **Model page → Units:** an ERROR unit's *Linearity error* cell used to be "—" (or "1000",
+     the 999.999 error marker, on 94 of them); it now says why, e.g. "not graded: insufficient
+     data points" (234 of the 237 ERROR units today; the other 3 when next reprocessed), and its
+     sigma cell shows "—" instead of the marker. A graded track inside such a file keeps its own
+     numbers.
+   - **Laser 1 (LTS) files, from now on:** each pass's `TrimVolts` curves are checked against the
+     workbook's own `VOLTAGES` sheet before they are stored. One that disagrees keeps its sweep
+     and verdict but stores no curves, and the log names it ("… TrimVolts capture REFUSED for …"). None
+     disagree in the 4,973 local files; if the log names any at work, that is TRACKER D4's answer.
    - **Findings on 8856 and 8856-1, laser 2 (DLTS):** pass rates rise to what their GRADED
      tracks do — 27.7 % → 49.0 % and 57.0 % → 72.1 % — because a track too short to grade no
-     longer counts as a linearity FAIL. 8914 barely moves (8.6 % → 8.8 %).
+     longer counts as a linearity FAIL. 8914 barely moves (8.6 % → 8.8 %). They move at the next
+     Findings refresh — it runs by itself after an ingest, or Settings → Database → "Refresh
+     process findings".
    - **Two-track laser-2 models:** a file processed from now on judges its track 2 against
      track 2's OWN resistance limits. The 1,868 two-track analyses already stored keep track 1's
      until they are next processed — there is no back-fill for this one.
@@ -136,8 +144,10 @@ rewritten at start-up. Nothing to retrain, nothing to click.
 
 **At home (the Mac) only:** since 2026-09-24 the home copy of the database is read-only
 (`chmod a-w`), after two of Claude's scripts wrote to it by accident — schema and bookkeeping
-only, nothing of yours changed (`TRACKER.md`, top). The app still opens and reads it. To write to
-it at home: `chmod u+w data/analysis.db`. Your work copy is unaffected.
+only, nothing of yours changed (`TRACKER.md`, top). The app opens it read-only, but Findings
+cannot refresh on it (this copy lacks one new column the app adds at a writable launch), so before
+using the app at home: `chmod u+w data/analysis.db`. Claude puts the write access back when its
+session work is over. Your work copy is unaffected.
 
 ## ⚡ 2026-09-23 — bringing the finished rebuild home (do it THIS way)
 

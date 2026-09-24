@@ -40,8 +40,13 @@ the start-up unit_id backfill provably had nothing it could change; SQLite's own
 reads "ok". These are the same changes the app makes by itself on its first launch with this code.
 **Your WORK database is untouched** — this was the home copy. **What I did about it:** the Mac file
 is now read-only (`chmod a-w`), so a stray write fails loudly instead of landing, and every brief
-now explains exactly how the processor reaches the database. The app still opens it and reads it.
-**To write to it on the Mac yourself** (running an ingest there, say): `chmod u+w data/analysis.db`.
+now explains exactly how the processor reaches the database. **Before you run the app on the Mac,
+give it write access back: `chmod u+w data/analysis.db`.** It opens read-only now, but this copy
+lacks the one column the newest code adds (`track2_parameters`), so Findings cannot refresh until
+a writable launch adds it (seconds). (I first wrote here that the app would open it read-only; the
+final review proved it could not — my check had used an empty database, and an unguarded start-up
+backfill stopped the app. That backfill is guarded now, `9d10803`.) I put the write access back
+myself when this session's subagent work is over.
 
 ### Decisions that are yours
 
@@ -630,7 +635,7 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       failed file logs a warning and stays on the fallback, never raises. `theme.py`'s
       `FONT_FAMILY_MEDIUM` now carries two spellings, because the bundled Medium file's real
       legacy family (read with fontTools) is the abbreviated `"IBM Plex Sans Medm"`, not
-      `"IBM Plex Sans Medium"`. `tests/test_font_loader.py` (7 tests) pins file/licence
+      `"IBM Plex Sans Medium"`. `tests/test_font_loader.py` (9 tests) pins file/licence
       presence, the family match against the actual files, the graceful-fallback path, and the
       Windows call itself (faked — this Mac can't take that branch for real). See
       `BRING_TO_WORK.md` for what James will see and how to confirm it at the work machine.
@@ -688,6 +693,14 @@ first and reviewed; the whole test suite is the gate.
       **Not back-filled: the 1,868 two-track analyses already in the database are judged against
       track 1's limits until they are next processed.** Laser 3 (LTS3): 0 of its 547 analyses
       are two-track.
+- [x] **G9 · What the final whole-branch review found, fixed** (`9d10803`..`a46b5dc`): a start-up
+      backfill that cannot write no longer stops the app opening; **ingest now checks each laser-1
+      TrimVolts capture against the workbook's own `VOLTAGES` sheet and refuses one it contradicts**
+      (the back-fill's rule, one function for both — a refused pass keeps its sweep, stores no curves,
+      and the log names it); the Units tab's "not graded" and sigma dash follow the TRACK, not the
+      file; track 2's limits replace the file's as pairs; two sweep checks that would have gone red
+      at work on correct data (or passed over nothing) are fixed; V5's Apply stamps its threshold
+      only on the tracks it grades. Parse gate: nothing moved.
 - [x] **G8 · The customer-value guard cried wolf** (`595d49c`): a real 5-digit PO number
       happened to be the last digits of a long measured decimal in a test baseline. A short PO
       now matches only as a whole number; the whole history stays clean.
