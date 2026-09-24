@@ -175,21 +175,25 @@ def read_track2_keyvalue(df: pd.DataFrame, *, label_col: int = 0,
 
     So "real" is decided from the block itself, never from which sheets this
     FILE happens to have (this module reads no Excel and is told no sheet
-    names -- see the module docstring): the header cell (row 0) names TRK2,
-    OR at least `_TRACK2_MIN_VALUES` rows carry a value under the same
-    labels column B uses. The OR matters: verified on the corpus, a few real
-    blocks are mislabelled -- column C's own header wrongly repeats
-    "SEC1-TRK1", a copy-paste in the source workbook (e.g. shop 8532-8A) --
-    while still carrying a full, genuinely different set of values. The
-    header check alone would miss those; the value-count check alone would
-    also flag the 1-4-cell comment noise, which the threshold excludes.
+    names -- see the module docstring): at least `_TRACK2_MIN_VALUES` rows
+    carry a value under the same labels column B uses. The header cell
+    (row 0) is NOT part of the decision, even though it names "SEC1-TRK2" on
+    most real blocks (ruling, added 2026-09-24): checking it bought nothing
+    on the corpus -- every real block, header-named or not, clears the
+    value-count bar on its own (32-34 non-null vs a 4-cell noise ceiling for
+    stray comments; see the module comment above) -- while ADDING a failure
+    mode of its own: a template column C that carries the "SEC1-TRK2" header
+    text but few or no real values underneath would have been stored as a
+    captured block. A few real blocks in the corpus are in fact mislabelled
+    -- column C's own header wrongly repeats "SEC1-TRK1", a copy-paste in the
+    source workbook (e.g. shop 8532-8A) -- and the value-count rule alone
+    reads those correctly too, since their values clear the bar regardless
+    of what the header says.
     """
     if df is None or df.empty or df.shape[1] <= value_col:
         return {}
-    header = df.iloc[0, value_col] if df.shape[0] else None
-    header_names_trk2 = isinstance(header, str) and "TRK2" in header.upper()
     non_null = int(df.iloc[1:, value_col].notna().sum()) if df.shape[0] > 1 else 0
-    if not header_names_trk2 and non_null < _TRACK2_MIN_VALUES:
+    if non_null < _TRACK2_MIN_VALUES:
         return {}
     return read_keyvalue(df, label_col=label_col, value_col=value_col)
 

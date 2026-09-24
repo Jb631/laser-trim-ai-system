@@ -1703,6 +1703,24 @@ def check_trim_capture() -> None:
                                "setup_keys": 70, "blanks": 72, "populated": {}},
         "lts_8232-1_194.xls": {"tracks": ["default"], "passes": 3,
                                "setup_keys": 70, "blanks": 72, "populated": {}},
+        # Task 9 (2026-09-24): two-track DLTS fixtures. Column C of 'Track
+        # Parameters' adds one key (`_track2`) to the parser's raw trim_setup
+        # dict when present -- 46 + 1 = 47, on BOTH (7553_10B carries a real
+        # Track 2 block despite being a TRK2-ONLY file; see trim_setup.
+        # read_track2_keyvalue). Neither file's untrimmed sweep carries a
+        # blank limit (0), unlike the original two DLTS fixtures.
+        "dlts_7553_10B.xls": {                          # TRK2 only in this file
+            "tracks": ["TRK2"], "passes": 2, "setup_keys": 47, "blanks": 0,
+            "populated": {"trim_target": 696, "initial_trim_value": 696,
+                          "final_trim_value": 696, "pred_deltas": 702,
+                          "used_deltas": 702, "cut_lengths": 702,
+                          "trim_currents": 702}},
+        "dlts_8074_18.xls": {           # TRK1 (untrimmed only) + TRK2 (2 cuts)
+            "tracks": ["TRK1", "TRK2"], "passes": 2, "setup_keys": 47, "blanks": 0,
+            "populated": {"trim_target": 258, "initial_trim_value": 258,
+                          "final_trim_value": 258, "pred_deltas": 262,
+                          "used_deltas": 262, "cut_lengths": 262,
+                          "trim_currents": 262}},
     }
 
     fixtures = sorted((REPO / "tests" / "fixtures" / "trim").glob("*.xls"))
@@ -1812,7 +1830,7 @@ def check_trim_capture() -> None:
           else f"{sum(len(v['tracks']) for v in EXPECTED.values())} tracks, as pinned")
     check("trim capture: every fixture yields the setup keys it is known to hold",
           not wrong_setup, "; ".join(wrong_setup) if wrong_setup
-          else "46/46/70/70 keys, as pinned")
+          else "46/46/70/70/47/47 keys, as pinned")
     # Vacuity guard for the check below, now PINNED rather than floored:
     # without real blanks in the fixtures, "no 0.0 found" would be true of
     # code that turns every blank into 0.0.
@@ -1834,7 +1852,7 @@ def check_trim_capture() -> None:
     # The sparse-neighbour case the "at least one real number" bar cannot see.
     check("trim capture: each System A column holds every value it is known "
           "to hold", not hollow, "; ".join(hollow[:3]) if hollow
-          else "per-column non-None counts as pinned on both DLTS fixtures")
+          else "per-column non-None counts as pinned on every System A fixture")
     check("trim capture: System B does not fake the columns it lacks",
           not b_leaked, "; ".join(b_leaked[:3]) if b_leaked
           else "absent, not empty, on every non-System-A pass")
@@ -2577,10 +2595,15 @@ def check_track2_setup_on_database(raw) -> None:
         warn("track2 setup: no two-track System A/C analyses on this copy to check")
         return
     captured = sum(1 for _aid, _model, t2_raw in rows if t2_raw)
-    check(f"track2 setup: {captured} of {total} two-track System A/C analyses on this "
-          "copy carry a captured Track 2 block (0 is CORRECT before a reprocess -- "
-          "no back-fill by design; see task-9-report.md)",
-          True, f"captured={captured} total={total}")
+    # Information, not a verdict -- a check that can never FAIL is forbidden by
+    # the sweep's own rule (a bare `check(..., True, ...)` was exactly the
+    # "weak assertion" class CLAUDE.md warns about). 0 captured is the correct
+    # state before a reprocess; a high or low count is neither good nor bad on
+    # its own, so this is a count for a human, via warn(), not check().
+    warn(f"track2 setup: {captured} of {total} two-track System A/C analyses on this "
+         "copy carry a captured Track 2 block (0 is CORRECT before a reprocess -- "
+         "no back-fill by design; see task-9-report.md)",
+         f"captured={captured} total={total}")
     bad = []
     for aid, model, t2_raw in rows:
         if not t2_raw:

@@ -94,12 +94,33 @@ def test_a_handful_of_stray_comments_is_not_a_track2_block():
 def test_a_mislabelled_header_with_real_values_is_still_read():
     """Verified on the corpus (e.g. shop 8532-8A): column C's own header cell
     wrongly repeats 'SEC1-TRK1' (a copy-paste in the source workbook), but the
-    column still carries a full, genuinely different value set. The header check
-    alone would miss this -- the value-count fallback must catch it."""
+    column still carries a full, genuinely different value set. The header text
+    plays no part in the decision at all (ruling, 2026-09-24) -- only the value
+    count does, so a wrong, right, or absent header all read identically here."""
     df = _sheet([11650, 10350, "Outer Track"], [6000, 4000, "Inner Track"],
                 header2="SEC1-TRK1")
     out = read_track2_keyvalue(df)
     assert out["field_0"] == 6000 and out["field_2"] == "Inner Track"
+
+
+@pytest.mark.parametrize("track2_values", [
+    [],                              # entirely empty under the header
+    [0.5, "a comment", 6000],        # a few values -- still below the threshold
+], ids=["empty", "a-few-values"])
+def test_a_trk2_named_header_with_too_few_values_is_not_a_block(track2_values):
+    """Controller's ruling (2026-09-24): the header cell is not part of the
+    decision at all. A column C that says 'SEC1-TRK2' at row 0 is not enough on
+    its own -- it still has to clear `_TRACK2_MIN_VALUES` real values, the same
+    bar a column with no header, or a wrong one, has to clear. Not observed on
+    the local corpus (every header-named block there also clears the bar), but
+    the header was never trustworthy on its own -- a template's column C could
+    say "TRK2" with nothing real underneath, and this must still return {}."""
+    rows = [["TRACK PARAMETERS", "SEC1-TRK1", "SEC1-TRK2"]]
+    for i in range(15):
+        v2 = track2_values[i] if i < len(track2_values) else None
+        rows.append([f"Field {i}", i, v2])
+    df = pd.DataFrame(rows)
+    assert read_track2_keyvalue(df) == {}
 
 
 def test_first_occurrence_wins_same_as_read_keyvalue():
