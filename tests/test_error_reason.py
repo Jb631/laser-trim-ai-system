@@ -296,6 +296,16 @@ def _all_labels(widget):
     return out
 
 
+def _cell_texts(row):
+    """{column key: the text its cell shows} for one `_UnitRow`, by column POSITION --
+    the row packs exactly one label per `_COLUMNS` entry, in that order."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.widgets.units_tab import _COLUMNS
+    labels = [w for w in row.winfo_children() if isinstance(w, ctk.CTkLabel)]
+    assert len(labels) == len(_COLUMNS), [w.cget("text") for w in labels]
+    return {key: w.cget("text") for (key, _), w in zip(_COLUMNS, labels)}
+
+
 def test_error_reason_cell_text_is_shortened_to_60_chars():
     from laser_trim_analyzer.gui.v6.widgets.units_tab import error_reason_cell_text
 
@@ -315,16 +325,14 @@ def test_units_tab_shows_the_reason_for_an_error_row(tk_root):
     from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
 
     tab = UnitsTab(tk_root, theme=ThemeManager(), on_unit_click=lambda u: None, on_export=lambda: None)
-    # sigma_gradient given a real value (unlike linearity_error) so the only
-    # possible "—" in this row would have come from the cell under test --
-    # its absence below is a real assertion, not a coincidence of the fixture.
+    # The linearity cell is read by POSITION (the last column), so the dash the sigma
+    # cell of a failed track now shows (2026-09-24) cannot stand in for it.
     units = [{"analysis_id": 1, "serial": "sn1", "file_date": datetime.now(),
               "overall_status": "Error", "sigma_gradient": 0.015, "linearity_error": None,
-              "error_reason": "Insufficient data points"}]
+              "error_reason": "Insufficient data points", "track_status": "ERROR"}]
     tab.set_units(units)
-    texts = [w.cget("text") for w in _all_labels(tab._rows[0])]
-    assert "not graded: Insufficient data points" in texts, texts
-    assert "—" not in texts, "the empty-cell dash must be replaced, not just supplemented"
+    texts = _cell_texts(tab._rows[0])
+    assert texts["linearity_error"] == "not graded: Insufficient data points", texts
 
 
 def test_a_non_error_row_never_shows_not_graded(tk_root):
@@ -335,7 +343,7 @@ def test_a_non_error_row_never_shows_not_graded(tk_root):
     tab = UnitsTab(tk_root, theme=ThemeManager(), on_unit_click=lambda u: None, on_export=lambda: None)
     units = [{"analysis_id": 1, "serial": "sn1", "file_date": datetime.now(),
               "overall_status": "Pass", "sigma_gradient": 0.01, "linearity_error": 0.004,
-              "error_reason": None}]
+              "error_reason": None, "track_status": "PASS"}]
     tab.set_units(units)
     texts = [w.cget("text") for w in _all_labels(tab._rows[0])]
     assert not any("not graded" in t for t in texts), texts
@@ -352,7 +360,92 @@ def test_an_error_row_with_no_reason_still_shows_the_dash(tk_root):
     tab = UnitsTab(tk_root, theme=ThemeManager(), on_unit_click=lambda u: None, on_export=lambda: None)
     units = [{"analysis_id": 1, "serial": "sn1", "file_date": datetime.now(),
               "overall_status": "Error", "sigma_gradient": None, "linearity_error": None,
-              "error_reason": None}]
+              "error_reason": None, "track_status": "ERROR"}]
     tab.set_units(units)
-    texts = [w.cget("text") for w in _all_labels(tab._rows[0])]
-    assert "—" in texts, texts
+    texts = _cell_texts(tab._rows[0])
+    assert texts["linearity_error"] == "—", texts
+
+
+# ---------------------------------------------------------------------------
+# One row per TRACK: "not graded" and the sigma dash are the TRACK's (2026-09-24)
+# ---------------------------------------------------------------------------
+
+def _two_track_error_analysis(app, model, failed_status):
+    """An ERROR analysis whose TRK1 was graded (WARNING) and whose TRK2 failed
+    processing -- the shape of model 8530 on the work database today -- with the
+    file's own error_reason set, as every ERROR saved from 2026-09-23 on has it.
+    Invented values throughout."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, StatusType, SystemType)
+    with app.db.session() as s:
+        ar = DBAR(model=model, serial="21", system=SystemType.A,
+                  filename=f"{model}_21_TEST DATA_3-4-2026_9-00 AM.xls",
+                  file_date=datetime(2026, 3, 4), overall_status=StatusType.ERROR,
+                  error_reason="TRK2: Insufficient data points")
+        s.add(ar)
+        s.flush()
+        s.add(DBTR(analysis_id=ar.id, track_id="TRK1", status=StatusType.WARNING,
+                   travel_length=1.0, linearity_spec=0.01, sigma_gradient=0.0123,
+                   final_linearity_error_shifted=0.00417))
+        s.add(DBTR(analysis_id=ar.id, track_id="TRK2", status=StatusType[failed_status],
+                   travel_length=1.0, linearity_spec=0.01, sigma_gradient=999.999,
+                   final_linearity_error_shifted=999.999,
+                   anomaly_reason="Insufficient data points"))
+
+
+@pytest.mark.parametrize("failed_status", ["ERROR", "PROCESSING_FAILED"])
+def test_a_graded_track_in_an_error_analysis_keeps_its_own_numbers(make_app, failed_status):
+    """Through the real loader and the real tab: TRK1 (graded) shows its own sigma and
+    linearity error, never the file's "not graded: TRK2: ..."; TRK2 (failed processing)
+    says why it was not graded and shows "—" for sigma -- never the 999.999 marker,
+    which the cell's "{:.4g}" printed as "1000"."""
+    app = make_app()
+    _two_track_error_analysis(app, "9991", failed_status)
+    page = app.page_container.get_page("model")
+    page._current_model = "9991"
+    for units in (page._load_units("9991"), page._search_units("9991", "21")):
+        assert sorted(u["track_status"] for u in units) == sorted(["WARNING", failed_status])
+        page._units_tab.set_units(units)
+        app.update_idletasks()
+        rows = {r.unit["track_status"]: r for r in page._units_tab._rows}
+        assert all(r.winfo_manager() == "pack" for r in rows.values())
+
+        graded = _cell_texts(rows["WARNING"])
+        assert graded["linearity_error"] == "0.00417", graded
+        assert graded["sigma_gradient"] == "0.0123", graded
+        assert not any("not graded" in t for t in graded.values()), graded
+
+        failed = _cell_texts(rows[failed_status])
+        assert failed["linearity_error"] == "not graded: TRK2: Insufficient data points", failed
+        assert failed["sigma_gradient"] == "—", failed
+        assert not any(m in t for t in failed.values() for m in ("1000", "1e+03", "999")), failed
+
+
+def test_a_failed_track_with_no_reason_shows_dashes_never_its_leftover_numbers(make_app):
+    """No reason anywhere (the 3 mechanism-1 rows, until reprocessed): both measurement
+    cells fall back to "—" -- a failed record's leftovers are not readings, even when
+    the analyser left a number in the column (114 ERROR tracks on the work database
+    carry a stored linearity error, some of them 999.999)."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, StatusType, SystemType)
+    app = make_app()
+    with app.db.session() as s:
+        ar = DBAR(model="9992", serial="5", system=SystemType.B,
+                  filename="9992_5_TA_Test Data_3-4-2026_9-00 AM.xls",
+                  file_date=datetime(2026, 3, 4), overall_status=StatusType.ERROR)
+        s.add(ar)
+        s.flush()
+        s.add(DBTR(analysis_id=ar.id, track_id="Track A", status=StatusType.ERROR,
+                   travel_length=1.0, linearity_spec=0.01, sigma_gradient=999.999,
+                   final_linearity_error_shifted=0.0321))
+    page = app.page_container.get_page("model")
+    page._current_model = "9992"
+    units = page._load_units("9992")
+    assert [u["error_reason"] for u in units] == [None]
+    page._units_tab.set_units(units)
+    row = page._units_tab._rows[0]
+    assert row.winfo_manager() == "pack"
+    cells = _cell_texts(row)
+    assert (cells["sigma_gradient"], cells["linearity_error"]) == ("—", "—"), cells

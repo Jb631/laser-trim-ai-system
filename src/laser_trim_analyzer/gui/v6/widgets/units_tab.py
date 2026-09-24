@@ -16,6 +16,7 @@ from typing import Callable, Dict, List, Optional
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.core.model_stats import failed_processing
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 _COLUMNS = [("serial", "Serial"), ("file_date", "Date"), ("overall_status", "Status"),
@@ -246,17 +247,26 @@ class _UnitRow(ctk.CTkFrame):
         # (live-walk finding, 2026-07-08: a column of plain-white 'Fail').
         _status_color = {"Fail": theme.TIER_OOC, "FAIL": theme.TIER_OOC,
                          "Warning": theme.TIER_WARNING, "WARNING": theme.TIER_WARNING}
-        # An ERROR row has no linearity_error value (nothing was graded) — that
-        # cell would otherwise just read "—". Show why instead, when the
-        # loader found a reason (analysis_results.error_reason, or a
-        # COALESCE onto the track's own words for rows older than that column).
-        is_error_row = str(unit.get("overall_status", "")).upper() == "ERROR"
-        reason = unit.get("error_reason") if is_error_row else None
+        # A row is one TRACK, so "not graded" is the TRACK's own status (the
+        # one failed-processing definition), never the analysis's: an ERROR
+        # analysis can hold a graded track (model 8530 today: TRK1 WARNING,
+        # TRK2 ERROR), and once error_reason is set the analysis-level test
+        # printed "not graded: TRK2: ..." over TRK1's own linearity error.
+        # A failed track was not graded, so its linearity cell says why, when
+        # the loader found a reason (analysis_results.error_reason, or a
+        # COALESCE onto the track's own words for rows older than that column),
+        # and is otherwise "—". Its values are what the analyser left behind,
+        # not readings -- sigma is the 999.999 marker on 94 work-database rows,
+        # which "{:.4g}" printed as "1000" -- so neither cell ever shows one.
+        track_failed = failed_processing(unit.get("track_status"))
+        reason = unit.get("error_reason") if track_failed else None
         for key, _ in _COLUMNS:
             v = unit.get(key)
             if key == "linearity_error" and reason:
                 txt = error_reason_cell_text(reason)
                 color = theme.TEXT_SECONDARY
+            elif key in ("linearity_error", "sigma_gradient") and track_failed:
+                txt, color = "—", theme.TEXT_PRIMARY
             else:
                 txt = (v.strftime("%Y-%m-%d") if hasattr(v, "strftime")
                        else f"{v:.4g}" if isinstance(v, float) else str(v) if v is not None else "—")

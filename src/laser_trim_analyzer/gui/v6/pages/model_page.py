@@ -62,6 +62,20 @@ _FINDINGS_TAB_NAME = "Findings"
 _RECENT_DAYS = 30
 
 
+def _unit_row(r) -> dict:
+    """One Units-tab row from the shared SELECT of `_load_units` / `_search_units`:
+    (analysis id, serial, file_date, ANALYSIS status, sigma, linearity error, reason,
+    TRACK status). One row per TRACK, so the row carries the track's own status as well
+    as the unit's -- the tab decides "not graded" and the sigma dash on the TRACK's
+    (`track_status`, the enum NAME `core.model_stats.failed_processing` reads), never on
+    the analysis's: a graded TRK1 inside an ERROR analysis owns its linearity error."""
+    return {"analysis_id": r[0], "serial": r[1], "file_date": r[2],
+            "overall_status": getattr(r[3], "value", str(r[3])),
+            "sigma_gradient": r[4], "linearity_error": r[5],
+            "error_reason": r[6],
+            "track_status": getattr(r[7], "name", r[7])}
+
+
 class ModelPage(PageBase):
     page_title = "Model"
 
@@ -879,15 +893,13 @@ class ModelPage(PageBase):
         cutoff = self._window_cutoff()
         with self.app.db.session() as s:
             q = (s.query(DBAR.id, DBAR.serial, DBAR.file_date, DBAR.overall_status,
-                         DBTR.sigma_gradient, DBTR.final_linearity_error_shifted, reason)
+                         DBTR.sigma_gradient, DBTR.final_linearity_error_shifted, reason,
+                         DBTR.status)
                  .join(DBTR, DBTR.analysis_id == DBAR.id).filter(DBAR.model == model))
             if cutoff:
                 q = q.filter(DBAR.file_date >= cutoff)
             rows = q.order_by(DBAR.file_date.desc()).limit(200).all()
-            return [{"analysis_id": r[0], "serial": r[1], "file_date": r[2],
-                     "overall_status": getattr(r[3], "value", str(r[3])),
-                     "sigma_gradient": r[4], "linearity_error": r[5],
-                     "error_reason": r[6]} for r in rows]
+            return [_unit_row(r) for r in rows]
 
     def _search_units(self, model, query: str) -> List[dict]:
         """Serial lookup for the model — ignores the window and the recent cap so an old
@@ -897,14 +909,12 @@ class ModelPage(PageBase):
         like = f"%{query}%"
         with self.app.db.session() as s:
             rows = (s.query(DBAR.id, DBAR.serial, DBAR.file_date, DBAR.overall_status,
-                            DBTR.sigma_gradient, DBTR.final_linearity_error_shifted, reason)
+                            DBTR.sigma_gradient, DBTR.final_linearity_error_shifted, reason,
+                            DBTR.status)
                     .join(DBTR, DBTR.analysis_id == DBAR.id)
                     .filter(DBAR.model == model, DBAR.serial.ilike(like))
                     .order_by(DBAR.file_date.desc()).limit(500).all())
-            return [{"analysis_id": r[0], "serial": r[1], "file_date": r[2],
-                     "overall_status": getattr(r[3], "value", str(r[3])),
-                     "sigma_gradient": r[4], "linearity_error": r[5],
-                     "error_reason": r[6]} for r in rows]
+            return [_unit_row(r) for r in rows]
 
     def _on_unit_search(self, query: str) -> None:
         model = self._current_model
