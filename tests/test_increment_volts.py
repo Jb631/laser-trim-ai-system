@@ -3,9 +3,12 @@
 
 Layout, measured on 4,972 real laser-1 files (design doc section 4): one COLUMN per
 engaged position, one ROW per laser increment, each cell the output voltage after it.
-Column k is the position at data row (Initial Points Ignored + k) of `Trim N`. Zeros are
-end padding only. The capture lands on laser 1's `Trim N` pass rows as `increment_volts`
-(never `trim_volts`: that key already carries the Trim Parameters' "Trim Volts" SETTING).
+Column k is the position at data row (first_row + k) of `Trim N`, where first_row is the
+file's Points From Start when it names both Points From Start and Points From End, else its
+Initial Points Ignored (`increment_volts_frame`; the ignored count alone put 36 local passes
+one position off, 2026-09-24). Zeros are end padding only. The capture lands on laser 1's
+`Trim N` pass rows as `increment_volts` (never `trim_volts`: that key already carries the
+Trim Parameters' "Trim Volts" SETTING).
 """
 import json
 from pathlib import Path

@@ -2165,23 +2165,38 @@ def _trimvolts_placement_one(path):
     VOLTAGES[first_row + k, N], exactly. The one allowance, measured on every local sheet
     (2026-09-24): the LAST non-empty curve's cell may be blank (55 passes); no other.
 
-    The parser supplies only what is under test (curves, first_row). The sheet census and
-    VOLTAGES are read here, independently. Module level so a process pool can run it.
+    The parser supplies only what is under test (curves, first_row). The sheet census,
+    VOLTAGES and the file's own Model Parameters are read here, independently -- and
+    BEFORE the parse, so a workbook that then fails to parse is still known to be one
+    whose Points From Start differs from its Initial Points Ignored (`pfs_differs`): the
+    files the first_row rule exists for. Module level so a process pool can run it.
     """
     import re as _re
     import pandas as _pd
     from laser_trim_analyzer.core.parser import ExcelParser, drop_cached_bytes
-    out = {"file": Path(path).name, "checked": 0, "placed": 0, "blank_last": 0,
-           "uncheckable": 0, "misplaced": [], "uncaptured": [], "error": None}
-    try:
+
+    def _count(v):
         try:
-            parsed = ExcelParser().parse_file(Path(path))
-        finally:
-            drop_cached_bytes(Path(path))
-        passes = {str(p.get("sheet", "")).strip().lower(): p
-                  for t in parsed.get("tracks") or [] for p in t.get("trim_passes") or []}
+            f = float(v)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return int(f) if f == f and f.is_integer() else None
+
+    out = {"file": Path(path).name, "checked": 0, "placed": 0, "blank_last": 0,
+           "uncheckable": 0, "misplaced": [], "uncaptured": [], "pfs_differs": False,
+           "error": None}
+    try:
         with _pd.ExcelFile(path) as xl:
             names = xl.sheet_names
+            labels = {}
+            if "Model Parameters" in names:
+                mp = _pd.read_excel(xl, sheet_name="Model Parameters", header=None)
+                for i in range(mp.shape[0] if mp.shape[1] > 1 else 0):
+                    if isinstance(mp.iat[i, 1], str):        # laser 1: value, then label
+                        labels.setdefault(mp.iat[i, 1].strip().lower(), mp.iat[i, 0])
+            ipi, pfs, pfe = (_count(labels.get(k)) for k in (
+                "initial points ignored", "points from start", "points from end"))
+            out["pfs_differs"] = None not in (ipi, pfs, pfe) and pfs != ipi
             tv = {}
             for s in names:
                 m = _re.fullmatch(r"trimvolts(\d+)", s.replace(" ", "").lower())
@@ -2189,6 +2204,12 @@ def _trimvolts_placement_one(path):
                     tv.setdefault(int(m.group(1)), []).append(s)
             volts = (_pd.read_excel(xl, sheet_name="VOLTAGES", header=None)
                      if "VOLTAGES" in names else None)
+            try:
+                parsed = ExcelParser().parse_file(Path(path))
+            finally:
+                drop_cached_bytes(Path(path))
+            passes = {str(p.get("sheet", "")).strip().lower(): p
+                      for t in parsed.get("tracks") or [] for p in t.get("trim_passes") or []}
             for s in names:
                 m = _re.fullmatch(r"trim\s+(\d+)", s.strip(), _re.I)
                 if not m or len(tv.get(int(m.group(1)), [])) != 1:
@@ -2248,8 +2269,20 @@ def check_increment_volts_corpus() -> None:
     Why it exists (2026-09-24 review): `first_row` was Initial Points Ignored, and on 36 of
     6,263 local passes the machine had started at Points From Start instead -- every curve
     on them one position off, invisible to the fixtures (8232-1 has no Points From Start).
-    Falsify before trusting: make `increment_volts_frame` ignore points_from_start again
-    and this goes FAIL with those 36 passes (37 with the tracked touch-up fixture).
+
+    It can never PASS on an error or on nothing (2026-09-24 re-review: a mutant that made
+    every Points-From-Start file fail to parse left 42 workbooks as "errors" and both
+    checks still read PASS -- at work, on the fixtures alone, the rule's only file
+    errored and they passed on the two 8232-1 fixtures). So: any workbook that does not
+    parse or read is a FAIL (0 of 4,973 do today); no workbook at all is a FAIL; and at
+    least one PLACED pass must come from a workbook whose Points From Start differs from
+    its Initial Points Ignored -- the files the rule exists for -- or the check names that
+    it did not exercise them. The tracked touch-up fixture is one, so this holds at work.
+
+    Falsify before trusting: make `increment_volts_frame` ignore points_from_start and
+    this goes FAIL with 37 misplaced (36 local + the fixture); make it raise for those
+    files and it goes FAIL on the errors and on zero exercised, with or without the local
+    corpus.
     """
     import os as _os
     from concurrent.futures import ProcessPoolExecutor
@@ -2275,19 +2308,39 @@ def check_increment_volts_corpus() -> None:
     misplaced = [m for r in parsed for m in r["misplaced"]]
     uncaptured = [u for r in parsed for u in r["uncaptured"]]
     errors = [f"{r['file']}: {r['error']}" for r in res if r["error"] is not None]
+    pfs_files = [r for r in res if r["pfs_differs"]]
+    pfs_errored = sum(1 for r in pfs_files if r["error"] is not None)
+    pfs_placed = sum(r["placed"] for r in pfs_files if r["error"] is None)
+    # Reasons NOT to pass, shared by both verdicts: neither may read PASS on an error
+    # or on nothing.
+    refuse = []
+    if not parsed:
+        refuse.append(f"no workbook parsed, of {len(res)}")
+    if errors:
+        refuse.append(f"{len(errors)} of {len(res)} workbooks did not parse or read "
+                      f"({pfs_errored} of them Points-From-Start files): {errors[:2]}")
+    why = list(refuse)
+    if misplaced:
+        why.append(f"misplaced={misplaced[:3]} ({len(misplaced)})")
+    if not pfs_placed:
+        why.append(f"not one placed pass from a workbook whose Points From Start differs "
+                   f"from its Initial Points Ignored ({len(pfs_files)} such workbooks, "
+                   f"{pfs_errored} errored) -- the files the first_row rule exists for "
+                   f"were not exercised")
     check("increment volts: every captured laser-1 pass sits where the machine's own "
           "VOLTAGES sheet puts it (corpus)",
-          checked > 0 and not misplaced,
-          (f"misplaced={misplaced[:3]} ({len(misplaced)}); " if misplaced else "")
-          + f"{checked} passes checked in {len(parsed)} workbooks "
-          f"({sum(r['placed'] for r in parsed)} placed, {sum(r['blank_last'] for r in parsed)} "
-          f"with the allowed blank last cell, {sum(r['uncheckable'] for r in parsed)} "
-          f"without a VOLTAGES column to hold them to); {len(errors)} workbooks did not "
-          f"parse or read: {errors[:2]}")
+          not why,
+          ("; ".join(why) + " | " if why else "")
+          + f"{checked} passes checked in {len(parsed)} of {len(res)} workbooks "
+          f"({sum(r['placed'] for r in parsed)} placed -- {pfs_placed} of them from "
+          f"{len(pfs_files)} workbooks whose Points From Start differs from Initial Points "
+          f"Ignored -- {sum(r['blank_last'] for r in parsed)} with the allowed blank last "
+          f"cell, {sum(r['uncheckable'] for r in parsed)} without a VOLTAGES column to hold "
+          f"them to)")
+    why = refuse + ([f"uncaptured={uncaptured[:3]} ({len(uncaptured)})"] if uncaptured else [])
     check("increment volts: every Trim N with a TrimVolts reading beside it is captured "
-          "(corpus)", not uncaptured,
-          f"uncaptured={uncaptured[:3]} ({len(uncaptured)})" if uncaptured
-          else f"all of them, across {len(parsed)} workbooks")
+          "(corpus)", not why,
+          "; ".join(why) if why else f"all of them, across all {len(parsed)} workbooks")
 
 
 def main() -> int:

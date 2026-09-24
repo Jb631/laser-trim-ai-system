@@ -110,9 +110,11 @@ the file-level `errors`, exactly as today.
   only per-position pre-cut reading a laser-1 file carries**. Zeros are end padding only (no
   zero between two readings in any of 107 passes).
 - The column count is `Number of Readings (Lin)` − *start* − *end* + 1 (the same pair of
-  fields), exact on 6,198 of 6,263 local sheets; the rest are all narrower, 11 of them at the
-  old .xls **256-column limit, cut short**. (The first version, with the ignored counts only,
-  also called a touch-up's full 120-column sheet truncated against a window of 122.)
+  fields), exact on 6,199 of the 6,264 captured local sheets (6,195 of 6,260 from Work Files,
+  plus the 4 fixture passes); the other 65 are all narrower — 11 of them at the old .xls
+  **256-column limit, cut short** — and none is wider. (The first version, with the ignored
+  counts only, also called a touch-up's full 120-column sheet truncated against a window of
+  122.)
 - The older template of 6607 and 8232-1 labels the same slot `Start Point` / `End point`
   ("points from start for reading/measuring" — not trimming). It equals the ignored counts on
   every local file, so no local workbook can say which one the machine follows when they
