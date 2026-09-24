@@ -265,3 +265,17 @@ def test_a_row_dated_more_than_a_day_in_the_future_does_not_move_fleet_latest(tm
                              filename="m2.xls", file_date=datetime.now() + timedelta(days=400),
                              overall_status=StatusType.PASS))
     assert _fleet_latest(db) == before == START
+
+
+def test_fleet_latest_does_not_use_the_deprecated_datetime_adapter(tmp_path):
+    """_fleet_latest binds its cutoff as a formatted string, not a raw datetime, so it never
+    falls back to sqlite3's own adapter registry (deprecated as of Python 3.12 -- text()
+    bypasses SQLAlchemy's own DATETIME bind_processor, which is what the ORM path uses)."""
+    import warnings
+    from laser_trim_analyzer.findings.engine import _fleet_latest
+    db = _db(tmp_path)
+    with warnings.catch_warnings():
+        # ONLY the datetime adapter: a blanket "error" filter would fail this test the day
+        # some library on this path deprecates something unrelated (e.g. pydantic's).
+        warnings.filterwarnings("error", message=r".*datetime adapter.*", category=DeprecationWarning)
+        assert _fleet_latest(db) is None                  # empty db -- exercises the bind either way

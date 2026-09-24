@@ -174,6 +174,28 @@ def test_settings_that_ran_side_by_side_are_not_called_two_periods():
     assert f.evidence["days_mixed_pct"] == pytest.approx(100.0)
 
 
+def test_settings_that_share_most_months_but_rarely_the_same_day_are_side_by_side():
+    # Alternate setting by DAY across one continuous span: every month has both settings
+    # (so it is not a before/after), but almost no single DAY does (so it is not "mixed on
+    # the same day" either) -- the middle grade, between the two above.
+    seen = {}
+    tracks = []
+    for i, d in enumerate(days(START, 240)):
+        cut = 1.0 if i % 2 == 0 else 2.0
+        share = 0.6 if cut == 1.0 else 0.3
+        low = seen.get(cut, 0) % 2 == 0
+        seen[cut] = seen.get(cut, 0) + 1
+        k = seen.get((cut, low), 0)
+        seen[(cut, low)] = k + 1
+        tracks.append(track(i, d, cut, 4000.0 if low else 5000.0, k % 10 < share * 10))
+    _, findings = cut_setting.analyze("M", tracks, label)
+    f = only(findings)
+    assert f.evidence["best"] == 1.0 and f.evidence["current"] == 2.0
+    assert f.evidence["days_mixed_pct"] < 25.0
+    assert f.evidence["grade"] == "side_by_side"
+    assert "side by side" in f.summary and "rarely on the same day" in f.summary
+
+
 def test_a_sample_too_thin_to_judge_says_nothing():
     facts, findings = cut_setting.analyze("M", two_blocks(0.6, 0.3, n=20), label)
     assert findings == []

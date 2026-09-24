@@ -39,7 +39,13 @@ def _fleet_latest(db) -> Optional[datetime]:
     from laser_trim_analyzer.core.model_stats import _FAILED_PROCESSING
     params: Dict[str, Any] = {f"failed{i}": name for i, name in enumerate(_FAILED_PROCESSING)}
     placeholders = ", ".join(f":{k}" for k in params)
-    params["cutoff"] = datetime.now() + timedelta(days=1)
+    # Bound as a string, not a raw datetime: text() does not apply SQLAlchemy's own DATETIME
+    # bind_processor (that only fires for ORM-typed columns), so a bare datetime falls back to
+    # sqlite3's own adapter registry -- deprecated since 3.12. file_date is stored in exactly
+    # this format ("%Y-%m-%d %H:%M:%S.%f", fixed-width and zero-padded, SQLAlchemy's sqlite
+    # DATETIME default), so a plain string comparison sorts identically to a chronological one.
+    cutoff = datetime.now() + timedelta(days=1)
+    params["cutoff"] = f"{cutoff:%Y-%m-%d %H:%M:%S.%f}"
     with db.session() as s:
         v = s.execute(text(
             "SELECT MAX(file_date) FROM analysis_results "
