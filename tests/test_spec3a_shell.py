@@ -38,6 +38,9 @@ def test_theme_spacing_and_radii():
     # Type scale moved one step up (spec 2026-09-23, section 1).
     assert (t.SIZE_CAPTION, t.SIZE_BODY, t.SIZE_HEADING, t.SIZE_TITLE, t.SIZE_DISPLAY) == \
         (12, 14, 17, 22, 30)
+    assert t.SIZE_READOUT == 20
+    # Chart text has its own scale, matplotlib points (spec 2026-09-23, section 1).
+    assert (t.CHART_FONT_SMALL, t.CHART_FONT, t.CHART_FONT_LARGE) == (8.0, 9.0, 10.0)
     assert t.FONT_FAMILY[0] == "IBM Plex Sans" and "Segoe UI" in t.FONT_FAMILY
 
 
@@ -69,6 +72,66 @@ def test_theme_font_returns_ctkfont(tk_root):
     f = t.font(t.SIZE_BODY, "bold")
     assert isinstance(f, ctk.CTkFont)
     assert t.resolved_family in t.FONT_FAMILY  # picked one of the declared families
+    # "bold" maps onto the resolved Medium family (weight "normal") when one is available,
+    # else real bold weight on the regular family -- branch on the state actually resolved
+    # on THIS machine, never assume one (no machine running the suite has Plex installed,
+    # so today this takes the else branch; Task 4 bundles the fonts).
+    if t.resolved_medium:
+        assert f.cget("family") == t.resolved_medium and f.cget("weight") == "normal"
+    else:
+        assert f.cget("weight") == "bold"
+
+
+def test_font_and_mono_map_bold_onto_the_medium_family_when_available(tk_root, monkeypatch):
+    """The bold->Medium branch in font()/mono() is dead code on any machine without IBM
+    Plex installed (every machine that runs this suite today). Fake the ONE thing that
+    differs -- what fonts Tk reports as installed -- so ThemeManager's real
+    _available_families()/_pick() resolution runs and actually picks the Medium families,
+    instead of poking resolved_* directly (which would test nothing but the assignment).
+
+    Patching tkinter.font.families (a plain module function) rather than the ThemeManager
+    staticmethod it feeds: monkeypatch's own restore does getattr-then-setattr, which would
+    silently strip the `@staticmethod` wrapper off a patched-and-restored class attribute
+    and break every ThemeManager() built afterward for the rest of the test session --
+    verified by reproducing it. A module-level function has no such descriptor trap.
+    """
+    import tkinter.font as tkfont
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    monkeypatch.setattr(tkfont, "families", lambda: [
+        "IBM Plex Sans", "IBM Plex Sans Medium", "IBM Plex Mono", "IBM Plex Mono Medium"])
+    t = ThemeManager()
+    assert t.resolved_medium == "IBM Plex Sans Medium"
+    assert t.resolved_mono_medium == "IBM Plex Mono Medium"
+
+    f_bold = t.font(t.SIZE_BODY, "bold")
+    assert (f_bold.cget("family"), f_bold.cget("weight")) == ("IBM Plex Sans Medium", "normal")
+
+    f_normal = t.font(t.SIZE_BODY)
+    assert (f_normal.cget("family"), f_normal.cget("weight")) == ("IBM Plex Sans", "normal")
+
+    m_normal = t.mono(t.SIZE_BODY)
+    assert m_normal.cget("family") == "IBM Plex Mono"
+
+    m_bold = t.mono(t.SIZE_BODY, "bold")
+    assert (m_bold.cget("family"), m_bold.cget("weight")) == ("IBM Plex Mono Medium", "normal")
+
+
+def test_font_and_mono_bold_uses_bold_weight_when_no_medium_family_exists(tk_root, monkeypatch):
+    """Same real resolution path, the other branch: no Medium family available (today's
+    actual state on every dev/CI machine) -- "bold" must fall back to real bold weight on
+    the regular family, for both font() and mono()."""
+    import tkinter.font as tkfont
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    monkeypatch.setattr(tkfont, "families", lambda: ["IBM Plex Sans", "IBM Plex Mono"])
+    t = ThemeManager()
+    assert t.resolved_medium is None
+    assert t.resolved_mono_medium is None
+
+    f_bold = t.font(t.SIZE_BODY, "bold")
+    assert (f_bold.cget("family"), f_bold.cget("weight")) == ("IBM Plex Sans", "bold")
+
+    m_bold = t.mono(t.SIZE_BODY, "bold")
+    assert (m_bold.cget("family"), m_bold.cget("weight")) == ("IBM Plex Mono", "bold")
 
 
 # ---- Task 2: Sidebar ------------------------------------------------------

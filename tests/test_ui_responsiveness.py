@@ -32,7 +32,15 @@ def test_theme_font_still_separates_size_and_weight(tk_root):
     t = ThemeManager()
     assert t.font(t.SIZE_BODY) is not t.font(t.SIZE_CAPTION)
     assert t.font(t.SIZE_BODY) is not t.font(t.SIZE_BODY, "bold")
-    assert t.font(t.SIZE_BODY, "bold").cget("weight") == "bold"
+    # "bold" maps onto the resolved Medium family (weight "normal") when one is available
+    # (see test_spec3a_shell.py for that branch, forced with a monkeypatch); on THIS
+    # machine there is none, so it is real bold weight on the regular family -- branch on
+    # the state actually resolved rather than assume one.
+    f_bold = t.font(t.SIZE_BODY, "bold")
+    if t.resolved_medium:
+        assert f_bold.cget("weight") == "normal"
+    else:
+        assert f_bold.cget("weight") == "bold"
     assert t.font(t.SIZE_CAPTION).cget("size") == t.SIZE_CAPTION
 
 

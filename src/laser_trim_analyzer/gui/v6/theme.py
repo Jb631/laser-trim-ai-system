@@ -60,6 +60,8 @@ class ThemeManager:
     resolved_medium: Optional[str] = field(default=None, init=False)
     resolved_mono: str = field(default="", init=False)
     resolved_mono_medium: Optional[str] = field(default=None, init=False)
+    # One CTkFont per (family, size, weight) — see font(). Excluded from
+    # repr/eq: it is a performance cache, not part of the theme's identity.
     _font_cache: Dict[Tuple[str, int, str], ctk.CTkFont] = field(
         default_factory=dict, init=False, repr=False, compare=False)
     _font_root: Optional[object] = field(
