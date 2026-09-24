@@ -18,6 +18,38 @@ def test_consume_model_route_full_without_focus(make_app):
     assert app.consume_model_route_full() == ("M2", None)
 
 
+def test_showing_a_model_selects_the_requested_tab(make_app):
+    """Task 7: the Findings page's opened-row button routes here with tab="findings" --
+    the page must land on its Findings tab, not whichever tab was last selected."""
+    app = make_app()
+    app.set_model_route("HOT", tab="findings")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None            # suppress the background DB reload -- irrelevant here
+    app.show_page("model")
+    del page._reload
+    assert page._tabs.get() == "Findings"
+
+
+def test_showing_a_model_without_a_tab_request_leaves_the_tab_alone(make_app):
+    app = make_app()
+    app.set_model_route("HOT")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    assert page._tabs.get() == "Drift Metrics"   # CTkTabview's own default: the first tab added
+
+
+def test_an_unknown_tab_name_is_ignored_not_a_crash(make_app):
+    app = make_app()
+    app.set_model_route("HOT", tab="no-such-tab")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")                       # must not raise
+    del page._reload
+    assert page._tabs.get() == "Drift Metrics"
+
+
 def test_track_metric_columns_public_and_linearity_maps_to_shifted():
     from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS
     from laser_trim_analyzer.database.models import TrackResult as DBTR

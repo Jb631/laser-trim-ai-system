@@ -1,8 +1,7 @@
-"""Findings -- every model's process findings in one ranked list (the front door).
+"""Findings -- every model's process findings, grouped by what to do about them (the front door).
 
-Recoverable TRACKS a year first (tracks, not units: a unit trimmed twice is two of them),
-then findings that claim no rate, by their own sample size. Reads the cache only:
-nothing here computes anything.
+Four groups (findings/presentation.py): change a setting to raise yield, laser time you could
+save, tests to check, and what changed. Reads the cache only: nothing here computes anything.
 """
 import logging
 import threading
@@ -10,7 +9,10 @@ from typing import Any, Dict, List
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.findings import presentation as P
 from laser_trim_analyzer.gui.v6.page_base import PageBase
+from laser_trim_analyzer.gui.v6.widgets import blocks
+from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +25,13 @@ class FindingsPage(PageBase):
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     def build_content(self, parent):
-        self._zone_header(parent, "What to change, biggest first",
-                          "tracks a year recoverable, then by sample size — click a row to open the model")
+        t = self.theme
+        self._notices = ctk.CTkFrame(parent, fg_color="transparent")
+        self._notices.pack(side="top", fill="x")
         self._list = ctk.CTkScrollableFrame(parent, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
+        self._view = FindingsView(self._list, t, on_open=self._open, include_empty=True)
+        self._view.pack(fill="x")
 
     # ---- data ----
     def reload_now(self):
@@ -69,50 +74,43 @@ class FindingsPage(PageBase):
         t = self.theme
         rows = data.get("rows") or []
         errors = data.get("errors") or {}
-        failed = data.get("failed")
         self._rows = rows
-        for child in self._list.winfo_children():
+        for child in self._notices.winfo_children():
             child.destroy()
-        if failed:
-            ctk.CTkLabel(self._list, font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY, anchor="w",
-                         justify="left", wraplength=900,
-                         text=f"Findings could not be loaded ({failed}). This is an error, not an "
-                              f"empty list — the log has the details."
-                         ).pack(fill="x", pady=t.SPACE_SM)
+        if data.get("failed"):
+            self.set_caption("")
+            self._view.set_findings([])
+            self._view.pack_forget()
+            blocks.banner(self._notices, t,
+                          f"Findings could not be loaded ({data['failed']}). This is an error, not an "
+                          f"empty list — the log has the details.").pack(fill="x", pady=t.SPACE_SM)
             return
-        if not rows:
-            ctk.CTkLabel(self._list, font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY, anchor="w",
-                         justify="left", wraplength=900,
-                         text="No findings yet. They are worked out after each ingest that saves trim files; "
-                              "a model with nothing worth acting on does not appear here."
-                         ).pack(fill="x", pady=t.SPACE_SM)
-        else:
-            for f in rows:
-                tpy = f.get("tracks_per_year")
-                gain = f"{tpy:,.0f} tracks a year" if tpy is not None else "no rate claimed"
-                ctk.CTkButton(
-                    self._list, anchor="w", fg_color=t.CARD, hover_color=t.ACCENT_HOVER,
-                    text_color=t.TEXT_PRIMARY, font=t.font(t.SIZE_BODY), corner_radius=8,
-                    text=f"{f.get('model', '')}   ·   {f.get('title', '')}\n"
-                         f"{f.get('category', '')}  ·  lever: {f.get('lever_label', '')} "
-                         f"({f.get('lead_time', '')})  ·  {gain}",
-                    command=lambda m=f.get("model"): self._open(m),
-                ).pack(fill="x", pady=(0, t.SPACE_SM))
+        if not self._view.winfo_ismapped():
+            self._view.pack(fill="x")
         if data.get("errors_failed"):
-            ctk.CTkLabel(self._list, font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY, anchor="w",
-                         justify="left", wraplength=900,
-                         text=f"Whether any model failed on the last refresh could not be checked "
-                              f"({data['errors_failed']}), so this list may be missing models."
-                         ).pack(fill="x", pady=t.SPACE_SM)
+            blocks.banner(self._notices, t,
+                          f"Whether any model failed on the last refresh could not be checked "
+                          f"({data['errors_failed']}), so this list may be missing models."
+                          ).pack(fill="x", pady=(0, t.SPACE_SM))
         if errors:
             names = sorted(errors)
             shown = ", ".join(names[:10]) + (" …" if len(names) > 10 else "")
-            ctk.CTkLabel(self._list, font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY, anchor="w",
-                         justify="left", wraplength=900,
-                         text=f"{len(names)} model(s) could not be fully worked out on the last refresh, "
-                              f"so they may be missing from this list: {shown}. Open one to see what failed."
-                         ).pack(fill="x", pady=t.SPACE_SM)
+            blocks.banner(self._notices, t,
+                          f"{len(names)} model(s) could not be fully worked out on the last refresh, "
+                          f"so they may be missing from this list: {shown}. Open one to see what failed."
+                          ).pack(fill="x", pady=(0, t.SPACE_SM))
+        if not rows:
+            self.set_caption("")
+            blocks.banner(self._notices, t,
+                          "No findings yet. They are worked out after each ingest that saves trim files; "
+                          "a model with nothing worth acting on does not appear here.", tone="quiet"
+                          ).pack(fill="x", pady=t.SPACE_SM)
+            self._view.set_findings([])
+            self._view.pack_forget()
+            return
+        self.set_caption(P.caption(P.arrange(rows), rows))
+        self._view.set_findings(rows)
 
     def _open(self, model: str) -> None:
-        self.app.set_model_route(model)
+        self.app.set_model_route(model, tab="findings")
         self.app.show_page("model")

@@ -1,20 +1,37 @@
+"""The Findings page: every model's findings in four groups (Task 7 rebuild on FindingsView).
+
+Same behaviours as the old flat ranked list -- a failed load reads as an error, an empty
+cache says so, model-level errors are still named -- now read from page._notices (banners)
+and page._view (the shared FindingsView) instead of a column of CTkButtons.
+"""
 import customtkinter as ctk
 
 
-def _finding(model, title, tracks_per_year, size=100):
-    return {"model": model, "analyzer": "a", "category": "Ink target", "lever": "ink",
-            "lever_label": "Ink formulation (incoming resistance)", "lead_time": "next lot",
-            "title": title, "summary": "s",
-            "expected_gain_points": None if tracks_per_year is None else 5.0,
-            "tracks_per_year": tracks_per_year, "annual_volume": size, "n_units": size, "evidence": {}}
+def _finding(model, title, tracks_per_year, size=100, analyzer="ink_target", category="Ink target"):
+    # "lever" is a required column on ProcessFinding (database/manager.replace_process_findings
+    # reads it as d["lever"], not .get) -- every persisted finding needs one even though the
+    # Findings view itself never shows it.
+    return {"model": model, "analyzer": analyzer, "category": category, "lever": "ink",
+            "title": title, "summary": f"summary for {model}", "systems": ["B"], "n_units": size,
+            "tracks_per_year": tracks_per_year, "evidence": {}}
 
 
-def _buttons(widget):
+def _texts(widget):
     out = []
     for c in widget.winfo_children():
-        if isinstance(c, ctk.CTkButton):
+        if isinstance(c, (ctk.CTkLabel, ctk.CTkButton)):
             out.append(c.cget("text"))
-        out.extend(_buttons(c))
+        out.extend(_texts(c))
+    return out
+
+
+def _labels(widget):
+    """Recursive CTkLabel text -- used on page._notices, which only ever holds banners."""
+    out = []
+    for c in widget.winfo_children():
+        if isinstance(c, ctk.CTkLabel):
+            out.append(c.cget("text"))
+        out.extend(_labels(c))
     return out
 
 
@@ -31,26 +48,32 @@ def test_the_list_is_ranked_and_a_row_opens_the_model(make_app, monkeypatch):
     app.db.replace_process_findings("BIG", {"tracks": 1}, [_finding("BIG", "the big one", 500.0)])
     page = app.page_container.get_page("findings")
     page.reload_now()
-    rows = _buttons(page)
-    assert len(rows) == 2
-    assert rows[0].startswith("BIG") and "500 tracks a year" in rows[0]        # a stated rate outranks sample size
-    assert rows[1].startswith("SMALL") and "no rate claimed" in rows[1]
+    # Both findings are "Ink target" -> the "yield" group; a stated rate (BIG, 500/yr)
+    # outranks a row with none (SMALL, sample size only) -- same ordering rule as before,
+    # now inside the group rather than across one flat list.
+    assert len(page._view.row_widgets) == 2
+    texts = _texts(page._view)
+    assert texts.index("BIG") < texts.index("SMALL")
+    assert "~500" in texts                  # BIG's readout: a stated rate
+    assert "—" in texts                     # SMALL's readout: no rate claimed
+    caption = page._caption.cget("text")
+    assert "changes worth testing" in caption
     shown = []
     monkeypatch.setattr(app, "show_page", lambda name: shown.append(name))
     page._open("BIG")
-    assert shown == ["model"] and app.consume_model_route() == "BIG"
+    assert shown == ["model"]
+    assert app.consume_model_route() == "BIG"
+    assert app.consume_model_tab() == "findings"        # opens straight onto the model's Findings tab
 
 
 def test_an_empty_cache_says_so(make_app):
     app = make_app()
     page = app.page_container.get_page("findings")
     page.reload_now()
-    labels = [c.cget("text") for c in page._list.winfo_children() if isinstance(c, ctk.CTkLabel)]
-    assert _buttons(page._list) == [] and any("No findings yet" in x for x in labels)
-
-
-def _labels(page):
-    return [c.cget("text") for c in page._list.winfo_children() if isinstance(c, ctk.CTkLabel)]
+    assert page._view.row_widgets == {}
+    assert not page._view.winfo_ismapped()
+    assert any("No findings yet" in x for x in _labels(page._notices))
+    assert page._caption.cget("text") == ""
 
 
 def test_a_load_failure_is_an_error_not_an_empty_list(make_app, monkeypatch):
@@ -61,9 +84,10 @@ def test_a_load_failure_is_an_error_not_an_empty_list(make_app, monkeypatch):
         raise RuntimeError("database is locked")
     monkeypatch.setattr(app.db, "get_process_findings", boom)
     page.reload_now()
-    text = " | ".join(_labels(page))
+    text = " | ".join(_labels(page._notices))
     assert "could not be loaded" in text and "RuntimeError: database is locked" in text
     assert "No findings yet" not in text
+    assert not page._view.winfo_ismapped()
 
 
 def test_models_whose_analyzers_failed_are_named_under_the_list(make_app):
@@ -72,8 +96,8 @@ def test_models_whose_analyzers_failed_are_named_under_the_list(make_app):
     app.db.replace_process_findings("HURT", {"tracks": 9, "errors": {"trim_effort": "ValueError: x"}}, [])
     page = app.page_container.get_page("findings")
     page.reload_now()
-    assert len(_buttons(page)) == 1
-    text = " | ".join(_labels(page))
+    assert len(page._view.row_widgets) == 1
+    text = " | ".join(_labels(page._notices))
     assert "1 model(s) could not be fully worked out" in text and "HURT" in text
 
 
@@ -82,7 +106,7 @@ def test_a_healthy_cache_says_nothing_about_failures(make_app):
     app.db.replace_process_findings("BIG", {"tracks": 1, "errors": {}}, [_finding("BIG", "the big one", 500.0)])
     page = app.page_container.get_page("findings")
     page.reload_now()
-    assert not any("could not be" in x for x in _labels(page))
+    assert not any("could not be" in x for x in _labels(page._notices))
 
 
 def test_a_failure_of_the_secondary_read_does_not_throw_away_the_list(make_app, monkeypatch):
@@ -97,8 +121,22 @@ def test_a_failure_of_the_secondary_read_does_not_throw_away_the_list(make_app, 
     monkeypatch.setattr(app.db, "get_process_errors", boom)
     page = app.page_container.get_page("findings")
     page.reload_now()
-    rows = _buttons(page)
-    assert len(rows) == 1 and rows[0].startswith("BIG")
-    text = " | ".join(_labels(page))
-    assert "Findings could not be loaded" not in text
-    assert "could not be checked" in text and "RuntimeError: database is locked" in text
+    assert len(page._view.row_widgets) == 1
+    notices = " | ".join(_labels(page._notices))
+    assert "Findings could not be loaded" not in notices
+    assert "could not be checked" in notices and "RuntimeError: database is locked" in notices
+
+
+def test_all_four_groups_show_even_when_only_one_has_rows(make_app):
+    """Spec section 3 'States': all four groups are always on the page; an empty one says
+    what would fill it."""
+    app = make_app()
+    app.db.replace_process_findings("BIG", {"tracks": 1, "errors": {}}, [_finding("BIG", "the big one", 500.0)])
+    page = app.page_container.get_page("findings")
+    page.reload_now()
+    texts = _texts(page._view)
+    assert "Change a setting to raise yield" in texts
+    assert "Laser time you could save" in texts
+    assert "Check the test" in texts
+    assert "What changed" in texts
+    assert any(x.startswith("No recipe changes found") for x in texts)   # the empty "What changed" group

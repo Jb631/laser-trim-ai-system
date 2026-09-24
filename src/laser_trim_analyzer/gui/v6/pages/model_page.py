@@ -52,6 +52,12 @@ _ALL_HISTORY = "All history (no lot)"
 # watched — see drift_types.WATCHED_METRICS / the D-SIGMA rationale).
 _DEFAULT_METRIC = "untrimmed_sigma_gradient"
 
+# The Findings tab's registered name in the CTkTabview below (self._tabs.add("Findings")) --
+# the target of a tab= route from the Findings page's opened-row button (Task 7). Route
+# values are compared case-insensitively: callers choose a plain word ("findings"), not the
+# tab view's own Title Case label.
+_FINDINGS_TAB_NAME = "Findings"
+
 # "recent" window for the baseline-vs-recent comparison shown in the Drift table.
 _RECENT_DAYS = 30
 
@@ -273,6 +279,7 @@ class ModelPage(PageBase):
         if focus and focus in WATCHED_METRICS:
             self._current_metric = focus
             self._user_picked_metric = True
+        tab = self.app.consume_model_tab()
         # Refresh the selector's model list each show.
         threading.Thread(target=self._refresh_selector_values, daemon=True).start()
         if self._current_model:
@@ -280,8 +287,18 @@ class ModelPage(PageBase):
             self._pill_row.set_selected(self._current_metric)
             self._predictor.set_model(self._current_model)
             self._reload()
+            if tab:
+                self._select_tab(tab)
         else:
             self._show_empty()
+
+    def _select_tab(self, name: str) -> None:
+        """Select a tab by its route name, case-insensitively. A name that matches
+        nothing the page has is ignored, not raised — a stale or unrecognised route
+        value must never crash the page (CTkTabview.set() raises ValueError on a
+        name it does not have)."""
+        if name.strip().lower() == _FINDINGS_TAB_NAME.lower():
+            self._tabs.set(_FINDINGS_TAB_NAME)
 
     def _refresh_selector_values(self):
         try:

@@ -217,6 +217,29 @@ def test_v6app_consume_model_route(make_app):
     assert app.consume_model_route() is None       # one-shot
 
 
+def test_consume_model_tab_is_popped_separately_from_the_model_route(make_app):
+    """Task 7: a route can also name a tab to land on (e.g. the Findings page's
+    opened-row button routes to the model's Findings tab). It is stored apart from
+    (model, focus_metric) so consuming one never consumes the other, and it is a
+    one-shot like every other routing hint."""
+    app = make_app()
+    assert app.consume_model_tab() is None
+    app.set_model_route("M", tab="findings")
+    assert app.consume_model_tab() == "findings"
+    assert app.consume_model_tab() is None                 # one-shot
+    assert app.consume_model_route() == "M"                # the model route is untouched
+
+
+def test_set_model_route_without_a_tab_clears_any_earlier_tab_route(make_app):
+    """A stale tab from a PREVIOUS navigation must never leak into a later one that
+    didn't ask for it -- e.g. Triage's plain set_model_route(model, focus) after a
+    Findings-page visit must not still land on the Findings tab."""
+    app = make_app()
+    app.set_model_route("M", tab="findings")
+    app.set_model_route("N")
+    assert app.consume_model_tab() is None
+
+
 def test_triage_focus_zone_shows_the_drifting_model(make_app):
     app, triage = _drifting_app(make_app)
     # The heading's count is the zone's, not the page's — one computation.

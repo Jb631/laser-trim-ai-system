@@ -44,6 +44,11 @@ class V6App(ctk.CTk):
         # get_database() (same singleton Processor uses). Tests inject an isolated one.
         self.db = db if db is not None else get_database()
         self._model_route: Optional[Tuple[str, Optional[str]]] = None
+        # Which tab to land on once there, e.g. "findings" from the Findings page's
+        # opened-row button. Kept SEPARATE from _model_route (see set_model_route):
+        # consuming one must never consume the other, and only one thing may
+        # decide what "no tab requested" means -- None.
+        self._model_tab_route: Optional[str] = None
         self._auto_train_on_first_run = auto_train_on_first_run
         # In-flight long runs: (cancel Event, worker thread, name). Closing
         # the window used to destroy Tk while a batch was mid-write — the
@@ -81,8 +86,14 @@ class V6App(ctk.CTk):
         self.sidebar.set_active(name)
 
     # ---- routing hint (3b adds consume_model_route, 3c adds consume_model_route_full) ----
-    def set_model_route(self, model: str, focus_metric: Optional[str] = None) -> None:
+    def set_model_route(self, model: str, focus_metric: Optional[str] = None,
+                        tab: Optional[str] = None) -> None:
         self._model_route = (model, focus_metric)
+        # Always set, even to None: a route call that does not ask for a tab must
+        # CLEAR any tab requested by an earlier, unrelated navigation -- otherwise
+        # a later plain set_model_route(model) could inherit a stale "findings"
+        # from a previous visit to the Findings page (Task 7).
+        self._model_tab_route = tab
 
     def consume_model_route(self) -> Optional[str]:
         """Pop the model name from the routing hint (focus consumed separately in 3c)."""
@@ -99,6 +110,13 @@ class V6App(ctk.CTk):
         route = self._model_route
         self._model_route = None
         return route
+
+    def consume_model_tab(self) -> Optional[str]:
+        """Pop the tab hint set alongside set_model_route's `tab=` (Task 7). One-shot,
+        like the other routing hints; None when no tab was requested."""
+        tab = self._model_tab_route
+        self._model_tab_route = None
+        return tab
 
     # ---- first-startup auto-train (Spec 3d / decision D3) ----
     def _should_offer_first_startup_train(self) -> bool:
