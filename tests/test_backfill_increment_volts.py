@@ -1,5 +1,5 @@
 """`scripts/backfill_increment_volts.py` -- the resumable back-fill for laser 1's TrimVolts
-capture (Task 4, `49f865e`). Brief: `.superpowers/sdd/2026-09-23-parse-fixes/task-5-brief.md`.
+capture (Task 4, `49f865e`). Brief: Task 5 of `docs/superpowers/plans/2026-09-23-parse-fixes.md`.
 
 Built the way the brief's Step 1 asks: a tmp database built by processing the real LTS
 fixtures with Task 4's own capture (it already ships), then the three columns are NULLed out

@@ -206,8 +206,8 @@ def guard_tk_font_finalizer() -> None:
     page rebuild can be finalised inside an ingest worker -- a Tk call off the
     UI thread, which this app forbids outright.
 
-    It is not a theoretical cost. Measured on this machine (see
-    `.superpowers/sdd/prebuild-fixes/H5-report.md`): dropping a Font on a
+    It is not a theoretical cost. Measured on this machine (the H5 report,
+    summarised in `docs/decisions/2026-09-ledger-decisions.md`): dropping a Font on a
     worker blocks that worker for 1.07 s inside `_tkinter`'s WaitForMainloop,
     then raises `RuntimeError: main thread is not in main loop`, which
     `__del__` swallows -- and the font is left registered in Tcl anyway. So the

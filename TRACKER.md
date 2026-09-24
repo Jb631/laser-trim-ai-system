@@ -702,7 +702,10 @@ first and reviewed; the whole test suite is the gate.
       are ignored. Were:
       `docs/chart_rep_review_2026-07-16/` and `scripts/chart_rep_review.py`.
       Keep, commit or delete?
-- [ ] **H3 · The decision logs: READ (2026-09-20), do NOT delete yet.** All five ledgers were
+- [ ] **H3 · The decision logs: READ (2026-09-20), do NOT delete yet.** *(2026-09-24: the ten
+      citing lines below now point at `docs/decisions/2026-09-ledger-decisions.md`, which carries
+      what each cited note said — so deleting the workspaces no longer breaks a tracked file. It
+      stays your call; nothing needs them deleted.)* All five ledgers were
       read and every judgement call checked against the code, the tests and this file: **130 calls,
       56 already written down somewhere durable, 51 pure process, 23 that would have been lost.**
       Two things came out of it that change the job:

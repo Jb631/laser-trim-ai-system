@@ -1,7 +1,7 @@
 """Settings — Backlog: one open-order upload sets both the active-models list and
 each model's current price (James, 2026-09-20). Replaces the old separate
 "Active Models (MPS)" and "Pricing" sections — see core/backlog.py for the parser
-and task-E1-brief.md for the full design.
+and docs/decisions/2026-09-ledger-decisions.md (the E1 brief) for the full design.
 
 `mps_models` stays the ONE list every other screen reads (dashboard cost
 priorities, triage, trends, compare, analyze, database cleanup...). This section
@@ -95,7 +95,7 @@ def _migrate_hand_pinned_list(cfg) -> None:
     hand-pinned list. If neither pinned_models nor backlog_models has ever been
     set, whatever is in mps_models now was hand-pinned — move it to
     pinned_models so it survives the first backlog upload. Not saved here (per
-    task-E1-brief.md); it is saved with whatever the user does next."""
+    the E1 design, docs/decisions/2026-09-ledger-decisions.md); it is saved with whatever the user does next."""
     if cfg.mps_models and not cfg.pinned_models and not cfg.backlog_models:
         cfg.pinned_models = list(cfg.mps_models)
 

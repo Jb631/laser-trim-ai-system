@@ -1,8 +1,8 @@
 """Tk is called from the main thread only -- including by the garbage collector.
 
 Two separate things are pinned here. They were found together and they are NOT
-the same bug; the 2x2 experiment in `.superpowers/sdd/prebuild-fixes/H5-report.md`
-kept them apart.
+the same bug; the 2x2 experiment of the H5 report (summarised in
+`docs/decisions/2026-09-ledger-decisions.md`) kept them apart.
 
 1. THE HANG (fixed by the function-scoped `tk_root` fixture in conftest.py).
    The suite was believed to "take 2.5 hours". It did not: it HUNG at >100% CPU,

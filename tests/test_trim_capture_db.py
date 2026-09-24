@@ -66,7 +66,8 @@ def test_saving_twice_does_not_duplicate_passes(tmp_path, monkeypatch):
 
 
 def test_trim_pass_unique_index_rejects_duplicate_insert(tmp_path, monkeypatch):
-    """Findings review (task-7-brief.md #1): the schema test only ever proved
+    """Findings review (trim-capture Task 7, concern #1 -- see
+    docs/decisions/2026-09-ledger-decisions.md): the schema test only ever proved
     the (track_result_id, pass_index) index exists, never that it actually
     rejects a duplicate row. This is the first task to write pass rows, so
     prove the DB-level behaviour, not just the DDL.
@@ -93,7 +94,8 @@ def test_trim_pass_unique_index_rejects_duplicate_insert(tmp_path, monkeypatch):
 
 
 def test_write_trim_passes_tolerates_duplicate_pass_index(tmp_path, monkeypatch):
-    """Findings review (task-7-brief.md #2): pass_sheets has no dedup guard,
+    """Findings review (trim-capture Task 7, concern #2 -- see
+    docs/decisions/2026-09-ledger-decisions.md): pass_sheets has no dedup guard,
     so two differently-named sheets that normalise to the same leading
     number would produce two passes with the same pass_index and collide on
     the unique index at write time. Never observed in a fixture, but a

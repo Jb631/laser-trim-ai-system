@@ -124,8 +124,8 @@ def tk_root():
     subprocess, so a regression fails instead of hanging the suite).
 
     The cost of function scope is a fresh root per test (~0.03 s), plus a
-    larger Tk teardown bill in files that build heavy pages -- see
-    `.superpowers/sdd/prebuild-fixes/H5-report.md`.
+    larger Tk teardown bill in files that build heavy pages -- see the H5
+    report's summary in `docs/decisions/2026-09-ledger-decisions.md`.
     """
     import customtkinter as ctk
     try:

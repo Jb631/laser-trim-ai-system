@@ -141,7 +141,7 @@ class ActiveModelsConfig:
     # list every other screen reads; it is maintained as
     # sorted(set(backlog_models) | set(pinned_models)) by rebuild_active_list()
     # in gui/v6/sections/backlog.py, called from both the upload path and the
-    # pin-save path. See task-E1-brief.md for the full design.
+    # pin-save path. The full design (the E1 brief): docs/decisions/2026-09-ledger-decisions.md.
     pinned_models: List[str] = field(default_factory=list)     # manual exceptions (the textbox)
     backlog_models: List[str] = field(default_factory=list)    # from the last backlog upload; REPLACED each upload
     backlog_open_qty: Dict[str, int] = field(default_factory=dict)  # model -> open units on that backlog

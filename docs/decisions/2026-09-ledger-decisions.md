@@ -347,9 +347,11 @@ its current name.
 
 ## Citations to repoint
 
-These are the exact lines, as they read today, that name a `.superpowers/` file this document now
-covers. **Not edited here** — repointing them (to this document, or wherever else makes sense) is
-a separate, deliberate change:
+**Repointed 2026-09-24:** every line below now names this document instead (and
+`tests/test_backfill_increment_volts.py:2`, added later, names the tracked parse-fixes plan its
+brief was cut from). No tracked file cites a `.superpowers/` path any more — `git grep
+'.superpowers/sdd' -- ':!docs/*' ':!TRACKER.md'` returns nothing — so deleting the workspaces
+breaks no citation. The list is kept as the record of what each line said before:
 
 - `src/laser_trim_analyzer/utils/threads.py:210` — `` `.superpowers/sdd/prebuild-fixes/H5-report.md`): dropping a Font on a ``
 - `tests/conftest.py:128` — `` `.superpowers/sdd/prebuild-fixes/H5-report.md`. ``

@@ -1,7 +1,7 @@
 """M-1 — a failed Model-page load must never render as "no data", and one
 model's verdict/pills must never linger under another model's name.
 
-See .superpowers/sdd/prebuild-fixes/M1-brief.md. Seeding and the synchronous
+The design is the M1 brief, summarised in docs/decisions/2026-09-ledger-decisions.md. Seeding and the synchronous
 open pattern come from test_spec3c_model.py / test_findings_tab.py (tests/ is
 on sys.path, so `_seed` and `_status` are importable from a sibling module).
 """

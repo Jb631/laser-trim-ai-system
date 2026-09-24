@@ -1,6 +1,7 @@
 """Settings — Backlog section (E1, 2026-09-20). Fixtures in tests/conftest.py.
 
-Covers the 7 points task-E1-brief.md names for this file, in the same order.
+Covers the 7 points the E1 brief named for this file, in the same order (the design:
+docs/decisions/2026-09-ledger-decisions.md).
 Synthetic rows only — never data/analysis.db, never Work Files/.
 """
 from datetime import datetime
