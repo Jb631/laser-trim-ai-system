@@ -150,6 +150,53 @@ def test_the_tab_view_hides_empty_groups(tk_root):
     assert "What changed" not in _texts(v)
 
 
+# ---- rows_per_group / groups (Task 1) --------------------------------------------------------
+
+def test_rows_per_group_overrides_the_default_row_count(tk_root):
+    v = FindingsView(tk_root, ThemeManager(), rows_per_group=3)
+    v.set_findings([cut(f"M{i}", float(100 - i), best=float(i)) for i in range(8)])
+    assert len(v.row_widgets) == 3
+    assert "Show all 8" in _texts(v)
+
+
+def test_rows_per_group_default_is_unchanged(tk_root):
+    """No argument -> presentation.ROWS_PER_GROUP, exactly as before this option existed."""
+    v = FindingsView(tk_root, ThemeManager())
+    v.set_findings([cut(f"M{i}", float(100 - i), best=float(i)) for i in range(8)])
+    assert len(v.row_widgets) == P.ROWS_PER_GROUP
+
+
+def test_groups_limits_which_groups_are_drawn(tk_root):
+    v = FindingsView(tk_root, ThemeManager(), groups=("yield",), include_empty=True)
+    v.set_findings([cut("6607", 182.0), _history(58.0, 80.0)])
+    texts = _texts(v)
+    assert "Change a setting to raise yield" in texts
+    assert "What changed" not in texts               # history group never drawn, empty or not
+    assert "Check the test" not in texts
+    assert "Laser time you could save" not in texts
+
+
+def test_groups_none_draws_every_group_exactly_as_before(tk_root):
+    v = FindingsView(tk_root, ThemeManager(), groups=None, include_empty=True)
+    v.set_findings([cut("6607", 182.0)])
+    texts = _texts(v)
+    for title in ("Change a setting to raise yield", "Laser time you could save",
+                  "Check the test", "What changed"):
+        assert title in texts
+
+
+def test_groups_can_admit_the_other_group_only_when_listed(tk_root):
+    unmapped = {"analyzer": "a_future_analyzer", "model": "6607", "title": "t", "summary": "s",
+                "systems": ["B"], "n_units": 10, "evidence": {}}
+    v = FindingsView(tk_root, ThemeManager(), groups=("yield",), include_empty=False)
+    v.set_findings([cut("6607", 182.0), unmapped])
+    assert "Other findings" not in _texts(v)          # not listed -> never drawn, even with rows
+
+    v2 = FindingsView(tk_root, ThemeManager(), groups=("yield", "other"), include_empty=False)
+    v2.set_findings([cut("6607", 182.0), unmapped])
+    assert "Other findings" in _texts(v2)
+
+
 # ---- Each row opens ITS OWN evidence (final review, 2026-09-24) ----------------------------------
 
 def lt(track):

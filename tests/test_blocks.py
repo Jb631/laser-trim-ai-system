@@ -166,6 +166,113 @@ def test_no_block_hard_codes_a_colour():
     assert not re.search(r'"#[0-9a-fA-F]{6}"', src), "colours come from theme.py only"
 
 
+# ---- wrap_to_width ---------------------------------------------------------------------------
+# <Configure> never fires under the withdrawn tk_root, even though geometry propagation still
+# runs (winfo_width() reports the real number) -- confirmed empirically the same way
+# test_a_real_click_fires_on_click_exactly_once_per_leaf above did for event_generate: map the
+# window off-screen (alpha 0, +20000+20000) so real <Configure> events are actually dispatched.
+
+def _mapped_offscreen(root):
+    try:
+        root.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    root.geometry("+20000+20000")
+    root.deiconify()
+    root.update_idletasks()
+    root.update()
+
+
+def test_wrap_to_width_sets_wraplength_from_the_container_after_update(tk_root, t):
+    container = ctk.CTkFrame(tk_root, fg_color="transparent")
+    container.pack(fill="both", expand=True)
+    label = ctk.CTkLabel(container, text="x" * 300)
+    label.pack(fill="x")
+    tk_root.geometry("400x200")
+    _mapped_offscreen(tk_root)
+    try:
+        blocks.wrap_to_width(label, container, padding=20)
+        assert container.winfo_width() == 400          # the container really is 400 wide
+        assert label.cget("wraplength") == 400 - 20      # set once, immediately
+    finally:
+        tk_root.withdraw()
+
+
+def test_wrap_to_width_follows_the_container_when_it_resizes(tk_root, t):
+    container = ctk.CTkFrame(tk_root, fg_color="transparent")
+    container.pack(fill="both", expand=True)
+    label = ctk.CTkLabel(container, text="x" * 300)
+    label.pack(fill="x")
+    tk_root.geometry("400x200")
+    _mapped_offscreen(tk_root)
+    try:
+        blocks.wrap_to_width(label, container, padding=20)
+        tk_root.geometry("300x200")
+        tk_root.update_idletasks()
+        tk_root.update()
+        assert label.cget("wraplength") == 300 - 20
+    finally:
+        tk_root.withdraw()
+
+
+def test_wrap_to_width_never_drops_below_120(tk_root, t):
+    container = ctk.CTkFrame(tk_root, fg_color="transparent")
+    container.pack(fill="both", expand=True)
+    label = ctk.CTkLabel(container, text="x")
+    label.pack(fill="x")
+    tk_root.geometry("140x100")           # 140 - 40 padding would be 100, below the floor
+    _mapped_offscreen(tk_root)
+    try:
+        blocks.wrap_to_width(label, container, padding=40)
+        assert label.cget("wraplength") == 120
+    finally:
+        tk_root.withdraw()
+
+
+def test_wrap_to_width_defaults_padding_to_zero(tk_root, t):
+    container = ctk.CTkFrame(tk_root, fg_color="transparent")
+    container.pack(fill="both", expand=True)
+    label = ctk.CTkLabel(container, text="x" * 50)
+    label.pack(fill="x")
+    tk_root.geometry("500x100")
+    _mapped_offscreen(tk_root)
+    try:
+        blocks.wrap_to_width(label, container)
+        assert label.cget("wraplength") == 500
+    finally:
+        tk_root.withdraw()
+
+
+def test_wrap_to_width_never_replaces_an_existing_configure_handler(tk_root, t):
+    """The container may already have its own <Configure> binding (a chart redraw, another
+    wrap) -- wrap_to_width must ADD to it, never replace it (global-constraints.md, Task 1).
+
+    A plain tkinter.Frame, not a CTkFrame: CTkFrame.bind() (see blocks.row()'s own docstring)
+    hard-codes add=True on the Tk call underneath REGARDLESS of what its caller passes, so a
+    CTkFrame container could never actually catch a dropped add="+" here -- only a widget whose
+    native .bind() defaults to replace (confirmed empirically: without add="+", a second
+    tkinter.Frame.bind() call drops the first handler entirely) can prove this contract.
+    """
+    container = tkinter.Frame(tk_root)
+    container.pack(fill="both", expand=True)
+    label = ctk.CTkLabel(container, text="x" * 10)
+    label.pack(fill="x")
+    hits = []
+    container.bind("<Configure>", lambda e: hits.append(1))
+    tk_root.geometry("400x200")
+    _mapped_offscreen(tk_root)
+    try:
+        blocks.wrap_to_width(label, container, padding=0)
+        hits.clear()
+        tk_root.geometry("300x200")
+        tk_root.update_idletasks()
+        tk_root.update()
+        assert hits, "wrap_to_width replaced the pre-existing <Configure> handler instead of adding to it"
+        assert label.cget("wraplength") == 300
+    finally:
+        tk_root.withdraw()
+
+
 _SHOUT = re.compile(r"^\s*([A-Z][A-Z0-9]*(?:[- ,&/'—]+[A-Z][A-Z0-9]*)*)(?![a-z])")
 _VERDICT_LABELS = {"PASS", "FAIL", "UNTRIMMED", "NOT GRADED", "SIGMA WATCH"}
 

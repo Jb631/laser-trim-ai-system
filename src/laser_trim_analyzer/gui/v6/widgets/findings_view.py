@@ -4,7 +4,7 @@ Shared by the Findings page (every model, all four groups, an Open button) and t
 page's Findings tab (one model, empty groups hidden, no Open button). The RULES live in
 findings/presentation.py; this only draws them.
 """
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import customtkinter as ctk
 
@@ -21,11 +21,18 @@ def _join_cells(cells, fmt) -> str:
 
 class FindingsView(ctk.CTkFrame):
     def __init__(self, master, theme, *, on_open: Optional[Callable[[str], None]] = None,
-                 include_empty: bool = True, **kwargs):
+                 include_empty: bool = True, rows_per_group: Optional[int] = None,
+                 groups: Optional[Sequence[str]] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
         self._on_open = on_open
         self._include_empty = include_empty
+        # None -> presentation's own default, unchanged from before this option existed.
+        self._rows_per_group = P.ROWS_PER_GROUP if rows_per_group is None else rows_per_group
+        # None -> every group arrange() returns, exactly as before this option existed;
+        # otherwise only the listed keys -- "other" included only when explicitly listed
+        # (arrange() itself already omits an EMPTY "other", listed or not).
+        self._groups = None if groups is None else set(groups)
         self._findings: List[Dict[str, Any]] = []
         self._expanded: Set[str] = set()
         self._rows: Dict[Tuple, P.Row] = {}
@@ -66,7 +73,10 @@ class FindingsView(ctk.CTkFrame):
         self.row_widgets.clear()
         self._detail = None
         was_open, self.open_key = self.open_key, None
-        for group in P.arrange(self._findings, include_empty=self._include_empty):
+        groups = P.arrange(self._findings, include_empty=self._include_empty)
+        if self._groups is not None:
+            groups = [g for g in groups if g.spec.key in self._groups]
+        for group in groups:
             spec = group.spec
             blocks.group_header(self, t, spec.title, len(group.rows), column=spec.column,
                                 tone=spec.tone, meaning=spec.meaning
@@ -76,7 +86,7 @@ class FindingsView(ctk.CTkFrame):
                              text_color=t.TEXT_SECONDARY, anchor="w", justify="left",
                              wraplength=1000).pack(fill="x", padx=t.SPACE_SM)
                 continue
-            shown = group.rows if spec.key in self._expanded else group.rows[:P.ROWS_PER_GROUP]
+            shown = group.rows if spec.key in self._expanded else group.rows[:self._rows_per_group]
             for r in shown:
                 tone = P.value_tone(spec.key, r.value, r.findings)
                 color = t.PASS_FG if tone == "up" else t.CHECK if tone == "down" else None

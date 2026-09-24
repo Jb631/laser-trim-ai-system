@@ -147,6 +147,31 @@ def link_button(parent, theme, text: str, command) -> ctk.CTkButton:
                          anchor="w", width=0, height=28)
 
 
+def wrap_to_width(label: ctk.CTkLabel, container, padding: int = 0) -> None:
+    """Keep `label` wrapping to `container`'s own width, instead of a fixed pixel guess that is
+    wrong at every window size but one (global-constraints.md: "No fixed pixel wraplength on
+    page-width text").
+
+    Binds `container`'s <Configure> with add="+" -- a container often already carries another
+    <Configure> handler (a chart redraw, a second wrapped label), and replacing it would silently
+    break that one. wraplength is set once immediately, from whatever width the container reports
+    right now, and again on every <Configure> after; it never drops below 120 -- narrower than
+    that reads as one word per line, which is worse than staying a little wide.
+    """
+    def _update(_event=None) -> None:
+        try:
+            width = container.winfo_width()
+        except Exception:            # container destroyed before its <Configure> fired
+            return
+        try:
+            label.configure(wraplength=max(120, width - padding))
+        except Exception:            # label destroyed first (teardown order)
+            pass
+
+    container.bind("<Configure>", _update, add="+")
+    _update()
+
+
 def banner(parent, theme, text: str, tone: str = "check") -> ctk.CTkLabel:
     """A notice. 'check' is coral (something failed or needs a look); 'quiet' is plain."""
     t = theme
