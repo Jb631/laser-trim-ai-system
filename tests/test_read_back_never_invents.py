@@ -393,6 +393,39 @@ def test_excel_export_single_result_error_track_is_not_graded(db, tmp_path):
     assert any(isinstance(v, str) and "not graded" in v.lower() for v in values)
 
 
+def test_excel_export_batch_results_error_track_renders_as_dash_not_fail(db, tmp_path):
+    """The brief's ~1773 reference (analyze.py::_export_model_results) fetches a
+    model's history via get_historical_data() and hands it straight to
+    export_batch_results() -> _create_batch_summary_sheet / _create_all_results_sheet.
+    Both were already None-safe (render "—") before this fix; pin that with a real
+    mixed batch rather than relying on reading the code."""
+    from laser_trim_analyzer.export.excel import export_batch_results
+    import openpyxl
+
+    db.save_analysis(_wrap(_error_track(), AnalysisStatus.ERROR, "ERR-5"))
+    db.save_analysis(_wrap(
+        _graded_track(AnalysisStatus.FAIL, 0.05, 0.03, False, 0.02, False, fail_points=3),
+        AnalysisStatus.FAIL, "FAIL-5"))
+    results = db.get_historical_data(model=MODEL, days_back=3650, limit=10)
+    assert len(results) == 2
+
+    out = tmp_path / "batch.xlsx"
+    export_batch_results(results, out)  # must not raise
+
+    ws = openpyxl.load_workbook(out)["All Results"]
+    rows = [[c.value for c in row] for row in ws.iter_rows(min_row=2)]
+    by_serial = {r[1]: r for r in rows}  # column B = Serial
+
+    err_row = by_serial["ERR-5"]
+    assert not any(v == 999.999 for v in err_row if isinstance(v, (int, float)))
+    assert "PASS" not in err_row and "FAIL" not in err_row
+    assert err_row.count("—") >= 2  # Sigma Pass and Linearity Pass columns
+
+    fail_row = by_serial["FAIL-5"]
+    assert "FAIL" in fail_row
+    assert any(isinstance(v, (int, float)) and abs(v - 0.05) < 1e-9 for v in fail_row)
+
+
 def test_excel_export_single_result_graded_fail_track_still_shows_numbers(db, tmp_path):
     from laser_trim_analyzer.export.excel import export_single_result
     import openpyxl
