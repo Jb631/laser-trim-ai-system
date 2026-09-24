@@ -20,7 +20,13 @@ unchanged layout:
     different data shape, so the sweep is not one model's UI state twice) -- each with EVERY tab its
     ThemedTabView has registered selected in turn, by NAME, labeled "model:<tab>" / "model2:<tab>";
   * the Findings PAGE (not the Model page's Findings tab) with its first row opened, the densest
-    layout on that page: a narrative, a settings table, and the "Open <model>" teal button.
+    layout on that page: a narrative, a settings table, and the "Open <model>" teal button -- opened
+    by `_open_first_row`, which VERIFIES the row ends open rather than assuming a toggle worked (a
+    review round, same date, found the naive version silently CLOSED an already-open row at the
+    second window size and still reported success; see that function's own docstring);
+  * optionally, one Model-page pass with a loader forced to fail (`_force_one_loader_failure`), so
+    `_load_banner` -- otherwise never exercised, since the real database never fails a loader -- is
+    checked against real rendered text instead of fixed by analogy to a sibling banner alone.
 
 Why two modes exist (controller ruling, Task 9, 2026-09-24): PIL.ImageGrab.grab is REFUSED on this
 Mac -- confirmed empirically, see _grab() -- because the process has no Screen Recording permission,
@@ -352,23 +358,45 @@ def _sweep_model_tabs(app, model: str, label_prefix: str, size_label: str,
             page, page=f"{label_prefix}:{name}", window_size=size_label))
 
 
-def _open_first_findings_row(app) -> bool:
-    """Open the Findings PAGE's first row (not the Model page's Findings tab) --
-    the densest layout on that page: a narrative, the settings table for a
-    cut_setting finding, and the "Open <model>" teal button (FindingsView._draw_
-    detail). True if a row existed to open. `row_widgets` is insertion-ordered by
-    _render() (group order, then each group's own row order), so the first key is
-    the first row a person would actually see, not an arbitrary pick."""
-    page = app.page_container.get_page("findings")
-    view = getattr(page, "_view", None)
-    if view is None or not view.row_widgets:
+def _open_first_row(view) -> bool:
+    """Open `view`'s first row, verifying it actually ends open; never a blind
+    toggle. Pure -- takes a FindingsView directly (not the app), so this is the
+    part tests/test_render_pages_audit.py drives on its own, no page/app needed.
+
+    Review finding (2026-09-24): FindingsView._render() re-opens whatever row
+    was open before a refresh (`was_open` -> `toggle(was_open)`), and the
+    Findings PAGE gets shown more than once in one --audit run -- once per
+    window size's Sidebar.ITEMS pass, once again for this explicit open. By
+    the SECOND window size, the row this function opened for the FIRST size is
+    routinely already open again by the time this runs (re-opened by
+    _render()'s own "keep it open across a refresh" behaviour) -- and
+    `toggle()` on an ALREADY-open key CLOSES it. The old code called
+    `view.toggle(key)` unconditionally and returned True regardless, so at
+    1280x720 -- the size every clip in this task was found at -- the densest
+    layout on the page (the settings table, the teal "Open <model>" button)
+    was silently never checked at all while "0 clipped" read as clean.
+
+    Fixed two ways, not one: (1) toggle only when the row is not ALREADY open
+    (so a second call in the same state is a no-op, not a close); (2) the
+    return value is VERIFIED against the view's actual state afterward
+    (`open_key == key and a detail pane exists`), never assumed from having
+    called toggle. Either fix alone would have been enough for the reproduced
+    bug; both together also cover a toggle that silently fails for some other
+    reason (e.g. `row_widgets` losing the key between the check and the call).
+    """
+    if not view.row_widgets:
         return False
-    view.toggle(next(iter(view.row_widgets)))
-    return True
+    key = next(iter(view.row_widgets))
+    if view.open_key != key:
+        view.toggle(key)
+    return view.open_key == key and view._detail is not None
 
 
-def run_audit(app, target_model: Optional[str], ft_model: Optional[str]) -> List[ClippedWidget]:
-    """Walk every view at every audited size; return every clip found.
+def run_audit(app, target_model: Optional[str],
+               ft_model: Optional[str]) -> Tuple[List[ClippedWidget], List[str]]:
+    """Walk every view at every audited size; return (every clip found, every
+    audit-tooling FAILURE -- a state this script could not itself get the app
+    into, as distinct from a clip, which is the app's own text being cut off).
 
     `target_model` (most cached findings) and `ft_model` (most final-test rows
     linked to a trim -- deliberately a different data shape) each get the FULL
@@ -379,6 +407,7 @@ def run_audit(app, target_model: Optional[str], ft_model: Optional[str]) -> List
     from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 
     clipped: List[ClippedWidget] = []
+    failures: List[str] = []
     for width, height in _audit_sizes(app):
         size_label = f"{width}x{height}"
         # Off-screen but MAPPED -- see the module docstring, point 1.
@@ -404,14 +433,75 @@ def run_audit(app, target_model: Optional[str], ft_model: Optional[str]) -> List
         # always a real transition; no detour needed.
         app.show_page("findings")
         _pump(app)
-        if _open_first_findings_row(app):
+        page = app.page_container.get_page("findings")
+        view = getattr(page, "_view", None)
+        if view is None or not view.row_widgets:
+            print(f"note: the Findings page has no rows to open at {size_label} -- "
+                  "skipping the opened-row audit for this size")
+        elif not _open_first_row(view):
+            # NEVER a silent skip (review finding): rows existed and opening one
+            # still did not work, which means the densest layout on this page
+            # (settings table, teal button) went unchecked at this size -- that
+            # is a failure of THIS SCRIPT, reported the same way a real clip is
+            # (a line in audit.txt, counted toward a non-zero exit), not folded
+            # into "0 clipped" where it would read as clean.
+            msg = (f"AUDIT FAILURE | {size_label} | could not open the Findings "
+                   f"page's first row (view.open_key={view.open_key!r}) -- the "
+                   f"opened-detail state was never actually checked at this size")
+            print(msg)
+            failures.append(msg)
+        else:
             _pump(app)
             app.update_idletasks()
             _walk_page(app, "findings", "findings:opened", size_label, clipped)
-        else:
-            print(f"note: the Findings page has no rows to open at {size_label} -- "
-                  "skipping the opened-row audit for this size")
-    return clipped
+    # Optional (review, 2026-09-24): _load_banner ("Could not load: ...") was
+    # fixed in the base report by ANALOGY to _spec_banner two lines above it in
+    # the same file -- the real database never fails a loader, so it had never
+    # actually been rendered with real text. Force exactly one to fail here so
+    # it is proven, not just reasoned about. Once, at the smaller audited size
+    # only (every clip in this task was found there) -- a supplementary check,
+    # not part of the required sweep, so it does not double the cost of the
+    # whole run.
+    if target_model:
+        width, height = _SMALL_SIZE
+        size_label = f"{width}x{height}"
+        app.geometry(f"{width}x{height}+20000+20000")
+        app.deiconify()
+        app.update_idletasks()
+        app.update()
+        _force_one_loader_failure(app, target_model, size_label, clipped)
+    return clipped, failures
+
+
+def _force_one_loader_failure(app, model: str, size_label: str,
+                               clipped: List[ClippedWidget]) -> None:
+    """Patch ModelPage._load_units to always raise for the duration of ONE
+    reload, so `failed` (the plain list `_set_load_banner` reads) is genuinely
+    non-empty and the banner renders real text -- restored in a `finally` no
+    matter what, so the patch can never leak into any other page or model this
+    script still has to audit. `_load_units` feeds "unit list" into `failed`
+    (gui/v6/pages/model_page.py:371) and is only otherwise called from a
+    search-box handler this audit never triggers (:907), so patching it here
+    does not disturb anything else this run measures.
+    """
+    from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
+
+    def _always_fails(self, model):
+        raise RuntimeError("render_pages.py --audit: forced failure to exercise _load_banner")
+
+    original = ModelPage._load_units
+    ModelPage._load_units = _always_fails
+    try:
+        app.show_page("home")
+        app.set_model_route(model)
+        app.show_page("model")
+        _pump(app)
+        app.update_idletasks()
+        page = app.page_container.get_page("model")
+        clipped.extend(find_clipped_text_widgets(
+            page, page="model:load-banner-forced", window_size=size_label))
+    finally:
+        ModelPage._load_units = original
 
 
 def _run_audit_mode(db_path: Path, outdir: Path) -> int:
@@ -432,14 +522,18 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
                   f"re-tests it, which is still real coverage, just not a second model")
         app.withdraw()      # never flash on-screen before run_audit positions it off-screen
         n_sizes = len(_audit_sizes(app))
-        clipped = run_audit(app, target_model, ft_model)
+        clipped, failures = run_audit(app, target_model, ft_model)
     finally:
         app.destroy()
         db.close()
 
     outdir.mkdir(parents=True, exist_ok=True)
-    lines = [c.line() for c in clipped]
-    header = (f"{len(clipped)} clipped widget(s) across {n_sizes} window size(s); "
+    # Failures first: a state this script could not verify at all outranks a
+    # confirmed clip -- and either one means the run is not clean, so both
+    # count toward the exit code together (never "0 clipped" alone).
+    lines = list(failures) + [c.line() for c in clipped]
+    header = (f"{len(clipped)} clipped widget(s), {len(failures)} audit failure(s), "
+              f"across {n_sizes} window size(s); "
               f"model (most findings): {target_model!r}; "
               f"model2 (most linked final-test rows): {ft_model!r}")
     (outdir / "audit.txt").write_text(header + "\n" + "\n".join(lines) + ("\n" if lines else ""))
@@ -447,7 +541,7 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
     for line in lines:
         print(line)
     print(f"-> {outdir / 'audit.txt'}")
-    return 1 if clipped else 0
+    return 1 if (clipped or failures) else 0
 
 
 # ---------------------------------------------------------------------------
