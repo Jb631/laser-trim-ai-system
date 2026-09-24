@@ -232,9 +232,11 @@ def test_page_base_set_caption_shows_and_clears(tk_root):
     """set_caption packs a caption line under the title bar on text, and clears it on "".
 
     winfo_manager(), NOT winfo_ismapped(): under the withdrawn test root nothing is ever
-    mapped, so an ismapped assertion would pass vacuously (test_focus_list_zone.py) -- and in
-    the real app ismapped is ALSO false whenever the page itself is merely hidden (not the
-    PageContainer's current tab), which is not what set_caption should key off either.
+    mapped, so an ismapped assertion would pass vacuously (test_focus_list_zone.py). And even
+    in the real app "is it on screen" is the wrong question -- PageContainer switches pages
+    with grid() + tkraise() (stacking order only), so a page it has switched away from stays
+    winfo_ismapped() == 1, not 0. "Is the caption packed" is the actual question, and
+    winfo_manager() answers it directly either way.
     """
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.theme import ThemeManager

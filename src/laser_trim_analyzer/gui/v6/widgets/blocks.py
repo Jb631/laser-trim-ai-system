@@ -103,8 +103,19 @@ def row(parent, theme, model: str, statement: str, value_text: str, *, tags: Ite
             w.configure(cursor="hand2")
         except Exception:                 # some CTk internals refuse a cursor; clicks still work
             pass
+        # w.bind() (CustomTkinter's override) already redirects onto w's OWN internal real
+        # widgets -- e.g. CTkLabel.bind() binds both its _canvas and its _label directly, and
+        # CTkFrame.bind() binds its _canvas. CTkFrame.winfo_children() excludes _canvas (it is
+        # "part of the frame itself"), so recursing there is safe and is the ONLY way to reach
+        # a semantic child like `mid`'s tag labels. But CTkLabel does NOT exclude _canvas/_label
+        # from winfo_children() -- so naive recursion used to bind those same two widgets a
+        # SECOND time each, and one real click fired on_click 2-4 times (review finding,
+        # reproduced with hits == [1, 1] from a single dispatched <Button-1>). Skip exactly the
+        # internal widgets .bind() already covered; still recurse into everything else.
+        internals = {getattr(w, name) for name in ("_canvas", "_label") if hasattr(w, name)}
         for child in w.winfo_children():
-            bind_all(child)
+            if child not in internals:
+                bind_all(child)
 
     if on_click is not None:
         bind_all(frame)

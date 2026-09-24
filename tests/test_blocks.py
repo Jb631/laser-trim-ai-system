@@ -1,4 +1,6 @@
 """The building blocks draw only from theme tokens and behave as the spec says (section 2)."""
+import tkinter
+
 import customtkinter as ctk
 import pytest
 
@@ -67,6 +69,52 @@ def test_a_row_is_clickable_everywhere_and_lifts_on_hover(tk_root, t):
     assert hits == [1]
     r._set_hover(True);  assert r.cget("fg_color") == t.ELEVATED
     r._set_hover(False); assert r.cget("fg_color") == "transparent"
+
+
+def test_a_real_click_fires_on_click_exactly_once_per_leaf(tk_root, t):
+    """Review finding: CTk's bind() redirects a wrapper's binding onto ITS OWN internal real
+    widgets (e.g. CTkLabel.bind() binds both its _canvas and its _label) -- and the old
+    recursion into winfo_children() walked into those same internals again, so one real click
+    fired on_click 2-4 times. r._on_click_all() (the other row test above) cannot see this: it
+    calls the handler directly instead of letting Tk deliver an event through the (possibly
+    stacked) bindings. This test drives REAL <Button-1> events at every underlying real Tk leaf.
+
+    event_generate needs the widget genuinely viewable, which the withdrawn tk_root never is
+    (confirmed empirically: event_generate dispatches nothing at all, even after update(), while
+    withdrawn) -- so deiconify for the duration of the test and withdraw again after.
+
+    Leaves are found with the BASE tkinter.Misc.winfo_children, not the public (possibly
+    CTk-overridden) one: CTkFrame hides its own _canvas from the public version ("part of the
+    frame itself"), which is correct for the production binding walk but would make a
+    childless CTkFrame (the divider) look like a leaf itself here, when the real clickable
+    surface a person's mouse actually lands on is the _canvas underneath it.
+    """
+    hits = []
+    r = blocks.row(tk_root, t, "6607", "Laser 1 (LTS): cut 6900 → try 6800", "~300",
+                   tags=("both tracks",), on_click=lambda: hits.append(1))
+    r.pack()
+    tk_root.deiconify()
+    tk_root.update()
+    try:
+        def leaves(w):
+            children = tkinter.Misc.winfo_children(w)
+            if not children:
+                yield w
+            for c in children:
+                yield from leaves(c)
+
+        leaf_widgets = list(leaves(r))
+        # 3 CTkFrames' _canvas (the row, mid, the divider) + 4 CTkLabels' _canvas+_label pairs
+        # (model, statement, the one tag, value) = 11. A regression that stops binding
+        # somewhere would also change this count, not just the per-leaf hit count below.
+        assert len(leaf_widgets) == 11
+        for leaf in leaf_widgets:
+            hits.clear()
+            leaf.event_generate("<Button-1>", x=1, y=1)
+            tk_root.update()
+            assert hits == [1], f"{leaf} fired on_click {len(hits)} times for one real click"
+    finally:
+        tk_root.withdraw()
 
 
 def test_the_primary_button_carries_dark_text_on_teal(tk_root, t):

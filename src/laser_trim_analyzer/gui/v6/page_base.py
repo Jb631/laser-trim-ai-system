@@ -62,10 +62,12 @@ class PageBase(ctk.CTkFrame):
         """One line under the page title -- a page's headline in words. '' hides it.
 
         Keyed on the geometry manager's own state (winfo_manager() == "pack"), not
-        winfo_ismapped(): ismapped is false whenever the page itself is merely hidden (not the
-        PageContainer's current tab) -- not only under a withdrawn test root -- so a caption
-        cleared on a hidden page would have kept a blank line packed, and one set on a hidden
-        page would have re-packed an already-packed label every call."""
+        winfo_ismapped(): PageContainer switches pages with grid() + tkraise(), which only
+        changes stacking order, so a hidden (non-front) page stays winfo_ismapped() == 1 --
+        ismapped was only ever false under this suite's withdrawn tk_root, never in the real
+        app. But "is it on screen" was the wrong question regardless: what set_caption needs
+        to know is "is the caption currently packed," and winfo_manager() answers that
+        directly, independent of visibility."""
         self._caption.configure(text=text or "")
         packed = self._caption.winfo_manager() == "pack"
         if text and not packed:
