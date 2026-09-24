@@ -49,6 +49,7 @@ from laser_trim_analyzer.core.models import (
     SystemType,
     RiskCategory,
 )
+from laser_trim_analyzer.core.model_stats import failed_processing
 from laser_trim_analyzer.config import get_config
 from laser_trim_analyzer.utils.hashing import calculate_file_hash, stat_once
 
@@ -3871,13 +3872,29 @@ class DatabaseManager:
         # run) they are legitimately None and we want to preserve that so the
         # GUI/exports can tell "no measurement" apart from "measured zero".
         # For pre-UNTRIMMED legacy rows with missing sigma, fall back to
-        # defaults to keep loading non-fatal.
+        # defaults to keep loading non-fatal. A track that FAILED PROCESSING
+        # (core.model_stats.failed_processing) is a third case, and neither of
+        # those rules applies to it: it is not a trim result (UNTRIMMED) and
+        # it is not a graded reading with a legacy gap (the "OLD rows"
+        # fallback below) -- it is not a measurement at all (CLAUDE.md, "What
+        # must never be stored"). Its numeric columns may still hold the
+        # analyzer's 999.999 saturation marker (_create_failed_track) rather
+        # than a real NULL -- that marker is not a reading either, so it is
+        # dropped here too, and its verdict columns (already NULL since Task
+        # 1's fix to _create_failed_track / enforce_measurement_backed_verdict)
+        # are never defaulted to False or recomputed from the marker.
         is_untrimmed = status == AnalysisStatus.UNTRIMMED
+        is_failed_processing = failed_processing(status)
         sigma_gradient = db_track.sigma_gradient
         sigma_threshold = db_track.sigma_threshold
         sigma_pass = db_track.sigma_pass
 
-        if not is_untrimmed:
+        if is_failed_processing:
+            sigma_gradient = None
+            sigma_threshold = None
+            # sigma_pass is left exactly as stored (None, per Task 1) -- never
+            # recomputed from a marker that was never a reading.
+        elif not is_untrimmed:
             if sigma_gradient is None:
                 logger.warning(f"Track {db_track.track_id} has None sigma_gradient, using 0.0")
                 sigma_gradient = 0.0
@@ -3885,6 +3902,11 @@ class DatabaseManager:
                 logger.warning(f"Track {db_track.track_id} has None sigma_threshold, using 0.01")
                 sigma_threshold = 0.01
             if sigma_pass is None:
+                # Legacy rows only: a graded (PASS/FAIL/WARNING) track that
+                # stored a real sigma reading but no sigma_pass verdict.
+                # Recomputing is safe here because sigma_gradient/threshold
+                # are real readings in this branch -- unlike the
+                # failed-processing branch above, where they are not.
                 sigma_pass = sigma_gradient <= sigma_threshold
 
         if is_untrimmed:
@@ -3892,9 +3914,19 @@ class DatabaseManager:
             linearity_pass_val = None
             optimal_offset_val = None  # No trim ran → no offset was applied.
         else:
-            linearity_error_val = abs(db_track.final_linearity_error_shifted or 0.0)
-            linearity_pass_val = db_track.linearity_pass if db_track.linearity_pass is not None else False
+            # NULL verdict stays None -- never invent a FAIL (previously
+            # `... if ... is not None else False`, which every `is not None`
+            # consumer then counted as an actual linearity/sigma rejection).
+            linearity_pass_val = db_track.linearity_pass
             optimal_offset_val = db_track.optimal_offset or 0.0
+            if is_failed_processing:
+                # Same 999.999-is-not-a-reading rule as sigma_gradient above.
+                linearity_error_val = None
+            else:
+                linearity_error_val = (
+                    None if db_track.final_linearity_error_shifted is None
+                    else abs(db_track.final_linearity_error_shifted)
+                )
 
         try:
             return TrackData(

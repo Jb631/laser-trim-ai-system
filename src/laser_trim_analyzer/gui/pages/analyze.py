@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, TrackData
+from laser_trim_analyzer.core.model_stats import failed_processing
 from laser_trim_analyzer.core.processor import Processor
 from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.config import get_config
@@ -1117,6 +1118,22 @@ class AnalyzePage(ctk.CTkFrame):
                         lines.append("")
                     continue
 
+                # A track that FAILED PROCESSING (ERROR/PROCESSING_FAILED) is
+                # not a measurement -- CLAUDE.md: "a record that failed
+                # processing is not a measurement" / "a failure must never
+                # look like a result". sigma_gradient, sigma_threshold,
+                # linearity_error, sigma_pass and linearity_pass are all None
+                # on it (database/manager.py::_map_db_to_track), so skip the
+                # numeric blocks instead of formatting None with :.6f.
+                if failed_processing(track.status):
+                    lines.append("  NOT GRADED — this track failed processing.")
+                    reason = (getattr(track, "linearity_spec_warning", None)
+                              or getattr(track, "anomaly_reason", None))
+                    if reason:
+                        lines.append(f"  Reason: {reason}")
+                    lines.append("")
+                    continue
+
                 # Sigma Analysis
                 lines.append("  SIGMA ANALYSIS:")
                 lines.append(f"    Gradient:  {track.sigma_gradient:.6f}")
@@ -2154,6 +2171,28 @@ class AnalyzePage(ctk.CTkFrame):
                        va='top', color='black')
             return
 
+        # A track that FAILED PROCESSING carries no measurement -- sigma/
+        # linearity fields are all None (database/manager.py::_map_db_to_track).
+        # Render that plainly instead of formatting None with :.6f (raises) or
+        # letting `corrected_values` (computed from empty error_data by the
+        # caller) invent a PASS.
+        if failed_processing(track.status):
+            metrics = [
+                "Sigma:     — (not graded)",
+                "Linearity: — (not graded)",
+                "",
+                "This track failed processing --",
+                "there is no measurement to grade.",
+            ]
+            y_pos = 0.95
+            ax.text(0.05, 0.98, "Analysis Metrics", fontsize=11, fontweight='bold',
+                   transform=ax.transAxes, va='top', color='black')
+            for metric in metrics:
+                y_pos -= 0.085
+                ax.text(0.05, y_pos, metric, fontsize=10, transform=ax.transAxes,
+                       va='top', color='black')
+            return
+
         # Use corrected values if provided (recalculated from actual spec limits)
         fail_points = corrected_values['fail_points'] if corrected_values else track.linearity_fail_points
         linearity_pass = corrected_values['linearity_pass'] if corrected_values else track.linearity_pass
@@ -2205,6 +2244,29 @@ class AnalyzePage(ctk.CTkFrame):
             ax.text(0.5, 0.72, f'STATUS: {status}', ha='center', va='center',
                    fontsize=16, color=color, fontweight='bold', transform=ax.transAxes)
             ax.text(0.5, 0.45, 'Test sweep only', ha='center', va='center',
+                   fontsize=11, color=color, transform=ax.transAxes)
+            ax.text(0.5, 0.15, f"Analysis: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                   ha='center', va='center', fontsize=9, color='gray',
+                   style='italic', transform=ax.transAxes)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            return
+
+        # A track that FAILED PROCESSING carries no verdict to render -- and
+        # `corrected_values['linearity_pass']` (computed by the caller from
+        # `actual_fail_count == 0`) would default to True on this track's
+        # empty error_data, inventing a PASS. Render "not graded" instead,
+        # same principle as the UNTRIMMED branch above.
+        if failed_processing(track.status):
+            status = "NOT GRADED"
+            color = '#7f8c8d'
+            rect = Rectangle((0.1, 0.6), 0.8, 0.25,
+                             linewidth=3, edgecolor=color,
+                             facecolor='white', alpha=0.9)
+            ax.add_patch(rect)
+            ax.text(0.5, 0.72, f'STATUS: {status}', ha='center', va='center',
+                   fontsize=16, color=color, fontweight='bold', transform=ax.transAxes)
+            ax.text(0.5, 0.45, 'Processing failed — no measurement', ha='center', va='center',
                    fontsize=11, color=color, transform=ax.transAxes)
             ax.text(0.5, 0.15, f"Analysis: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                    ha='center', va='center', fontsize=9, color='gray',

@@ -27,6 +27,7 @@ except ImportError:
     HAS_OPENPYXL = False
 
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, TrackData
+from laser_trim_analyzer.core.model_stats import failed_processing
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +370,25 @@ def _create_tracks_sheet(wb: "Workbook", result: AnalysisResult) -> None:
                     ws[f"A{row}"] = "Untrimmed R:"
                     ws[f"B{row}"] = f"{track.untrimmed_resistance}"
                     row += 1
+            row += 2
+            continue
+
+        # A track that FAILED PROCESSING (ERROR/PROCESSING_FAILED) carries no
+        # measurement -- sigma_gradient, sigma_threshold, linearity_error,
+        # sigma_pass and linearity_pass are all None on it (see
+        # database/manager.py::_map_db_to_track). Skip the numeric sections
+        # instead of formatting None with :.6f or rendering "NO" for "never
+        # graded" (CLAUDE.md: "a failure must never look like a result").
+        if failed_processing(track.status):
+            ws[f"A{row}"] = "Not graded — this track failed processing."
+            ws[f"A{row}"].font = Font(italic=True)
+            row += 1
+            reason = (getattr(track, "linearity_spec_warning", None)
+                      or getattr(track, "anomaly_reason", None))
+            if reason:
+                ws[f"A{row}"] = f"Reason: {reason}"
+                ws[f"A{row}"].font = Font(italic=True)
+                row += 1
             row += 2
             continue
 
