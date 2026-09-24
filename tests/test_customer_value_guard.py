@@ -116,3 +116,15 @@ def test_the_repository_is_clean_against_the_real_backlog():
     prices, names, pos, _src = data
     assert prices, "the backlog parsed but yielded no prices -- the guard would pass vacuously"
     assert all(p > 0 for vals in prices.values() for p in vals), "a zero price reached the scan"
+
+
+def test_every_text_format_the_repository_commits_is_scanned():
+    # A design mockup (.html) went through a push unscanned on 2026-09-23 -- clean, by luck.
+    # Every text extension present in the tracked tree must be one the guard reads.
+    import subprocess
+    tracked = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True).stdout.split()
+    exts = {Path(f).suffix.lower() for f in tracked if Path(f).suffix}
+    binary = {".xls", ".xlsx", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".ttf", ".otf", ".woff",
+              ".woff2", ".pdf", ".db", ".pkl", ".joblib", ".zip", ".gz", ".icns", ".bin", ".lock"}
+    unscanned = sorted(e for e in exts - binary if e not in G.TEXT)
+    assert not unscanned, f"committed text formats the guard never reads: {unscanned}"

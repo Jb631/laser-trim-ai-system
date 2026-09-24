@@ -21,7 +21,12 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-TEXT = (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".ps1", ".bat", ".command", ".cfg", ".ini")
+# Every text format this repository commits. .html/.css/.js/.csv/.xml/.svg were missing until
+# 2026-09-23, when a design mockup (.html) went through a push unscanned -- it was clean, checked
+# by hand, but only by luck of what it happened to contain. A guard that skips a file type is a
+# guard with a door in it.
+TEXT = (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".ps1", ".bat", ".command",
+        ".cfg", ".ini", ".html", ".htm", ".css", ".js", ".csv", ".tsv", ".xml", ".svg", ".sh")
 
 
 # A number is only a candidate price when it is not part of a path, a filename or a
