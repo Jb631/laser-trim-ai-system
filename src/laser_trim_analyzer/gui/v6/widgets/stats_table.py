@@ -201,7 +201,7 @@ class StatsTableZone(ctk.CTkFrame):
 
         # Disposition band — the split is the whole point of the table, so it
         # gets its own row of headings, centred over the columns it names.
-        for label, first in (("ALL UNITS", 1),
+        for label, first in (("All units", 1),
                              ("LIN-PASSING (accepted)", rule_column + 1)):
             ctk.CTkLabel(frame, text=label, font=t.font(t.SIZE_CAPTION, "bold"),
                          text_color=t.TEXT_SECONDARY, anchor="center")\

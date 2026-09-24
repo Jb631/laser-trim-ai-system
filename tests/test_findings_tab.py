@@ -42,7 +42,7 @@ def test_no_findings_reads_as_nothing_to_act_on_not_as_a_gap(tk_root):
     text = " | ".join(_texts(tab))
     assert "Nothing to act on" in text
     assert "Laser 1 (LTS)" in text and "System B" not in text      # the shop's names, never the letters
-    assert "18%" in text and "52%" in text and "RECIPE HISTORY" in text
+    assert "18%" in text and "52%" in text and "Recipe history" in text
 
 
 def test_a_finding_shows_its_lever_lead_time_and_gain(tk_root):
@@ -100,7 +100,7 @@ def test_a_crashed_analyzer_is_named_and_the_yardstick_is_not_blamed(tk_root):
     assert "what each cut buys" in text and "RuntimeError: boom" in text
     assert "the recipe history" in text and "KeyError" in text
     assert "not graded for this model" not in text      # the yardstick agreed 100% -- it is not the reason
-    assert "RECIPE HISTORY" not in text                 # None history: no heading, no crash
+    assert "Recipe history" not in text                 # None history: no heading, no crash
 
 
 def test_a_thin_model_is_told_the_bar_not_only_100_percent(tk_root):
@@ -133,7 +133,7 @@ def test_a_value_that_is_not_there_reads_as_a_dash_never_as_zero_and_never_crash
     tab.set_data({"facts": dict(FACTS, trim_effort=effort, recipe_history=history),
                   "findings": [{**FINDING, "n_units": None, "expected_gain_points": None}]})
     text = " | ".join(_texts(tab))
-    assert "RECIPE HISTORY" in text                     # it rendered all the way to the last section
+    assert "Recipe history" in text                     # it rendered all the way to the last section
     assert "median incoming — Ω" in text and "0 Ω" not in text
     assert "— tracks cut" in text and "()" not in text
     assert "rests on — tracks" in text and "no rate claimed" in text
@@ -148,11 +148,11 @@ def test_more_than_one_limit_table_gets_its_own_section_and_one_does_not(tk_root
             "last": "2026-09-11", "trim_pass_pct": None}]
     tab.set_data({"facts": dict(FACTS, limit_tables=two), "findings": []})
     text = " | ".join(_texts(tab))
-    assert "LIMIT TABLES" in text and "89 graded points of 111 rows" in text and "1,649 tracks" in text
+    assert "Limit tables" in text and "89 graded points of 111 rows" in text and "1,649 tracks" in text
     assert "45 graded points of 57 rows" in text and "— left the laser inside limits" in text
     assert "Laser 1 (LTS)" in text and "System B" not in text
     tab.set_data({"facts": dict(FACTS, limit_tables=two[:1]), "findings": []})
-    assert "LIMIT TABLES" not in " | ".join(_texts(tab))
+    assert "Limit tables" not in " | ".join(_texts(tab))
     tab.set_data({"facts": dict(FACTS, limit_tables=None, errors={"limit_tables": "RuntimeError: bad table"}),
                   "findings": []})
     text = " | ".join(_texts(tab))

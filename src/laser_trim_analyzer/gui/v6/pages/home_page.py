@@ -53,7 +53,7 @@ class HomePage(PageBase):
     # ---- construction ------------------------------------------------------
     def build_content(self, parent):
         t = self.theme
-        self._zone_header(parent, "BRING IN WHAT'S NEW",
+        self._zone_header(parent, "Bring in what's new",
                           "your remembered folders, in order, through the same "
                           "batch the Process page runs")
 
@@ -129,7 +129,7 @@ class HomePage(PageBase):
             font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
         self._unreadable_count = 0
 
-        self._zone_header(parent, "WHAT THE APP IS TELLING YOU",
+        self._zone_header(parent, "What the app is telling you",
                           "drifting now, biggest first — one verdict per lot, "
                           "self-clearing")
         self._focus = FocusListZone(parent, theme=t,

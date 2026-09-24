@@ -44,13 +44,28 @@ class PageBase(ctk.CTkFrame):
     # "clear sections for what im looking at and what the app is telling
     # me" — pages mark INTERPRETATION zones vs DATA zones with this). ----
     def _zone_header(self, parent, title: str, caption: str) -> None:
+        """A section inside a page: sentence-case title, its caption on the line below.
+
+        This used to be an 11 px all-caps label in the accent colour -- the hardest text on
+        the screen to read, and much of the 'dated' look (spec 2026-09-23). Callers now pass
+        sentence case."""
         t = self.theme
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
-        wrap.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-        ctk.CTkLabel(wrap, text=title, font=t.font(t.SIZE_CAPTION, "bold"),
-                     text_color=t.ACCENT, anchor="w").pack(side="left")
-        ctk.CTkLabel(wrap, text="   " + caption, font=t.font(t.SIZE_CAPTION),
-                     text_color=t.TEXT_SECONDARY, anchor="w").pack(side="left")
+        wrap.pack(side="top", fill="x", pady=(t.SPACE_SM, t.SPACE_XS))
+        ctk.CTkLabel(wrap, text=title, font=t.font(t.SIZE_HEADING, "bold"),
+                     text_color=t.TEXT_PRIMARY, anchor="w").pack(fill="x")
+        if caption:
+            ctk.CTkLabel(wrap, text=caption, font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY,
+                         anchor="w", justify="left", wraplength=1000).pack(fill="x")
+
+    def set_caption(self, text: str) -> None:
+        """One line under the page title -- a page's headline in words. '' hides it."""
+        self._caption.configure(text=text or "")
+        if text and not self._caption.winfo_ismapped():
+            self._caption.pack(side="top", fill="x", padx=self.theme.SPACE_LG,
+                               before=self._content, pady=(0, self.theme.SPACE_SM))
+        elif not text and self._caption.winfo_ismapped():
+            self._caption.pack_forget()
 
     # ---- thread-safe UI update (foundations §2.4, reworked 2026-07-06) ----
     def safe_after(self, fn, delay: int = 0) -> None:
@@ -92,6 +107,10 @@ class PageBase(ctk.CTkFrame):
         self._header.pack(side="top", fill="x")
         ctk.CTkFrame(self, height=1, fg_color=self.theme.DIVIDER, corner_radius=0)\
             .pack(side="top", fill="x")
+        # Created here but NOT packed -- set_caption() packs it (before self._content) the
+        # first time a page gives it text, and unpacks it again on "".
+        self._caption = ctk.CTkLabel(self, text="", font=self.theme.font(self.theme.SIZE_BODY),
+                                     text_color=self.theme.TEXT_SECONDARY, anchor="w")
         self._content = ctk.CTkFrame(self, fg_color="transparent")
         self._content.pack(fill="both", expand=True,
                            padx=self.theme.SPACE_LG, pady=self.theme.SPACE_MD)

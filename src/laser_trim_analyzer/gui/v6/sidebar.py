@@ -51,7 +51,7 @@ class Sidebar(ctk.CTkFrame):
                                                fg_color=theme.DIVIDER)
                 self._separator.pack(side="top", fill="x",
                                      padx=theme.SPACE_MD, pady=(theme.SPACE_MD, 0))
-                ctk.CTkLabel(self, text="OTHER VIEWS", anchor="w",
+                ctk.CTkLabel(self, text="Other views", anchor="w",
                              font=theme.font(theme.SIZE_CAPTION, "bold"),
                              text_color=theme.TEXT_DISABLED)\
                     .pack(side="top", fill="x", padx=theme.SPACE_LG,

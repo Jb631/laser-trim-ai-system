@@ -228,6 +228,26 @@ def test_page_base_lifecycle_hooks(tk_root):
     assert ev == ["show", "hide"]
 
 
+def test_page_base_set_caption_shows_and_clears(tk_root):
+    """set_caption packs a caption line under the title bar on text, and clears it on ""."""
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): pass
+
+    p = _P(tk_root, theme=ThemeManager())
+    # winfo_manager(), NOT winfo_ismapped(): under the withdrawn test root nothing is
+    # ever mapped, so an ismapped assertion would pass vacuously (test_focus_list_zone.py).
+    assert p._caption.winfo_manager() == ""
+    p.set_caption("Two models need a look this week")
+    assert p._caption.cget("text") == "Two models need a look this week"
+    assert p._caption.winfo_manager() == "pack"
+    p.set_caption("")
+    assert p._caption.cget("text") == ""
+
+
 def test_page_container_add_get_show(tk_root):
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.page_container import PageContainer

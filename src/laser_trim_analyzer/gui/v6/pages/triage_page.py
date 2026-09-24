@@ -60,12 +60,12 @@ class TriagePage(PageBase):
     def build_content(self, parent):
         # Same two-zone framing as the Model page (2026-07-13 design pass):
         # the app's read first, the raw model list below it.
-        self._zone_header(parent, "WHAT THE APP IS TELLING YOU",
+        self._zone_header(parent, "What the app is telling you",
                           "drifting now, biggest first — one verdict per lot, self-clearing")
         self._focus = FocusListZone(parent, theme=self.theme,
                                     on_row_click=self._on_focus_click)
         self._focus.pack(side="top", fill="x", pady=(0, self.theme.SPACE_LG))
-        self._zone_header(parent, "WHAT YOU'RE LOOKING AT",
+        self._zone_header(parent, "What you're looking at",
                           "every model on record — click one to see its data")
         self._browse = BrowseZone(parent, theme=self.theme, on_row_click=self._on_row_click)
         self._browse.pack(side="top", fill="both", expand=True)

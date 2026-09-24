@@ -53,9 +53,9 @@ class FindingsTab(ctk.CTkFrame):
             self._line("No process findings have been computed for this model yet. They are worked out "
                        "after each ingest; Settings can also refresh them.", muted=True)
             return
-        self._heading("WHAT WAS MEASURED")
+        self._heading("What was measured")
         self._facts(facts)
-        self._heading("WHAT TO DO ABOUT IT")
+        self._heading("What to do about it")
         if not findings:
             self._line("Nothing to act on. No analyzer found a lever worth pulling on this model — "
                        "that is a result, not a gap.", muted=True)
@@ -63,7 +63,7 @@ class FindingsTab(ctk.CTkFrame):
             self._card(f)
         tables = facts.get("limit_tables") or []
         if len(tables) > 1:             # one table is the unremarkable case; two is something to look at
-            self._heading("LIMIT TABLES THIS MODEL HAS BEEN GRADED AGAINST")
+            self._heading("Limit tables this model has been graded against")
             for tab in tables:
                 self._line(f"{laser_label(tab.get('system'))} · {_txt(tab.get('track'))} · "
                            f"{_num(tab.get('graded'))} graded points of {_num(tab.get('rows'))} rows · "
@@ -81,7 +81,7 @@ class FindingsTab(ctk.CTkFrame):
                            muted=True)
         cuts = facts.get("cut_setting") or {}
         if cuts:
-            self._heading("CUT SETTINGS THIS MODEL HAS BEEN RUN AT")
+            self._heading("Cut settings this model has been run at")
             for group, g in sorted(cuts.items()):
                 current = g.get("current_setting")
                 mixed = g.get("days_with_more_than_one_setting_pct")
@@ -96,7 +96,7 @@ class FindingsTab(ctk.CTkFrame):
                                f"{_txt(s_.get('window'))}{mark}", muted=True)
         history = facts.get("recipe_history") or []
         if history:
-            self._heading("RECIPE HISTORY")
+            self._heading("Recipe history")
             for run in history:
                 self._line(f"{laser_label(run.get('system'))} · {_txt(run.get('first'))} → "
                            f"{_txt(run.get('last'))} · {_txt(run.get('recipe'))} · {_num(run.get('n'))} tracks · "

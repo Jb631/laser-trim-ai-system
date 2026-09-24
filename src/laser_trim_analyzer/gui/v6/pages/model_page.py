@@ -155,7 +155,7 @@ class ModelPage(PageBase):
         # what im looking at and what the app is telling me"). Verdict FIRST
         # (the answer), then the per-metric pills (the evidence), then the σ
         # key. Everything in this zone is an interpretation.
-        self._zone_header(self._body, "WHAT THE APP IS TELLING YOU",
+        self._zone_header(self._body, "What the app is telling you",
                           "drift-watch verdict — one verdict per lot, never a spec disposition")
         # THE daily question in one line (user #17, 2026-07-13: "not getting
         # the most out of the available data"): holding or drifting, which
@@ -198,7 +198,7 @@ class ModelPage(PageBase):
                      anchor="w", justify="left", wraplength=980)\
             .pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         # ---- ZONE 2: the data itself — where the read above is verified.
-        self._zone_header(self._body, "WHAT YOU'RE LOOKING AT",
+        self._zone_header(self._body, "What you're looking at",
                           "the measurements — chart the pill you clicked; units & final tests in the tabs")
         # The stats table goes FIRST in this zone: it is the thing James
         # currently leaves the app to compute (export to Excel, work out

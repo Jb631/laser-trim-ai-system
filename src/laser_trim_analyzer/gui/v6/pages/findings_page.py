@@ -23,7 +23,7 @@ class FindingsPage(PageBase):
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     def build_content(self, parent):
-        self._zone_header(parent, "WHAT TO CHANGE, BIGGEST FIRST",
+        self._zone_header(parent, "What to change, biggest first",
                           "tracks a year recoverable, then by sample size — click a row to open the model")
         self._list = ctk.CTkScrollableFrame(parent, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
