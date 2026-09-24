@@ -227,8 +227,9 @@ row.
 
 ### Rows
 
-- **Statement** names the laser in shop terms ("Laser 1: cut 6900 → try 6800") — never the
-  code's letters.
+- **Statement** names the laser in shop terms, through `laser_label()` like every other screen
+  ("Laser 1 (LTS): cut 6900 → try 6800") — never the code's letters. (Corrected 2026-09-24:
+  the first draft and the mockup shortened it to "Laser 1:"; the app-wide label won.)
 - **Merging:** findings merge into ONE row when they share the model, the analyzer and the
   recommendation, differing only by track name. The readout is their sum (tracks are
   additive), a "both tracks" tag says so, and the opened row lists each track's own numbers.
