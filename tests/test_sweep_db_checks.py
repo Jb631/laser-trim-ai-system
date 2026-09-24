@@ -185,3 +185,21 @@ def test_increment_volts_still_fails_on_a_missed_pass(tmp_path):
     carries = [r for r in results if "carries its TrimVolts curves" in r[1]]
     assert [r[0] for r in carries] == ["FAIL"], results
     assert f"{LTS_FIXTURE.name} Trim 1" in carries[0][2], carries
+
+
+def test_increment_volts_a_pass_refused_at_ingest_is_a_warn_not_a_miss(tmp_path):
+    """Since 2026-09-24 ingest REFUSES a capture its workbook's own VOLTAGES sheet
+    contradicts (a wrong position is worse than none), so a pass processed since the
+    capture can correctly hold no curves beside a TrimVolts sheet full of readings.
+    Settled by the back-fill's reader, that is a refusal -- a WARN naming the file --
+    never "missed": a FAIL there would fail correct data, the first time work ingests
+    such a file. Built from the back-fill tests' own misplaced file."""
+    from test_backfill_increment_volts import _bump_initial_points_ignored, _write_modified_copy
+    shifted = _write_modified_copy(tmp_path / "shifted.xlsx", mutate=_bump_initial_points_ignored)
+    db = _laser1_passes(tmp_path, [(True, True, None), (False, True, shifted)])
+    results = _iv(_run_check(db, "check_increment_volts_on_database", tmp_path))
+    carries = [r for r in results if "carries its TrimVolts curves" in r[1]]
+    assert [r[0] for r in carries] == ["PASS"], results
+    assert "1 refused" in carries[0][2] and "0 missed" in carries[0][2], carries
+    refused = [r for r in results if r[0] == "WARN" and "REFUSED at ingest" in r[1]]
+    assert len(refused) == 1 and "shifted.xlsx Trim 1" in refused[0][2], results

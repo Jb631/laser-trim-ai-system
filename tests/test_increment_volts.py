@@ -386,6 +386,126 @@ def test_a_pass_whose_trimvolts_sheet_is_missing_keeps_everything_else(tmp_path)
     assert len(missing[1]["increment_volts"]) == 49
 
 
+# ------------------------------------- held to the machine's own placement AT INGEST
+
+# The back-fill's own perturbation, reused so both paths are held to the SAME misplaced
+# file: `Initial Points Ignored` +1 moves the start row off the machine's VOLTAGES
+# placement without touching VOLTAGES or any Trim/TrimVolts sheet.
+from test_backfill_increment_volts import (  # noqa: E402
+    _bump_initial_points_ignored, _write_modified_copy)
+
+_REFUSED = "TrimVolts capture REFUSED"
+
+
+def _refusals(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.levelname == "WARNING" and _REFUSED in r.getMessage()]
+
+
+def test_a_capture_its_own_voltages_sheet_contradicts_is_refused_at_ingest(tmp_path, caplog):
+    """The rule the back-fill applies (`voltages_placement` "misplaced" -> not written),
+    now at ingest too (2026-09-24 final review): the pass keeps everything else -- its
+    sweep, limits and recipe -- but stores NO curves, and a WARNING names the file and
+    sheet. The unperturbed copy, written by the same writer, is the control."""
+    import logging
+    from laser_trim_analyzer.core.parser import ExcelParser
+    good = _trim_passes(ExcelParser().parse_file(_write_modified_copy(tmp_path / "good.xlsx")))
+    with caplog.at_level(logging.WARNING, logger="laser_trim_analyzer.core.parser"):
+        clean = _refusals(caplog)
+        bad_path = _write_modified_copy(tmp_path / "shifted.xlsx",
+                                        mutate=_bump_initial_points_ignored)
+        bad = _trim_passes(ExcelParser().parse_file(bad_path))
+    assert clean == [], "the control is placed: nothing refused"
+    assert [p["sheet"] for p in good] == [p["sheet"] for p in bad] == ["Trim 1", "Trim 2"]
+    assert all(len(p["increment_volts"]) == 49 for p in good), "control keeps its curves"
+    for g, b in zip(good, bad):
+        assert {k: b[k] for k in KEYS} == dict.fromkeys(KEYS), b["sheet"]
+        assert {k: v for k, v in b.items() if k not in KEYS} == \
+            {k: v for k, v in g.items() if k not in KEYS}, "the refusal costs the curves only"
+    refused = _refusals(caplog)
+    assert len(refused) == 2, refused
+    for sheet, msg in zip(("Trim 1", "Trim 2"), refused):
+        assert f"'{sheet}'" in msg and "shifted.xlsx" in msg and "Laser 1 (LTS)" in msg, msg
+
+
+def test_a_refused_capture_stores_three_real_nulls(tmp_path, monkeypatch):
+    """Through the Processor and the writer: SQL NULL in all three columns -- the database's
+    own "not captured", so the back-fill (which refuses the same file) leaves it, and the
+    recipe blob never grows the keys."""
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as mgr
+    db = mgr.DatabaseManager(tmp_path / "t.db")
+    _inject(monkeypatch, db)
+    bad_path = _write_modified_copy(tmp_path / "shifted.xlsx", mutate=_bump_initial_points_ignored)
+    db.save_analysis(Processor(use_ml=False).process_file(bad_path))
+    with db.session() as s:
+        rows = s.execute(sa.text(
+            "SELECT p.sheet, p.increment_volts IS NULL, p.increment_volts_first_row IS NULL, "
+            "p.increment_volts_truncated IS NULL, p.recipe, p.errors IS NOT NULL "
+            "FROM trim_passes p ORDER BY p.pass_index")).all()
+    trim_rows = [r for r in rows if r[0].startswith("Trim ")]
+    assert [r[0] for r in trim_rows] == ["Trim 1", "Trim 2"]
+    for sheet, v_null, fr_null, tr_null, recipe, has_errors in trim_rows:
+        assert (v_null, fr_null, tr_null) == (1, 1, 1), sheet
+        assert has_errors, f"{sheet}: the sweep itself is still stored"
+        assert not (set(KEYS) & set(json.loads(recipe or "{}"))), sheet
+
+
+def _drop_initial_points_ignored(sheets):
+    """The LTS fixture names no Points From Start, so without this field the file names
+    no start row at all: `increment_volts_frame` gives first_row None."""
+    df = sheets["Model Parameters"]
+    for r in range(df.shape[0]):
+        label = df.iat[r, 1]
+        if isinstance(label, str) and label.strip().lower() == "initial points ignored":
+            df.iat[r, 1] = "(label removed)"
+            return
+    raise AssertionError("'Initial Points Ignored' not found in Model Parameters")
+
+
+def test_a_capture_with_no_start_row_is_refused_and_says_why(tmp_path, caplog):
+    """No start row, so no position a curve could be placed at: `voltages_placement` calls
+    that misplaced (the back-fill refuses it too), and the WARNING says the file names no
+    start row rather than quoting a comparison that never ran."""
+    import logging
+    from laser_trim_analyzer.core.parser import ExcelParser
+    with caplog.at_level(logging.WARNING, logger="laser_trim_analyzer.core.parser"):
+        passes = _trim_passes(ExcelParser().parse_file(
+            _write_modified_copy(tmp_path / "no_start.xlsx", mutate=_drop_initial_points_ignored)))
+    assert all({k: p[k] for k in KEYS} == dict.fromkeys(KEYS) for p in passes), passes
+    refused = _refusals(caplog)
+    assert len(refused) == 2 and all("names no start row" in m for m in refused), refused
+
+
+def test_a_workbook_with_no_voltages_sheet_keeps_its_curves(tmp_path, caplog):
+    """Nothing to hold the capture to ("uncheckable"): stored exactly as before this rule,
+    the same as the back-fill writes it (and counts it unverified)."""
+    import logging
+    from laser_trim_analyzer.core.parser import ExcelParser
+    with caplog.at_level(logging.WARNING, logger="laser_trim_analyzer.core.parser"):
+        passes = _trim_passes(ExcelParser().parse_file(
+            _write_modified_copy(tmp_path / "no_voltages.xlsx", drop=("VOLTAGES",))))
+    assert [len(p["increment_volts"]) for p in passes] == [49, 49]
+    assert [p["increment_volts_first_row"] for p in passes] == [2, 2]
+    assert _refusals(caplog) == []
+
+
+def test_the_voltages_sheet_is_read_once_per_workbook(monkeypatch):
+    """ONE read of VOLTAGES for a two-pass file, from the workbook already open."""
+    import laser_trim_analyzer.core.parser as parser_mod
+    real = parser_mod.pd.read_excel
+    reads = []
+
+    def counting(xl, sheet_name=0, **kw):
+        reads.append(sheet_name)
+        return real(xl, sheet_name=sheet_name, **kw)
+
+    monkeypatch.setattr(parser_mod.pd, "read_excel", counting)
+    passes = _trim_passes(parser_mod.ExcelParser().parse_file(LTS))
+    assert all(p["increment_volts"] for p in passes)
+    assert reads.count("VOLTAGES") == 1, reads
+
+
 # ------------------------------------------------------------------- the database
 
 

@@ -2012,25 +2012,42 @@ def _file_has_trimvolts(path, n):
         return None
 
 
+def _placement_refused(path, sheet):
+    """True when the capture rule itself REFUSES this pass: the workbook's own VOLTAGES
+    sheet contradicts where its TrimVolts curves would sit, so ingest stores no curves, by
+    design (core/parser.py `_increment_volts_for`, 2026-09-24). Settled by the back-fill's
+    reader (`scripts/backfill_increment_volts._capture_file`: the same shared
+    `voltages_placement` rule, reached through a reader apart from the parser that stored
+    the row). False whenever it cannot be settled -- the pass then stays "missed"."""
+    try:
+        from backfill_increment_volts import _capture_file
+        return sheet in _capture_file(path, [sheet]).disagreed
+    except Exception:
+        return False
+
+
 def _increment_volts_audit(conn, since, max_files=20):
     """Every laser-1 `Trim N` pass row in `conn`, sorted into buckets that add up.
 
     Created before `since` (the database's own record, `_increment_volts_since`):
     `old_captured` (back-filled) or `old_uncaptured` (the back-fill's job).
     Created since: `captured`, or settled against the pass's own workbook -- the
-    sheet is there, so the capture missed it (`missed`, a FAIL); the sheet is not
-    (a touch-up file -- 1 in 4,972 locally) or holds no reading (`no_sheet`,
-    correct); or the file cannot be opened (`unverified`). At most `max_files`
-    workbooks are opened; beyond that a row counts as unverified. With no
-    `since` at all, every row is held to "must carry".
+    sheet is there, so the capture missed it (`missed`, a FAIL) unless the capture
+    rule refuses it because the workbook's own VOLTAGES sheet contradicts the
+    placement (`refused`: correct -- ingest stores no curves then, since 2026-09-24,
+    and a WARN names them); the sheet is not (a touch-up file -- 1 in 4,972
+    locally) or holds no reading (`no_sheet`, correct); or the file cannot be
+    opened (`unverified`). At most `max_files` workbooks are opened; beyond that a
+    row counts as unverified. With no `since` at all, every row is held to "must
+    carry".
     passes == old_captured + old_uncaptured + captured + no_sheet
-              + len(missed) + len(unverified).
+              + len(missed) + len(refused) + len(unverified).
     Raw SQL on purpose, and `IS NULL` is exact here: the writer stores a real SQL
     NULL for "no capture", never SafeJSON's 'null' text.
     """
     import re as _re
     out = {"passes": 0, "old_captured": 0, "old_uncaptured": 0, "captured": 0,
-           "no_sheet": 0, "missed": [], "unverified": []}
+           "no_sheet": 0, "missed": [], "refused": [], "unverified": []}
     verdicts = {}
     for sheet, created, has, path in conn.execute(
             "SELECT p.sheet, p.created_date, p.increment_volts IS NOT NULL, a.file_path "
@@ -2051,10 +2068,14 @@ def _increment_volts_audit(conn, since, max_files=20):
         if key not in verdicts:
             verdicts[key] = (_file_has_trimvolts(path, n)
                              if len(verdicts) < max_files else None)
+            if verdicts[key] is True and _placement_refused(path, sheet):
+                verdicts[key] = "refused"
         name = (_re.split(r"[\\/]", path)[-1]         # a UNC path on any OS
                 if path else "(no file_path)")
         where = f"{name} {sheet}"
-        if verdicts[key] is True:
+        if verdicts[key] == "refused":
+            out["refused"].append(where)
+        elif verdicts[key] is True:
             out["missed"].append(where)
         elif verdicts[key] is False:
             out["no_sheet"] += 1
@@ -2154,9 +2175,11 @@ def check_increment_volts_fixtures() -> None:
 
 def _increment_volts_counts(a):
     """One line in which the numbers add up to a['passes']."""
-    new = a["captured"] + a["no_sheet"] + len(a["missed"]) + len(a["unverified"])
+    new = (a["captured"] + a["no_sheet"] + len(a["missed"]) + len(a["refused"])
+           + len(a["unverified"]))
     return (f"{new} processed since the capture started: {a['captured']} carry their "
             f"curves, {a['no_sheet']} whose workbook has no TrimVolts reading, "
+            f"{len(a['refused'])} refused (their VOLTAGES sheet contradicts the placement), "
             f"{len(a['unverified'])} unverifiable here, {len(a['missed'])} missed; "
             f"{a['old_captured'] + a['old_uncaptured']} predate it "
             f"({a['old_captured']} back-filled, {a['old_uncaptured']} not yet) "
@@ -2176,7 +2199,7 @@ def check_increment_volts_on_database(raw) -> None:
           f"since={since}" if since else
           "no app_meta record: its start-up migration did not run, or could not record it")
     a = _increment_volts_audit(raw, since)
-    processed_since = (a["captured"] + a["no_sheet"] + len(a["missed"])
+    processed_since = (a["captured"] + a["no_sheet"] + len(a["missed"]) + len(a["refused"])
                        + len(a["unverified"]))
     if not processed_since:
         warn("increment volts: no laser-1 Trim N pass processed since the capture started "
@@ -2187,6 +2210,11 @@ def check_increment_volts_on_database(raw) -> None:
           "carries its TrimVolts curves",
           not a["missed"],
           (f"missed={a['missed'][:3]}; " if a["missed"] else "") + _increment_volts_counts(a))
+    if a["refused"]:
+        warn("increment volts: passes processed since the capture whose curves were REFUSED "
+             "at ingest -- the workbook's own VOLTAGES sheet contradicts where the start-row "
+             "rule places them (a wrong position is worse than none); look at these files",
+             f"{len(a['refused'])}: {a['refused'][:3]}")
     if a["unverified"]:
         warn("increment volts: passes processed since the capture WITHOUT curves whose "
              "workbook cannot be opened here to settle it",
@@ -2208,7 +2236,11 @@ def _trimvolts_placement_one(path):
 
     The comparison itself is `core.trim_passes.voltages_placement` (Task 5 fix round 2):
     this function still does its own independent file census/reading, but no longer its own
-    copy of the placement loop.
+    copy of the placement loop. Since 2026-09-24 the parser applies that same rule at
+    ingest and REFUSES a capture VOLTAGES contradicts (all three keys None): such a pass
+    lands in `refused`, not `misplaced` -- `misplaced` is now the proof that no stored
+    capture is ever on the wrong positions, and `refused` that the start-row rule still
+    places every local file.
     """
     import re as _re
     import pandas as _pd
@@ -2223,7 +2255,8 @@ def _trimvolts_placement_one(path):
         return int(f) if f == f and f.is_integer() else None
 
     out = {"file": Path(path).name, "checked": 0, "placed": 0, "blank_last": 0,
-           "uncheckable": 0, "misplaced": [], "uncaptured": [], "pfs_differs": False,
+           "uncheckable": 0, "misplaced": [], "uncaptured": [], "refused": [],
+           "pfs_differs": False,
            "error": None}
     try:
         with _pd.ExcelFile(path) as xl:
@@ -2264,7 +2297,10 @@ def _trimvolts_placement_one(path):
                     raw = _pd.read_excel(xl, sheet_name=tv[n][0], header=None)
                     if any(isinstance(v, (int, float)) and not isinstance(v, bool)
                            and v == v and v != 0 for v in raw.to_numpy().ravel()):
-                        out["uncaptured"].append(where)
+                        # The parser's refusal leaves the keys present and None; a read that
+                        # failed, or never ran, leaves them absent.
+                        refused = "increment_volts" in p and p["increment_volts"] is None
+                        out["refused" if refused else "uncaptured"].append(where)
                     continue
                 out["checked"] += 1
                 fr = p.get("increment_volts_first_row")
@@ -2306,10 +2342,17 @@ def check_increment_volts_corpus() -> None:
     its Initial Points Ignored -- the files the rule exists for -- or the check names that
     it did not exercise them. The tracked touch-up fixture is one, so this holds at work.
 
+    A capture the parser REFUSED at ingest (its VOLTAGES sheet contradicts the placement;
+    `core/parser.py`, 2026-09-24) FAILs the second check here, named as refused: locally the
+    start-row rule places every file, so a refusal means the rule regressed. (At work it is
+    a WARN -- `check_increment_volts_on_database` -- where the rule is unproven.)
+
     Falsify before trusting: make `increment_volts_frame` ignore points_from_start and
-    this goes FAIL with 37 misplaced (36 local + the fixture); make it raise for those
-    files and it goes FAIL on the errors and on zero exercised, with or without the local
-    corpus.
+    both checks go FAIL: the parser refuses the 37 captures VOLTAGES contradicts (36 local
+    + the fixture), named as refused, and no placed pass is left from a Points-From-Start
+    workbook; stop the parser refusing as well and the 37 are stored, and FAIL here as
+    misplaced. Make it raise for those files and it goes FAIL on the errors and on zero
+    exercised, with or without the local corpus.
     """
     import os as _os
     from concurrent.futures import ProcessPoolExecutor
@@ -2334,6 +2377,7 @@ def check_increment_volts_corpus() -> None:
     checked = sum(r["checked"] for r in parsed)
     misplaced = [m for r in parsed for m in r["misplaced"]]
     uncaptured = [u for r in parsed for u in r["uncaptured"]]
+    refused_at_ingest = [u for r in parsed for u in r["refused"]]
     errors = [f"{r['file']}: {r['error']}" for r in res if r["error"] is not None]
     pfs_files = [r for r in res if r["pfs_differs"]]
     pfs_errored = sum(1 for r in pfs_files if r["error"] is not None)
@@ -2365,6 +2409,10 @@ def check_increment_volts_corpus() -> None:
           f"cell, {sum(r['uncheckable'] for r in parsed)} without a VOLTAGES column to hold "
           f"them to)")
     why = refuse + ([f"uncaptured={uncaptured[:3]} ({len(uncaptured)})"] if uncaptured else [])
+    if refused_at_ingest:
+        why.append(f"refused at ingest={refused_at_ingest[:3]} ({len(refused_at_ingest)}) -- "
+                   f"the parser's VOLTAGES check contradicts the start-row rule on a local "
+                   f"file, where the rule is proven")
     check("increment volts: every Trim N with a TrimVolts reading beside it is captured "
           "(corpus)", not why,
           "; ".join(why) if why else f"all of them, across all {len(parsed)} workbooks")

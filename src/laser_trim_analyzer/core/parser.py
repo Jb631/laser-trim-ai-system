@@ -19,7 +19,7 @@ import pandas as pd
 import numpy as np
 
 from laser_trim_analyzer.utils.hashing import hash_bytes_for, shares_one_stat, stat_once
-from laser_trim_analyzer.core.models import SystemType, FileMetadata
+from laser_trim_analyzer.core.models import SystemType, FileMetadata, laser_label
 from laser_trim_analyzer.core import trim_passes as _tp
 from laser_trim_analyzer.core import trim_setup as _ts
 from laser_trim_analyzer.utils.constants import (
@@ -989,7 +989,7 @@ class ExcelParser:
                     xl, SystemType.B, sys_b_track_id, start_row, recipes,
                     exclude_sheets=(no_cut_template_sheet,)
                     if no_cut_template_sheet else (),
-                    increment_frame=increment_frame)
+                    increment_frame=increment_frame, file_path=file_path)
                 tracks.append(track_data)
 
         return tracks
@@ -1427,9 +1427,31 @@ class ExcelParser:
     # Laser 1's pass sheets: "Trim 1", "Trim 2", ... (never "Lin Error").
     _TRIM_N_RE = re.compile(r"^trim\s+(\d+)$", re.I)
 
+    # A capture the workbook's own VOLTAGES sheet contradicts: stored as "not captured"
+    # (all three SQL NULL, see _write_trim_passes), never as curves on the wrong positions.
+    _REFUSED_INCREMENT_VOLTS: Final = {"increment_volts": None,
+                                       "increment_volts_first_row": None,
+                                       "increment_volts_truncated": None}
+
+    @staticmethod
+    def _voltages_sheet(xl: pd.ExcelFile, file_path: Optional[Path]) -> Optional[pd.DataFrame]:
+        """Laser 1's own `VOLTAGES` sheet, or None when the workbook has none or it will
+        not read -- the same read, and the same None, as
+        `scripts/backfill_increment_volts.py` (a capture then cannot be checked, and is
+        stored as it always was). Never raises."""
+        try:
+            if "VOLTAGES" not in xl.sheet_names:
+                return None
+            return pd.read_excel(xl, sheet_name="VOLTAGES", header=None)
+        except Exception:
+            logger.debug("Could not read VOLTAGES in %s",
+                         file_path.name if file_path else "this workbook", exc_info=True)
+            return None
+
     def _increment_volts_for(
         self, xl: pd.ExcelFile, sheet: str, trimvolts: Dict[int, str],
         increment_frame: Tuple[Optional[int], Optional[int]], track_id: str,
+        volts: Optional[pd.DataFrame] = None, file_path: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Laser 1's `TrimVolts N` capture for the pass sheet `Trim N`, or {}.
 
@@ -1438,6 +1460,19 @@ class ExcelParser:
         the `Trim N` sweep read beside them. `Lin Error` has no TrimVolts, and
         a touch-up file legitimately has none for a real `Trim N` (1 file in
         4,972), so absence is not news -- DEBUG, like a sheet that won't read.
+
+        Held to the workbook's own placement before it is kept (2026-09-24, the
+        final review): laser 1 writes each `TrimVolts N` column's last reading
+        into `VOLTAGES` column N at that column's position row, so a capture
+        `core.trim_passes.voltages_placement` calls "misplaced" sits on the wrong
+        positions -- the start-row rule is proven on 8340-1 alone, and 4,311 work
+        files name a Points From Start that differs from their ignored counts. It
+        is refused: all three keys None, so the pass stores NO curves (SQL NULL)
+        and a WARNING names the file and sheet; a wrong position is worse than
+        none. "placed" and "uncheckable" (no VOLTAGES sheet, or not this column)
+        are kept as before. The SAME function, called the same way, decides for
+        `scripts/backfill_increment_volts.py` -- one rule on both paths. `volts`
+        is that sheet, read once per workbook by the caller (None: none there).
         """
         m = self._TRIM_N_RE.match(sheet.strip())
         if not m:
@@ -1450,7 +1485,26 @@ class ExcelParser:
         try:
             df = pd.read_excel(xl, sheet_name=tv_sheet, header=None)
             first_row, window = increment_frame
-            return _tp.read_increment_volts(df, first_row, window)
+            cap = _tp.read_increment_volts(df, first_row, window)
+            curves = cap["increment_volts"]
+            if any(curves):
+                pc = _tp.voltages_placement(
+                    curves, cap["increment_volts_first_row"], volts, n)
+                if pc.result == "misplaced":
+                    fr = cap["increment_volts_first_row"]
+                    logger.warning(
+                        "%s TrimVolts capture REFUSED for %r in %s: %s -- stored with no "
+                        "curves; a wrong position is worse than none",
+                        laser_label(SystemType.B), sheet,
+                        file_path.name if file_path else "this workbook",
+                        "the file names no start row for it (Points From Start/End or "
+                        "Initial/Ending Points Ignored), so VOLTAGES cannot confirm any "
+                        "position" if fr is None else
+                        f"the workbook's own VOLTAGES sheet contradicts placing it at "
+                        f"first_row {fr} ({pc.bad} of {pc.live_count} curves off, "
+                        f"{pc.matched} matched)")
+                    return dict(self._REFUSED_INCREMENT_VOLTS)
+            return cap
         except Exception:
             logger.debug("Could not read %r beside %r (track %s)", tv_sheet, sheet,
                          track_id, exc_info=True)
@@ -1461,6 +1515,7 @@ class ExcelParser:
         start_row: Optional[int], recipes: List[Dict[str, Any]],
         exclude_sheets: Sequence[str] = (),
         increment_frame: Tuple[Optional[int], Optional[int]] = (None, None),
+        file_path: Optional[Path] = None,
     ) -> List[Dict[str, Any]]:
         """Sweeps for every pass after the untrimmed one, each joined to its recipe.
 
@@ -1496,7 +1551,12 @@ class ExcelParser:
         `increment_volts_truncated` -- see `trim_passes.read_increment_volts`.
         `increment_frame` is (first_row, window) from the file's own Model
         Parameters. Keyed on the FORMAT the caller passes, so a laser-3 label
-        never reaches it: laser 3 writes laser 2's sheets.
+        never reaches it: laser 3 writes laser 2's sheets. Each capture is held
+        to the workbook's own `VOLTAGES` sheet, read here ONCE per workbook (a
+        System B file has one track) from the workbook already open, and only
+        when it has TrimVolts sheets to check; a capture it contradicts is
+        refused (see `_increment_volts_for`). `file_path` names the file in
+        that refusal's WARNING.
         """
         out: List[Dict[str, Any]] = []
         try:
@@ -1529,6 +1589,9 @@ class ExcelParser:
                 )
                 return out
 
+        volts = (self._voltages_sheet(xl, file_path)
+                 if system_type == SystemType.B and trimvolts else None)
+
         for idx, sheet in sheets:
             try:
                 df = pd.read_excel(xl, sheet_name=sheet, header=None)
@@ -1538,7 +1601,8 @@ class ExcelParser:
                 entry.update({k: v for k, v in recipe.items() if k not in entry})
                 if system_type == SystemType.B:
                     entry.update(self._increment_volts_for(
-                        xl, sheet, trimvolts, increment_frame, track_id))
+                        xl, sheet, trimvolts, increment_frame, track_id,
+                        volts=volts, file_path=file_path))
             except Exception:
                 logger.warning(
                     "Could not read trim pass %r for track %s", sheet, track_id,
