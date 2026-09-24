@@ -39,8 +39,10 @@ def _load_tk(path: Path) -> bool:
         from customtkinter import FontManager
         ok = bool(FontManager.windows_load_font(str(path), private=True, enumerable=True))
     except Exception:
-        logger.warning("bundled font %s did not load for the window; using the fallback",
-                        path.name, exc_info=True)
+        # A raised exception is less expected than a plain "no" -- log it as an error with its
+        # traceback, as _load_matplotlib and the rest of the codebase do.
+        logger.exception("bundled font %s did not load for the window; using the fallback",
+                         path.name)
         return False
     if not ok:
         logger.warning("bundled font %s did not load for the window; using the fallback", path.name)
