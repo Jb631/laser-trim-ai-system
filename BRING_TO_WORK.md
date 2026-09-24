@@ -1,5 +1,46 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-24 — the new look (pull, then look)
+
+Step 1 of the facelift shipped: a new dark theme, bigger and more readable text, and the
+Findings page rebuilt. No schema change, nothing to retrain, nothing to click on first launch.
+
+1. **`git pull`.**
+2. **Open every page and look at it** — sidebar top to bottom, then a model on the Model page
+   (click through its tabs, including Findings).
+3. **What to check:**
+   - **Nothing is cut off.** No text squeezed against the edge of its box, no label wrapped
+     somewhere ugly.
+   - **The teal is the only accent.** One colour means "act on this"; everything else is
+     text, grey, or a verdict badge (PASS / FAIL / WARNING keep their own colours on purpose
+     — that is not the accent).
+   - **Findings: four groups, click a row to open it, "Open <model>" goes to its Findings
+     tab.** The page used to be a wall of rows; now it's grouped (change worth testing, laser
+     time to save, tests to check, what changed), and opening a row shows the plain-English
+     read plus the numbers behind it. From the Model page's own Findings tab, the same rules
+     apply — it's the same view.
+4. **Run the mechanical page check** — catches clipped text without you having to eyeball
+   every page, and on your machine (unlike mine) it can also save a real screenshot of each
+   one. In PowerShell, from the repo folder (don't drop the leading `.\`):
+
+       Copy-Item data\analysis.db $env:TEMP\qa_copy.db
+       .\.venv\Scripts\python scripts\render_pages.py $env:TEMP\qa_copy.db qa_output\pages --audit
+
+   That prints one summary line (clipped widgets found, or 0) and writes `audit.txt` beside
+   it. Drop `--audit` and it does the same walk but SAVES a PNG of every page into
+   `qa_output\pages\` instead — worth doing once, since Windows allows the screen capture my
+   Mac refuses:
+
+       .\.venv\Scripts\python scripts\render_pages.py $env:TEMP\qa_copy.db qa_output\pages
+
+   Either way, delete the copy when you're done — `Remove-Item $env:TEMP\qa_copy.db` — and
+   never point either command at `data\analysis.db` itself (it refuses on purpose, but don't
+   test that).
+5. **Fonts are on the system fallback, not Plex yet** — Segoe UI for text, Cascadia Mono for
+   the numbers. Bundling IBM Plex needs your yes (five small files from Google's font repo,
+   about 0.8 MB) — say the word and it ships; until then the fallback is by design, nothing
+   is broken.
+
 ## ⚡ 2026-09-23 — bringing the finished rebuild home (do it THIS way)
 
 The rebuild finished on 2026-09-22: **173,740 files walked, 168,501 processed in 21.8 hours,

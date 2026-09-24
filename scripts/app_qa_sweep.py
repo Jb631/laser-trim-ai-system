@@ -750,6 +750,39 @@ def check_findings_on_database(db) -> None:
             warn(f"findings: the yardstick cannot vouch for {m} -- trim-effort findings stay silent there", f"{y}")
 
 
+def check_findings_group_mapping(db) -> None:
+    """Every analyzer sitting in the CACHED findings (process_findings, real data on the
+    database under test) has a Findings-page group in findings/presentation.ANALYZER_GROUP --
+    so a renamed or new analyzer whose cache predates a presentation-layer update is caught
+    against what is actually STORED, not only against the source tree (that static check is
+    tests/test_findings_presentation.py::test_every_analyzer_the_engine_runs_has_a_group, which
+    compares ANALYZER_GROUP against the analyzer modules on disk and cannot see a stale cache).
+
+    A weak version of this would ask presentation.group_key() for an answer and accept whatever
+    comes back -- but group_key() always returns something, because an unmapped analyzer falls
+    through to the OTHER group by design (so the Findings page never drops a finding silently).
+    That would pass even on the exact bug it exists to catch. The real assertion is that the
+    analyzer is a KEY of ANALYZER_GROUP, not that group_key() ran without raising.
+
+    Falsify before trusting (2026-09-24): union `seen` with an invented analyzer name before the
+    comparison below -- FAILs, naming "totally_invented_analyzer" as unmapped. Remove the union
+    and the check is real again, run on whatever this database's cache actually holds.
+    """
+    from laser_trim_analyzer.findings import presentation as P
+
+    cached = db.get_process_findings()
+    seen = {d.get("analyzer") for d in cached if isinstance(d, dict) and d.get("analyzer")}
+    check("findings: there are cached payloads to check group mapping against",
+          len(cached) > 0 and len(seen) > 0,
+          f"{len(cached)} cached findings, analyzers={sorted(seen)}")
+    missing = sorted(seen - set(P.ANALYZER_GROUP))
+    check("findings: every cached finding's analyzer maps to a Findings-page group "
+          "(findings/presentation.ANALYZER_GROUP)",
+          not missing,
+          f"unmapped -- would render under 'Other findings': {missing}; "
+          f"analyzers seen in the cache: {sorted(seen)}; known groups: {sorted(set(P.ANALYZER_GROUP))}")
+
+
 def check_ft_disposition_excludes_ungraded(db, raw) -> None:
     """Rows with no disposition stay out of every rate built on one.
 
@@ -2253,6 +2286,7 @@ def main() -> int:
     check_ft_regrade_dry_run(db)
     check_findings_fixtures()
     check_findings_on_database(db)
+    check_findings_group_mapping(db)
 
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with db.session() as s:
@@ -2992,13 +3026,17 @@ def main() -> int:
          "Baseline period", "drift tab discloses baseline provenance"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
          "This action is recorded", "requalify dialog states auditability"),
-        # 2026-07-13 design pass: interpretation vs data zones.
+        # 2026-07-13 design pass: interpretation vs data zones. Text updated 2026-09-24: the
+        # facelift's sentence-case sweep (T2) converted these from shouting headings to
+        # sentence case app-wide -- the zone-marking obligation this check exists to pin is
+        # unchanged, only the literal casing is, so the string here tracks the page, not the
+        # other way round.
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "WHAT THE APP IS TELLING YOU", "model page marks the app's-read zone"),
+         "What the app is telling you", "model page marks the app's-read zone"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "WHAT YOU'RE LOOKING AT", "model page marks the data zone"),
+         "What you're looking at", "model page marks the data zone"),
         ("src/laser_trim_analyzer/gui/v6/pages/triage_page.py",
-         "WHAT THE APP IS TELLING YOU", "triage marks the app's-read zone"),
+         "What the app is telling you", "triage marks the app's-read zone"),
         ("src/laser_trim_analyzer/gui/v6/widgets/metric_pill_row.py",
          "Outcomes — trim linearity · final test", "pills grouped process vs outcomes"),
         ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",

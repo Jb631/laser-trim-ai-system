@@ -583,10 +583,20 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       in steps. Measured while designing: three of today's colour pairs fail the basic
       readability minimum, including the out-of-control drift tier; the app has no colour for
       PASS or FAIL at all; only 9 of 96 findings claim a gain and all 96 are drawn the same.
-- [ ] **F2 · Build step 1** — plan next, then build: IBM Plex bundled, new tokens app-wide,
-      the shared building blocks, the Findings page and tab rebuilt, and the two
-      `cut_setting` fixes (a setting must have run for a real period to be "best"; "now
-      running" must mean now — which retires 8397-2's "+48 points").
+- [x] **F2 · Build step 1 — SHIPPED** (`28a4862..4338b01`, 25 commits). New refined-dark
+      palette and a readability test; shared building blocks, sentence-case headers and a
+      page caption; chart text on the theme's scale with laser colours kept clear of
+      pass/fail meaning; the two `cut_setting` fixes (a short trial cannot be "best", "now
+      running" means now — retires 8397-2's "+48 points"); the Findings page's rules as
+      tested data; the Findings page rebuilt as four groups with one open row and a
+      merged-track table; the Model page's Findings tab on that same view;
+      `scripts/render_pages.py` with a mechanical `--audit` for clipped text, plus the 14
+      overflow fixes it found.
+      **One piece still open: Task 4, bundled IBM Plex fonts.** Downloading five files
+      (~0.8 MB, `github.com/google/fonts`, OFL 1.1) needs James's yes — asked, not yet
+      answered. Every family tuple in `theme.py` was always written as a fallback chain with
+      Plex first, so nothing is broken by waiting: text and numbers render in Segoe UI /
+      Cascadia Mono (Windows) until he says go. See `BRING_TO_WORK.md` for what to look at.
 - [ ] **F3… · Relayout each remaining page**, one design round each: Model, Home,
       Dashboard, Triage, Process, Settings. Order to be agreed after F2 ships.
 
