@@ -3288,6 +3288,153 @@ def check_write_batch_fixtures() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _same_values(a, b) -> bool:
+    """Exact equality of two model_dump()s, a NaN equal to a NaN (a stored NaN is a value)."""
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (a != a and b != b)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_values(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_same_values(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
+
+
+def check_spec_snapshot_on_database(db, raw) -> None:
+    """The spec snapshot (ingest-speed Task 8, spec §4, ruling 16) on the copy's REAL model_specs.
+
+    A worker process never opens a database, so it answers every spec question from a
+    SpecSnapshot taken at folder start -- and a spec changes the stored numbers (spec F8), so a
+    snapshot that answered one question differently from the database would store different
+    numbers without a word. On real data:
+      1. it carries every model_specs row, and the ML thresholds of the COPY (the shared ML
+         manager is a five-minute process cache, so an earlier check's database must not leak in);
+      2. every model question -- each spec's model, each model the copy's trims and final tests
+         carry, each alias -- gets the database's answer, from the snapshot and from a pickled copy
+         (the spawn transport, Task 11);
+      3. every final-test question the same -- one real serial per (final-test model, trailing
+         character), which is where a section letter picks 8508-B over 8508;
+      4. a Processor carrying it stores exactly what the database-backed Processor stores, on
+         corpus trim files whose numbers depend on their spec (a spec-less run differs), and asks
+         the database nothing.
+    The copy may carry no aliases; tests/test_spec_snapshot.py covers them with invented specs,
+    and the detail says how many were exercised here.
+
+    Falsify before trusting (2026-09-25): make SpecSnapshot.resolve_spec_for_ft skip the section
+    letter -- check 3 goes FAIL; make the Processor ignore its snapshot -- check 4 goes FAIL (no
+    file moved by its spec); take the snapshot without dropping the cached ML manager while
+    another database's is cached (the ingest checks leave one) -- check 1 goes FAIL, 0 thresholds.
+    """
+    import pickle
+    from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.database.specs import SpecSnapshot, parse_aliases
+    from laser_trim_analyzer.ml import invalidate_shared_ml_manager
+
+    invalidate_shared_ml_manager()        # the COPY's ML state, not an earlier check's database
+    try:
+        snap = take_spec_snapshot(use_ml=True, db=db)
+    finally:
+        invalidate_shared_ml_manager()    # ...and no later check inherits the copy's
+    back = pickle.loads(pickle.dumps(snap))   # the sweep's own object, made above
+
+    ids = [r for (r,) in raw.execute("SELECT id FROM model_specs ORDER BY id")]
+    thresholds = dict(raw.execute(
+        "SELECT model, sigma_threshold FROM model_ml_state "
+        "WHERE is_trained = 1 AND sigma_threshold IS NOT NULL").fetchall())
+    from laser_trim_analyzer.ml.predictor import FEATURE_COLUMNS
+    features = {c: 0.5 for c in FEATURE_COLUMNS}
+    unlike = [m for m, p in snap.ml_predictors.items()
+              if m not in back.ml_predictors or not _same_values(
+                  p.predict_failure_probability(features),
+                  back.ml_predictors[m].predict_failure_probability(features))]
+    check("spec snapshot: carries every model_specs row and the copy's own ML state; a pickled "
+          "copy predicts as the original does",
+          [r["id"] for r in snap.specs] == ids != [] and snap.ml_thresholds == thresholds
+          and back.ml_thresholds == thresholds and back.specs == snap.specs
+          and sorted(back.ml_predictors) == sorted(snap.ml_predictors) and not unlike,
+          f"{len(snap.specs)} of {len(ids)} specs; {len(snap.ml_thresholds)} thresholds vs "
+          f"{len(thresholds)} trained in model_ml_state; {len(snap.ml_predictors)} predictors "
+          f"(from data/ml_models under {Path.cwd()}), unlike after pickling={unlike[:3]}")
+
+    models = {r["model"] for r in snap.specs}
+    models |= {m for (m,) in raw.execute("SELECT DISTINCT model FROM analysis_results")}
+    models |= {m for (m,) in raw.execute("SELECT DISTINCT model FROM final_test_results")}
+    aliases = {a for r in snap.specs for a in parse_aliases(r.get("aliases"))}
+    wrong, answered = [], 0
+    questions = sorted(models | aliases, key=lambda m: (m is None, str(m)))
+    for m in questions:
+        want = db.get_model_spec(m)
+        answered += want is not None
+        if snap.get_model_spec(m) != want or back.get_model_spec(m) != want:
+            wrong.append(m)
+    check("spec snapshot: every model question answered as the database answers it (the "
+          "snapshot and a pickled copy)",
+          not wrong and answered > 0,
+          f"{len(questions)} models, {answered} with a spec; {len(aliases)} aliases on this "
+          f"database (tests/test_spec_snapshot.py covers aliases); wrong={wrong[:5]}")
+
+    pairs = raw.execute("SELECT model, MIN(serial) FROM final_test_results "
+                        "GROUP BY model, substr(serial, -1)").fetchall()
+    wrong_ft, sectioned = [], 0
+    for m, s in pairs:
+        want = db.resolve_spec_for_ft(m, s)
+        if want is not None and want["model"] != (m or "").strip():
+            sectioned += 1                # another row answered: a section's spec
+        if snap.resolve_spec_for_ft(m, s) != want or back.resolve_spec_for_ft(m, s) != want:
+            wrong_ft.append((m, s))
+    check("spec snapshot: every final-test question answered as the database answers it -- one "
+          "real serial per (model, trailing character), where a section letter picks the "
+          "section's spec",
+          not wrong_ft and sectioned > 0,
+          f"{len(pairs)} (model, serial) questions, {sectioned} answered by a section's spec; "
+          f"wrong={wrong_ft[:5]}")
+
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
+    picks = []
+    for system, n in (("DLTS", 10), ("LTS", 6)):
+        folders = sorted(p for p in (base / system).iterdir() if p.is_dir()) \
+            if (base / system).is_dir() else []
+        firsts = [min((f for f in d.iterdir() if f.suffix.lower() in (".xls", ".xlsx")),
+                      default=None) for d in folders if snap.get_model_spec(d.name)]
+        picks += [f for f in firsts if f is not None][:n]
+    if not picks:
+        warn("spec snapshot: stored numbers", f"no corpus trim files under {base} -- not run")
+        return
+
+    def run(proc):
+        return [proc.process_file(f).model_dump(exclude={"processing_time"}) for f in picks]
+
+    by_database = run(Processor(use_ml=False))
+    asked, real_get, real_session = [], _mgr.get_database, db.session
+
+    def refused():
+        asked.append("get_database")      # recorded: a reach the caller swallows still shows
+        raise RuntimeError("the analysis asked the database")
+
+    def watched(*a, **kw):
+        asked.append("session")
+        return real_session(*a, **kw)
+
+    _mgr.get_database = _dbpkg.get_database = refused
+    db.session = watched
+    try:
+        by_snapshot = run(Processor(use_ml=False, snapshot=SpecSnapshot(specs=snap.specs)))
+    finally:
+        _mgr.get_database = _dbpkg.get_database = real_get
+        del db.session
+    spec_less = run(Processor(use_ml=False, snapshot=SpecSnapshot()))
+    differ = [f.name for f, a, b in zip(picks, by_database, by_snapshot) if not _same_values(a, b)]
+    moved = sum(1 for a, c in zip(by_database, spec_less) if not _same_values(a, c))
+    errors = [f.name for f, a in zip(picks, by_database)
+              if getattr(a["overall_status"], "name", a["overall_status"]) == "ERROR"]
+    check("spec snapshot: a Processor carrying it stores exactly what the database-backed one "
+          "stores, and asks the database nothing",
+          not differ and not asked and not errors and moved > 0,
+          f"{len(picks)} corpus trim files, {moved} moved by their spec (a spec-less run "
+          f"differs); differ={differ[:3]}; asked={sorted(set(asked))}; ERROR={errors[:3]}")
+
+
 def check_track2_setup_on_database(raw) -> None:
     """On the copy: how many two-track System A/C analyses have (not yet) been
     reprocessed under this feature, and every one that HAS carries a Track 2 block
@@ -4554,6 +4701,8 @@ def main() -> int:
         check_track2_setup_on_database(raw)
     with _guard("write batch: fixtures"):
         check_write_batch_fixtures()
+    with _guard("spec snapshot: on the database"):
+        check_spec_snapshot_on_database(db, raw)
 
     # Ingest guard fires on a synthetic corrupt track.
     with _guard("ingest guard: a synthetic corrupt track"):

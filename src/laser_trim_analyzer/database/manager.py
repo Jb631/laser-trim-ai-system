@@ -51,6 +51,7 @@ from laser_trim_analyzer.core.models import (
 )
 from laser_trim_analyzer.core.model_stats import failed_processing, failed_processing_statuses
 from laser_trim_analyzer.config import get_config
+from laser_trim_analyzer.database import specs as _specs
 from laser_trim_analyzer.utils.hashing import calculate_file_hash, stat_once
 
 logger = logging.getLogger(__name__)
@@ -8728,9 +8729,7 @@ class DatabaseManager:
     @staticmethod
     def _parse_aliases(aliases_str: Optional[str]) -> List[str]:
         """Parse pipe-separated aliases into a trimmed list of non-empty tokens."""
-        if not aliases_str:
-            return []
-        return [a.strip() for a in aliases_str.split("|") if a.strip()]
+        return _specs.parse_aliases(aliases_str)
 
     def get_all_model_specs(self) -> List[Dict[str, Any]]:
         """Get all model specs as dicts."""
@@ -8743,31 +8742,28 @@ class DatabaseManager:
         Get spec for a specific model. Checks both the primary `model` column
         and the pipe-separated `aliases` column, so `1621501` and `2001621501`
         can share a single spec row.
+
+        Answered through `database.specs.resolve_model_spec` -- the ONE rule the
+        SpecSnapshot a worker carries answers through as well, so the two can
+        never disagree (ingest-speed ruling 16). The rows come from here: the
+        exact `model` match, else the rows carrying aliases IN ID ORDER (the order
+        the old unordered query read them in, now said out loud -- it decides
+        which spec answers an alias two specs share).
         """
         if not model:
             return None
-        model = model.strip()
         with self.session() as session:
-            # Primary match first
-            spec = session.query(ModelSpec).filter(
-                ModelSpec.model == model
-            ).first()
-            if spec:
-                return self._spec_to_dict(spec)
+            def primary(m: str) -> Optional[Dict[str, Any]]:
+                spec = session.query(ModelSpec).filter(ModelSpec.model == m).first()
+                return None if spec is None else self._spec_to_dict(spec)
 
-            # Fallback: search aliases. SQLite's LIKE is case-insensitive by
-            # default for ASCII; we wrap with the delimiter to avoid matching
-            # prefixes/suffixes ('21501' should not match '1621501').
-            like_pattern = f"%|{model}|%"
-            # Also match at start/end without a leading/trailing pipe
-            candidates = session.query(ModelSpec).filter(
-                ModelSpec.aliases.isnot(None),
-                ModelSpec.aliases != "",
-            ).all()
-            for c in candidates:
-                if model in self._parse_aliases(c.aliases):
-                    return self._spec_to_dict(c)
-            return None
+            def alias_rows() -> List[Dict[str, Any]]:
+                return [self._spec_to_dict(c) for c in session.query(ModelSpec).filter(
+                    ModelSpec.aliases.isnot(None),
+                    ModelSpec.aliases != "",
+                ).order_by(ModelSpec.id)]
+
+            return _specs.resolve_model_spec(model, primary, alias_rows)
 
     def resolve_spec_for_ft(self, model: Optional[str], serial: Optional[str]) -> Optional[Dict[str, Any]]:
         """
@@ -8783,24 +8779,10 @@ class DatabaseManager:
           1. If serial ends in a letter AND get_model_spec(model-letter) exists,
              return that row.
           2. Otherwise return get_model_spec(model).
+
+        The rule is `database.specs.resolve_ft_spec`, shared with the SpecSnapshot.
         """
-        if not model:
-            return None
-
-        if serial:
-            # Trailing letter on the serial — e.g., '31B', '1004a'.
-            # Uppercase it so '31b' and '31B' both resolve to '-B'.
-            import re as _re
-            m = _re.match(r'^.*?([A-Za-z])\s*$', str(serial))
-            if m:
-                section_letter = m.group(1).upper()
-                section_model = f"{model}-{section_letter}"
-                section_spec = self.get_model_spec(section_model)
-                if section_spec:
-                    return section_spec
-
-        # Fallback: plain model lookup (covers single-section parts).
-        return self.get_model_spec(model)
+        return _specs.resolve_ft_spec(model, serial, self.get_model_spec)
 
     def save_model_spec(self, data: Dict[str, Any]) -> Tuple[int, bool]:
         """Create or update a model spec. Returns (spec_id, was_update)."""

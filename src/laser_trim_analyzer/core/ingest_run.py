@@ -47,7 +47,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from laser_trim_analyzer.config import ingest_folder_problem
 from laser_trim_analyzer.core.models import AnalysisStatus, ProcessingStatus
-from laser_trim_analyzer.core.processor import Processor
+from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -969,7 +969,21 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     else:
         _say(on_phase, f"Checking {total:,} files against the database…")
 
-    processor = Processor(config=config)          # I7: no db= param
+    # What the analysis reads from the database -- every model spec, the ML thresholds and
+    # predictors -- read ONCE, here, at folder start (ingest-speed ruling 16): a spec edited while
+    # this folder runs takes effect at the next folder, and the analysis asks the database
+    # nothing. From the database the Processor's lookups always used (get_database()). Specs
+    # that cannot be read fail the folder by name: analysing it spec-less would store
+    # different numbers without a word (spec section 4.3).
+    try:
+        snapshot = take_spec_snapshot(use_ml=True)
+    except Exception as exc:
+        logger.exception("Could not read the model specs for %s", folder)
+        why = f"could not read the model specs: {exc}"
+        _say(on_phase, f"{folder}: {why}")
+        return FolderResult(folder=folder, ok=False, error=why, files_found=total,
+                            phases=phases, seconds=time.monotonic() - started)
+    processor = Processor(config=config, snapshot=snapshot)   # I7: no db= param
 
     def progress_callback(status: ProcessingStatus) -> None:
         if progress is not None:

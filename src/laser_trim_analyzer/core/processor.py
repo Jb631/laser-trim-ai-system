@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Callable, Generator
+from typing import Dict, List, Optional, Callable, Generator, Tuple
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -47,6 +47,7 @@ from laser_trim_analyzer.config import Config, get_config
 from laser_trim_analyzer.core.final_test_parser import FinalTestParser
 from laser_trim_analyzer.core.smoothness_parser import SmoothnessParser, is_smoothness_file
 from laser_trim_analyzer.utils.hashing import calculate_file_hash
+from laser_trim_analyzer.database.specs import SpecSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,62 @@ def error_reason_of(tracks, overall_status) -> Optional[str]:
     return ("; ".join(parts)[:500]) or "ERROR with no recorded reason"
 
 
+def load_ml_state(db) -> Tuple[Dict[str, float], Dict[str, object]]:
+    """(sigma thresholds, trained predictors) per model -- the ML state the analysis uses.
+
+    The one extraction rule, for a Processor built without a snapshot (`_load_ml_thresholds`) and
+    for `take_spec_snapshot` alike. Never fatal, as it never was: any failure means no ML state,
+    and the analyzer falls back to its formula thresholds.
+    """
+    thresholds: Dict[str, float] = {}
+    predictors: Dict[str, object] = {}
+    try:
+        from laser_trim_analyzer.ml import get_shared_ml_manager
+        ml_manager = get_shared_ml_manager(db)
+
+        # Extract thresholds from trained models
+        for model_name in ml_manager.trained_models:
+            optimizer = ml_manager.threshold_optimizers.get(model_name)
+            if optimizer and optimizer.is_calculated:
+                thresholds[model_name] = optimizer.threshold
+
+        # Extract trained predictors for failure probability
+        for model_name, predictor in ml_manager.predictors.items():
+            if predictor.is_trained:
+                predictors[model_name] = predictor
+
+        if thresholds:
+            logger.info(f"Loaded ML thresholds for {len(thresholds)} models")
+        else:
+            logger.debug("No trained ML thresholds found, using formula")
+
+        if predictors:
+            logger.info(f"Loaded ML predictors for {len(predictors)} models")
+
+    except Exception as e:
+        logger.debug(f"Could not load ML thresholds: {e}")
+        return {}, {}
+    return thresholds, predictors
+
+
+def take_spec_snapshot(*, use_ml: bool = True, db=None) -> SpecSnapshot:
+    """What the analysis reads from the database, read ONCE: at folder start (ruling 16).
+
+    Every model spec, and with `use_ml` the ML thresholds and predictors -- from the database the
+    Processor's own lookups use (`get_database()`) unless one is named. A Processor built with it
+    answers every spec question from it and never asks the database; a spec edited while a folder
+    runs reaches the next folder's snapshot. Plain, picklable data (see SpecSnapshot). A failure to
+    read the specs RAISES: analysing a folder spec-less would store different numbers without a
+    word (spec §4.3).
+    """
+    if db is None:
+        from laser_trim_analyzer.database import get_database
+        db = get_database()
+    thresholds, predictors = load_ml_state(db) if use_ml else ({}, {})
+    return SpecSnapshot(specs=tuple(db.get_all_model_specs()),
+                        ml_thresholds=thresholds, ml_predictors=predictors)
+
+
 class Processor:
     """
     Unified processor for laser trim files.
@@ -139,6 +196,7 @@ class Processor:
         self,
         config: Optional[Config] = None,
         use_ml: bool = True,
+        snapshot: Optional[SpecSnapshot] = None,
     ):
         """
         Initialize processor.
@@ -146,8 +204,13 @@ class Processor:
         Args:
             config: Configuration object
             use_ml: Whether to attempt loading ML thresholds from database
+            snapshot: What the analysis would read from the database, read once at folder start
+                (`take_spec_snapshot`). Given one, every spec question and the ML thresholds and
+                predictors come from it and the analysis never asks the database; without one,
+                they come from `get_database()` as they always have (the V5 loop, scripts).
         """
         self.config = config or get_config()
+        self._snapshot = snapshot
         self.parser = ExcelParser()
         self.final_test_parser = FinalTestParser()  # For Final Test files
         self.smoothness_parser = SmoothnessParser()  # For Output Smoothness files
@@ -193,7 +256,11 @@ class Processor:
         # Storage path for composite risk pickle files (mirrors MLManager convention).
         self.ml_storage_path = Path("data/ml_models")
         if use_ml:
-            self._load_ml_thresholds()
+            if snapshot is not None:
+                self._model_thresholds = dict(snapshot.ml_thresholds)
+                self._model_predictors = dict(snapshot.ml_predictors)
+            else:
+                self._load_ml_thresholds()
 
         # Create analyzer with per-model thresholds
         self.analyzer = Analyzer(
@@ -201,37 +268,16 @@ class Processor:
         )
 
     def _load_ml_thresholds(self) -> None:
-        """Load trained per-model thresholds from database."""
+        """Load trained per-model thresholds from database (no snapshot given)."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import get_shared_ml_manager
-
             db = get_database()
-            ml_manager = get_shared_ml_manager(db)
-
-            # Extract thresholds from trained models
-            for model_name in ml_manager.trained_models:
-                optimizer = ml_manager.threshold_optimizers.get(model_name)
-                if optimizer and optimizer.is_calculated:
-                    self._model_thresholds[model_name] = optimizer.threshold
-
-            # Extract trained predictors for failure probability
-            for model_name, predictor in ml_manager.predictors.items():
-                if predictor.is_trained:
-                    self._model_predictors[model_name] = predictor
-
-            if self._model_thresholds:
-                logger.info(f"Loaded ML thresholds for {len(self._model_thresholds)} models")
-            else:
-                logger.debug("No trained ML thresholds found, using formula")
-
-            if self._model_predictors:
-                logger.info(f"Loaded ML predictors for {len(self._model_predictors)} models")
-
         except Exception as e:
             logger.debug(f"Could not load ML thresholds: {e}")
             self._model_thresholds = {}
             self._model_predictors = {}
+            return
+        self._model_thresholds, self._model_predictors = load_ml_state(db)
 
     def process_file(self, file_path: Path, generate_plots: bool = True) -> Optional[AnalysisResult]:
         """
@@ -1336,12 +1382,16 @@ class Processor:
         if not model:
             return empty
         try:
-            from laser_trim_analyzer.database import get_database
-            db = get_database()
+            # The folder's snapshot when there is one -- the same resolver, never the database
+            # (ruling 16); else the database, as before.
+            source = getattr(self, "_snapshot", None)
+            if source is None:
+                from laser_trim_analyzer.database import get_database
+                source = get_database()
             if is_final_test:
-                spec = db.resolve_spec_for_ft(model, serial)
+                spec = source.resolve_spec_for_ft(model, serial)
             else:
-                spec = db.get_model_spec(model)
+                spec = source.get_model_spec(model)
             if not spec:
                 return empty
 
