@@ -15,7 +15,7 @@ class YieldPanel(ctk.CTkFrame):
         ctk.CTkLabel(self, text=title, font=t.font(t.SIZE_HEADING, "bold"),
                      text_color=t.TEXT_PRIMARY, anchor="w")\
             .pack(side="top", fill="x", padx=t.SPACE_MD, pady=(t.SPACE_MD, 0))
-        self._rate = ctk.CTkLabel(self, text="—", font=t.font(t.SIZE_DISPLAY, "bold"),
+        self._rate = ctk.CTkLabel(self, text="—", font=t.mono(t.SIZE_DISPLAY, "bold"),
                                   text_color=t.TEXT_PRIMARY, anchor="w")
         self._rate.pack(side="top", fill="x", padx=t.SPACE_MD)
         self._counts = ctk.CTkLabel(self, text="", font=t.font(t.SIZE_BODY),
@@ -46,7 +46,18 @@ class YieldPanel(ctk.CTkFrame):
             f"of {u['gradeable_units']:,}  (unit = shop # + day; "
             f"sections = 1P/1R, TA/TB…)"))
 
-    def set_yield(self, stats: dict, total_label: str) -> None:
+    def set_yield(self, stats: Optional[dict], total_label: str) -> None:
+        if stats is None:
+            # The loader itself failed -- the page's banner names it (CLAUDE.md:
+            # "a failure must never look like a result"). Stay at the same blank
+            # "—" this panel starts at, never a fabricated 0%/0-count that would
+            # read as a genuinely empty (but healthy) window.
+            self._rate.configure(text="—")
+            self._counts.configure(text="")
+            self._total.configure(text=total_label)
+            self._unit_line.configure(text="")
+            self._trend.set_points([])
+            return
         # HEADLINE = linearity yield (the CUSTOMER basis). Linearity is the
         # zero-tolerance requirement; WARNING units passed linearity — sigma is
         # an internal drift-watch flag, not a disposition. The old headline

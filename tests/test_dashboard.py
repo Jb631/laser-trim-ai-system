@@ -1,4 +1,5 @@
 """Dashboard (Production Health) + helpers. Fixtures in tests/conftest.py."""
+import logging
 from datetime import datetime, timedelta
 
 import pytest
@@ -211,6 +212,27 @@ def test_yield_panel_empty_state(tk_root):
     assert "—" in " ".join(_labels_text(p))   # no fabricated 0%
 
 
+def test_yield_panel_unavailable_state(tk_root):
+    """stats=None (the loader itself raised) must stay blank -- never a
+    fabricated 0% or 0-count that would read like a genuinely empty window
+    (CLAUDE.md: "a failure must never look like a result"). The page's own
+    banner names the failure; this panel just stays at its built-in '—'."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.yield_panel import YieldPanel
+    p = YieldPanel(tk_root, theme=ThemeManager(), title="Trim analysis yield")
+    p.set_yield({"passed": 4, "warnings": 0, "failed": 0, "errors": 0, "untrimmed": 0,
+                 "gradeable": 4, "total": 4, "pass_rate": 100.0, "trend": []},
+                total_label="4 trim records")
+    p.set_unit_yield({"gradeable_units": 4, "first_pass_yield": 100.0,
+                      "final_yield": 100.0, "attempts_per_section": 1.0, "rework_units": 0})
+    p.set_yield(None, total_label="")             # the next load fails outright
+    assert p._rate.cget("text") == "—"
+    assert p._counts.cget("text") == ""
+    assert p._total.cget("text") == ""
+    assert p._unit_line.cget("text") == ""         # the STALE prior unit-yield line is gone too
+    assert "0" not in p._rate.cget("text")
+
+
 def test_worst_models_list_rows_and_click(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.worst_models_list import WorstModelsList
@@ -218,9 +240,24 @@ def test_worst_models_list_rows_and_click(tk_root):
     w = WorstModelsList(tk_root, theme=ThemeManager(), on_row_click=got.append)
     w.set_rows([{"model": "BAD", "units": 5, "trim_rate": 60.0, "ft_rate": 48.0},
                 {"model": "OK", "units": 9, "trim_rate": 95.0, "ft_rate": None}], total=2)
-    assert len(w._rows) == 2
-    w._rows[0]._on_click()
+    assert len(w._row_widgets) == 2
+    assert [r["model"] for r in w._rows] == ["BAD", "OK"]
+    w._row_widgets[0]._on_click_all()              # blocks.row's own test hook
     assert got == ["BAD"]
+
+
+def test_worst_models_list_row_draws_model_statement_readout(tk_root):
+    """blocks.row shape (design doc §4): model mono, a statement, a readout
+    mono on the right -- the readout is Trim % (what this list ranks by), and
+    a big gap earns a plain-word tag rather than a colour alone."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.worst_models_list import WorstModelsList
+    w = WorstModelsList(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    w.set_rows([{"model": "OVERKILL", "units": 10, "trim_rate": 40.0, "ft_rate": 90.0}], total=1)
+    texts = _labels_text(w._row_widgets[0])
+    assert "OVERKILL" in texts                     # model
+    assert "40%" in texts                           # readout: the trim_rate this list ranks by
+    assert "overkill" in texts                      # gap = 40 - 90 = -50, tagged (not just coloured)
 
 
 def test_worst_models_list_discloses_cap(tk_root):
@@ -263,7 +300,7 @@ def test_dashboard_reload_now_populates(make_app):
     page.reload_now()
     # trim panel shows a rate; worst-models has DASH (5 pass + 1 fail = 6 gradeable >= 5)
     assert any("83" in x or "%" in x for x in _labels_text(page._trim_panel))
-    assert any(r.row["model"] == "DASH" for r in page._worst._rows)
+    assert any(r["model"] == "DASH" for r in page._worst._rows)
 
 
 def test_dashboard_row_click_routes_to_model(make_app):
@@ -317,3 +354,150 @@ def test_unit_yield_first_pass_final_and_sections(tmp_path):
     # Cohort: cutoff after the day excludes all three units.
     u2 = compute_unit_yield(db, datetime(2026, 6, 1), model="M")
     assert u2["gradeable_units"] == 0 and u2["first_pass_yield"] is None
+
+
+# ---- Task 6: every failed loader is named, never drawn as zero -----------
+#
+# Before this task, _query wrapped compute_yield(trim) + compute_yield(ft) +
+# worst_models_by_yield in ONE try/except with no logger call at all -- any of
+# the three raising rendered an all-zero dict that looked like a genuinely
+# empty (but healthy) window. Each of the three loaders below now fails on
+# its own, is logged, and is named in ONE banner (`page._load_banner`, same
+# shape as ModelPage's own -- see tests/test_model_page_failures.py).
+
+def test_dashboard_yield_failure_names_banner_and_blanks_only_yield(make_app, monkeypatch, caplog):
+    """compute_yield raising must be NAMED (not silently zeroed), must leave
+    both yield panels at their blank '—' (never a fabricated rate or count),
+    and must NOT blank company trend / priorities, which have real data of
+    their own here."""
+    import laser_trim_analyzer.gui.v6.pages.dashboard_page as dp
+    app = make_app()
+    now = datetime.now()
+    with app.db.session() as s:
+        for _ in range(5):
+            _add_ar(s, "DASH", StatusType.PASS, now)
+        _add_ft(s, "DASH", StatusType.FAIL, now)      # real data for "priorities"
+        s.commit()
+
+    def _boom(*a, **kw):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(dp, "compute_yield", _boom)
+
+    page = app.page_container.get_page("dashboard")
+    with caplog.at_level(logging.ERROR):
+        page.reload_now()
+    assert "Dashboard: yield query failed" in caplog.text
+
+    assert page._load_banner.winfo_manager() != ""
+    banner_text = page._load_banner.cget("text")
+    assert "yield" in banner_text
+    assert "company trend" not in banner_text
+    assert "priorities" not in banner_text
+
+    # No zero anywhere in either panel -- blank, not fabricated.
+    assert page._trim_panel._rate.cget("text") == "—"
+    assert page._trim_panel._counts.cget("text") == ""
+    assert page._trim_panel._total.cget("text") == ""
+    assert page._ft_panel._rate.cget("text") == "—"
+    assert page._ft_panel._counts.cget("text") == ""
+
+    assert page._caption.cget("text") == "Laser — · final test — over the last 90 days"
+    # Priorities is untouched by the yield failure -- real FT-fail data, not
+    # the "No final-test failures" empty state.
+    assert "No final-test failures" not in page._priorities._cap.cget("text")
+
+
+def test_dashboard_company_trend_failure_names_banner_others_unaffected(make_app, monkeypatch, caplog):
+    app = make_app()
+    now = datetime.now()
+    with app.db.session() as s:
+        for _ in range(3):
+            _add_ar(s, "DASH", StatusType.PASS, now)
+        _add_ar(s, "DASH", StatusType.FAIL, now)
+        s.commit()
+
+    def _boom(*a, **kw):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(app.db, "get_company_yield_trend", _boom)
+
+    page = app.page_container.get_page("dashboard")
+    with caplog.at_level(logging.ERROR):
+        page.reload_now()
+    assert "Dashboard: company trend failed" in caplog.text
+
+    banner_text = page._load_banner.cget("text")
+    assert "company trend" in banner_text
+    assert "yield" not in banner_text
+    assert "priorities" not in banner_text
+
+    # The yield loader ran fine: a real rate, not blanked by this failure.
+    assert page._trim_panel._rate.cget("text") != "—"
+    assert page._caption.cget("text") == "Laser 75% · final test — over the last 90 days"
+
+
+def test_dashboard_priorities_failure_names_banner_others_unaffected(make_app, monkeypatch, caplog):
+    import laser_trim_analyzer.gui.v6.pages.dashboard_page as dp
+    app = make_app()
+    now = datetime.now()
+    with app.db.session() as s:
+        for _ in range(3):
+            _add_ar(s, "DASH", StatusType.PASS, now)
+        _add_ar(s, "DASH", StatusType.FAIL, now)
+        s.commit()
+
+    def _boom(*a, **kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(dp, "compute_cost_priorities", _boom)
+
+    page = app.page_container.get_page("dashboard")
+    with caplog.at_level(logging.ERROR):
+        page.reload_now()
+    assert "Dashboard: cost priorities failed" in caplog.text
+
+    banner_text = page._load_banner.cget("text")
+    assert "priorities" in banner_text
+    assert "company trend" not in banner_text
+    assert "yield" not in banner_text
+
+    assert page._trim_panel._rate.cget("text") != "—"
+    assert page._caption.cget("text") == "Laser 75% · final test — over the last 90 days"
+
+
+def test_dashboard_healthy_reload_has_no_load_banner(make_app):
+    app = make_app()
+    now = datetime.now()
+    with app.db.session() as s:
+        _add_ar(s, "DASH", StatusType.PASS, now)
+        s.commit()
+    page = app.page_container.get_page("dashboard")
+    page.reload_now()
+    assert page._load_banner.winfo_manager() == ""
+
+
+def test_dashboard_caption_reads_both_yields_in_words(make_app):
+    """Design doc §4's own example: 'Laser 61% · final test 83% over the last
+    90 days'. Seeded here to 75%/50% exactly, so the assertion pins the whole
+    sentence, not just a substring."""
+    app = make_app()
+    now = datetime.now()
+    with app.db.session() as s:
+        for _ in range(3):
+            _add_ar(s, "DASH", StatusType.PASS, now)
+        _add_ar(s, "DASH", StatusType.FAIL, now)          # trim: 3/4 = 75%
+        _add_ft(s, "DASH", StatusType.PASS, now)
+        _add_ft(s, "DASH", StatusType.FAIL, now)          # FT: 1/2 = 50%
+        s.commit()
+    page = app.page_container.get_page("dashboard")
+    page.reload_now()
+    assert page._caption.cget("text") == "Laser 75% · final test 50% over the last 90 days"
+
+
+def test_dashboard_caption_dash_when_no_data_yet(make_app):
+    """An empty database is not a failure (no banner) -- but a yield that is
+    genuinely unknown still reads '—' in the caption, same as a failed load
+    (brief: "and '—' when a yield is unknown")."""
+    app = make_app()
+    page = app.page_container.get_page("dashboard")
+    page.reload_now()
+    assert page._caption.cget("text") == "Laser — · final test — over the last 90 days"
+    assert page._load_banner.winfo_manager() == ""

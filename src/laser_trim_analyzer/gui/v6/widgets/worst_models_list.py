@@ -1,26 +1,20 @@
 """Dashboard — WorstModelsList: ranked, clickable model rows (model/units/trim%/FT%)."""
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 # Gap = Trim% − FT%. Strongly NEGATIVE = units failing trim but passing final
 # test — the overkill pattern (trim thresholds or specs rejecting good product).
 # Strongly POSITIVE = passing trim but failing FT — escapes (worse). Ported
 # from V5 Quality Health's ranked table (2026-07-07, feature restoration).
-_COLS = [("model", "Model"), ("units", "Units"), ("trim_rate", "Trim %"),
-         ("ft_rate", "FT %"), ("gap", "Gap (pts)")]
+_GAP_TAG_THRESHOLD = 15
 
 
-def _fmt(key, value) -> str:
-    if value is None:
-        return "—"
-    if key in ("trim_rate", "ft_rate"):
-        return f"{value:.0f}%"
-    if key == "gap":
-        return f"{value:+.0f}"
-    return str(value)
+def _pct(value: Optional[float]) -> str:
+    return "—" if value is None else f"{value:.0f}%"
 
 
 class WorstModelsList(ctk.CTkFrame):
@@ -28,25 +22,28 @@ class WorstModelsList(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
         self._cb = on_row_click
-        self._rows: List["_WorstRow"] = []
+        self._rows: List[dict] = []             # the data behind the rows currently shown
+        self._row_widgets: List[ctk.CTkFrame] = []
         t = theme
         ctk.CTkLabel(self, text="Lowest-yield models", font=t.font(t.SIZE_HEADING, "bold"),
                      text_color=t.TEXT_PRIMARY, anchor="w").pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-        # Column key (live-walk finding, 2026-07-08: 'Gap -62' meant nothing
-        # cold). Same treatment as the sigma gloss: one plain-language line.
-        ctk.CTkLabel(self, text=("Trim % / FT % = linearity yield in the window. "
-                                 "Gap = Trim − FT in points; negative = grading worse at trim "
-                                 "than at final test (overkill pattern). Models with ≥5 units."),
-                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
-                     anchor="w", justify="left", wraplength=1200)\
-            .pack(side="top", fill="x", pady=(0, t.SPACE_SM))
-        header = ctk.CTkFrame(self, fg_color=t.CARD)
-        header.pack(side="top", fill="x")
-        header.grid_columnconfigure(tuple(range(len(_COLS))), weight=1, uniform="wm")
-        for i, (_key, label) in enumerate(_COLS):
-            ctk.CTkLabel(header, text=label, font=t.font(t.SIZE_CAPTION, "bold"),
-                         text_color=t.TEXT_SECONDARY, anchor="w")\
-                .grid(row=0, column=i, sticky="ew", padx=t.SPACE_SM, pady=t.SPACE_XS)
+        # Row key (live-walk finding, 2026-07-08: 'Gap -62' meant nothing cold).
+        # Same treatment as the sigma gloss: one plain-language line. The
+        # readout on the right of each row is Trim % (linearity yield, the
+        # worst-first ranking); 'overkill'/'escapes' tags a gap of >=15 points.
+        # No fixed pixel wraplength on page-width text (global-constraints.md)
+        # -- follows this frame's own width via blocks.wrap_to_width, same as
+        # the page caption; the narrower audited size (1280x720) is where the
+        # old fixed guess (1200) clipped this line once it grew past a
+        # 'overkill'/'escapes' explanation.
+        self._gloss = ctk.CTkLabel(self, text=(
+            "Readout = Trim % (linearity yield) in the window, worst first. Gap = Trim − FT "
+            "in points; tagged 'overkill' when trim grades worse than final test by 15+ points "
+            "(rejecting good product), 'escapes' the other way (worse). Models with ≥5 units."),
+                                   font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
+                                   anchor="w", justify="left")
+        self._gloss.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        blocks.wrap_to_width(self._gloss, self, padding=0)
         self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
         self._cap = ctk.CTkLabel(self, text="", font=t.font(t.SIZE_CAPTION),
@@ -56,9 +53,10 @@ class WorstModelsList(ctk.CTkFrame):
                                    text_color=t.TEXT_SECONDARY, anchor="w")
 
     def set_rows(self, rows: List[dict], total: int) -> None:
-        for r in self._rows:
-            r.destroy()
-        self._rows.clear()
+        for w in self._row_widgets:
+            w.destroy()
+        self._row_widgets.clear()
+        self._rows = list(rows or [])
         t = self.theme
         if not rows:
             self._cap.configure(text="")
@@ -67,35 +65,25 @@ class WorstModelsList(ctk.CTkFrame):
             return
         self._empty.pack_forget()
         for row in rows:
-            r = _WorstRow(self._list, row=row, theme=t, on_click=self._cb)
-            r.pack(side="top", fill="x", pady=1)
-            self._rows.append(r)
+            w = self._build_row(row)
+            w.pack(side="top", fill="x")
+            self._row_widgets.append(w)
         self._cap.configure(text=f"Showing {len(rows)} of {total} (min 5 units, worst first)."
                             if total > len(rows) else f"{total} models (min 5 units, worst first).")
 
-
-class _WorstRow(ctk.CTkFrame):
-    def __init__(self, master, row: dict, theme: ThemeManager, on_click: Callable[[str], None]):
-        super().__init__(master, fg_color=theme.SURFACE, corner_radius=theme.RADIUS_SM)
-        self.row = row
-        self._cb = on_click
-        # Gap derived here so the query stays untouched: Trim% − FT%.
+    def _build_row(self, row: dict) -> ctk.CTkFrame:
+        """blocks.row: model (mono) . statement and tags . readout (mono, right) --
+        the readout is Trim % (what this list ranks by); the statement carries
+        units and FT %; a big gap earns a plain-word tag instead of colour."""
+        t = self.theme
         gap = None
         if row.get("trim_rate") is not None and row.get("ft_rate") is not None:
             gap = row["trim_rate"] - row["ft_rate"]
-        row = {**row, "gap": gap}
-        self.grid_columnconfigure(tuple(range(len(_COLS))), weight=1, uniform="wm")
-        for i, (key, _label) in enumerate(_COLS):
-            color = theme.TEXT_PRIMARY
-            if key == "gap" and gap is not None and abs(gap) >= 15:
-                # Big divergence between stations deserves the eye:
-                # negative = overkill (rejecting good product), positive = escapes.
-                color = theme.TIER_WARNING if gap < 0 else theme.TIER_OOC
-            lbl = ctk.CTkLabel(self, text=_fmt(key, row.get(key)), font=theme.font(theme.SIZE_BODY),
-                               text_color=color, anchor="w")
-            lbl.grid(row=0, column=i, sticky="ew", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
-            lbl.bind("<Button-1>", lambda e: self._on_click())
-        self.bind("<Button-1>", lambda e: self._on_click())
-
-    def _on_click(self):
-        self._cb(self.row["model"])
+        statement = f"{row.get('units', 0)} units · final test {_pct(row.get('ft_rate'))}"
+        if gap is not None:
+            statement += f" · gap {gap:+.0f} pts"
+        tags = []
+        if gap is not None and abs(gap) >= _GAP_TAG_THRESHOLD:
+            tags.append("overkill" if gap < 0 else "escapes")
+        return blocks.row(self._list, t, row["model"], statement, _pct(row.get("trim_rate")),
+                          tags=tags, on_click=lambda m=row["model"]: self._cb(m))
