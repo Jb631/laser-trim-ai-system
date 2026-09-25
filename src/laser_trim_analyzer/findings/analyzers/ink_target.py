@@ -170,6 +170,19 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
     # differs from the configured one (but still catches some of it) is not a disagreement.
     configured_disagrees = None if configured is None else \
         not _overlaps(configured, (best["r_low"], best["r_high"]))
+    # Branch on the configured window FIRST, then on whether it disagrees: the sentence must not
+    # rest on configured_disagrees happening to be None exactly when configured is (review of
+    # aa8b20c) -- only the first two branches may read configured[0] / configured[1].
+    if configured is None:
+        configured_sentence = ("These files carry no configured incoming window, so this is a "
+                               "computed target, not a comparison with a setting. ")
+    elif configured_disagrees:
+        configured_sentence = (f"The station is set to accept {configured[0]:,.0f} to "
+                               f"{configured[1]:,.0f} Ω, and the window that did best lies outside "
+                               "it. ")
+    else:
+        configured_sentence = (f"The station is set to accept {configured[0]:,.0f} to "
+                               f"{configured[1]:,.0f} Ω incoming. ")
     first, last = min(t.file_date for t in ts).date(), max(t.file_date for t in ts).date()
     # The rate is claimed over THIS group only -- the tracks it was measured on, in the last year of
     # the group's own data. Scaling it by the whole model overstated one real two-laser case 14x.
@@ -190,11 +203,7 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
                     f"resistance window has changed since {last} (the current setup has too few tracks "
                     f"to judge). Treat it as history unless you go back to it. "
                     if superseded else "")
-                 + (f"The station is set to accept {configured[0]:,.0f} to {configured[1]:,.0f} Ω, and the "
-                    f"window that did best lies outside it. " if configured_disagrees else
-                    f"The station is set to accept {configured[0]:,.0f} to {configured[1]:,.0f} Ω incoming. "
-                    if configured else "These files carry no configured incoming window, so this is a computed "
-                    "target, not a comparison with a setting. ")
+                 + configured_sentence
                  + "Laser, recipe, limit table and the station's final-resistance window are held constant, "
                    "so none of them explains the difference. Period, operator and lot are not."),
         n_units=n, scope_annual_tracks=scope_year,
