@@ -24,6 +24,12 @@ from laser_trim_analyzer.ml.spc import RECENT_K, SpcSeries
 # same convention as markersize**2), so a circular marker's radius is
 # sqrt(s)/2 points -- ~2.7pt at s=30.
 _OFFSCALE_MARKER_S = 30
+# Round 3: pinned at the exact edge, a marker (radius above) was clipped in
+# half by the axes boundary. Inset by its own radius plus a hair of margin
+# instead -- drawn via a blended transform (axes-fraction Y, points offset;
+# real-date X), so the WHOLE marker renders regardless of the y-window's data
+# scale, and it can never be clipped at all.
+_OFFSCALE_MARKER_INSET_PT = (_OFFSCALE_MARKER_S ** 0.5) / 2.0 + 2.0
 # set_series's header band (round 2, same task): the key line (what's drawn)
 # and the off-scale note share ONE row, its bottom edge this far above the
 # axes -- more than double the marker radius above, so a ceiling marker
@@ -172,7 +178,8 @@ class FocusChart(ctk.CTkFrame):
         on that line too or its own line above it, but never inside the axes.
         """
         import numpy as np
-        from matplotlib.transforms import offset_copy
+        import matplotlib.dates as mdates
+        from matplotlib.transforms import blended_transform_factory, offset_copy
         ax, t = self._ax, self.theme
         ax.clear()
         self._style()
@@ -294,7 +301,20 @@ class FocusChart(ctk.CTkFrame):
                 roll_days = 90 if window_span_days > _ROLLING_WINDOW_SWITCH_DAYS else 30
                 s_in = pd.Series([v for _, v in pairs],
                                  index=pd.DatetimeIndex([d for d, _ in pairs]))
-                roll = s_in.rolling(f"{roll_days}D", min_periods=_ROLLING_MIN_UNITS).median()
+                # Evaluated per UNIT (min_periods counts real units, not
+                # days -- "min 5 units" per the brief) but DRAWN per DAY
+                # (round 3, James: the line smeared vertically wherever a
+                # day carried many units, because evaluating it at every one
+                # of them nudges the window's exact row membership each
+                # time, even though they share a timestamp). The window as
+                # of a day's LAST unit already includes every unit from that
+                # whole day, so keeping only the last per-day row is the
+                # correctly-computed value with the same-day zigzag simply
+                # never drawn -- not a different (and weaker) once-a-day
+                # computation, the same one, sampled once.
+                roll_per_unit = s_in.rolling(f"{roll_days}D",
+                                             min_periods=_ROLLING_MIN_UNITS).median()
+                roll = roll_per_unit.groupby(roll_per_unit.index.normalize()).last()
                 mx: list = []; mvals: list = []
                 prev_d = None
                 for d, v in roll.items():
@@ -323,7 +343,7 @@ class FocusChart(ctk.CTkFrame):
         lcl = (baseline_mean - 3 * baseline_std) if has_limits else None
         in_x, in_y = [], []
         off_vals = []
-        off_by_month: dict = {}        # (year, month, "top"|"bottom") -> (x, y)
+        off_by_month: dict = {}        # (year, month, "top"|"bottom") -> representative date
         for d, v in zip(dates, values):
             if v is None or not np.isfinite(v):
                 continue
@@ -336,21 +356,38 @@ class FocusChart(ctk.CTkFrame):
                 edge = "top" if v > y1 else "bottom"
                 key = (d.year, d.month, edge)
                 prev = off_by_month.get(key)
-                if prev is None or d > prev[0]:      # newest day in the month marks it
-                    off_by_month[key] = (d, y1 if edge == "top" else y0)
+                if prev is None or d > prev:         # newest day in the month marks it
+                    off_by_month[key] = d
             else:
                 in_x.append(d); in_y.append(v)
         if in_x:
             ax.scatter(in_x, in_y, s=9, color=t.CHECK, alpha=0.55, edgecolors="none", zorder=5)
         if off_by_month:
-            tops = [xy for (_y, _m, edge), xy in off_by_month.items() if edge == "top"]
-            bots = [xy for (_y, _m, edge), xy in off_by_month.items() if edge == "bottom"]
+            tops = [d for (_y, _m, edge), d in off_by_month.items() if edge == "top"]
+            bots = [d for (_y, _m, edge), d in off_by_month.items() if edge == "bottom"]
+            # Round 3: pinned exactly at y1/y0 and clip_on=True (round 2) drew
+            # a marker whose center sits ON the axes edge clipped in half.
+            # Inset by its own radius instead, via a BLENDED transform (real
+            # dates for X, axes-fraction 1.0/0.0 offset by a fixed POINTS
+            # amount for Y) -- the whole triangle renders, at any y-window
+            # data scale, without ever touching the boundary it would need
+            # clipping at. Still clear of the header row: that row is offset
+            # the OPPOSITE way (_HEADER_LINE_CLEARANCE_PT ABOVE axes-fraction
+            # 1.0), so the two can only ever move apart, never collide.
             if tops:
-                ax.scatter([p[0] for p in tops], [p[1] for p in tops], color=t.CHECK,
-                           marker="^", s=_OFFSCALE_MARKER_S, zorder=5, clip_on=True)
+                top_transform = blended_transform_factory(
+                    ax.transData, offset_copy(ax.transAxes, fig=self._fig,
+                                              y=-_OFFSCALE_MARKER_INSET_PT, units="points"))
+                ax.scatter(tops, [1.0] * len(tops), color=t.CHECK, marker="^",
+                          s=_OFFSCALE_MARKER_S, zorder=5, clip_on=True,
+                          transform=top_transform)
             if bots:
-                ax.scatter([p[0] for p in bots], [p[1] for p in bots], color=t.CHECK,
-                           marker="v", s=_OFFSCALE_MARKER_S, zorder=5, clip_on=True)
+                bottom_transform = blended_transform_factory(
+                    ax.transData, offset_copy(ax.transAxes, fig=self._fig,
+                                              y=_OFFSCALE_MARKER_INSET_PT, units="points"))
+                ax.scatter(bots, [0.0] * len(bots), color=t.CHECK, marker="v",
+                          s=_OFFSCALE_MARKER_S, zorder=5, clip_on=True,
+                          transform=bottom_transform)
 
         note = ""
         if off_vals:
@@ -426,6 +463,17 @@ class FocusChart(ctk.CTkFrame):
         span = (d1 - d0)
         xpad = max(span * 0.02, timedelta(days=1))
         ax.set_xlim(d0 - xpad, d1 + xpad)
+        # Round 3, James: month labels ran together ("2026-022026-03") at a
+        # 12-month window -- the implicit default formatter/locator packed
+        # ticks too densely for the available width. AutoDateLocator picks
+        # HOW MANY ticks actually fit (not a fixed one-per-month), and
+        # ConciseDateFormatter drops what is already established on the
+        # axis (a bare "Feb" once a year has been shown) instead of
+        # repeating the full date at every tick -- both together are what
+        # keeps labels apart, at a wide window or a narrow one.
+        locator = mdates.AutoDateLocator(minticks=4, maxticks=9)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
 
         self._fig.tight_layout()
         # tight_layout already makes room for the header text above (checked

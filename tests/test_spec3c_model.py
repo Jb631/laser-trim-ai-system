@@ -181,10 +181,16 @@ def _scatter_window_extent(coll, ax, renderer):
     """A scatter PathCollection's own get_window_extent() can come back an
     all-inf Bbox (nothing in its `_offsets` path ever sets a datalim for a
     collection built this way) -- build a real one from its transformed
-    offsets plus the marker's own rendered half-size instead."""
+    offsets plus the marker's own rendered half-size instead.
+
+    Round 3: the off-scale markers no longer plot in data space at all (a
+    BLENDED transform -- real dates for X, a points-offset axes-fraction for
+    Y, so the whole marker draws regardless of the y-window's data scale) --
+    `coll.get_offset_transform()` is what actually turns its raw offsets
+    into display coordinates, which is NOT always `ax.transData`."""
     from matplotlib.transforms import Bbox
     offsets = coll.get_offsets()
-    disp = ax.transData.transform(offsets)
+    disp = coll.get_offset_transform().transform(offsets)
     sizes = coll.get_sizes()
     size = sizes[0] if len(sizes) else 0.0
     radius_px = (size ** 0.5) / 2.0 * (renderer.dpi / 72.0)
@@ -269,6 +275,114 @@ def test_off_scale_note_never_touches_an_off_scale_marker(tk_root):
         marker_box = _scatter_window_extent(coll, chart._ax, renderer)
         assert not note_box.overlaps(marker_box), (
             f"note {note_box.bounds} overlaps the off-scale marker {marker_box.bounds}")
+
+
+# ---- Round 3 (2026-09-24, controller + James on 189409c/9486393's renders) -
+
+def test_off_scale_marker_renders_whole_not_clipped(tk_root):
+    """Pinned exactly at the axis edge with clip_on=True (round 2), a marker
+    was cut in half by the axes boundary. Inset by its own radius instead
+    (round 3) -- confirmed here by checking the marker's own rendered bbox
+    sits entirely INSIDE the axes' bbox, so clipping never has anything to
+    do at all, rather than merely "doesn't touch the header text"."""
+    from datetime import datetime, timedelta
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(20, 0, -1)]
+    values = [0.0119 - 0.0001 * i for i in range(20)]
+    values[-1] = 5.0
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005)
+
+    canvas = FigureCanvasAgg(chart._fig)
+    canvas.draw()
+    renderer = canvas.get_renderer()
+
+    markers = _offscale_marker_collections(chart._ax)
+    assert markers, "expected an aggregated off-scale marker"
+    axes_box = chart._ax.get_window_extent(renderer)
+    for coll in markers:
+        marker_box = _scatter_window_extent(coll, chart._ax, renderer)
+        assert marker_box.y0 >= axes_box.y0 - 0.5, (
+            f"marker {marker_box.bounds} reaches below the axes {axes_box.bounds}")
+        assert marker_box.y1 <= axes_box.y1 + 0.5, (
+            f"marker {marker_box.bounds} reaches above the axes {axes_box.bounds}")
+
+
+def test_rolling_median_draws_exactly_one_vertex_per_day(tk_root):
+    """The line smeared vertically wherever a day carried many units --
+    evaluating the rolling median at every UNIT let each one nudge the
+    window's exact row membership, even on a shared day. A day with 20
+    units must still contribute exactly one line vertex."""
+    from datetime import datetime, timedelta
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    today = datetime.now()
+    busy_day = today - timedelta(days=10)
+    dates, values = [], []
+    for i in range(20):
+        dates.append(busy_day)
+        values.append(0.0100 + 0.0001 * (i % 5))
+    for i in range(40, 0, -1):
+        d = today - timedelta(days=i)
+        if d == busy_day:
+            continue
+        dates.append(d)
+        values.append(0.0102 + 0.0001 * (i % 5))
+
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.0105, baseline_std=0.0006)
+    lines = [ln for ln in chart._ax.get_lines() if ln.get_linewidth() > 1.5]
+    assert lines, "expected the rolling-median line to be drawn"
+    xs = lines[0].get_xdata()
+    busy_key = (busy_day.year, busy_day.month, busy_day.day)
+    busy_count = sum(1 for x in xs if (x.year, x.month, x.day) == busy_key)
+    assert busy_count == 1, f"expected exactly one vertex for the 20-unit day, got {busy_count}"
+
+
+def test_x_tick_labels_never_collide_at_12_months_or_15_years(tk_root):
+    """"2026-022026-03" ran together at a 12-month window -- the implicit
+    default formatter/locator packed ticks too densely for the available
+    width. Checked at two window spans and two figure widths (the widget's
+    own default, and a narrower one standing in for a cramped small-window
+    layout -- the exact chart pixel width inside a 1280x720 app window
+    depends on the rest of that page's layout, not reproduced here)."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    for n_years, span_label in [(1, "12mo"), (15, "15yr")]:
+        dates, values = _long_history_with_outliers(n_years=n_years)
+        # (8, 3) is the widget's own default (FocusChart.__init__); (4.5,
+        # 1.8) is deliberately cramped -- matplotlib's OWN default
+        # locator/formatter (no explicit ConciseDateFormatter) collides at
+        # this width on this fixture, confirmed empirically, which is what
+        # makes this a real regression guard rather than a fixture that
+        # happens to pass either way.
+        for figsize in ((8, 3), (4.5, 1.8)):
+            chart = FocusChart(tk_root, theme=ThemeManager())
+            chart._fig.set_size_inches(*figsize)
+            chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                             baseline_mean=0.011, baseline_std=0.0005)
+            canvas = FigureCanvasAgg(chart._fig)
+            canvas.draw()
+            renderer = canvas.get_renderer()
+
+            labels = [lbl for lbl in chart._ax.get_xticklabels() if lbl.get_text()]
+            assert len(labels) >= 2, f"{span_label} @ {figsize}: expected multiple x ticks"
+            boxes = [lbl.get_window_extent(renderer) for lbl in labels]
+            for i in range(len(boxes)):
+                for j in range(i + 1, len(boxes)):
+                    assert not boxes[i].overlaps(boxes[j]), (
+                        f"{span_label} @ {figsize}: x tick labels "
+                        f"{labels[i].get_text()!r} and {labels[j].get_text()!r} collide")
 
 
 def test_y_tick_labels_resolve_to_plex_mono_once_loaded():
