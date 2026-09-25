@@ -159,6 +159,59 @@ def max_abs_measured(values: Optional[List[Any]]) -> Optional[float]:
     return max(measured) if measured else None
 
 
+def linearity_verdict_from_limits(track: TrackData) -> Dict[str, Optional[Any]]:
+    """Recount fail points against a track's OWN per-point spec limits, and
+    say whether it passes -- the computation three V5 chart exports each
+    carried their own copy of ("RECALCULATE fail points using actual spec
+    limits"): `gui/pages/export.py::_export_single_chart` /
+    `_export_multi_page_pdf`, and `gui/pages/analyze.py
+    ::_export_comprehensive_chart`.
+
+    The stored `linearity_fail_points`/`linearity_pass` may have been graded
+    against a flat scalar spec, so this re-shifts the measured errors by the
+    track's own optimal offset/slope (matching `core/analyzer.py`'s own
+    theory-rotation rule) and re-checks them against the full per-point
+    (bowtie) limit arrays, falling back to a flat +/-linearity_spec band when
+    the file stored no per-point limits.
+
+    Returns `{'fail_points': None, 'linearity_pass': None}` when there is no
+    error data to grade. Before this helper existed, each copy of this loop
+    started `actual_fail_count = 0` and only entered the comparison loop
+    `if upper_limits and lower_limits and track.error_data:` -- so a track
+    with no `error_data` left that accumulator untouched, and
+    `fail_count == 0` read as a PASS. A blank measurement is ungraded, never a
+    pass (CLAUDE.md).
+    """
+    upper_limits = track.upper_limits
+    lower_limits = track.lower_limits
+
+    # Fallback to a flat +/-linearity_spec band if no per-point limits stored.
+    if not upper_limits or not lower_limits:
+        if track.linearity_spec and track.linearity_spec > 0 and track.error_data:
+            upper_limits = [track.linearity_spec] * len(track.error_data)
+            lower_limits = [-track.linearity_spec] * len(track.error_data)
+
+    if not (upper_limits and lower_limits and track.error_data):
+        return {"fail_points": None, "linearity_pass": None}
+
+    k = getattr(track, "optimal_slope", 0.0) or 0.0
+    theory = getattr(track, "theory_volts", None)
+    if theory and k != 0:
+        shifted_errors = [track.error_data[i] + theory[i] * k + track.optimal_offset
+                          for i in range(len(track.error_data))]
+    else:
+        shifted_errors = [e + track.optimal_offset for e in track.error_data]
+
+    fail_count = 0
+    for i, e in enumerate(shifted_errors):
+        if i < len(upper_limits) and i < len(lower_limits):
+            if upper_limits[i] is not None and lower_limits[i] is not None:
+                if e > upper_limits[i] or e < lower_limits[i]:
+                    fail_count += 1
+
+    return {"fail_points": fail_count, "linearity_pass": fail_count == 0}
+
+
 class Analyzer:
     """
     Combined analyzer for laser trim data.

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, TrackData
 from laser_trim_analyzer.core.model_stats import failed_processing
+from laser_trim_analyzer.core.analyzer import linearity_verdict_from_limits
 from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.utils.threads import get_thread_manager
 from laser_trim_analyzer.gui.widgets.scrollable_combobox import ScrollableComboBox
@@ -557,35 +558,9 @@ class ExportPage(ctk.CTkFrame):
 
         track = result.tracks[0]
 
-        # RECALCULATE fail points using actual spec limits
-        actual_fail_count = 0
-        upper_limits = track.upper_limits
-        lower_limits = track.lower_limits
-
-        # Fallback to flat linearity_spec if limits not stored
-        if not upper_limits or not lower_limits:
-            if track.linearity_spec and track.linearity_spec > 0 and track.error_data:
-                upper_limits = [track.linearity_spec] * len(track.error_data)
-                lower_limits = [-track.linearity_spec] * len(track.error_data)
-
-        if upper_limits and lower_limits and track.error_data:
-            _k = getattr(track, 'optimal_slope', 0.0) or 0.0
-            _theory = getattr(track, 'theory_volts', None)
-            if _theory and _k != 0:
-                shifted_errors = [track.error_data[i] + _theory[i] * _k + track.optimal_offset
-                                  for i in range(len(track.error_data))]
-            else:
-                shifted_errors = [e + track.optimal_offset for e in track.error_data]
-            for i, e in enumerate(shifted_errors):
-                if i < len(upper_limits) and i < len(lower_limits):
-                    if upper_limits[i] is not None and lower_limits[i] is not None:
-                        if e > upper_limits[i] or e < lower_limits[i]:
-                            actual_fail_count += 1
-
-        corrected_values = {
-            'fail_points': actual_fail_count,
-            'linearity_pass': actual_fail_count == 0,
-        }
+        # RECALCULATE fail points using actual spec limits. A track with no
+        # error data is ungraded, never a pass -- see linearity_verdict_from_limits.
+        corrected_values = linearity_verdict_from_limits(track)
 
         # Create figure with subplots (larger for detailed export)
         fig = plt.figure(figsize=(14, 10), dpi=150, facecolor='white')
@@ -638,34 +613,10 @@ class ExportPage(ctk.CTkFrame):
 
                 track = result.tracks[0]
 
-                # RECALCULATE fail points using actual spec limits
-                actual_fail_count = 0
-                upper_limits = track.upper_limits
-                lower_limits = track.lower_limits
-
-                if not upper_limits or not lower_limits:
-                    if track.linearity_spec and track.linearity_spec > 0 and track.error_data:
-                        upper_limits = [track.linearity_spec] * len(track.error_data)
-                        lower_limits = [-track.linearity_spec] * len(track.error_data)
-
-                if upper_limits and lower_limits and track.error_data:
-                    _k = getattr(track, 'optimal_slope', 0.0) or 0.0
-                    _theory = getattr(track, 'theory_volts', None)
-                    if _theory and _k != 0:
-                        shifted_errors = [track.error_data[i] + _theory[i] * _k + track.optimal_offset
-                                          for i in range(len(track.error_data))]
-                    else:
-                        shifted_errors = [e + track.optimal_offset for e in track.error_data]
-                    for i, e in enumerate(shifted_errors):
-                        if i < len(upper_limits) and i < len(lower_limits):
-                            if upper_limits[i] is not None and lower_limits[i] is not None:
-                                if e > upper_limits[i] or e < lower_limits[i]:
-                                    actual_fail_count += 1
-
-                corrected_values = {
-                    'fail_points': actual_fail_count,
-                    'linearity_pass': actual_fail_count == 0,
-                }
+                # RECALCULATE fail points using actual spec limits. A track
+                # with no error data is ungraded, never a pass -- see
+                # linearity_verdict_from_limits.
+                corrected_values = linearity_verdict_from_limits(track)
 
                 # Create figure with subplots (letter size for PDF)
                 fig = plt.figure(figsize=(11, 8.5), facecolor='white')
@@ -919,6 +870,29 @@ class ExportPage(ctk.CTkFrame):
                        va='top', color='black')
             return
 
+        # A track with NO ERROR DATA has nothing to grade against the spec
+        # limits -- linearity_verdict_from_limits (the caller's
+        # corrected_values) returns None rather than inventing
+        # fail_points=0/linearity_pass=True on a comparison loop that never
+        # ran. Same principle as the branch above: a blank measurement is
+        # ungraded, never a pass (CLAUDE.md).
+        if corrected_values is not None and corrected_values.get('linearity_pass') is None:
+            metrics = [
+                "Sigma:     — (not graded)",
+                "Linearity: — (not graded)",
+                "",
+                "No linearity data --",
+                "there is no measurement to grade.",
+            ]
+            y_pos = 0.95
+            ax.text(0.05, 0.98, "Analysis Metrics", fontsize=11, fontweight='bold',
+                   transform=ax.transAxes, va='top', color='black')
+            for metric in metrics:
+                y_pos -= 0.085
+                ax.text(0.05, y_pos, metric, fontsize=10, transform=ax.transAxes,
+                       va='top', color='black')
+            return
+
         # Use corrected values if provided (recalculated from actual spec limits)
         fail_points = corrected_values['fail_points'] if corrected_values else track.linearity_fail_points
         linearity_pass = corrected_values['linearity_pass'] if corrected_values else track.linearity_pass
@@ -990,6 +964,28 @@ class ExportPage(ctk.CTkFrame):
             ax.text(0.5, 0.72, f'STATUS: {status}', ha='center', va='center',
                    fontsize=16, color=color, fontweight='bold', transform=ax.transAxes)
             ax.text(0.5, 0.45, 'Processing failed — no measurement', ha='center', va='center',
+                   fontsize=11, color=color, transform=ax.transAxes)
+            ax.text(0.5, 0.15, f"Analysis: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                   ha='center', va='center', fontsize=9, color='gray',
+                   style='italic', transform=ax.transAxes)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            return
+
+        # A track with NO ERROR DATA has nothing to grade against the spec
+        # limits -- linearity_verdict_from_limits returns None rather than
+        # inventing a pass. Same principle as the branch above: never render
+        # PASS/WARNING/FAIL for a verdict that was never computed.
+        if corrected_values is not None and corrected_values.get('linearity_pass') is None:
+            status = "NOT GRADED"
+            color = '#7f8c8d'
+            rect = Rectangle((0.1, 0.6), 0.8, 0.25,
+                             linewidth=3, edgecolor=color,
+                             facecolor='white', alpha=0.9)
+            ax.add_patch(rect)
+            ax.text(0.5, 0.72, f'STATUS: {status}', ha='center', va='center',
+                   fontsize=16, color=color, fontweight='bold', transform=ax.transAxes)
+            ax.text(0.5, 0.45, 'No linearity data', ha='center', va='center',
                    fontsize=11, color=color, transform=ax.transAxes)
             ax.text(0.5, 0.15, f"Analysis: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                    ha='center', va='center', fontsize=9, color='gray',
