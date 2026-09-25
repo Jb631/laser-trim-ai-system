@@ -18,7 +18,7 @@ moved along with the rest of this group.
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, case, exists, func, or_
+from sqlalchemy import and_, case, exists, func, or_, text
 
 from laser_trim_analyzer.database.manager import GRADEABLE_STATUS_NAMES, json_array_absent, logger
 from laser_trim_analyzer.database.models import (
