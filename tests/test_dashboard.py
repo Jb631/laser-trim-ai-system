@@ -465,6 +465,11 @@ def test_dashboard_company_trend_failure_names_banner_others_unaffected(make_app
     # The yield loader ran fine: a real rate, not blanked by this failure.
     assert page._trim_panel._rate.cget("text") != "—"
     assert page._caption.cget("text") == "Laser 75% · final test — over the last 90 days"
+    # The failed panel's OWN text (final review, 2026-09-24): it said "No trim data in the
+    # selected window." -- a confident statement about the data, over a query that crashed.
+    trend_text = " ".join(t.get_text() for t in page._company_trend._ax.texts)
+    assert "Unavailable" in trend_text
+    assert "No trim data" not in trend_text
 
 
 def test_dashboard_priorities_failure_names_banner_others_unaffected(make_app, monkeypatch, caplog):
@@ -493,6 +498,10 @@ def test_dashboard_priorities_failure_names_banner_others_unaffected(make_app, m
 
     assert page._trim_panel._rate.cget("text") != "—"
     assert page._caption.cget("text") == "Laser 75% · final test — over the last 90 days"
+    # The failed panel's OWN text (final review, 2026-09-24): it said "No final-test failures in
+    # this window." -- good news, over a query that crashed.
+    cap = page._priorities._cap.cget("text")
+    assert "Unavailable" in cap and "No final-test failures" not in cap
 
 
 def test_dashboard_healthy_reload_has_no_load_banner(make_app):
@@ -549,3 +558,46 @@ def test_cost_priorities_do_not_use_the_deprecated_datetime_adapter(tmp_path):
         # ONLY the datetime adapter -- a blanket "error" would trip on unrelated deprecations.
         warnings.filterwarnings("error", message=r".*datetime adapter.*", category=DeprecationWarning)
         assert compute_cost_priorities(db, {}, 0.5) == []   # empty db -- the bind happens either way
+
+
+
+def test_company_trend_unavailable_is_not_no_data(tk_root):
+    """None is a FAILED load, never the "no trim data" sentence an empty window gets."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
+    chart = CompanyTrendChart(tk_root, theme=ThemeManager())
+    chart.set_data(None)
+    failed = " ".join(t.get_text() for t in chart._ax.texts)
+    assert "Unavailable" in failed and "No trim data" not in failed
+    chart.set_data({"periods": [], "company": [], "by_system": {}})
+    empty = " ".join(t.get_text() for t in chart._ax.texts)
+    assert "No trim data in the selected window." in empty and "Unavailable" not in empty
+
+
+def test_priorities_unavailable_is_not_no_failures(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.priorities_panel import PrioritiesPanel
+    panel = PrioritiesPanel(tk_root, theme=ThemeManager(), on_row_click=lambda m: None)
+    panel.set_rows(None)
+    assert "Unavailable" in panel._cap.cget("text")
+    assert "No final-test failures" not in panel._cap.cget("text")
+    panel.set_rows([])
+    assert panel._cap.cget("text") == "No final-test failures in this window."
+
+
+def test_the_caption_on_all_says_over_all_time(make_app):
+    """M4: "over the last all time" -- the "All" window reads as a duration of its own."""
+    app = make_app()
+    now = datetime.now()
+    with app.db.session() as s:
+        for _ in range(3):
+            _add_ar(s, "DASH", StatusType.PASS, now)
+        _add_ar(s, "DASH", StatusType.FAIL, now)
+        s.commit()
+    page = app.page_container.get_page("dashboard")
+    page._window_choice = "All"
+    page.reload_now()
+    assert page._caption.cget("text") == "Laser 75% · final test — over all time"
+    page._window_choice = "30d"
+    page.reload_now()
+    assert page._caption.cget("text").endswith("over the last 30 days")

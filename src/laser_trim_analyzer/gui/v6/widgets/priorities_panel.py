@@ -1,7 +1,7 @@
 """Dashboard — PrioritiesPanel: 'this week's priorities', models ranked by the
 money leaking at final test. Clickable rows route to the Model page for the
 reason and evidence (mirrors WorstModelsList's drill-down)."""
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 import customtkinter as ctk
 
@@ -53,7 +53,10 @@ class PrioritiesPanel(ctk.CTkFrame):
                                  text_color=t.TEXT_SECONDARY, anchor="w")
         self._cap.pack(side="top", fill="x")
 
-    def set_rows(self, rows: List[dict]) -> None:
+    def set_rows(self, rows: Optional[List[dict]]) -> None:
+        """`rows=None` means the loader FAILED -- say so; `[]` means the window really had no
+        final-test failures. The two must never read alike: "No final-test failures" over a
+        crashed query is good news nobody measured (final review, 2026-09-24)."""
         for r in self._rows:
             try:
                 r.destroy()
@@ -64,6 +67,9 @@ class PrioritiesPanel(ctk.CTkFrame):
             row = _PriorityRow(self._list, d, self.theme, self._cb)
             row.pack(side="top", fill="x", pady=1)
             self._rows.append(row)
+        if rows is None:
+            self._cap.configure(text="Unavailable — the notice above says why.")
+            return
         if not rows:
             self._cap.configure(text="No final-test failures in this window.")
             return

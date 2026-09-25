@@ -54,7 +54,12 @@ class CompanyTrendChart(ctk.CTkFrame):
                  note: Optional[str] = None) -> None:
         """Render the trend. NEVER fails blank: any internal error draws a
         visible message in the axes (a swallowed exception once left bare
-        0-1 axes with no explanation — worse than an error)."""
+        0-1 axes with no explanation — worse than an error).
+
+        `trend=None` means the page's loader FAILED: the chart says it is unavailable (the
+        page's banner names why), never "No trim data in the selected window." -- that is a
+        statement about the data, and a crashed query has made none (final review,
+        2026-09-24). An empty trend dict is the real "no data"."""
         try:
             self._set_data(trend, period_label, note=note)
         except Exception as exc:
@@ -82,6 +87,12 @@ class CompanyTrendChart(ctk.CTkFrame):
         # No axes title: the page's section header already says "Company trend"
         # and the period is on the toggle — the title row is better spent on
         # the legend (which used to sit on the data).
+        if trend is None:
+            ax.text(0.5, 0.5, "Unavailable — the notice above says why.",
+                    transform=ax.transAxes, ha="center", va="center",
+                    color=t.TEXT_SECONDARY)
+            self.canvas.draw_idle()
+            return
 
         periods = (trend or {}).get("periods") or []
         company = (trend or {}).get("company") or []

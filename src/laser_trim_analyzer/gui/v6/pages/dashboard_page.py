@@ -22,8 +22,10 @@ from laser_trim_analyzer.gui.v6.widgets.yield_panel import YieldPanel
 _WINDOW_DAYS = {"30d": 30, "90d": 90, "365d": 365, "All": 36500}
 _TREND_PERIODS = {"Weekly": "week", "Monthly": "month"}
 # Words for the caption (design doc §4: "over the last 90 days"), keyed by the
-# same choices as _WINDOW_DAYS -- "All" reads as a duration, not "36500 days".
-_WINDOW_LABELS = {"30d": "30 days", "90d": "90 days", "365d": "365 days", "All": "all time"}
+# same choices as _WINDOW_DAYS -- "All" reads as its own phrase, never "over the
+# last all time" (final review, 2026-09-24) nor "36500 days".
+_WINDOW_PHRASES = {"30d": "over the last 30 days", "90d": "over the last 90 days",
+                   "365d": "over the last 365 days", "All": "over all time"}
 
 
 def _rate_text(stats) -> str:
@@ -197,8 +199,10 @@ class DashboardPage(PageBase):
             ft, total_label=(f"{ft['total']} final-test records (matched to trims)"
                              if ft is not None else ""))
         try:
+            # None = the loader failed: the chart says "unavailable", never "no trim data".
             self._company_trend.set_data(
-                company_trend, period_label=period, note=trend_note)
+                None if "company trend" in failed else (company_trend or {}),
+                period_label=period, note=trend_note)
         except Exception:
             # Isolate the trend from the rest of the dashboard, but NEVER
             # silently (a swallowed error rendered as a blank chart).
@@ -210,12 +214,14 @@ class DashboardPage(PageBase):
         except Exception:
             logger.exception("Dashboard: lowest-yield list render failed")
         try:
-            self._priorities.set_rows(priorities or [])
+            # None = the loader failed: "unavailable", never "No final-test failures".
+            self._priorities.set_rows(None if "priorities" in failed else (priorities or []))
         except Exception:
             logger.exception("Dashboard: priorities render failed")
-        window_words = _WINDOW_LABELS.get(self._window_choice, self._window_choice)
+        window_words = _WINDOW_PHRASES.get(self._window_choice,
+                                           f"over the last {self._window_choice}")
         self.set_caption(f"Laser {_rate_text(trim)} · final test {_rate_text(ft)} "
-                         f"over the last {window_words}")
+                         f"{window_words}")
         self._set_load_banner(failed)
 
     def _set_load_banner(self, failed) -> None:
