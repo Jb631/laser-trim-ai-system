@@ -27,8 +27,13 @@ def test_no_hex_colour_outside_the_theme():
 
 
 def test_the_table_column_widths_were_left_alone():
+    """Grid column widths, not fonts: the font-token task left them 190 and 78. Since the final
+    review (2026-09-24) they are scaled like every other size (grid minsize is real pixels to Tk,
+    so at 150% Windows scaling an unscaled one stays 190 px while the text grows) -- the same
+    two widths, in CustomTkinter's unscaled units."""
     src = (V6 / "widgets" / "stats_table.py").read_text()
-    assert "minsize=190" in src and "minsize=78" in src
+    assert "minsize=frame._apply_widget_scaling(190)" in src
+    assert "minsize=frame._apply_widget_scaling(78)" in src
 
 
 def test_the_qa_render_script_has_no_copied_palette():
