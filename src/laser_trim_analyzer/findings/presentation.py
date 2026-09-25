@@ -481,6 +481,13 @@ def errors_unknown_notice(reason: str) -> str:
             f"this list may be missing models.")
 
 
+def _move_text(value: float) -> str:
+    """A pass-rate move, signed -- "±0" when it rounds to nothing: "+0" and "-0" claim a direction
+    the number does not have (re-review, 2026-09-25: "Laser Power 52 → 60 · -0")."""
+    text = f"{value:+.0f}"
+    return "±0" if text in ("+0", "-0") else text
+
+
 def value_text(group: str, value: Optional[float],
                findings: Sequence[Dict[str, Any]] = ()) -> str:
     """`findings` = the row's own findings: a readout counted in something other than its group's
@@ -490,7 +497,7 @@ def value_text(group: str, value: Optional[float],
     if group == "yield":
         return f"~{value:,.0f}"
     if group == "history":
-        return f"{value:+.0f}"
+        return _move_text(value)
     units = {_READOUT_UNIT.get(f.get("analyzer")) for f in findings}
     unit = next(iter(units)) if len(units) == 1 else None
     return f"{value:,.0f} {unit}" if unit else f"{value:,.0f}"
@@ -503,8 +510,8 @@ def value_tone(group: str, value: Optional[float],
     move but gets no colour and a "different test" tag (see _tags): part of that move may be a
     change of test, not of parts, and CLAUDE.md's rule -- never compare pass rates across a
     table change -- outranks the mockup's colour. `findings` is required on purpose: a caller
-    that forgot it would colour every move."""
-    if group != "history" or value is None or value == 0:
+    that forgot it would colour every move. A move that reads "±0" (_move_text) is neither."""
+    if group != "history" or value is None or _move_text(value) == "±0":
         return None
     if any(_different_test(f) for f in findings):
         return None

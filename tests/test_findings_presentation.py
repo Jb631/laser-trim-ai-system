@@ -77,6 +77,24 @@ def test_a_history_readout_is_the_pass_rate_move():
     assert P.value_tone("history", 21.0, [x]) == "up"
 
 
+@pytest.mark.parametrize("analyzer", ("recipe_change", "setup_change"))
+@pytest.mark.parametrize("move", (-0.4, -0.01, 0.0, 0.3, 0.5))
+def test_a_history_move_that_rounds_to_nothing_reads_plus_minus_zero(analyzer, move):
+    """The re-review (2026-09-25): f"{v:+.0f}" printed "-0" and "+0" for a move under half a point
+    ("Laser Power 52 → 60 · -0"). It reads "±0" -- a sign on nothing claims a direction the number
+    does not have -- and carries no colour either, for the same reason."""
+    x = f(analyzer, evidence={"before": {"trim_pass_pct": 50.0},
+                              "after": {"trim_pass_pct": 50.0 + move}})
+    assert P.value_text("history", move, [x]) == "±0"
+    assert P.value_tone("history", move, [x]) is None
+
+
+def test_a_history_move_of_more_than_half_a_point_keeps_its_sign_and_colour():
+    x = f("setup_change", evidence={})
+    assert (P.value_text("history", 0.6, [x]), P.value_tone("history", 0.6, [x])) == ("+1", "up")
+    assert (P.value_text("history", -0.6, [x]), P.value_tone("history", -0.6, [x])) == ("-1", "down")
+
+
 def test_two_tracks_saying_the_same_thing_become_one_row():
     rows = P.arrange([cut(tpy=182.0, track="Track A"), cut(tpy=118.0, track="Track B")])[0].rows
     assert len(rows) == 1 and rows[0].merged
