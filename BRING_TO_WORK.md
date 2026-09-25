@@ -16,9 +16,13 @@ change, nothing to retrain.
    script run without one says so and stops, before it opens anything
    (`.\.venv\Scripts\python scripts\<name>.py data\analysis.db`, or `--db data\analysis.db` where the
    script has that flag). Every command in this file is updated and shows which form it takes.
-4. **Known, fixed in the next pull:** if a scrolling tab (Findings, Drift metrics, Smoothness)
-   comes up blank after you click away and back, resize the window a little and it redraws. Seen
-   on the Mac; tell Claude if it happens at work too.
+4. **Also in this pull (if you pulled before ~08:00 on 09-25, pull again):** a scrolling tab
+   (Findings, Drift metrics, Smoothness) no longer comes up blank when you click back to it; a click
+   on a tab right after the app switches tabs itself always shows a tab; the Findings tab says so
+   when its findings failed to load (not "not computed yet"); Home and Triage never let an older,
+   slower load overwrite a newer one; the drift tab's columns stay aligned if you drag the window to
+   a screen with different scaling; failure banners wrap to the page. The audit helper below now
+   reads 0 clipped at 100%, 125% and 150% on the Mac, twice at 150%.
 
 ## ⚡ 2026-09-24 night — the other six pages, and a chart you can read (pull, then look)
 
@@ -73,10 +77,8 @@ schema change, nothing to retrain, nothing to click on first launch. **If you ha
 
    **Expect ZERO clipped widgets** — checked on the Mac at 100%, 125% and 150% display scaling
    (wrapped text used to be cut above 100%, which is what Windows scaling does); at work it runs at
-   your laptop's own scaling, which is the real test. One known exception: a "… squeezed out" line
-   for the Findings, Drift metrics or Smoothness tab is the blank-tab fault below (TRACKER F4),
-   fixed next. Anything else it lists is new; tell Claude the line. Then
-   `Remove-Item $env:TEMP\qa_copy.db`.
+   your laptop's own scaling, which is the real test. Anything it lists is new; tell Claude the
+   line. Then `Remove-Item $env:TEMP\qa_copy.db`.
 
 ## ⚡ 2026-09-24 — the new look and the parse fixes (pull, then look)
 

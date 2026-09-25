@@ -14,8 +14,9 @@ database guard (only the app opens its default database — every script now nam
 small fixes. Before it, `422da7a` (2026-09-24): facelift step 1 and every parse fix. At work:
 `git pull`, then the top section of `BRING_TO_WORK.md` (and the two 2026-09-24 sections if you have
 not pulled them yet). Nothing needs running except the optional TrimVolts back-fill. **Being built
-now:** the rest of the findings catalogue (B6 — every analyzer reviewed, its final review next),
-then the ingest-speed design (A4/A3/A5) and the facelift follow-ups (F4).
+now:** the rest of the findings catalogue (B6 — every analyzer reviewed; its final review's fix
+round is running), then F5 ("Inactive" models, your call of 2026-09-25) and the ingest-speed design
+(A4/A3/A5). The facelift follow-ups (F4) went out in a second push the same morning.
 
 **The rebuild is done** (B2: 168,501 files in 21.8 hours, finished 2026-09-22) and every number
 that rested on a final-test verdict has been re-derived on it (B3).
@@ -27,7 +28,7 @@ that rested on a final-test verdict has been re-derived on it (B3).
 | **C. Review and refactor** | the review is done (C1); C2 step 1, the database guard and three parked fixes shipped | C2 step 2 (`database/migrations.py`) — Claude |
 | **D. Checks at the shop** | D1, D3, D4, D5, D6, D7 open | James |
 | **E. Backlog upload** | shipped (E1) | — |
-| **F. Facelift** | steps 1 and 2 shipped | F4 follow-ups (a blank scrolling tab on the Mac, two load races) — Claude |
+| **F. Facelift** | steps 1 and 2 shipped; F4 follow-ups shipped | F5 "Inactive" models (+ F4's review gaps) — Claude |
 | **G. Parse fixes** | all built, reviewed and pushed (`422da7a`) | — (the back-fill is yours, optional) |
 
 ### One thing of mine to own (2026-09-24): the home database was written to
@@ -678,8 +679,21 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       overturn once you have seen the pages): `docs/superpowers/specs/2026-09-24-facelift-step2-pages-design.md`,
       plan `docs/superpowers/plans/2026-09-24-facelift-step2-pages.md`. Next to build.
 
-- [ ] **F4 · Step 2 follow-ups** — found by the fix round's re-review (2026-09-25); all
-      pre-existing, none blocking. Claude, next:
+- [ ] **F5 · "Inactive" models — James, 2026-09-25:** *"models that havnt been trimmed in 2 years should
+      show inacative or something but i dont want to hide them as the data is useful if we decide to
+      start building the model again."* A model whose newest trim file is more than two years older than
+      the newest file in the database is labelled **Inactive · last trimmed Mon YYYY** wherever it appears
+      (findings rows, the model page caption, the Triage list); nothing is hidden and every finding and
+      number is kept; the short ranked previews (Home's top three) list active models first. 40 of the
+      240 findings on the rebuild are on such models today. Claude, after the findings catalogue merges.
+- [x] **F4 · Step 2 follow-ups — DONE 2026-09-25** (`dbf57d0..7ab3a67`, 9 commits, reviewed:
+      approved; gate 123/123 files, 2,436 tests; audit 0 clipped at 100/125/150%, twice at 150%;
+      sweep 299 checks, 1 FAIL = D3). Its review left robustness gaps for **F5's round**: the redraw
+      guard has no counting test; the private CustomTkinter override is not named by the version
+      pin's message; one crash in the sweep's section 5 shows as three FAILs; Home's FOCUS apply now
+      stops the two ingest notices if it raises; the Findings page and the Dashboard's `reload_now`
+      lack the stale-load counter; `safe_after` swallows callback errors without logging them.
+      Found by the fix round's re-review (2026-09-25); all pre-existing, none blocking:
       - **A scrolling tab comes up blank after you click away and back** (Findings, Drift metrics,
         Smoothness) — seen on the Mac at every scaling; probably not on Windows, unverified.
         Resizing the window brings it back. Fix: nudge the tab's scroll frames when it is shown.
