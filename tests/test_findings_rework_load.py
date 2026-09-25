@@ -12,8 +12,12 @@ tests pin what rework_load adds on top of it (review of 85222c4, fix brief 2026-
   maxima, which sit where one station does not grade at all;
 * THE GRAIN -- unit-days, not final-test records, and each final-test record on ITS OWN track;
 * THE COMPARISON -- rework against the TOP THIRD of pass/pass units by laser error (like with
-  like), at CONFIRM_RATIO, with MIN_UNIT_DAYS and MIN_CONTROL at their exact boundaries;
-* the facts/finding split, and that a crash is never swallowed here.
+  like), by a one-sided rank test (fix round 2, 2026-09-25: Mann-Whitney U, normal approximation
+  with tie correction) at CONFIRM_P, with the effect no smaller than MAX_EFFECT_RATIO, and
+  MIN_UNIT_DAYS and MIN_CONTROL at their exact boundaries -- each boundary red on round 1's fixed
+  0.8 ratio cut wherever the two rules disagree;
+* the facts/finding split (the test is a fact always; the floors gate only the verdict), and that
+  a crash is never swallowed here.
 
 Every fixture is a centred spike: a sweep reading 0.01 V everywhere but one point, so each
 station's worst graded error is exactly the number the test names. Example data is invented.
@@ -117,6 +121,24 @@ def seed(db, n_rework, n_control, *, rework=(0.30, 0.10), control=(0.30, 0.30), 
     return shop
 
 
+def seed_ratios(db, rework, top, *, low=60, first_shop=1):
+    """Unit-days whose final-test/laser ratio is EXACTLY what the test names: one reworked
+    unit-day per value in `rework` and one pass/pass unit-day per value in `top`, all at laser
+    0.30 V -- plus `low` pass/pass unit-days the laser left nearly perfect (0.05 V, ratio 1.0),
+    which sort BELOW them by laser error. With the defaults (30 + 60) the top third of the
+    pass/pass units is exactly `top`. Returns the next free shop number."""
+    rows = ([(False, 0.30, r) for r in rework] + [(True, 0.30, c) for c in top]
+            + [(True, 0.05, 1.0)] * low)
+    shop = first_shop
+    with db.session() as s:
+        for k, (passed, laser, ratio) in enumerate(rows):
+            day = START + timedelta(days=k)
+            aid = trim_file(s, shop, day.replace(hour=9), "Track A", passed, spike(laser))
+            final_test(s, shop, day + timedelta(days=2), aid, spike(laser * ratio))
+            shop += 1
+    return shop
+
+
 def tracks_for(n, model=MODEL, system="B"):
     """The window population: only file_date matters to rework_load (it sets `latest` and so the
     cutoff) -- independent of the DB rows seeded for the comparison itself, exactly as
@@ -143,6 +165,10 @@ class _Boom:
 
 # ---- a confirmed signature is one finding; the readout is unit-days ----------------------------
 
+COMPARISON_IN_WORDS = ("their error fell more between the stations than it did for the untouched "
+                       "units that started nearest them")
+
+
 def test_a_confirmed_signature_is_one_finding_with_the_unit_day_readout(db):
     seed(db, 40, 90)             # rework: laser 0.30 -> final test 0.10 (1/3); control 0.30 -> 0.30
     facts, findings = run(db)
@@ -153,7 +179,7 @@ def test_a_confirmed_signature_is_one_finding_with_the_unit_day_readout(db):
     assert f.n_units == 40
     assert f.title == "Laser 1 (LTS): 40 units a year fail here and pass final test after rework"
     assert "hand trim" in f.summary and "33%" in f.summary and "100%" in f.summary
-    assert "top third" in f.summary
+    assert COMPARISON_IN_WORDS in f.summary
     assert f.systems == ("B",)
     assert facts["rework_unit_days"] == 40 and facts["linked"] == 130
     assert facts["rework_ratio_n"] == 40 and facts["control_n"] == 90
@@ -162,18 +188,76 @@ def test_a_confirmed_signature_is_one_finding_with_the_unit_day_readout(db):
     assert facts["confirmed"] is True
     assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
     assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert facts["effect_ratio"] == pytest.approx(1 / 3, abs=1e-3)
+    assert facts["mann_whitney_u"] == 0.0       # every reworked unit below every untouched one
+    assert facts["p_value"] < 1e-6
+    assert facts["reduction"] == rework_load.REDUCTION
 
 
-def test_evidence_carries_both_medians_the_top_third_and_the_comparison_made(db):
+def test_evidence_carries_the_test_both_medians_both_sizes_and_the_comparison_made(db):
     seed(db, 40, 90)
     f = only(run(db)[1])
     assert set(f.evidence) == {"facts", "comparison"}
-    assert f.evidence["facts"] == pytest.approx(
-        {"rework_unit_days": 40, "rework_ratio_n": 40, "control_n": 90, "control_top_third_n": 30,
-         "median_ratio_rework": 1 / 3, "median_ratio_control_top_third": 1.0, "skipped_pairs": 0},
-        abs=1e-3)
+    ev = f.evidence["facts"]
+    assert set(ev) == {"rework_unit_days", "rework_ratio_n", "control_n", "control_top_third_n",
+                       "median_ratio_rework", "median_ratio_control_top_third", "effect_ratio",
+                       "mann_whitney_u", "p_value", "skipped_pairs", "reduction"}
+    assert (ev["rework_unit_days"], ev["rework_ratio_n"], ev["control_n"],
+            ev["control_top_third_n"], ev["skipped_pairs"]) == (40, 40, 90, 30, 0)
+    assert ev["effect_ratio"] == pytest.approx(1 / 3, abs=1e-3) and ev["p_value"] < 1e-6
+    assert ev["reduction"] == rework_load.REDUCTION
     said = f.evidence["comparison"]
-    assert "top third" in said and "laser error" in said and "0.8" in said
+    assert "rank test" in said and "top third" in said and "0.01" in said and "0.9" in said
+
+
+# ---- the thresholds are the controller's rulings (fix round 2, 2026-09-25) ---------------------
+# Pinned here once. The boundary tests below never read these constants: each goes red on its
+# own BEHAVIOUR when a threshold moves (every one was mutation-checked that way), so a green run
+# proves the boundary is where the ruling put it, not merely that a number was typed.
+
+def test_the_thresholds_are_the_ruled_values():
+    assert rework_load.CONFIRM_P == 0.01 and rework_load.MAX_EFFECT_RATIO == 0.9
+    assert rework_load.MIN_UNIT_DAYS == 30 and rework_load.MIN_CONTROL == 20
+    assert rework_load.JUNK_VOLTS == 1.0
+    assert rework_load.LOOKBACK_DAYS == 365 and rework_load.MIN_CONFIDENCE == 0.70
+    assert not hasattr(rework_load, "CONFIRM_RATIO")          # round 1's fixed ratio cut is gone
+
+
+# ---- the rank test itself: findings/stats.py, U built from the AUC helper -----------------------
+# Reference values: scipy.stats.mannwhitneyu(x, y, alternative="less", method="asymptotic",
+# use_continuity=False) -- the ruled normal approximation with tie correction, and no continuity
+# correction. The app never imports scipy for this: stats.py stays dependency-free.
+
+def test_u_is_the_auc_times_both_sizes_and_p_is_the_normal_approximation():
+    from laser_trim_analyzer.findings.stats import auc, mann_whitney_lower
+    x, y = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]
+    u, p = mann_whitney_lower(x, y)
+    assert u == auc(x, y) * 3 * 3 == 0.0
+    assert p == pytest.approx(0.024767306717813357, rel=1e-9)
+    x, y = [0.5, 0.7, 0.9, 1.1, 1.3], [0.8, 1.0, 1.2, 1.4, 1.6, 1.8]
+    u, p = mann_whitney_lower(x, y)
+    assert u == pytest.approx(auc(x, y) * 5 * 6) and u == pytest.approx(6.0)
+    assert p == pytest.approx(0.05017412323114538, rel=1e-9)
+
+
+def test_the_rank_test_corrects_for_ties():
+    from laser_trim_analyzer.findings.stats import mann_whitney_lower
+    u, p = mann_whitney_lower([1.0, 1.0, 2.0, 3.0], [2.0, 3.0, 3.0, 4.0, 5.0])
+    assert u == pytest.approx(2.5)                             # a tie counts half
+    assert p == pytest.approx(0.029725546655776806, rel=1e-9)  # without the correction: 0.0331
+
+
+def test_the_rank_test_is_one_sided_lower():
+    from laser_trim_analyzer.findings.stats import mann_whitney_lower
+    x, y = [0.5, 0.7, 0.9, 1.1, 1.3], [0.8, 1.0, 1.2, 1.4, 1.6, 1.8]
+    (_, p_lower), (_, p_swapped) = mann_whitney_lower(x, y), mann_whitney_lower(y, x)
+    assert p_lower < 0.5 < p_swapped and p_lower + p_swapped == pytest.approx(1.0)
+
+
+def test_no_rank_test_without_both_groups_or_without_any_variation():
+    from laser_trim_analyzer.findings.stats import mann_whitney_lower
+    assert mann_whitney_lower([], [1.0]) is None and mann_whitney_lower([1.0], []) is None
+    assert mann_whitney_lower([2.0, 2.0], [2.0, 2.0, 2.0]) == (3.0, None)   # all tied: no p
 
 
 # ---- compare like with like: the TOP THIRD of control, never the whole of it --------------------
@@ -181,75 +265,111 @@ def test_evidence_carries_both_medians_the_top_third_and_the_comparison_made(db)
 def test_the_comparison_is_against_the_top_third_of_control_not_all_of_it(db):
     # Final test has an error floor, so FT/laser runs HIGH on units the laser left nearly perfect:
     # 60 pass/pass units at laser 0.05 read 2.0 and pull the whole control's median to 2.0. The
-    # reworked units (laser 0.30) read 0.81 -- far below 2.0, and a plain comparison would call it
-    # confirmed. Against the 30 untouched units most like them (laser 0.30, ratio 1.0) it is not.
-    nxt = seed(db, 40, 0, rework=(0.30, 0.243))
+    # reworked units (laser 0.30) read 0.95 -- far below 2.0, which a comparison with the whole
+    # control would confirm. Against the 30 untouched units that started nearest them (laser
+    # 0.30, ratio 1.0) the shift is significant but far too small (0.95 > 0.9): not confirmed.
+    nxt = seed(db, 40, 0, rework=(0.30, 0.285))
     nxt = seed(db, 0, 60, control=(0.05, 0.10), first_shop=nxt)
     seed(db, 0, 30, control=(0.30, 0.30), first_shop=nxt)
     facts, findings = run(db)
     assert findings == []
     assert facts["confirmed"] is False
     assert facts["control_n"] == 90 and facts["control_top_third_n"] == 30
-    assert facts["median_ratio_rework"] == pytest.approx(0.81, abs=1e-3)
     assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert facts["effect_ratio"] == pytest.approx(0.95, abs=1e-3)
+    assert facts["p_value"] < 1e-6
 
 
-# ---- the thresholds are the controller's rulings (fix brief, 2026-09-25) -------------------------
-# Pinned here once. The boundary tests below never read these constants: each goes red on its
-# own BEHAVIOUR when a threshold moves (every one was mutation-checked that way), so a green run
-# proves the boundary is where the ruling put it, not merely that a number was typed.
+# ---- CONFIRM_P at its boundary: p just under confirms, just over does not -----------------------
+# 30 reworked unit-days against 30 in the top third, every ratio distinct: 20 far below all of the
+# top third, 9 above all of it, and one that beats exactly 22 of them (U = 9 x 30 + 22 = 292,
+# p = 0.00975) or 23 (U = 293, p = 0.01014). The effect is 0.51 either way -- round 1's fixed 0.8
+# ratio cut confirms BOTH, so "just over" is where the two rules part.
 
-def test_the_thresholds_are_the_ruled_values():
-    assert rework_load.CONFIRM_RATIO == 0.8
-    assert rework_load.MIN_UNIT_DAYS == 30
-    assert rework_load.MIN_CONTROL == 30
-    assert rework_load.JUNK_VOLTS == 1.0
-    assert rework_load.LOOKBACK_DAYS == 365 and rework_load.MIN_CONFIDENCE == 0.70
+TOP_30 = [1.0 + 0.001 * j for j in range(30)]
 
 
-# ---- CONFIRM_RATIO at its boundary: just under confirms, just over does not ---------------------
+def _straddle(beats):
+    return ([0.5 + 0.001 * i for i in range(20)] + [1.0305 + 0.001 * i for i in range(9)]
+            + [1.0 + 0.001 * beats - 0.0005])
 
-def test_just_under_the_confirm_ratio_is_confirmed(db):
-    seed(db, 40, 90, rework=(0.30, 0.237))                  # 0.79 of the top third's 1.0
+
+def test_p_just_under_the_confirm_p_is_confirmed(db):
+    seed_ratios(db, _straddle(22), TOP_30)
     facts, findings = run(db)
-    assert only(findings).n_units == 40
-    assert facts["confirmed"] is True
-    assert facts["median_ratio_rework"] == pytest.approx(0.79, abs=1e-3)
+    assert only(findings).n_units == 30
+    assert facts["mann_whitney_u"] == 292.0
+    assert facts["p_value"] == pytest.approx(0.009747, abs=5e-6)
+    assert facts["effect_ratio"] == pytest.approx(0.507, abs=1e-3)
 
 
-def test_just_over_the_confirm_ratio_is_not(db):
-    seed(db, 40, 90, rework=(0.30, 0.243))                  # 0.81 of the top third's 1.0
+def test_p_just_over_the_confirm_p_is_not(db):
+    seed_ratios(db, _straddle(23), TOP_30)
+    facts, findings = run(db)
+    assert findings == []                    # a fixed 0.8 ratio cut WOULD confirm this (0.51)
+    assert facts["mann_whitney_u"] == 293.0
+    assert facts["p_value"] == pytest.approx(0.010139, abs=5e-6)
+    assert facts["confirmed"] is False and "p =" in facts["note"]
+
+
+# ---- MAX_EFFECT_RATIO at its boundary: 0.89 confirms, 0.91 does not -----------------------------
+
+def test_an_effect_of_0_89_is_confirmed(db):
+    seed_ratios(db, [0.89] * 30, [1.0] * 30)     # round 1's 0.8 cut would NOT confirm this
+    facts, findings = run(db)
+    assert only(findings).n_units == 30
+    assert facts["effect_ratio"] == pytest.approx(0.89, abs=1e-3) and facts["p_value"] < 1e-6
+
+
+def test_an_effect_of_0_91_is_not(db):
+    seed_ratios(db, [0.91] * 30, [1.0] * 30)
     facts, findings = run(db)
     assert findings == []
-    assert facts["rework_unit_days"] == 40                  # the count is real...
-    assert facts["confirmed"] is False                      # ...but the signature is not confirmed
-    assert facts["median_ratio_rework"] == pytest.approx(0.81, abs=1e-3)
-    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
-    assert facts["note"]
+    assert facts["effect_ratio"] == pytest.approx(0.91, abs=1e-3)
+    assert facts["p_value"] < 1e-6          # significant -- but too small a shift to call hand trim
+    assert facts["confirmed"] is False and facts["note"]
+
+
+# ---- MIN_CONTROL at its boundary: 19 vs 20 control units in the TOP THIRD -----------------------
+
+def test_19_control_units_in_the_top_third_is_nothing(db):
+    seed(db, 40, 57)                                        # top third = 57 - 38 = 19
+    facts, findings = run(db)
+    assert findings == []
+    assert facts["control_n"] == 57 and facts["control_top_third_n"] == 19
+    assert facts["confirmed"] is False
+    assert facts["p_value"] < 1e-6           # the test WOULD confirm: still a fact, never a verdict
+
+
+def test_20_control_units_in_the_top_third_is_a_finding(db):
+    seed(db, 40, 60)                         # top third = 60 - 40 = 20 (round 1 needed 30)
+    facts, findings = run(db)
+    assert only(findings).n_units == 40
+    assert facts["control_top_third_n"] == 20
 
 
 # ---- MIN_UNIT_DAYS at its boundary -- counted in unit-days, never final-test records -------------
 
 def test_29_rework_unit_days_is_nothing_even_with_58_final_test_records(db):
-    seed(db, 29, 90, ft_records=2)          # each unit final-tested twice: 58 records, 29 units
+    seed(db, 29, 60, ft_records=2)          # each unit final-tested twice: 58 records, 29 units
     facts, findings = run(db)
     assert findings == []
-    assert facts["rework_unit_days"] == 29
+    assert facts["rework_unit_days"] == 29 and facts["rework_ratio_n"] == 29
     assert facts["confirmed"] is False
-    # The floor gates BEFORE the sweeps are read -- no median was ever computed.
-    assert "rework_ratio_n" not in facts and "median_ratio_rework" not in facts
+    # The floors gate only the verdict: the test is still run, and shown.
+    assert facts["mann_whitney_u"] == 0.0 and facts["p_value"] < 1e-6
 
 
 def test_30_rework_unit_days_is_a_finding_and_one_ratio_per_unit_day(db):
-    seed(db, 30, 90, ft_records=2)
+    seed(db, 30, 60, ft_records=2)          # 60 records, 30 unit-days; top third 20
     facts, findings = run(db)
     assert only(findings).n_units == 30
     assert facts["rework_unit_days"] == 30 and facts["rework_ratio_n"] == 30
 
 
 def test_30_rework_unit_days_with_only_29_scorable_is_nothing(db):
-    # The second floor is on the RATIO population: one unit-day's final test grades a stretch of
-    # travel the laser never grades, so only 29 ratios exist -- a guess, not a median.
+    # The floor is on the population the test is run over: one unit-day's final test grades a
+    # stretch of travel the laser never grades, so only 29 ratios exist.
     nxt = seed(db, 29, 90)
     with db.session() as s:
         aid = trim_file(s, nxt, START.replace(hour=9), "Track A", False,
@@ -261,27 +381,32 @@ def test_30_rework_unit_days_with_only_29_scorable_is_nothing(db):
     assert facts["rework_unit_days"] == 30 and facts["rework_ratio_n"] == 29
     assert facts["skipped_pairs"] == 1
     assert facts["confirmed"] is False
-    # Below the floor the medians are still facts -- shown with their n, confirming nothing.
     assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
     assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
 
 
-# ---- MIN_CONTROL at its boundary: 29 vs 30 control units in the TOP THIRD -----------------------
+# ---- the test is a fact always; the floors gate only the verdict --------------------------------
 
-def test_29_control_units_in_the_top_third_is_nothing(db):
-    seed(db, 40, 87)                                        # top third = 87 - 58 = 29
+def test_the_test_is_a_fact_even_far_below_the_floors(db):
+    seed(db, 5, 9)                          # 5 reworked, 9 pass/pass: a top third of 3
     facts, findings = run(db)
     assert findings == []
-    assert facts["control_n"] == 87 and facts["control_top_third_n"] == 29
-    assert facts["confirmed"] is False                      # a ratio that WOULD confirm...
-    assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)   # ...still a fact
+    assert facts["rework_ratio_n"] == 5 and facts["control_top_third_n"] == 3
+    assert facts["mann_whitney_u"] == 0.0 and facts["p_value"] is not None
+    assert facts["effect_ratio"] == pytest.approx(1 / 3, abs=1e-3)
+    assert facts["reduction"] == rework_load.REDUCTION and facts["confirmed"] is False
 
 
-def test_30_control_units_in_the_top_third_is_a_finding(db):
-    seed(db, 40, 88)                                        # top third = 88 - 58 = 30
+def test_with_no_reworked_unit_the_test_is_none_and_the_sizes_are_still_said(db):
+    seed(db, 0, 30)
     facts, findings = run(db)
-    assert only(findings).n_units == 40
-    assert facts["control_top_third_n"] == 30
+    assert findings == [] and facts["rework_unit_days"] == 0
+    assert facts["rework_ratio_n"] == 0 and facts["control_n"] == 30
+    assert facts["control_top_third_n"] == 10
+    assert facts["mann_whitney_u"] is None and facts["p_value"] is None
+    assert facts["effect_ratio"] is None and facts["median_ratio_rework"] is None
+    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert facts["confirmed"] is False and facts["note"]
 
 
 # ---- two-track units: each final test on ITS track, one ratio per unit-day ----------------------

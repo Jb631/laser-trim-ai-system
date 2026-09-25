@@ -56,39 +56,12 @@ from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..model import Finding
-from ..stats import plausible_resistance
+from ..stats import auc, plausible_resistance   # auc: the one AUC, shared with rework_load's rank test
 
 MIN_TRACKS = 300            # scored tracks for a laser, below this an AUC is a taste, not a rate
 MIN_PER_OUTCOME = 50         # each outcome (fail, pass) must clear this or the rarer one is noise
 STRONG_AUC = 0.70             # below this the laser's own settings are still the first thing to check
 LOOKBACK_DAYS = 365
-
-
-def auc(fails: List[float], passes: List[float]) -> Optional[float]:
-    """The probability a FAIL's score is greater than a PASS's (a tie counts half) -- the
-    Mann-Whitney U statistic scaled to [0, 1]. None when either side is empty: there is no
-    separation to report without at least one example of each outcome."""
-    if not fails or not passes:
-        return None
-    n1, n2 = len(fails), len(passes)
-    ranks = _ranks(list(fails) + list(passes))
-    r1 = sum(ranks[:n1])                      # fails occupy the first n1 slots, by construction
-    return (r1 - n1 * (n1 + 1) / 2.0) / (n1 * n2)
-
-
-def _ranks(xs: List[float]) -> List[float]:
-    """1-based ranks of `xs`; tied values share their block's average rank."""
-    order = sorted(range(len(xs)), key=lambda i: xs[i])
-    ranks = [0.0] * len(xs)
-    i = 0
-    while i < len(order):
-        j = i
-        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
-            j += 1
-        for k in range(i, j + 1):
-            ranks[order[k]] = (i + j) / 2.0 + 1.0
-        i = j + 1
-    return ranks
 
 
 def _score_error(t) -> Optional[float]:

@@ -1,6 +1,8 @@
 """Small, dependency-free statistics the analyzers share."""
+import math
+from collections import Counter
 from statistics import mean
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 
 def pct(flags: Sequence[bool]) -> Optional[float]:
@@ -37,6 +39,50 @@ def _ranks(xs: Sequence[float]) -> List[float]:
             ranks[order[k]] = (i + j) / 2.0 + 1.0       # ties share the average rank
         i = j + 1
     return ranks
+
+
+def auc(fails: Sequence[float], passes: Sequence[float]) -> Optional[float]:
+    """The probability a value from the first group is greater than one from the second (a tie
+    counts half) -- the Mann-Whitney U statistic scaled to [0, 1]. None when either side is empty:
+    there is no separation to report without at least one example of each.
+
+    Lives here, not in loss_origin where it was written, since rework_load's rank test builds its
+    U from it too (fix round 2, 2026-09-25) -- one rank computation, never a second copy."""
+    if not fails or not passes:
+        return None
+    n1, n2 = len(fails), len(passes)
+    ranks = _ranks(list(fails) + list(passes))
+    r1 = sum(ranks[:n1])                      # the first group occupies the first n1 slots
+    return (r1 - n1 * (n1 + 1) / 2.0) / (n1 * n2)
+
+
+def mann_whitney_lower(lower: Sequence[float],
+                       higher: Sequence[float]) -> Optional[Tuple[float, Optional[float]]]:
+    """(U, one-sided p) for the claim that values in `lower` tend to be LOWER than in `higher`.
+
+    U is the first group's Mann-Whitney statistic -- the number of (lower, higher) pairs with the
+    first value greater, a tie counting half -- built from `auc` (U = AUC x n1 x n2), so the ranks
+    are computed once. p is the normal approximation with the tie correction:
+        var(U) = n1 n2 / 12 * [(N + 1) - sum(t^3 - t) / (N (N - 1))],  z = (U - n1 n2 / 2) / sd,
+    p = Phi(z) -- small when U is small, i.e. when the first group sits low. No continuity
+    correction (the ruling names the tie correction only; at the >= 20 per group the analyzers
+    require, the two differ in the third significant figure). Matches
+    scipy.stats.mannwhitneyu(..., alternative="less", method="asymptotic", use_continuity=False).
+
+    None when either group is empty; p is None when every value is tied (no variation, no test).
+    """
+    a = auc(lower, higher)
+    if a is None:
+        return None
+    n1, n2 = len(lower), len(higher)
+    u = a * n1 * n2
+    n = n1 + n2
+    ties = sum(t ** 3 - t for t in Counter(list(lower) + list(higher)).values())
+    var = n1 * n2 / 12.0 * ((n + 1) - ties / (n * (n - 1)))
+    if var <= 0:
+        return u, None
+    z = (u - n1 * n2 / 2.0) / math.sqrt(var)
+    return u, 0.5 * math.erfc(-z / math.sqrt(2.0))
 
 
 def spearman(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:

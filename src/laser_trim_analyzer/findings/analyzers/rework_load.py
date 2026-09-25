@@ -34,13 +34,18 @@ track that passed at the laser is an untouched control reading even when the uni
 failed. Then one reading per unit-day: per track the latest final test, and the unit's track with
 the largest laser error -- same-track pairs only, never one track's final test over another's laser.
 
-**Compare like with like.** Final test has an error floor, so its ratio to the laser's error falls
-as the laser's error rises even on units nobody touched: a plain ratio of medians confirms partly by
-construction. So the reworked units' median ratio is compared with the median of the pass/pass
-units in the TOP THIRD of laser error -- the untouched units most like the reworked ones -- and the
-signature is confirmed only at CONFIRM_RATIO or below, with MIN_UNIT_DAYS ratios and MIN_CONTROL
-units in that top third. Both medians are facts whenever both groups exist; the floors gate only the
-verdict. Confirmation, never a screen.
+**Compare like with like, by a rank test.** Final test has an error floor, so its ratio to the
+laser's error falls as the laser's error rises even on units nobody touched: a plain ratio of
+medians confirms partly by construction. So the reworked units' ratios are compared with those of
+the pass/pass units in the TOP THIRD of laser error -- the untouched units that started nearest
+them. Confirmed when the reworked ratios are significantly LOWER (a one-sided Mann-Whitney U test,
+`findings/stats.mann_whitney_lower`, at CONFIRM_P) AND the shift is not trivial (the rework median
+at most MAX_EFFECT_RATIO of the top third's -- a large sample must not confirm a tiny shift), with
+MIN_UNIT_DAYS reworked unit-days and MIN_CONTROL units in the top third. Fix round 2, 2026-09-25:
+round 1's fixed 0.8 ratio cut rested on numbers that did not reproduce, and 6607's verdict under it
+turned on how one unit-day's final tests were reduced. U, p, both medians, both sizes, the effect
+ratio and the REDUCTION are facts always; the floors gate only the verdict. Confirmation, never a
+screen.
 
 No yield gain is claimed (`expected_gain_points=None`): this counts laser time hand trim is already
 spending on the laser's own failures, in the "Laser time you could save" group alongside pass_burden
@@ -58,15 +63,21 @@ from ...core.model_stats import failed_processing_statuses
 from ...core.models import LASER_ORDER
 from ...export.unit_chart import corrected_errors
 from ..model import Finding
+from ..stats import mann_whitney_lower
 
 LOOKBACK_DAYS = 365
 # get_model_trim_ft_agreement's own default -- identical on purpose, so the sweeps compared here are
 # drawn from the same confidently-linked population the readout counts.
 MIN_CONFIDENCE = 0.70
-MIN_UNIT_DAYS = 30    # reworked unit-days with a ratio -- below this a median is a guess, not a rate
-MIN_CONTROL = 30      # pass/pass unit-days in the TOP THIRD of laser error, the comparison group
-CONFIRM_RATIO = 0.8   # the rework median must be this share of the top third's median, or below
-JUNK_VOLTS = 1.0      # a worst |error| this large is not a linearity reading (a broken column)
+MIN_UNIT_DAYS = 30      # reworked unit-days with a ratio -- below this the test is not a verdict
+MIN_CONTROL = 20        # pass/pass unit-days in the TOP THIRD of laser error, the comparison group
+CONFIRM_P = 0.01        # one-sided Mann-Whitney: the reworked ratios LOWER than the top third's
+MAX_EFFECT_RATIO = 0.9  # ...and by enough: the rework median at most this share of theirs
+JUNK_VOLTS = 1.0        # a worst |error| this large is not a linearity reading (a broken column)
+# How one unit-day's final tests become ONE reading (round 1's same-track choice, unchanged): named
+# in the facts, because a verdict that turned on it would not be a verdict.
+REDUCTION = ("per track the latest final test against that track's last laser attempt; per "
+             "unit-day the track with the largest laser error")
 
 _CHUNK = 500          # ids per IN (...) -- far below SQLite's variable limit
 _SERIAL_TRACK = re.compile(r"^\d+([AaBb])?$")
@@ -269,8 +280,9 @@ def _trim_arrays(db, track_rows: Iterable[int]) -> Dict[int, Dict[str, Any]]:
     return out
 
 
-def _populations(db, model: str, cutoff: datetime) -> Dict[str, Any]:
-    """The reworked and the pass/pass unit-days, one reading each, with what was left out."""
+def _scored_pairs(db, model: str, cutoff: datetime) -> Dict[str, Any]:
+    """Every (final test, trim track) pair in the window that could be scored, one _Reading each,
+    with what was left out: unpaired final tests, pairs with no common graded position, junk."""
     fts = _final_tests(db, model, cutoff)
     linked, by_unit = _unit_tracks(db, (f["linked"] for f in fts))
     paired: List[Tuple[Dict[str, Any], Any, Dict[str, Any]]] = []
@@ -290,7 +302,7 @@ def _populations(db, model: str, cutoff: datetime) -> Dict[str, Any]:
 
     arrays = _trim_arrays(db, (t["track_row"] for _, _, t in paired))
     skipped = junk = 0
-    latest: Dict[Tuple, _Reading] = {}
+    readings: List[_Reading] = []
     for f, unit, track in paired:
         got = graded_maxima(f, arrays.get(track["track_row"]) or {})
         ratio, was_junk = (None, False) if got is None else _ratio(*got)
@@ -300,21 +312,88 @@ def _populations(db, model: str, cutoff: datetime) -> Dict[str, Any]:
         if ratio is None:
             skipped += 1                    # no common graded position (or nothing to divide by)
             continue
-        reading = _Reading(unit=unit, track_row=track["track_row"], rework=not track["passed"],
-                           when=f["when"], laser=got[1], ft=got[0], ratio=ratio)
-        key = (reading.rework, unit, reading.track_row)
-        if key not in latest or reading.when > latest[key].when:    # per track: the latest test
-            latest[key] = reading
+        readings.append(_Reading(unit=unit, track_row=track["track_row"], rework=not track["passed"],
+                                 when=f["when"], laser=got[1], ft=got[0], ratio=ratio))
+    return {"readings": readings, "skipped": skipped, "junk": junk, "unpaired": unpaired,
+            "rework_systems": rework_systems}
+
+
+def _one_per_unit_day(readings: Iterable[_Reading]) -> Tuple[List[_Reading], List[_Reading]]:
+    """(reworked, pass/pass): ONE reading per unit-day and group, by REDUCTION -- per track the
+    latest final test, then the unit-day's track with the largest laser error (same-track pairs
+    only, never one track's final test over another track's laser)."""
+    latest: Dict[Tuple, _Reading] = {}
+    for r in readings:
+        key = (r.rework, r.unit, r.track_row)
+        if key not in latest or r.when > latest[key].when:          # per track: the latest test
+            latest[key] = r
     per_unit: Dict[Tuple, _Reading] = {}
     for r in latest.values():               # per unit-day: the track with the largest laser error
         key = (r.rework, r.unit)
         best = per_unit.get(key)
         if best is None or (r.laser, r.ft, r.track_row) > (best.laser, best.ft, best.track_row):
             per_unit[key] = r
-    return {"rework": [r for (rw, _), r in per_unit.items() if rw],
-            "control": [r for (rw, _), r in per_unit.items() if not rw],
-            "skipped": skipped, "junk": junk, "unpaired": unpaired,
-            "rework_systems": rework_systems}
+    return ([r for (rw, _), r in per_unit.items() if rw],
+            [r for (rw, _), r in per_unit.items() if not rw])
+
+
+def _populations(db, model: str, cutoff: datetime) -> Dict[str, Any]:
+    """The reworked and the pass/pass unit-days, one reading each, with what was left out."""
+    scored = _scored_pairs(db, model, cutoff)
+    rework, control = _one_per_unit_day(scored["readings"])
+    return {"rework": rework, "control": control, "skipped": scored["skipped"],
+            "junk": scored["junk"], "unpaired": scored["unpaired"],
+            "rework_systems": scored["rework_systems"]}
+
+
+def rank_comparison(rework: Sequence[_Reading], top: Sequence[_Reading]) -> Dict[str, Optional[float]]:
+    """The test the verdict rests on, unrounded: U and one-sided p for "the reworked ratios sit
+    LOWER than the top third's", both medians and the effect ratio -- None where uncomputable
+    (either group empty; p also when every ratio is tied)."""
+    out: Dict[str, Optional[float]] = {"u": None, "p": None, "median_rework": None,
+                                       "median_top": None, "effect": None}
+    if rework:
+        out["median_rework"] = median(r.ratio for r in rework)
+    if top:
+        out["median_top"] = median(r.ratio for r in top)
+    test = mann_whitney_lower([r.ratio for r in rework], [r.ratio for r in top])
+    if test is not None:
+        out["u"], out["p"] = test
+    if out["median_rework"] is not None and out["median_top"]:
+        out["effect"] = out["median_rework"] / out["median_top"]
+    return out
+
+
+def verdict(n_rework: int, n_top: int, test: Dict[str, Optional[float]]) -> Tuple[bool, Optional[str]]:
+    """(confirmed, why not). The floors first, then significance, then the size of the shift."""
+    p, effect = test["p"], test["effect"]
+    if n_rework < MIN_UNIT_DAYS or n_top < MIN_CONTROL:
+        return False, (f"{n_rework} reworked unit-days and {n_top} comparable pass/pass units "
+                       "could be read over the travel both stations grade -- the test needs "
+                       f"{MIN_UNIT_DAYS} and {MIN_CONTROL}")
+    if p is None or not p < CONFIRM_P:
+        shown = ("every ratio is tied, so no rank test can be run" if p is None
+                 else f"one-sided rank test p = {p:.2g}")
+        return False, ("the reworked units' error did not fall significantly more between the "
+                       "stations than it did for the untouched units that started nearest them "
+                       f"({shown}; confirming needs p below {CONFIRM_P:g})")
+    if effect is None or effect > MAX_EFFECT_RATIO:
+        size = "cannot be sized" if effect is None else f"is {effect:.0%} of those units'"
+        return False, ("the reworked units' error fell more between the stations than it did for "
+                       f"the untouched units that started nearest them (p = {p:.2g}), but their "
+                       f"median ratio {size} -- too small a shift to call hand trim (needs "
+                       f"{MAX_EFFECT_RATIO:.0%} or less)")
+    return True, None
+
+
+def _sig(x: Optional[float], digits: int = 4) -> Optional[float]:
+    """`x` to `digits` significant figures (a p-value can be 1e-15; fixed decimals would zero it,
+    and three figures would print 0.01014 as 0.0101 -- no longer visibly over 0.01)."""
+    return None if x is None else float(f"{x:.{digits}g}")
+
+
+def _round(x: Optional[float], places: int = 3) -> Optional[float]:
+    return None if x is None else round(x, places)
 
 
 def _top_third(control: List[_Reading]) -> List[_Reading]:
@@ -355,49 +434,38 @@ def analyze(model: str, db, tracks, laser_label) -> Tuple[Dict[str, Any], List[F
         facts["confirmed"] = False
         facts["note"] = "no final tests are linked to a trim analysis for this model in the window"
         return facts, findings
-    if n_rework < MIN_UNIT_DAYS:
-        facts["confirmed"] = False
-        facts["note"] = f"{n_rework} rework unit-days in the window, below the {MIN_UNIT_DAYS} floor"
-        return facts, findings
 
     pop = _populations(db, model, cutoff)
     rework, control = pop["rework"], pop["control"]
     top = _top_third(control)
+    test = rank_comparison(rework, top)
+    # Every number the verdict rests on is a fact, whether or not the floors are met -- a fact
+    # always, a finding only when strong (the rule loss_origin states), so whoever overturns a
+    # threshold has the numbers to do it with.
     facts.update({
         "rework_ratio_n": len(rework), "control_n": len(control), "control_top_third_n": len(top),
         "control_top_third_min_laser_error": round(top[0].laser, 4) if top else None,
         "skipped_pairs": pop["skipped"], "junk_readings": pop["junk"],
-        "unpaired_final_tests": pop["unpaired"]})
-    # Both medians are facts whenever both groups exist -- a fact always, a finding only when
-    # strong (the rule loss_origin states): below the floors they are shown with their n and
-    # never confirm anything, so whoever overturns a floor has the numbers to do it with.
-    if rework and top:
-        facts["median_ratio_rework"] = round(median(r.ratio for r in rework), 3)
-        facts["median_ratio_control_top_third"] = round(median(r.ratio for r in top), 3)
-    if len(rework) < MIN_UNIT_DAYS or len(top) < MIN_CONTROL:
-        facts["confirmed"] = False
-        facts["note"] = (f"{len(rework)} reworked unit-days and {len(top)} comparable pass/pass "
-                         f"units could be read over the travel both stations grade -- below the "
-                         f"{MIN_UNIT_DAYS} and {MIN_CONTROL} needed to compare them")
-        return facts, findings
-
-    med_rework = median(r.ratio for r in rework)
-    med_top = median(r.ratio for r in top)
-    confirmed = med_rework <= CONFIRM_RATIO * med_top
+        "unpaired_final_tests": pop["unpaired"],
+        "mann_whitney_u": _round(test["u"], 1), "p_value": _sig(test["p"]),
+        "median_ratio_rework": _round(test["median_rework"]),
+        "median_ratio_control_top_third": _round(test["median_top"]),
+        "effect_ratio": _round(test["effect"]), "reduction": REDUCTION})
+    confirmed, why_not = verdict(len(rework), len(top), test)
     facts["confirmed"] = confirmed
     if not confirmed:
-        facts["note"] = (f"the reworked units' final-test error did not fall to {CONFIRM_RATIO:g}x "
-                         "or less of what comparable untouched units show (the top third of "
-                         "pass/pass units by laser error), so hand trim cannot be told apart from "
-                         "the two stations' normal difference")
+        facts["note"] = why_not
         return facts, findings
 
+    med_rework, med_top, p, effect = test["median_rework"], test["median_top"], test["p"], test["effect"]
     systems = _shop_order(pop["rework_systems"]) or _shop_order(t.system for t in dated)
     floor = top[0].laser
-    comparison = (f"median final-test / laser worst-error ratio of the {len(rework):,} reworked "
-                  f"unit-days against the median of the {len(top):,} pass/pass unit-days in the top "
-                  f"third of laser error ({floor:.4f} V and up), over the travel both stations "
-                  f"grade; confirmed at {CONFIRM_RATIO:g}x or below")
+    comparison = (f"one-sided rank test (Mann-Whitney U, normal approximation with tie correction): "
+                  f"the final-test / laser worst-error ratios of the {len(rework):,} reworked "
+                  f"unit-days against those of the {len(top):,} pass/pass unit-days in the top third "
+                  f"of laser error ({floor:.4f} V and up), over the travel both stations grade; "
+                  f"confirmed at p < {CONFIRM_P:g} with the rework median at {MAX_EFFECT_RATIO:g}x "
+                  "theirs or less")
     findings.append(Finding(
         model=model, analyzer="rework_load", category="Rework load",
         lever="laser_settings", systems=systems,
@@ -405,24 +473,26 @@ def analyze(model: str, db, tracks, laser_label) -> Tuple[Dict[str, Any], List[F
                "pass final test after rework"),
         summary=(
             f"{n_rework:,} unit-days in the last year failed linearity at the laser and then passed "
-            "final test. That is hand trim, not an unnecessary rejection. Over the travel both "
-            "stations grade, each corrected with its own offset, final test's worst error on "
-            f"{len(rework):,} of these units is a median {med_rework:.0%} of the laser's on the same "
-            f"track, against {med_top:.0%} on the {len(top):,} untouched units (their track passed "
-            f"at both stations) with the largest laser errors (the top third, {floor:.4f} V and "
-            "up) -- the error fell "
-            "between the stations further than on comparable untouched units, which a looser final "
-            "test alone would not produce. No gain is claimed: this counts laser time hand trim is "
-            "already spending on this model's own failures."),
+            "final test. That is hand trim, not an unnecessary rejection: their error fell more "
+            "between the stations than it did for the untouched units that started nearest them. "
+            "Over the travel both stations grade, each corrected with its own offset, final test's "
+            f"worst error on {len(rework):,} of these units is a median {med_rework:.0%} of the "
+            f"laser's on the same track, against {med_top:.0%} on the {len(top):,} untouched units "
+            "(their track passed at both stations) with the largest laser errors (the top third, "
+            f"{floor:.4f} V and up); a one-sided rank test puts the difference at p = {p:.2g}. No "
+            "gain is claimed: this counts laser time hand trim is already spending on this model's "
+            "own failures."),
         n_units=n_rework,
-        strength_name=("reworked units' median final-test/laser error ratio, as a share of "
-                       "comparable untouched units'"),
-        strength_value=round(med_rework / med_top, 3) if med_top else None,
+        strength_name=("reworked units' median final-test/laser error ratio, as a share of the "
+                       "untouched units' that started nearest them"),
+        strength_value=_round(effect),
         expected_gain_points=None,           # hand-trim labour avoided, never a yield rate
         evidence={"facts": {"rework_unit_days": n_rework, "rework_ratio_n": len(rework),
                             "control_n": len(control), "control_top_third_n": len(top),
-                            "median_ratio_rework": round(med_rework, 3),
-                            "median_ratio_control_top_third": round(med_top, 3),
-                            "skipped_pairs": pop["skipped"]},
+                            "median_ratio_rework": _round(med_rework),
+                            "median_ratio_control_top_third": _round(med_top),
+                            "effect_ratio": _round(effect), "mann_whitney_u": _round(test["u"], 1),
+                            "p_value": _sig(p), "skipped_pairs": pop["skipped"],
+                            "reduction": REDUCTION},
                   "comparison": comparison}))
     return facts, findings
