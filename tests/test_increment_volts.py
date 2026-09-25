@@ -653,19 +653,24 @@ def test_the_start_is_not_recorded_until_the_column_really_exists(tmp_path, monk
     import sqlite3
     import sqlalchemy
     from laser_trim_analyzer.database import manager as mgr
+    # _run_migrations runs as MigrationsMixin (database/migrations.py, C2 Task 4) -- a bare
+    # `text(...)` call inside it resolves against THAT module's globals, not manager.py's, so
+    # the sabotage has to patch `text` where the migration code now actually looks it up
+    # ("patch where it's used"). Patching mgr.text here would silently do nothing.
+    from laser_trim_analyzer.database import migrations as migr
     path = tmp_path / "old.db"
     conn = sqlite3.connect(path)
     conn.executescript(_PRE_CAPTURE_TRIM_PASSES)
     conn.close()
 
-    real_text = mgr.text
+    real_text = migr.text
 
     def sabotaged(sql, *a, **k):
         if str(sql).startswith("ALTER TABLE trim_passes ADD COLUMN"):
             return real_text("SELECT no_such_function()")          # fails, not a duplicate
         return real_text(sql, *a, **k)
 
-    monkeypatch.setattr(mgr, "text", sabotaged)
+    monkeypatch.setattr(migr, "text", sabotaged)
     mgr.DatabaseManager(path).close()
     conn = sqlite3.connect(path)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(trim_passes)")}
@@ -673,7 +678,7 @@ def test_the_start_is_not_recorded_until_the_column_really_exists(tmp_path, monk
     assert "increment_volts" not in cols
     assert _since(path) is None
 
-    monkeypatch.setattr(mgr, "text", real_text)
+    monkeypatch.setattr(migr, "text", real_text)
     mgr.DatabaseManager(path).close()
     assert _since(path) is not None
 
