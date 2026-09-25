@@ -23,6 +23,7 @@ from laser_trim_analyzer.database.models import (
 from laser_trim_analyzer.database.manager import (
     DatabaseManager,
     DatabaseError,
+    DefaultDatabaseRefused,
     get_database,
     reset_database,
 )
@@ -41,6 +42,7 @@ __all__ = [
     # Manager
     "DatabaseManager",
     "DatabaseError",
+    "DefaultDatabaseRefused",
     "get_database",
     "reset_database",
 ]

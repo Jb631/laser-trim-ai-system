@@ -252,6 +252,14 @@ class DatabaseError(Exception):
 # ---------------------------------------------------------------------------
 _default_database_allowed = False
 
+# Set the first time DatabaseManager.__init__ logs the refusal below, so a
+# whole process writes it once -- not once per refusal. The Processor's
+# model-spec lookups (_get_linearity_type, _get_spec_for_analysis) each call
+# get_database() per file, so an unattended run over many files used to write
+# one ERROR line per file for the exact same cause. Tests reset this per test
+# (see conftest.py), the same way they pin _default_database_allowed.
+_default_database_refusal_logged = False
+
 DEFAULT_DATABASE_REFUSED = (
     "No database named: pass an explicit path or inject a manager (the implicit "
     "default is the production database and only the app opens it). "
@@ -259,6 +267,16 @@ DEFAULT_DATABASE_REFUSED = (
     "get_database() -- the Processor does -- set "
     "laser_trim_analyzer.database.manager._db_manager = DatabaseManager(path) first."
 )
+
+
+class DefaultDatabaseRefused(RuntimeError):
+    """`DatabaseManager()` / `get_database()` refused the implicit default.
+
+    A named subclass so a caller (or a test) can tell this refusal apart from
+    any other RuntimeError, while staying a RuntimeError itself -- every
+    existing `except RuntimeError` (and `except Exception`) still catches it
+    unchanged. See `allow_default_database` for who may lift the refusal.
+    """
 
 
 def allow_default_database() -> None:
@@ -296,9 +314,14 @@ class DatabaseManager:
             # Logged as well as raised: most of the Processor's lookups catch
             # Exception and log it at DEBUG (a failed spec lookup reads as "no
             # spec"), so a raise alone would let a script that forgot to name
-            # its database run on, quietly, on degraded results.
-            logger.error(DEFAULT_DATABASE_REFUSED)
-            raise RuntimeError(DEFAULT_DATABASE_REFUSED)
+            # its database run on, quietly, on degraded results. Logged only
+            # ONCE per process, not once per refusal -- see
+            # _default_database_refusal_logged above.
+            global _default_database_refusal_logged
+            if not _default_database_refusal_logged:
+                logger.error(DEFAULT_DATABASE_REFUSED)
+                _default_database_refusal_logged = True
+            raise DefaultDatabaseRefused(DEFAULT_DATABASE_REFUSED)
         config = get_config()
 
         if database_path is None:

@@ -49,6 +49,13 @@ def _never_touch_the_real_database(tmp_path, monkeypatch):
     # Every test runs as a script would: the implicit default is refused.
     monkeypatch.setattr(_mgr, "_default_database_allowed", False)
 
+    # The refusal's ERROR log is written once per PROCESS, not once per
+    # refusal (C2 task 3b) -- so without this, whichever test happens to
+    # refuse the default first in this process leaves the flag set and every
+    # later test's own refusal logs silently. Reset per test, same as the
+    # switch above.
+    monkeypatch.setattr(_mgr, "_default_database_refusal_logged", False, raising=False)
+
     # Both roots: the tree the tests live in and the tree the package was
     # imported from. They differ when the suite runs from a git worktree.
     protected = {

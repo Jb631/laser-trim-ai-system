@@ -15,15 +15,27 @@ Captures per file/track:
 Runs on a throwaway database of its own: the processor reaches one through
 get_database() (spec lookups, and it saves smoothness files and marks refused
 ones), and the app's default -- the production database -- is refused outside
-the app. So model_specs is empty here, and the snapshot no longer depends on
-which machine's database it ran beside. save_final_test is still stubbed, so
-nothing is written even there.
+the app. That throwaway database starts empty, so before 2026-09-25 model_specs
+was empty here too, and the snapshot's spec-aware analysis (linearity_type,
+angle_spec/tol/tol_type, exclude_points -- see core/processor.py's
+_get_spec_for_analysis) silently differed from a run beside a populated
+database. Measured on real files: 8340 and 8340-3 (electrical_angle_tol_type=
+'min') shift linearity_error/linearity_fail_points once their spec is loaded,
+because 'min' grants a k allowance even with no explicit angle_tol (see
+core/analyzer.py::_k_bounds_from_angle_tol). So this now loads model_specs from
+the CONFIGURED DEFAULT database into the throwaway one first -- read-only
+(sqlite3, mode=ro), never opened read-write, which stays the entire point of
+the 2026-09-24 guard. No default database file (or one that is not a valid
+database, or predates the model_specs table) leaves the throwaway database
+exactly as empty as before -- never raises. save_final_test is still stubbed,
+so nothing is written even there.
 
 Usage:
     python scripts/parser_audit/snapshot.py [output_path]
 """
 import sys
 import json
+import sqlite3
 import tempfile
 import warnings
 import logging
@@ -39,6 +51,7 @@ logging.getLogger().setLevel(logging.CRITICAL)
 from laser_trim_analyzer.core.processor import Processor
 from laser_trim_analyzer.core.parser import detect_file_type
 from laser_trim_analyzer.database import manager as mgr
+import laser_trim_analyzer.database as dbpkg
 
 
 PRECISION = 6  # decimal places for float comparison
@@ -66,15 +79,60 @@ def snapshot_track(track):
     }
 
 
+def _default_database_path() -> Path:
+    """Where DatabaseManager() would open, per THIS process's config -- the
+    SAME resolution DatabaseManager.__init__ uses (mgr.get_config()), so a
+    caller that redirects the default for the guard (as the tests do)
+    redirects this too."""
+    return Path(mgr.get_config().database.path)
+
+
+def load_model_specs_from_default_database(db) -> int:
+    """Copy every `model_specs` row from the CONFIGURED DEFAULT database into
+    `db` -- read-only, so the snapshot sees the same specs a pre-guard run
+    would have (silently, against the real default) without ever opening it
+    read-write, which stays the entire point of the 2026-09-24 guard.
+
+    Returns how many rows were copied. 0 or the default path not existing, not
+    a valid sqlite file, or predating the model_specs table -- never raises;
+    `db` is left exactly as it was.
+    """
+    default_path = _default_database_path()
+    if not default_path.exists():
+        return 0
+    try:
+        con = sqlite3.connect(f"file:{default_path}?mode=ro", uri=True)
+        try:
+            con.row_factory = sqlite3.Row
+            rows = con.execute("SELECT * FROM model_specs").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return 0
+    for row in rows:
+        data = dict(row)
+        data.pop("id", None)
+        data.pop("created_at", None)
+        data.pop("updated_at", None)
+        db.save_model_spec(data)
+    return len(rows)
+
+
 def build_snapshot(work_root: Path) -> dict:
     injected = mgr._db_manager
+    injected_pkg = getattr(dbpkg, "_db_manager", None)
     with tempfile.TemporaryDirectory(prefix="parser_audit_") as scratch:
         db = mgr.DatabaseManager(Path(scratch) / "snapshot.db")
         mgr._db_manager = db
+        dbpkg._db_manager = db
+        n_specs = load_model_specs_from_default_database(db)
+        print(f"Loaded {n_specs} model_specs row(s) from the default database "
+              f"(read-only)", file=sys.stderr)
         try:
             return _snapshot(work_root, db)
         finally:
             mgr._db_manager = injected          # whatever was injected before, even None
+            dbpkg._db_manager = injected_pkg
             db.close()
 
 

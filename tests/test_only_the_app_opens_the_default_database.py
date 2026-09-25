@@ -71,6 +71,100 @@ def test_get_database_with_nothing_injected_refuses_and_caches_nothing(tmp_path,
     assert not target.parent.exists()
 
 
+# ------------------------------------------------ the refusal is a NAMED subclass (C2 task 3a)
+
+@pytest.mark.parametrize("build", [lambda: mgr.DatabaseManager(),
+                                   lambda: mgr.DatabaseManager(None)],
+                         ids=["no-argument", "None"])
+def test_the_refusal_is_the_named_subclass(tmp_path, monkeypatch, build):
+    """`DefaultDatabaseRefused` -- so a test (or a reviewer) can tell this
+    RuntimeError apart from any other, while every existing bare
+    `except RuntimeError`/`except Exception` still catches it."""
+    _default_at(monkeypatch, tmp_path / "not_yet" / "analysis.db")
+    with pytest.raises(mgr.DefaultDatabaseRefused) as excinfo:
+        build()
+    assert isinstance(excinfo.value, RuntimeError)
+
+
+def test_default_database_refused_is_exported_from_the_database_package():
+    from laser_trim_analyzer.database import DefaultDatabaseRefused
+    assert DefaultDatabaseRefused is mgr.DefaultDatabaseRefused
+    assert issubclass(DefaultDatabaseRefused, RuntimeError)
+
+
+def test_get_database_raises_the_named_subclass_too(tmp_path, monkeypatch):
+    _default_at(monkeypatch, tmp_path / "not_yet" / "analysis.db")
+    mgr.reset_database()
+    with pytest.raises(mgr.DefaultDatabaseRefused):
+        mgr.get_database()
+
+
+# --------------------------------------------- the refusal is logged ONCE per process (C2 task 3b)
+
+def test_the_refusal_is_logged_once_per_process_not_once_per_call(tmp_path, monkeypatch, caplog):
+    """The guard (39461a2) logs at ERROR as well as raising, because the
+    Processor's model-spec lookups swallow the raise at DEBUG. Each lookup
+    calls get_database() -- so a run over many files, each refused the same
+    way, used to write one ERROR line per file. Dedupe at the source: once
+    per process, not once per refusal."""
+    _default_at(monkeypatch, tmp_path / "not_yet" / "analysis.db")
+    monkeypatch.setattr(mgr, "_default_database_refusal_logged", False)
+    with caplog.at_level(logging.ERROR, logger="laser_trim_analyzer.database.manager"):
+        for _ in range(4):
+            with pytest.raises(mgr.DefaultDatabaseRefused):
+                mgr.DatabaseManager()
+    refusals = [r for r in caplog.records
+                if r.levelno == logging.ERROR and "No database named" in r.message]
+    assert len(refusals) == 1, [r.message for r in caplog.records]
+
+
+def test_processor_model_spec_lookups_across_two_files_log_the_refusal_exactly_once(
+        tmp_path, monkeypatch, caplog):
+    """The brief's own framing: two files processed with no database named ->
+    exactly one ERROR record. _get_linearity_type / _get_spec_for_analysis are
+    the Processor's model-spec lookups that reach get_database() per file; the
+    Processor's own handling (swallow at DEBUG, degrade to no specs) is
+    unchanged -- only the ERROR-level log at the source is deduped."""
+    from laser_trim_analyzer.core.processor import Processor
+
+    _default_at(monkeypatch, tmp_path / "not_yet" / "analysis.db")
+    monkeypatch.setattr(mgr, "_default_database_refusal_logged", False)
+    mgr.reset_database()
+    proc = Processor(use_ml=False)
+
+    with caplog.at_level(logging.ERROR, logger="laser_trim_analyzer.database.manager"):
+        assert proc._get_linearity_type("MODEL-FILE-1") is None      # "file" 1
+        assert proc._get_spec_for_analysis("MODEL-FILE-1") is not None
+        assert proc._get_linearity_type("MODEL-FILE-2") is None      # "file" 2
+        assert proc._get_spec_for_analysis("MODEL-FILE-2") is not None
+
+    refusals = [r for r in caplog.records
+                if r.levelno == logging.ERROR and "No database named" in r.message]
+    assert len(refusals) == 1, [r.message for r in caplog.records]
+    assert mgr._db_manager is None, "a refused manager must not be cached"
+
+
+def test_with_a_tmp_manager_injected_the_processor_logs_no_refusal_at_all(
+        tmp_path, monkeypatch, caplog):
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as mgr_mod
+    import laser_trim_analyzer.database as dbpkg
+
+    monkeypatch.setattr(mgr, "_default_database_refusal_logged", False)
+    injected = mgr.DatabaseManager(tmp_path / "injected.db")
+    monkeypatch.setattr(mgr_mod, "_db_manager", injected, raising=False)
+    monkeypatch.setattr(dbpkg, "_db_manager", injected, raising=False)
+    proc = Processor(use_ml=False)
+
+    with caplog.at_level(logging.ERROR, logger="laser_trim_analyzer.database.manager"):
+        proc._get_linearity_type("MODEL-FILE-1")
+        proc._get_spec_for_analysis("MODEL-FILE-2")
+
+    refusals = [r for r in caplog.records
+                if r.levelno == logging.ERROR and "No database named" in r.message]
+    assert refusals == []
+
+
 def test_an_explicit_path_is_always_allowed(tmp_path):
     """Named on purpose -- `data/analysis.db` included, the way James's work scripts name it."""
     assert mgr._default_database_allowed is False
