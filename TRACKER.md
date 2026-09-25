@@ -14,10 +14,11 @@ database guard (only the app opens its default database — every script now nam
 small fixes. Before it, `422da7a` (2026-09-24): facelift step 1 and every parse fix. At work:
 `git pull`, then the top section of `BRING_TO_WORK.md` (and the two 2026-09-24 sections if you have
 not pulled them yet). Nothing needs running except the optional TrimVolts back-fill. **Being built
-now:** F5 ("Inactive" models, your call of 2026-09-25) and the ingest-speed work (A4/A3/A5 — its
-design is done; the save probe you run at work comes first). Pushed on 2026-09-25: the facelift
-follow-ups (F4) in the morning, and the rest of the findings catalogue (B6) at midday — after pulling
-that one, refresh the findings once (Settings → Database → Refresh process findings).
+now:** the rest of the ingest-speed work (A4/A3/A5, Tasks 5–12: the batched writer, worker
+processes, workers that come back) — the save probe you run at work (A6) tunes it. Pushed on
+2026-09-25: the facelift follow-ups (F4) in the morning; the rest of the findings catalogue (B6) at
+midday (after pulling it, refresh the findings once: Settings → Database → Refresh process findings);
+the save probe; and in the afternoon F5 ("Inactive" models) with the first three speed steps.
 
 **The rebuild is done** (B2: 168,501 files in 21.8 hours, finished 2026-09-22) and every number
 that rested on a final-test verdict has been re-derived on it (B3).
@@ -160,7 +161,10 @@ problem — per-file conversations with the share were. Same code, same laptop:
       final-test save also scans the whole final-test table (no index on `file_hash`: 22 ms → 3.5 ms
       with one). About 200 ms/file of A0 does not reproduce off the laptop — the probe (A6) says
       whether it is in the code (processes remove it) or in the app and machine (they do not).
-      Task 1, the probe, is shipped; Tasks 2–12 (the index, pragmas, the batched writer, worker
+      Tasks 1–4 are shipped (the probe; the batch line's save CPU beside its wall time; the
+      `file_hash` indexes — 0.085 s to add on the 6 GB database; WAL's safe flush setting and a 64 MB
+      page cache — which also made the connection hook that enforces foreign keys actually run, as it
+      never had); Tasks 5–12 (the batched writer, worker
       processes, workers that come back) are next — Claude.
 - [ ] **A0 · WHERE THE INGEST'S TIME ACTUALLY GOES — measured at work, 2026-09-21.**
       From the app's own batch line: `load 0.0s | check 0.3s (62,323 new) | verify 0
@@ -720,7 +724,13 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       overturn once you have seen the pages): `docs/superpowers/specs/2026-09-24-facelift-step2-pages-design.md`,
       plan `docs/superpowers/plans/2026-09-24-facelift-step2-pages.md`. Next to build.
 
-- [ ] **F5 · "Inactive" models — James, 2026-09-25:** *"models that havnt been trimmed in 2 years should
+- [x] **F5 · DONE 2026-09-25** — 196 of 326 models read Inactive on the home copy (190 by date, 6 "no trims
+      on record": every file they have is a no-cut check sweep); nothing hidden, counts unchanged, the
+      top-three previews put active models first. With it: F4's review gaps and the findings
+      catalogue's re-review residuals below, and a callback that keeps failing is logged once, then
+      counted. **A question for you:** a model pinned in Settings → Active Models (the backlog) can
+      also read Inactive (not trimmed in two years) — say if either word should change.
+      Was: **F5 · "Inactive" models — James, 2026-09-25:** *"models that havnt been trimmed in 2 years should
       show inacative or something but i dont want to hide them as the data is useful if we decide to
       start building the model again."* A model whose newest trim file is more than two years older than
       the newest file in the database is labelled **Inactive · last trimmed Mon YYYY** wherever it appears

@@ -1,5 +1,22 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-25 afternoon — "Inactive" models, and the first three speed steps
+
+No schema change beyond two new indexes, which the first launch adds by itself (well under a second).
+
+1. **`git pull`.**
+2. **Inactive models (your call this morning):** a model not trimmed in the two years before the
+   newest file reads **Inactive · last trimmed Mon YYYY** — on its findings rows, the model page
+   caption and Triage. Nothing is hidden and no count changes; the short top-three lists put active
+   models first. On the home copy: 196 of 326 models, 6 of them "no trims on record" (their only
+   files are no-cut check sweeps). Triage's date column now says which files it counts.
+3. **Speed, the first three steps:** a final-test save no longer scans the whole final-test table
+   (an index); SQLite now flushes the way its WAL mode is designed to (a power cut can lose only the
+   last few saved files, which the next run processes again — it never damages the database) with a
+   larger page cache; and the batch line shows how much of the save was work (`save cpu`) beside how
+   long it took. The bigger steps — batched saves and worker processes — come next; the save probe
+   (below) tunes them.
+
 ## ⚡ 2026-09-25 — one measurement for the speed work (about 6 minutes, safe with the app open)
 
 This pull adds `scripts\ingest_save_probe.py`; nothing in the app changes. It measures, on YOUR
