@@ -212,6 +212,34 @@ def linearity_verdict_from_limits(track: TrackData) -> Dict[str, Optional[Any]]:
     return {"fail_points": fail_count, "linearity_pass": fail_count == 0}
 
 
+def corrected_errors(errors, offset=0.0, k=0.0, theory=None):
+    """The GRADED trace: `error + theory*k + offset`.
+
+    Single definition of the adjustment, shared by the print export, the V6
+    unit modal's fail-point count and its on-screen chart, the trim-vs-FT
+    overlay and the findings (rework_load), so none of them can disagree about
+    which curve is being judged. Lives in core, not in export/unit_chart where
+    it was written: a matplotlib module is no place for grading arithmetic,
+    and the findings engine imported plotting code to reach it (fix round 2,
+    2026-09-25). export/unit_chart re-exports it, so its callers are unchanged.
+
+    k (stored as TrackResult.optimal_slope) is the theory ROTATION factor;
+    dropping it re-grades the unit on a curve the analyzer never judged and
+    invents fail points at the end of travel, where theory is largest —
+    the 2026-08-31 "Fail Points: 18 / Linearity Pass: YES" contradiction on
+    8415-1 SN 26. Mirrors analyzer._calculate_linearity, including its
+    `if theory_volts and optimal_k != 0` guard: no theory column or no k
+    means offset-only, exactly as the analyzer graded it.
+    """
+    errs = list(errors or [])
+    off = float(offset or 0.0)
+    k = float(k or 0.0)
+    if not k or not theory or len(theory) < len(errs):
+        return [None if e is None else e + off for e in errs]
+    return [None if e is None else e + (theory[i] or 0.0) * k + off
+            for i, e in enumerate(errs)]
+
+
 class Analyzer:
     """
     Combined analyzer for laser trim data.

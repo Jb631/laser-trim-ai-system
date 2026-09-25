@@ -28,7 +28,7 @@ the frozen fallback UI, and this work does not touch it.
 """
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from laser_trim_analyzer.export.unit_chart import corrected_errors
+from laser_trim_analyzer.core.analyzer import corrected_errors
 
 # The confidence floor for treating a trim record and a final-test record as
 # the same unit. Matches the app-wide default (manager.py `min_confidence`).

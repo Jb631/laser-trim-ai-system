@@ -411,3 +411,26 @@ def test_fleet_latest_does_not_use_the_deprecated_datetime_adapter(tmp_path):
         # some library on this path deprecates something unrelated (e.g. pydantic's).
         warnings.filterwarnings("error", message=r".*datetime adapter.*", category=DeprecationWarning)
         assert _fleet_latest(db) is None                  # empty db -- exercises the bind either way
+
+
+# ---- the findings engine loads no plotting code (fix round 2, 2026-09-25) --------------------------
+# rework_load reads both stations' sweeps through the ONE graded-trace definition,
+# corrected_errors. While that lived in export/unit_chart (a matplotlib module), importing the
+# engine -- on the ingest worker, in scripts, in every analyzer test -- loaded matplotlib.figure.
+
+def test_importing_the_findings_engine_loads_no_plotting_code():
+    """In a FRESH interpreter, so nothing this test session already imported can hide it."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[1] / "src"
+    code = ("import sys, laser_trim_analyzer.findings.engine as e; "
+            "print(e.__file__); "
+            "print(sorted(m for m in sys.modules if m.split('.')[0] == 'matplotlib'))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         env={**os.environ, "PYTHONPATH": str(src)}, timeout=120)
+    assert out.returncode == 0, out.stderr
+    engine_file, loaded = out.stdout.strip().splitlines()[-2:]
+    assert engine_file.startswith(str(src))            # the code under test, not another checkout
+    assert loaded == "[]", f"importing the findings engine loaded {loaded}"

@@ -18,7 +18,7 @@ RECORDS -- 6607 tests each track in its own file, so 533 records were 261 unit-d
 **The metric is what hand trim changes** (review of 85222c4). Per linked (unit, track) pair: the
 largest |corrected error| over the positions BOTH stations grade -- trim rows that carry limits,
 inside the final test's graded window, on one position axis -- each station's sweep corrected with
-its OWN stored offset (and slope where stored) through `export/unit_chart.corrected_errors`. The
+its OWN stored offset (and slope where stored) through `core/analyzer.corrected_errors`. The
 stored scalars (`final_linearity_error_shifted`, `linearity_error`) cannot do this: they are maxima
 over each station's whole sweep, and they sit where the other station never grades (6607: the
 laser's worst point was beyond final test's +/-14 on 1,090 of 1,091 pairs; 8340-1: on rows with no
@@ -57,11 +57,10 @@ from datetime import datetime, timedelta
 from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from ...core.analyzer import max_abs_measured
+from ...core.analyzer import corrected_errors, max_abs_measured
 from ...core.ft_overlay import normalize_track_id, positions_on_trim_axis, ungraded_indices
 from ...core.model_stats import failed_processing_statuses
 from ...core.models import LASER_ORDER
-from ...export.unit_chart import corrected_errors
 from ..model import Finding
 from ..stats import mann_whitney_lower
 
@@ -136,7 +135,7 @@ def graded_maxima(ft: Dict[str, Any], trim: Dict[str, Any]) -> Optional[Tuple[fl
     graded_start / graded_end. A trim row is graded when it carries limits; a final-test row when
     it also lies inside the station's graded window. Final test's positions are placed on the
     laser's axis first (core/ft_overlay.positions_on_trim_axis). Each station is corrected with
-    its OWN offset and slope (export/unit_chart.corrected_errors); a blank reading is ungraded,
+    its OWN offset and slope (core/analyzer.corrected_errors); a blank reading is ungraded,
     never 0.0 (core/analyzer.max_abs_measured).
     """
     t_pos = list(trim.get("positions") or [])

@@ -11,6 +11,8 @@ requirement and decides accept/reject; sigma only separates PASS from
 "pass, watch process". The builder applies that rule.
 """
 from laser_trim_analyzer.core.models import laser_label
+# The graded-trace definition lives in core (see there); re-exported for this module's callers.
+from laser_trim_analyzer.core.analyzer import corrected_errors  # noqa: F401
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -32,30 +34,6 @@ _C = {
 
 def _fmt(v, spec=".6f", na="N/A"):
     return format(v, spec) if isinstance(v, (int, float)) else na
-
-
-def corrected_errors(errors, offset=0.0, k=0.0, theory=None):
-    """The GRADED trace: `error + theory*k + offset`.
-
-    Single definition of the adjustment, shared by this export, the V6 unit
-    modal's fail-point count and its on-screen chart, so all three can never
-    disagree about which curve is being judged.
-
-    k (stored as TrackResult.optimal_slope) is the theory ROTATION factor;
-    dropping it re-grades the unit on a curve the analyzer never judged and
-    invents fail points at the end of travel, where theory is largest —
-    the 2026-08-31 "Fail Points: 18 / Linearity Pass: YES" contradiction on
-    8415-1 SN 26. Mirrors analyzer._calculate_linearity, including its
-    `if theory_volts and optimal_k != 0` guard: no theory column or no k
-    means offset-only, exactly as the analyzer graded it.
-    """
-    errs = list(errors or [])
-    off = float(offset or 0.0)
-    k = float(k or 0.0)
-    if not k or not theory or len(theory) < len(errs):
-        return [None if e is None else e + off for e in errs]
-    return [None if e is None else e + (theory[i] or 0.0) * k + off
-            for i, e in enumerate(errs)]
 
 
 def _spec_band_text(data: Dict[str, Any]) -> str:
