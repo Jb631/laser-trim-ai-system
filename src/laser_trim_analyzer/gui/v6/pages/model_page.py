@@ -18,7 +18,8 @@ from laser_trim_analyzer.findings import presentation as P
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
-from laser_trim_analyzer.gui.v6.widgets.findings_tab import FindingsTab
+from laser_trim_analyzer.gui.v6.widgets.findings_tab import (
+    NOT_COMPUTED_TEXT, FindingsTab, analyzer_name)
 from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
 from laser_trim_analyzer.gui.v6.widgets.history_tab import HistoryTab
@@ -669,6 +670,17 @@ class ModelPage(PageBase):
         "nothing worth changing" over a load that actually crashed is exactly the
         CLAUDE.md hazard this page exists to remove -- a failure must never look like
         a result.
+
+        Otherwise three states, never two (final review, 2026-09-24 -- "nothing worth
+        changing" used to be said for all three):
+          * NOT COMPUTED -- no cached facts: the Findings tab's own "not computed yet"
+            line, and no count pill (unknown is not zero);
+          * FAILED -- an analyzer crashed (facts["errors"]): a check-tone banner naming
+            each one, never the "nothing" line; rows the other analyzers found still show,
+            with the banner saying the list may be short;
+          * EMPTY -- computed, nothing in these three groups: "Nothing worth changing
+            stands out", under a 0. Decided on the COUNT, not on `findings`: a model with
+            only history findings (off this section) was a "0" over a blank body.
         """
         t = self.theme
         for child in self._worth_section.winfo_children():
@@ -676,15 +688,34 @@ class ModelPage(PageBase):
         self._worth_view = None
         if "process findings" in (failed or []):
             return
+        title = "Worth changing on this model"
+        facts = (findings_data or {}).get("facts")
+        if not facts:
+            blocks.group_header(self._worth_section, t, title, None
+                                ).pack(fill="x", pady=(0, t.SPACE_XS))
+            ctk.CTkLabel(self._worth_section, text=NOT_COMPUTED_TEXT, font=t.font(t.SIZE_BODY),
+                         text_color=t.TEXT_SECONDARY, anchor="w", justify="left", wraplength=1000
+                         ).pack(fill="x", padx=t.SPACE_SM, pady=(0, t.SPACE_SM))
+            return
         findings = (findings_data or {}).get("findings") or []
         count = _worth_changing_count(findings)
-        blocks.group_header(self._worth_section, t, "Worth changing on this model", count,
+        errors = facts.get("errors") or {}
+        blocks.group_header(self._worth_section, t, title,
+                            None if (errors and not count) else count,
                             tone="act").pack(fill="x", pady=(0, t.SPACE_XS))
-        if not findings:
-            ctk.CTkLabel(self._worth_section,
-                        text="Nothing worth changing stands out for this model.",
-                        font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY,
-                        anchor="w").pack(fill="x", padx=t.SPACE_SM, pady=(0, t.SPACE_SM))
+        if errors:
+            named = "; ".join(f"{analyzer_name(k)} ({errors[k]})" for k in sorted(errors))
+            blocks.banner(self._worth_section, t,
+                          f"Could not be worked out on the last refresh: {named}. Anything "
+                          f"{'it' if len(errors) == 1 else 'they'} would have found is missing "
+                          f"here — this is an error, not a result. The log has the details."
+                          ).pack(fill="x", pady=(0, t.SPACE_SM))
+        if not count:
+            if not errors:
+                ctk.CTkLabel(self._worth_section,
+                             text="Nothing worth changing stands out for this model.",
+                             font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY,
+                             anchor="w").pack(fill="x", padx=t.SPACE_SM, pady=(0, t.SPACE_SM))
             return
         view = FindingsView(self._worth_section, t, on_open=None, include_empty=False,
                             rows_per_group=3, groups=_WORTH_CHANGING_GROUPS)

@@ -86,16 +86,10 @@ class FindingsPage(PageBase):
                           f"empty list — the log has the details.").pack(fill="x", pady=t.SPACE_SM)
             return
         if data.get("errors_failed"):
-            blocks.banner(self._notices, t,
-                          f"Whether any model failed on the last refresh could not be checked "
-                          f"({data['errors_failed']}), so this list may be missing models."
+            blocks.banner(self._notices, t, P.errors_unknown_notice(data["errors_failed"])
                           ).pack(fill="x", pady=(0, t.SPACE_SM))
         if errors:
-            names = sorted(errors)
-            shown = ", ".join(names[:10]) + (" …" if len(names) > 10 else "")
-            blocks.banner(self._notices, t,
-                          f"{len(names)} model(s) could not be fully worked out on the last refresh, "
-                          f"so they may be missing from this list: {shown}. Open one to see what failed."
+            blocks.banner(self._notices, t, P.errors_notice(errors)
                           ).pack(fill="x", pady=(0, t.SPACE_SM))
         if not rows:
             self.set_caption("")

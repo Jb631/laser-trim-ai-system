@@ -1765,10 +1765,87 @@ def test_worth_changing_header_precedes_pills_and_stats_table(make_app):
     assert [f["title"] for f in view._findings] == ["Incoming resistance: aim lower"]
 
 
-def test_no_findings_shows_the_quiet_line_not_the_view(make_app):
-    app, page = _worth_app(make_app, finding=False)
-    texts = [w.cget("text") for w in _all_labels(page._worth_section)]
-    assert any(t == "Nothing worth changing stands out for this model." for t in texts)
+def _worth_texts(page):
+    return [w.cget("text") for w in _all_labels(page._worth_section)]
+
+
+def _has_count_pill(page):
+    """blocks.group_header draws its count as a separate, purely numeric label."""
+    return any(str(t).replace(",", "").isdigit() for t in _worth_texts(page))
+
+
+def _check_banners(page):
+    """The check-tone banners (blocks.banner: coral on CHECK_TINT) in the Worth-changing section."""
+    import customtkinter as ctk
+    return [w for w in _all_labels(page._worth_section)
+            if isinstance(w, ctk.CTkLabel) and w.cget("fg_color") == page.theme.CHECK_TINT]
+
+
+def _facts_app(make_app, facts, findings=(), model="HOT"):
+    """App on the Model page for a model whose findings refresh stored `facts` (and `findings`)."""
+    app = make_app()
+    _seed_tracks(app.db, model, "untrimmed_resistance")
+    app.db.replace_process_findings(model, facts, [dict(f, model=model) for f in findings])
+    app.set_model_route(model)
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    return app, page
+
+
+# The final review (2026-09-24): "Worth changing" had two states, rows or "Nothing worth changing
+# stands out", so a model whose findings were NEVER computed, and a model whose analyzer CRASHED,
+# both read as a clean bill. Three states, never two: FAILED (an analyzer crashed) . NOT COMPUTED
+# (no cached facts) . EMPTY (computed, nothing found).
+
+def test_a_model_never_worked_out_says_so_never_nothing_worth_changing(make_app):
+    from laser_trim_analyzer.gui.v6.widgets.findings_tab import NOT_COMPUTED_TEXT
+    app, page = _worth_app(make_app, finding=False)          # no facts cached at all
+    texts = _worth_texts(page)
+    assert NOT_COMPUTED_TEXT in texts
+    assert not any("Nothing worth changing" in t for t in texts)
+    assert not _has_count_pill(page), texts                   # unknown is not zero
+    assert page._worth_view is None
+
+
+def test_an_analyzer_that_crashed_is_a_banner_never_nothing_worth_changing(make_app):
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {
+        "cut_setting": "ValueError: invented crash"}})
+    texts = _worth_texts(page)
+    banners = _check_banners(page)
+    assert banners, texts
+    assert "the cut settings" in banners[0].cget("text")
+    assert "ValueError: invented crash" in banners[0].cget("text")
+    assert not any("Nothing worth changing" in t for t in texts)
+    assert not _has_count_pill(page), texts
+
+
+def test_a_crashed_analyzer_beside_real_findings_shows_both(make_app):
+    """The rows the other analyzers found are real; the banner says the list may be short."""
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {"cut_setting": "ValueError: x"}},
+                           findings=[_WORTH_CHANGING_FINDING])
+    assert page._worth_view is not None and len(page._worth_view.row_widgets) == 1
+    banners = _check_banners(page)
+    assert banners and "the cut settings" in banners[0].cget("text")
+
+
+def test_a_model_worked_out_with_nothing_found_says_nothing_stands_out(make_app):
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {}})
+    texts = _worth_texts(page)
+    assert "Nothing worth changing stands out for this model." in texts
+    assert page._worth_view is None
+
+
+def test_only_history_findings_are_empty_here_not_a_zero_over_a_blank(make_app):
+    """M1: recipe changes are "What changed" (history) -- off this section by design. A model
+    with only those had a "0" header over NO body at all (`if not findings`, not the count)."""
+    history = {"model": "HOT", "analyzer": "recipe_change", "category": "Recipe",
+               "lever": "recipe", "title": "Laser 1 (LTS): recipe changed from 4000 to 4100",
+               "summary": "invented", "n_units": 10, "tracks_per_year": None, "evidence": {}}
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {}}, findings=[history])
+    assert "Nothing worth changing stands out for this model." in _worth_texts(page)
     assert page._worth_view is None
 
 

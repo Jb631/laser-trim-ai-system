@@ -44,15 +44,19 @@ def verdict_badge(parent, theme, verdict: str) -> ctk.CTkLabel:
                         corner_radius=t.RADIUS_SM, padx=8, height=22)
 
 
-def group_header(parent, theme, title: str, count: int, *, column: str = "",
+def group_header(parent, theme, title: str, count: Optional[int], *, column: str = "",
                  tone: str = "act", meaning: str = "") -> ctk.CTkFrame:
+    """`count=None` draws the title with NO count pill: the count is unknown (the load failed,
+    or nothing was ever worked out) -- and an unknown count drawn as "0" is a failure looking
+    like a result (final review, 2026-09-24)."""
     t = theme
     wrap = ctk.CTkFrame(parent, fg_color="transparent")
     top = ctk.CTkFrame(wrap, fg_color="transparent")
     top.pack(fill="x")
     ctk.CTkLabel(top, text=title, font=t.font(t.SIZE_HEADING, "bold"), text_color=t.TEXT_PRIMARY,
                  anchor="w").pack(side="left")
-    count_pill(top, t, count, tone).pack(side="left", padx=(t.SPACE_SM, 0))
+    if count is not None:
+        count_pill(top, t, count, tone).pack(side="left", padx=(t.SPACE_SM, 0))
     if column:
         ctk.CTkLabel(top, text=column, font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
                      anchor="e").pack(side="right")

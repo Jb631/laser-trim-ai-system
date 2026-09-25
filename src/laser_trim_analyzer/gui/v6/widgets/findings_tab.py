@@ -36,6 +36,16 @@ _ANALYZER_NAMES = {"recipe_change": "the recipe history", "ink_target": "the ink
                    "cut_setting": "the cut settings",
                    "pass_burden": "the multi-pass burden"}
 
+# NOT COMPUTED, in one set of words: this tab and the model page's "Worth changing" section both
+# say it (final review, 2026-09-24 -- the section used to read "nothing worth changing" instead).
+NOT_COMPUTED_TEXT = ("No process findings have been computed for this model yet. They are worked "
+                     "out after each ingest; Settings can also refresh them.")
+
+
+def analyzer_name(key: str) -> str:
+    """An analyzer's name as a person would say it ("the cut settings"); unknown keys as-is."""
+    return _ANALYZER_NAMES.get(key, key)
+
 
 class FindingsTab(ctk.CTkFrame):
     def __init__(self, master, theme: ThemeManager, **kwargs):
@@ -53,8 +63,7 @@ class FindingsTab(ctk.CTkFrame):
         facts = (data or {}).get("facts")
         findings: List[Dict[str, Any]] = (data or {}).get("findings") or []
         if not facts:
-            self._line("No process findings have been computed for this model yet. They are worked out "
-                       "after each ingest; Settings can also refresh them.", muted=True)
+            self._line(NOT_COMPUTED_TEXT, muted=True)
             return
         self._heading("What was measured")
         self._facts(facts)
@@ -143,7 +152,7 @@ class FindingsTab(ctk.CTkFrame):
         # act on"), so a failure must never be allowed to look like one.
         errors = facts.get("errors") or {}
         for name in sorted(errors):
-            self._line(f"Could not be worked out this time — {_ANALYZER_NAMES.get(name, name)} "
+            self._line(f"Could not be worked out this time — {analyzer_name(name)} "
                        f"({_txt(errors[name])}). The rest of this tab is unaffected; the log has the details.")
         if not facts.get("tracks"):
             self._line("No laser trim tracks are stored for this model, so there is nothing to measure.",

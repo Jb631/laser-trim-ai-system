@@ -570,3 +570,75 @@ def test_still_exactly_one_teal_button(make_app):
     page._worth_view.toggle(next(iter(page._worth_view.row_widgets)))
     teal = [b for b in _buttons(page) if b.cget("fg_color") == t.ACCENT]
     assert len(teal) == 1 and teal[0].cget("text") == "Process everything new"
+
+
+# ---- final review (2026-09-24): "Worth changing" never says "nothing" when nothing was worked out,
+# the ingest notices sit in "Bring in what's new", and the focus list has ONE heading -----------
+
+def _check_banner_text(page):
+    """The Worth-changing banner's text, when it is laid out (winfo_manager, never ismapped)."""
+    return page._worth_banner.cget("text") if page._worth_banner.winfo_manager() else ""
+
+
+def test_a_model_whose_analyzer_crashed_is_named_on_home(make_app):
+    """The Findings page banners "N model(s) could not be fully worked out"; Home read the same
+    cache and said nothing -- so a crashed analyzer's missing finding looked like no finding."""
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    app.db.replace_process_findings("BIG", {"tracks": 1}, [_finding("BIG", "big one", 500.0)])
+    app.db.replace_process_findings("BAD", {"tracks": 1, "errors": {"cut_setting": "ValueError: x"}}, [])
+    page = _home(app)
+    page.reload_now()
+    text = _check_banner_text(page)
+    assert "1 model(s) could not be fully worked out" in text and "BAD" in text
+    assert page._worth_banner.cget("fg_color") == page.theme.CHECK_TINT
+    assert page._worth_view is not None                     # BIG's real row still shows
+
+
+def test_when_the_failed_models_cannot_be_read_home_says_so(make_app, monkeypatch):
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    app.db.replace_process_findings("BIG", {"tracks": 1}, [_finding("BIG", "big one", 500.0)])
+
+    def boom():
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(app.db, "get_process_errors", boom)
+    page = _home(app)
+    page.reload_now()
+    text = _check_banner_text(page)
+    assert "could not be checked" in text and "RuntimeError: database is locked" in text
+    assert page._worth_view is not None
+
+
+def test_with_nothing_worked_out_the_caption_claims_no_zero(make_app):
+    """No cached findings at all -- never worked out, or nothing anywhere: unknown to this page, so
+    the caption says nothing about it rather than "0 worth changing"."""
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    page = _home(app)
+    page.reload_now()
+    assert page._caption.cget("text").startswith("Last processed")
+    assert "worth changing" not in page._caption.cget("text")
+    assert "Nothing here yet" in " ".join(_labels(page._worth_section))
+
+
+def test_the_ingest_notices_belong_to_bring_in_whats_new(make_app):
+    """M2: the two notices are about ingest; packed before "Drifting now" they sat under the
+    "Worth changing" findings, which they have nothing to do with."""
+    app = make_app()
+    page = _home(app)
+    page._apply_legacy_ft(12)
+    page._apply_unreadable(70)
+    order = page._body.pack_slaves()
+    for notice in (page._legacy_ft_label, page._unreadable_label):
+        assert order.index(notice) < order.index(page._worth_header)
+    assert order.index(page._worth_header) < order.index(page._worth_section)
+
+
+def test_the_drifting_now_list_has_one_heading(make_app):
+    """M3: the zone header already says "Drifting now"; the list's own "FOCUS — drifting now"
+    heading under it said it twice."""
+    app = make_app()
+    page = _home(app)
+    assert page._focus._heading is None
+    assert not any(t.startswith("FOCUS —") for t in _labels(page))

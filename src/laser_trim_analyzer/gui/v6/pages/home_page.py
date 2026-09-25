@@ -182,25 +182,32 @@ class HomePage(PageBase):
         # arrange() the Findings page itself draws, so this can never disagree with it.
         # Findings-loading FAILURE below is a check-tone banner, never "nothing worth
         # changing" (CLAUDE.md: a failure must never look like a result).
-        self._zone_header(parent, "Worth changing",
-                          "the top of the Findings page's yield group — a setting that did "
-                          "better on the same test, across every model")
-        self._worth_banner = blocks.banner(parent, t, "")     # packed only on a failed load
+        self._worth_header = self._zone_header(
+            parent, "Worth changing",
+            "the top of the Findings page's yield group — a setting that did "
+            "better on the same test, across every model")
+        # Packed only when there is something to say: the findings load failed, or some models'
+        # last refresh had an analyzer fail (or which ones could not be read) -- never both at
+        # once (a failed load reads nothing else), so one banner holds whichever it is.
+        self._worth_banner = blocks.banner(parent, t, "")
         self._worth_section = ctk.CTkFrame(parent, fg_color="transparent")
         self._worth_section.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
 
         # The two notices above are packed later, only when they have something to say -- and
-        # always ABOVE this header (_show_notice), never after the focus list below it: that
-        # list expands to fill the page, so on a 720-px-tall window a notice packed after it
-        # got no height at all and vanished (the audit found "70 files are being skipped..."
-        # squeezed out, 2026-09-24). Renamed from "What the app is telling you" (Task 4): with
-        # "Worth changing" now also on this page, two zones sharing that generic title would
-        # say nothing -- this one names what it specifically is.
+        # always inside "Bring in what's new", just above the "Worth changing" header
+        # (_show_notice): they are about ingest, not findings (final review, 2026-09-24), and
+        # never after the focus list below, which expands to fill the page -- on a 720-px-tall
+        # window a notice packed after it got no height at all and vanished (the audit found
+        # "70 files are being skipped..." squeezed out, 2026-09-24). Renamed from "What the app
+        # is telling you" (Task 4): with "Worth changing" now also on this page, two zones
+        # sharing that generic title would say nothing -- this one names what it specifically is.
         self._focus_header = self._zone_header(parent, "Drifting now",
                                                "biggest first — one verdict per lot, "
                                                "self-clearing")
+        # show_heading=False, like Triage: the zone header above already says "Drifting now";
+        # the list's own "FOCUS — drifting now, biggest first (N)" under it said it twice.
         self._focus = FocusListZone(parent, theme=t,
-                                    on_row_click=self._on_focus_click)
+                                    on_row_click=self._on_focus_click, show_heading=False)
         self._focus.pack(side="top", fill="both", expand=True)
 
     # ---- folder list -------------------------------------------------------
@@ -426,9 +433,10 @@ class HomePage(PageBase):
         self._show_notice(self._unreadable_label)
 
     def _show_notice(self, label) -> None:
-        """Pack a notice just above the focus section, where the expanding focus list can never
-        take its room (see build_content)."""
-        label.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM), before=self._focus_header)
+        """Pack an ingest notice at the foot of "Bring in what's new" -- just above the "Worth
+        changing" header, where the expanding focus list can never take its room (see
+        build_content)."""
+        label.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM), before=self._worth_header)
 
     def _apply_focus(self, result, last_processed) -> None:
         # Handed to the zone untouched: one computation owns membership,
@@ -442,15 +450,29 @@ class HomePage(PageBase):
 
     # ---- "Worth changing" ---------------------------------------------------
     def _query_findings(self) -> dict:
-        """The same read the Findings page uses for its own list (get_process_findings) --
-        every model's cached findings, one query. A failed read is named in a check-tone
-        banner, never drawn as "nothing worth changing" (CLAUDE.md: a failure must never
-        look like a result)."""
+        """The same two reads the Findings page makes (findings_page.py::_query), guarded
+        separately, worker-safe (no Tk):
+
+        * every model's cached findings (get_process_findings) -- a failed read is `failed`,
+          named in a check-tone banner, never drawn as "nothing worth changing" (CLAUDE.md: a
+          failure must never look like a result);
+        * which models' last refresh had an analyzer fail (get_process_errors) -- their
+          findings may be MISSING from the list, so the banner says so (final review,
+          2026-09-24: Home used to say nothing). If this read alone fails, the list is still
+          true and still shown, and `errors_failed` says the other thing is unknown."""
+        out = {"rows": [], "failed": None, "errors": {}, "errors_failed": None}
         try:
-            return {"rows": self.app.db.get_process_findings(), "failed": None}
+            out["rows"] = self.app.db.get_process_findings()
         except Exception as exc:
             logger.exception("Home: findings load failed")
-            return {"rows": [], "failed": f"{type(exc).__name__}: {exc}"}
+            out["failed"] = f"{type(exc).__name__}: {exc}"
+            return out
+        try:
+            out["errors"] = self.app.db.get_process_errors()
+        except Exception as exc:
+            logger.exception("Home: could not read which models failed")
+            out["errors_failed"] = f"{type(exc).__name__}: {exc}"
+        return out
 
     def _reload_findings(self) -> None:
         def work():
@@ -475,9 +497,20 @@ class HomePage(PageBase):
                                     before=self._worth_section)
             self._update_caption()
             return
-        self._worth_banner.pack_forget()
+        notice = (P.errors_unknown_notice(data["errors_failed"]) if data.get("errors_failed")
+                  else P.errors_notice(data["errors"]) if data.get("errors") else "")
+        if notice:
+            self._worth_banner.configure(text=notice)
+            self._worth_banner.pack(side="top", fill="x", pady=(0, t.SPACE_SM),
+                                    before=self._worth_section)
+        else:
+            self._worth_banner.pack_forget()
         rows = data.get("rows") or []
-        self._worth_count = _yield_findings_count(rows)
+        # No cached findings at all is "never worked out" as much as "nothing found" -- this page
+        # cannot tell them apart, so the caption states no N rather than a zero it cannot vouch
+        # for (the Findings page drops its caption the same way); the section's own line below,
+        # "Nothing here yet", is true of both.
+        self._worth_count = _yield_findings_count(rows) if rows else None
         if not self._worth_count:
             # include_empty=False (below) means FindingsView draws nothing at all for an
             # empty group -- say it here instead, in the group's own words, so the section
@@ -504,8 +537,9 @@ class HomePage(PageBase):
         ruling 2 item 1). No last-processed date at all -- nothing has ever been ingested --
         means no caption, the same posture the Findings page takes on its own empty/failed
         states: zeros are not a real reading of an app that has never run. N drops out of the
-        sentence (never shown as a misleading "0") while the findings read is unknown; M
-        never does, because load_focus() itself never raises."""
+        sentence (never shown as a misleading "0") while the findings read failed or nothing
+        is cached at all (_apply_findings); M never does, because load_focus() itself never
+        raises."""
         if self._last_processed is None:
             self.set_caption("")
             return

@@ -53,6 +53,14 @@ def test_pills_use_teal_to_act_and_coral_to_check(tk_root, t):
     assert blocks.count_pill(tk_root, t, 1234).cget("text") == "1,234"
 
 
+def test_an_unknown_count_draws_no_pill_never_a_zero(tk_root, t):
+    """count=None: the count is unknown (a failed load, nothing worked out yet) -- drawn as "0"
+    it would be a failure looking like a result (final review, 2026-09-24)."""
+    g = blocks.group_header(tk_root, t, "Needs a look", None)
+    assert _texts(g) == ["Needs a look"]
+    assert "0" in _texts(blocks.group_header(tk_root, t, "Needs a look", 0))
+
+
 def test_group_header_shows_title_count_unit_and_meaning(tk_root, t):
     g = blocks.group_header(tk_root, t, "Check the test", 22, column="tracks", tone="check",
                             meaning="Graded against more than one limit table")

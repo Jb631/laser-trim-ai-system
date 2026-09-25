@@ -174,12 +174,11 @@ class FocusListZone(ctk.CTkFrame):
         # its internal canvas/scrollbar, not the rows.
         self._rendered: List[ctk.CTkBaseClass] = []
         t = theme
-        # show_heading=False (Triage, facelift step 2 Task 7): Triage draws its OWN
-        # "Needs a look" blocks.group_header, with a count known only once data has loaded, so
-        # this zone stays a plain sparkline list with no heading of its own -- unlike Home, which
-        # keeps this default text ("FOCUS -- drifting now, biggest first (N)") exactly as before
-        # (this widget is shared by both pages; Home's own review already shipped and is not
-        # part of this change).
+        # show_heading=False (Triage, facelift step 2 Task 7; Home since the final review of
+        # 2026-09-24): both pages head this list themselves -- Triage's "Needs a look"
+        # blocks.group_header, with a count known only once data has loaded, and Home's
+        # "Drifting now" zone header -- so on both it is a plain sparkline list; with its own
+        # "FOCUS -- drifting now, biggest first (N)" too, Home said "drifting now" twice.
         self._heading: Optional[ctk.CTkLabel] = None
         if show_heading:
             self._heading = ctk.CTkLabel(self, text="", anchor="w",

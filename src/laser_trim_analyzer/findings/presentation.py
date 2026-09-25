@@ -407,6 +407,24 @@ def caption(groups: Sequence[Group], findings: Sequence[Dict[str, Any]], *,
     return " · ".join(parts)
 
 
+def errors_notice(errors: Dict[str, Any]) -> str:
+    """The banner for models whose last refresh had an analyzer fail ({model: {analyzer: msg}},
+    DatabaseManager.get_process_errors) -- one wording for every screen that lists findings (the
+    Findings page, and Home's "Worth changing" since the final review of 2026-09-24): a finding
+    those analyzers would have made is MISSING, so the list must say it may be short."""
+    names = sorted(errors)
+    shown = ", ".join(names[:10]) + (" …" if len(names) > 10 else "")
+    return (f"{len(names)} model(s) could not be fully worked out on the last refresh, so they may "
+            f"be missing from this list: {shown}. Open one to see what failed.")
+
+
+def errors_unknown_notice(reason: str) -> str:
+    """The banner for when WHICH models failed could not itself be read -- the list is still
+    true, but it may be missing models, and silence would claim it is not."""
+    return (f"Whether any model failed on the last refresh could not be checked ({reason}), so "
+            f"this list may be missing models.")
+
+
 def value_text(group: str, value: Optional[float]) -> str:
     if value is None:
         return "—"
