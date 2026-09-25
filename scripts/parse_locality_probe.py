@@ -14,7 +14,10 @@ SMB round trips, on-access virus scanning -- lands in the parse number instead o
 the read number, where nobody thinks to look for it.
 
 Reads the source files and writes only to a throwaway database, so it is safe to
-run while an ingest is going.
+run while an ingest is going. That database gets the model specs of a NAMED one
+(`--specs-from DB`, default this checkout's data/analysis.db, opened read-only):
+with an empty model_specs table the analysis is a third cheaper than the ingest's,
+and the numbers would time the wrong thing (spec 2026-09-25 F8, ruling 3).
 
     local much faster  -> mirror the share first (tracker A2) and rebuild from the
                           copy; the network or the scanner is charging per open
@@ -30,6 +33,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _probe_specs import copy_model_specs, describe, specs_from_argv  # noqa: E402
 
 
 def _time_parse(proc, files):
@@ -49,11 +54,12 @@ def _time_parse(proc, files):
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    specs_from, argv = specs_from_argv(sys.argv, REPO)
+    if len(argv) < 2:
         print(__doc__)
         return 2
-    src = Path(sys.argv[1])
-    n = int(sys.argv[2]) if len(sys.argv) > 2 else 25
+    src = Path(argv[1])
+    n = int(argv[2]) if len(argv) > 2 else 25
     if not src.is_dir():
         print(f"not a directory: {src}")
         return 2
@@ -76,6 +82,7 @@ def main() -> int:
         db = mgr.DatabaseManager(tmp / "probe.db")
         mgr._db_manager = db               # BOTH globals, or get_database() builds
         dbpkg._db_manager = db             # one at the CONFIGURED path.
+        print(describe(copy_model_specs(specs_from, tmp / "probe.db"), specs_from))
         proc = Processor(use_ml=False)
         proc.process_file(files[0])        # warm the imports, not the measurement
 
