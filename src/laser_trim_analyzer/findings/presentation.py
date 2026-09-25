@@ -227,9 +227,9 @@ def statement(finding: Dict[str, Any]) -> str:
 
 def _history_when(finding) -> str:
     """When a history row's change happened: the month the new run began -- and for a setup
-    change, the month the stable setup before it ended too, when that differs (setup_change's
-    docstring: nothing limits that gap, and two setups can sit years apart, so a decade-wide
-    comparison must never read as a change of its last month alone)."""
+    change, the month the stable setup before it ended too, when that differs: the change happened
+    somewhere in the up-to-60 days between the two (setup_change's MIN_RUN_DAYS cap), and a row
+    names every month that span touches rather than only its last."""
     ev = finding.get("evidence") or {}
     when = _month((ev.get("after") or {}).get("first"))
     if finding.get("analyzer") == "setup_change":

@@ -24,9 +24,12 @@ setups; setup against setup the move was 38.6% -> 67.6%. And one day's seven cha
     between them (one that does not meet the floors) is absorbed: its tracks are in neither side,
     and the settings that differ between the two stable setups are one compound change (6607's
     power change of 2026-01-06 and pulse change of 2026-01-12 become one). A change with no stable
-    setup on a side is not reported. There is no limit on the time between the two stable setups
-    -- recipe_change's consecutive stable runs have none either -- so the summary always gives
-    both sides' dates, and says how many short-lived setups (and tracks) sat between them.
+    setup on a side is not reported, and neither is one whose two stable setups are more than
+    MIN_RUN_DAYS apart, last file of the one to first file of the other (controller ruling,
+    2026-09-25): a transition longer than a stable setup's own minimum is a period, not one change
+    -- it stays a fact, never a finding. (With no cap, 8340-3 compared two setups 9.6 years
+    apart.) The summary gives both sides' dates and says how many short-lived setups (and
+    tracks) sat between them.
   * One finding per (laser, track) change, naming EVERY setting that differs, with the file's own
     label (`LABELS`). A setting that moved and came back inside the absorbed stretch is no change.
   * Facts keep every per-setting boundary, reported or not, each with the reason it was not.
@@ -349,14 +352,17 @@ def _setups(rows) -> List[Dict[str, Any]]:
 
 
 def _compare(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
-    """Two consecutive stable setups: which settings differ, whether the recipe moved too, and
-    whether both sides were graded against one and the same limit table."""
+    """Two consecutive stable setups: which settings differ, whether the recipe moved too,
+    whether both sides were graded against one and the same limit table, and whether they meet
+    within MIN_RUN_DAYS (the last file of the one to the first file of the other)."""
     bs, as_ = before["state"], after["state"]
     diff = [k for k in sorted(bs.keys() & as_.keys()) if bs[k] != as_[k]]
     tb, ta = before["side"]["limit_table"], after["side"]["limit_table"]
+    gap = (after["tracks"][0].file_date - before["tracks"][-1].file_date).days
     return {"settings": sorted((k for k in diff if k not in _RECIPE),
                                key=lambda k: (_name(k).lower(), k)),
             "recipe_changed": any(k in _RECIPE for k in diff),
+            "gap_days": gap, "within": gap <= MIN_RUN_DAYS,
             "same_table": tb is not None and tb == ta,
             "graded": (before["side"]["trim_pass_pct"] is not None
                        and after["side"]["trim_pass_pct"] is not None)}
@@ -419,7 +425,7 @@ def analyze(model: str, tracks, laser_label) -> Tuple[List[Dict[str, Any]], List
             changes: Dict[Tuple[int, int], Dict[str, Any]] = {}
             for i, j in zip(stable, stable[1:]):
                 c = changes[(i, j)] = _compare(setups[i], setups[j])
-                if not (c["settings"] and c["same_table"] and c["graded"]):
+                if not (c["settings"] and c["within"] and c["same_table"] and c["graded"]):
                     continue
                 bstate, astate = setups[i]["state"], setups[j]["state"]
                 settings = [{"setting": k, "label": LABELS.get(k), "from": bstate[k], "to": astate[k]}
@@ -450,6 +456,11 @@ def _why(idx: int, key: str, setups, stable: List[int],
     if after is None:
         return {"reported": False, "why_not": "no stable setup after it yet"}
     c = changes[(before, after)]
+    if not c["within"]:
+        return {"reported": False,
+                "why_not": (f"the stable setups either side are {c['gap_days']} days apart -- longer "
+                            f"than a stable setup's own {MIN_RUN_DAYS}-day minimum, so a period, not "
+                            "one change")}
     if key not in setups[before]["state"]:
         return {"reported": False, "why_not": "not captured in the stable setup before it"}
     if key not in c["settings"]:

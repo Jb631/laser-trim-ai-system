@@ -187,14 +187,19 @@ def test_a_middle_setup_at_both_floors_is_stable_so_there_are_two_changes():
     assert len(analyze(_three(100, 60))[1]) == 2
 
 
-def test_a_middle_setup_one_track_short_of_the_floor_is_absorbed():
-    (f,) = analyze(_three(99, 60))[1]
-    assert f.evidence["absorbed_setups"] == 1 and len(f.evidence["settings"]) == 2
+def test_a_middle_setup_one_track_short_of_the_floor_is_no_stable_setup():
+    """Not stable, so not two changes -- and the stable setups either side of it are then 62 days
+    apart, a period rather than one change (the 60-day cap below). A compound change across a
+    short-lived setup is pinned by the absorbed-setup test above."""
+    facts, findings = analyze(_three(99, 60))
+    assert findings == []
+    assert facts and all("62 days apart" in b["why_not"] for b in facts)
 
 
-def test_a_middle_setup_one_day_short_of_the_floor_is_absorbed():
-    (f,) = analyze(_three(100, 59))[1]
-    assert f.evidence["absorbed_setups"] == 1 and len(f.evidence["settings"]) == 2
+def test_a_middle_setup_one_day_short_of_the_floor_is_no_stable_setup():
+    facts, findings = analyze(_three(100, 59))
+    assert findings == []
+    assert facts and all("61 days apart" in b["why_not"] for b in facts)
 
 
 def test_a_run_under_the_day_floor_says_nothing():
@@ -218,6 +223,38 @@ def test_a_change_with_no_stable_setup_before_it_says_nothing():
     later = setup_era(1000, after(early), 200, {"laser_power": 62}, 0.50)
     facts, findings = analyze(early + later)
     assert findings == [] and [b["why_not"] for b in facts] == ["no stable setup before it"]
+
+
+# ---- the two stable setups meet within 60 days (controller ruling, 2026-09-25) ------------------
+# Two stable setups more than MIN_RUN_DAYS apart are not ONE change: a transition longer than a
+# stable setup's own minimum is a period. It stays a fact, never a finding.
+
+def test_stable_setups_60_days_apart_are_one_change():
+    s1 = setup_era(0, START, 200, {"laser_power": 50}, 0.80)
+    s2 = setup_era(1000, after(s1, gap_days=60), 200, {"laser_power": 62}, 0.50)
+    f = only(analyze(s1 + s2)[1])
+    assert (s2[0].file_date - s1[-1].file_date).days == 60
+    assert f.title == "Laser 1 (LTS): Laser Power 50 → 62"
+
+
+def test_stable_setups_61_days_apart_are_a_period_not_a_change():
+    s1 = setup_era(0, START, 200, {"laser_power": 50}, 0.80)
+    s2 = setup_era(1000, after(s1, gap_days=61), 200, {"laser_power": 62}, 0.50)
+    facts, findings = analyze(s1 + s2)
+    assert findings == []
+    assert [(b["setting"], b["reported"]) for b in facts] == [("laser_power", False)]
+    assert "61 days apart" in facts[0]["why_not"]
+
+
+def test_the_gap_is_measured_between_the_stable_setups_not_across_the_short_one():
+    """A short-lived setup halfway does not make a 61-day transition two short ones."""
+    s1 = setup_era(0, START, 200, {"laser_power": 50, "pulse_duration": 50}, 0.80)
+    blip = setup_era(500, after(s1, gap_days=30), 5, {"laser_power": 55, "pulse_duration": 50}, 0.50)
+    s2 = setup_era(1000, s1[-1].file_date + timedelta(days=61), 200,
+                   {"laser_power": 55, "pulse_duration": 100}, 0.50)
+    facts, findings = analyze(s1 + blip + s2)
+    assert findings == []
+    assert all("61 days apart" in b["why_not"] for b in facts)
 
 
 # ---- never across a limit-table change ----------------------------------------------------------
