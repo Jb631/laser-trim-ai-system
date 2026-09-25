@@ -46,7 +46,10 @@ def compute_cost_priorities(db, model_prices: Optional[Dict[str, float]],
                    SUM(CASE WHEN overall_status='FAIL' THEN 1 ELSE 0 END) AS ft_fails
             FROM final_test_results
             WHERE file_date >= :cutoff
-            GROUP BY model"""), {"cutoff": cutoff}).fetchall()
+            GROUP BY model"""),
+            # The stored format, never a raw datetime: text() bypasses SQLAlchemy's DATETIME bind
+            # processor, and sqlite3's own adapter is deprecated since Python 3.12.
+            {"cutoff": f"{cutoff:%Y-%m-%d %H:%M:%S.%f}"}).fetchall()
 
     out: List[dict] = []
     for r in rows:

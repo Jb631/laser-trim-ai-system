@@ -533,3 +533,19 @@ def test_dashboard_caption_dash_when_no_data_yet(make_app):
     page.reload_now()
     assert page._caption.cget("text") == "Laser — · final test — over the last 90 days"
     assert page._load_banner.winfo_manager() == ""
+
+
+def test_cost_priorities_do_not_use_the_deprecated_datetime_adapter(tmp_path):
+    """compute_cost_priorities binds its cutoff as the stored string format, never a raw
+    datetime: text() bypasses SQLAlchemy's DATETIME bind processor, so a datetime would go
+    through sqlite3's own adapter -- deprecated since Python 3.12, and a loader that raised
+    on it would be the Dashboard's "priorities" banner, not a number (facelift step 2's
+    close-out found it by turning that one warning into an error)."""
+    import warnings
+    from laser_trim_analyzer.core.cost_priorities import compute_cost_priorities
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    db = DatabaseManager(tmp_path / "cost.db")
+    with warnings.catch_warnings():
+        # ONLY the datetime adapter -- a blanket "error" would trip on unrelated deprecations.
+        warnings.filterwarnings("error", message=r".*datetime adapter.*", category=DeprecationWarning)
+        assert compute_cost_priorities(db, {}, 0.5) == []   # empty db -- the bind happens either way
