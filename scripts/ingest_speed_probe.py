@@ -17,10 +17,15 @@ If this machine's parse figure is close to that but the owner sees ~0.5
 files/sec in the app, the cost is NOT in parsing -- look at layer 1 and at
 the worker count.
 
-SAFETY: never opens the real database. Writes only to a temp file, removed
-on exit. Pass a folder of .xls files:
+SAFETY: never opens the real database for writing. Writes only to a temp file,
+removed on exit. Pass a folder of .xls files:
 
-    python scripts/ingest_speed_probe.py "//192.168.66.9/BTXData/.../DLTS" 25
+    python scripts/ingest_speed_probe.py "//192.168.66.9/BTXData/.../DLTS" 25 [--specs-from DB]
+
+The throwaway database gets the model specs of a NAMED one (`--specs-from`, default
+this checkout's data/analysis.db, opened read-only): with an empty model_specs table
+the analysis is a third cheaper than the one the ingest runs, and every figure below
+would be measuring the wrong thing (spec 2026-09-25 F8, ruling 3).
 """
 import os
 import shutil
@@ -28,6 +33,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _probe_specs import copy_model_specs, describe, specs_from_argv  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -44,11 +52,12 @@ def _files(root: Path, n: int):
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    specs_from, argv = specs_from_argv(sys.argv, Path(__file__).resolve().parents[1])
+    if len(argv) < 2:
         print(__doc__)
         return 2
-    root = Path(sys.argv[1])
-    n = int(sys.argv[2]) if len(sys.argv) > 2 else 25
+    root = Path(argv[1])
+    n = int(argv[2]) if len(argv) > 2 else 25
     if not root.is_dir():
         print(f"not a folder: {root}")
         return 2
@@ -100,6 +109,7 @@ def main() -> int:
         db = mgr.DatabaseManager(tmp / "probe.db")
         mgr._db_manager = db          # BOTH globals, or get_database() would
         dbpkg._db_manager = db        # build one at the CONFIGURED path.
+        print(describe(copy_model_specs(specs_from, tmp / "probe.db"), specs_from))
         proc = Processor(use_ml=False)
         proc.process_file(files[0])   # warm up imports
 

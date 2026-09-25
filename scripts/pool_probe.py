@@ -1,6 +1,6 @@
 """Would PROCESSES actually beat threads on this machine? Nothing real is written.
 
-    python scripts/pool_probe.py "\\\\192.168.66.9\\...\\DLTS" 200
+    python scripts/pool_probe.py "\\\\192.168.66.9\\...\\DLTS" 200 [--specs-from DB]
 
 Runs the same files four ways -- one at a time, a thread pool, and a process pool at
 two sizes -- and prints files/sec for each. It does what the ingest does to a file
@@ -25,6 +25,15 @@ Two mistakes the first version of this script made, both corrected here after th
   173-293 ms. Roughly half the real per-file cost is the ANALYSIS, and a probe that
   leaves it out is measuring the wrong thing.
 
+A third, found 2026-09-25 (spec 2026-09-25-ingest-speed-design.md F8, ruling 3):
+
+* **It timed the analysis WITHOUT model specs.** A fresh throwaway database has an empty
+  model_specs table, and the ingest's analysis is about half again as expensive with the
+  specs it really has (DLTS on the Mac: 67 -> 99 ms/file, same files). So the 339 ms/file
+  measured at work was the cheap analysis, not the ingest's. Every throwaway database now
+  gets the model specs of a NAMED one (`--specs-from`, default this checkout's
+  data/analysis.db, opened read-only).
+
 Use enough files that startup stops mattering: 200+ is a fair test, 48 is not.
 """
 import os
@@ -36,16 +45,22 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _probe_specs import copy_model_specs, describe, specs_from_argv  # noqa: E402
 
 _PROC = None
 _SCRATCH_DIR = None         # this process's throwaway-database folder; see _use_scratch_db
+_SPECS_FROM = None          # the named database whose model specs every throwaway one gets
+_SPECS_COPIED = 0
 
 
-def _use_scratch_db(folder: str) -> None:
-    """Where this process's throwaway database goes. main() calls it for itself and hands it
-    to every pool worker as the initializer, so each worker writes only there."""
-    global _SCRATCH_DIR
+def _use_scratch_db(folder: str, specs_from=None) -> None:
+    """Where this process's throwaway database goes, and whose model specs it gets. main()
+    calls it for itself and hands it to every pool worker as the initializer, so each worker
+    writes only there and analyses with the same specs as the ingest."""
+    global _SCRATCH_DIR, _SPECS_FROM
     _SCRATCH_DIR = folder
+    _SPECS_FROM = specs_from
 
 
 def _processor():
@@ -55,16 +70,22 @@ def _processor():
     it is given any work, and constructing it there would be paid even by a pool
     that never receives a file.
     """
-    global _PROC
+    global _PROC, _SPECS_COPIED
     if _PROC is None:
         import logging
         logging.disable(logging.WARNING)
         from laser_trim_analyzer.core.processor import Processor
         from laser_trim_analyzer.database import manager as mgr
+        import laser_trim_analyzer.database as dbpkg
         # Before the Processor: everything it does with a database goes through
         # get_database(), and with nothing injected that is the app's default -- refused
         # outside the app. One file per process: pool workers are separate processes.
-        mgr._db_manager = mgr.DatabaseManager(Path(_SCRATCH_DIR) / f"probe_{os.getpid()}.db")
+        path = Path(_SCRATCH_DIR) / f"probe_{os.getpid()}.db"
+        db = mgr.DatabaseManager(path)
+        if _SPECS_FROM:
+            _SPECS_COPIED = copy_model_specs(_SPECS_FROM, path)
+        mgr._db_manager = db            # BOTH globals, or get_database() builds one at
+        dbpkg._db_manager = db          # the CONFIGURED path.
         _PROC = Processor(use_ml=False)
     return _PROC
 
@@ -106,11 +127,12 @@ def _time_pool(label, make_pool, files, workers):
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    specs_from, argv = specs_from_argv(sys.argv, REPO)
+    if len(argv) < 2:
         print(__doc__)
         return 2
-    src = Path(sys.argv[1])
-    n = int(sys.argv[2]) if len(sys.argv) > 2 else 200
+    src = Path(argv[1])
+    n = int(argv[2]) if len(argv) > 2 else 200
     if not src.is_dir():
         print(f"not a directory: {src}")
         return 2
@@ -128,13 +150,14 @@ def main() -> int:
     print("\nparse AND analyse, on throwaway databases (startup excluded from the rate):")
 
     with tempfile.TemporaryDirectory(prefix="pool_probe_", ignore_cleanup_errors=True) as scratch:
-        _use_scratch_db(scratch)
+        _use_scratch_db(scratch, str(specs_from))
 
         def processes(workers):
             return lambda: ProcessPoolExecutor(max_workers=workers, initializer=_use_scratch_db,
-                                               initargs=(scratch,))
+                                               initargs=(scratch, str(specs_from)))
         try:
             serial = _time_pool("1 at a time", None, files, 1)
+            print(f"  {describe(_SPECS_COPIED, specs_from)}")
             _time_pool("4 threads (what runs now)", lambda: ThreadPoolExecutor(max_workers=4),
                        files, 4)
             p4 = _time_pool("4 processes", processes(4), files, 4)

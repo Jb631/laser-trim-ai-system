@@ -24,7 +24,7 @@ that rested on a final-test verdict has been re-derived on it (B3).
 
 | Workstream | State | Next move |
 |---|---|---|
-| **A. Processing speed** | the share and the scanner are cleared (A1a); the save is the serial half (A0) | the A4/A3/A5 design (A4 first), after the findings catalogue — Claude |
+| **A. Processing speed** | designed 2026-09-25: the save is NOT the bottleneck; worker processes overlap parse and save | run the save probe at work (A6, yours); then Tasks 2–12 — Claude |
 | **B. More useful information** | rebuild done; the findings catalogue complete — 11 analyzers (B6, 2026-09-25); laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
 | **C. Review and refactor** | the review is done (C1); C2 step 1, the database guard and three parked fixes shipped | C2 step 2 (`database/migrations.py`) — Claude |
 | **D. Checks at the shop** | D1, D3, D4, D5, D6, D7 open | James |
@@ -144,6 +144,24 @@ problem — per-file conversations with the share were. Same code, same laptop:
       cleared the server); only if A1 still shows slow lookups on the LAN.
       The idea was one `robocopy /MT:32 /Z` copy, then rebuild at local speed. The
       measurement says there is no local speed to gain.
+- [ ] **A6 · Run the save probe at work — James, ~6 minutes** (the top section of BRING_TO_WORK):
+      it measures the laptop's own save and flush cost and where the loop's time goes, on a
+      read-only copy, and answers the design's one open question (below). Paste the whole output
+      back, with the three questions there.
+- [ ] **A3 / A4 / A5 — DESIGNED AND PLANNED 2026-09-25**: spec
+      `docs/superpowers/specs/2026-09-25-ingest-speed-design.md`, plan
+      `docs/superpowers/plans/2026-09-25-ingest-speed.md` (12 tasks). **What it measured, which
+      corrects A0 below:** a save into the 6 GB database costs 4–5 ms — the batch line's "save" was
+      mostly waiting for Python's lock while four parser threads ran (33 ms wall, 5 ms CPU); A0's
+      339 ms "parse" came from probes whose throwaway database had no model specs (the real analysis
+      costs ~48% more); and with worker PROCESSES the parse and the save overlap instead of adding,
+      so A0's 1.35x cap does not hold — a prototype (8 workers, one consumer saving 20 files per
+      transaction) ran laser-2 files at 13.3 ms/file against 102–116 today, on the Mac. Every
+      final-test save also scans the whole final-test table (no index on `file_hash`: 22 ms → 3.5 ms
+      with one). About 200 ms/file of A0 does not reproduce off the laptop — the probe (A6) says
+      whether it is in the code (processes remove it) or in the app and machine (they do not).
+      Task 1, the probe, is shipped; Tasks 2–12 (the index, pragmas, the batched writer, worker
+      processes, workers that come back) are next — Claude.
 - [ ] **A0 · WHERE THE INGEST'S TIME ACTUALLY GOES — measured at work, 2026-09-21.**
       From the app's own batch line: `load 0.0s | check 0.3s (62,323 new) | verify 0
       files 0.0s | process 674 files 520.1s`. **The pre-pass is free** — 0.3 s to
