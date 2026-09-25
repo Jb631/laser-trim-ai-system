@@ -10,7 +10,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from sqlalchemy import text
 
 from .analyzers import (cut_setting, ink_target, limit_tables, loss_origin, machine_compare,
-                        pass_burden, recipe_change, rework_load, station_setup, trim_effort)
+                        pass_burden, recipe_change, rework_load, setup_change, station_setup,
+                        trim_effort)
 from .data import load_model_tracks, yardstick_fidelity
 from .model import Finding, rank
 
@@ -65,7 +66,7 @@ def compute_for_model(db, model: str,
                              "yardstick": None, "recipe_history": None, "trim_effort": None,
                              "limit_tables": None, "cut_setting": None, "pass_burden": None,
                              "machine_compare": None, "loss_origin": None, "station_setup": None,
-                             "rework_load": None, "errors": {}}
+                             "rework_load": None, "setup_change": None, "errors": {}}
     if not tracks:
         return facts, []
     if fleet_latest is None:
@@ -89,6 +90,12 @@ def compute_for_model(db, model: str,
         findings += changes
     except Exception as exc:
         failed("recipe_change", exc)
+    try:
+        setup_history, setup_changes = setup_change.analyze(model, tracks, _laser_label)  # stored setup blocks
+        facts["setup_change"] = setup_history
+        findings += setup_changes
+    except Exception as exc:
+        failed("setup_change", exc)
     try:
         findings += ink_target.analyze(model, tracks, _laser_label)         # stored verdicts only
     except Exception as exc:

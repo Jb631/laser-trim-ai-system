@@ -123,6 +123,7 @@ def test_a_healthy_run_has_no_errors_and_an_explicit_history(tmp_path, monkeypat
     facts, _ = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
     assert facts["errors"] == {}
     assert isinstance(facts["recipe_history"], list) and isinstance(facts["trim_effort"], dict)
+    assert isinstance(facts["setup_change"], list)
 
 
 def test_every_documented_key_exists_even_for_a_model_with_no_tracks(monkeypatch):
@@ -132,7 +133,8 @@ def test_every_documented_key_exists_even_for_a_model_with_no_tracks(monkeypatch
     assert findings == [] and facts["tracks"] == 0
     assert set(facts) == {"model", "tracks", "annual_volume", "latest", "yardstick",
                           "recipe_history", "trim_effort", "limit_tables", "cut_setting", "pass_burden",
-                          "machine_compare", "loss_origin", "station_setup", "rework_load", "errors"}
+                          "machine_compare", "loss_origin", "station_setup", "rework_load",
+                          "setup_change", "errors"}
 
 
 def test_refresh_reports_what_did_not_get_done(tmp_path, monkeypatch):
@@ -319,6 +321,40 @@ def test_rework_load_runs_inside_the_engine_and_its_facts_are_cached(tmp_path, m
     assert found["n_units"] == 40 and found["tracks_per_year"] is None       # no gain claimed
     cached = db.get_process_facts("REWORK")["rework_load"]
     assert cached["rework_unit_days"] == 40 and cached["confirmed"] is True
+    assert db.get_process_errors() == {}
+
+
+# ---- Task 6: setup_change is a laser setting BEYOND the cut recipe -- takes no db, so wiring it
+# needs nothing beyond the tracks population, unlike station_setup/rework_load before it.
+
+def test_a_crash_in_setup_change_is_named_like_any_other(tmp_path, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    hot = _hot()
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
+
+    def boom(*a, **k):
+        raise RuntimeError("bad setup block")
+    monkeypatch.setattr(engine.setup_change, "analyze", boom)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
+    assert facts["errors"] == {"setup_change": "RuntimeError: bad setup block"}
+    assert facts["setup_change"] is None
+    assert [f.analyzer for f in findings] == ["ink_target"]                   # the rest still ran
+
+
+def test_setup_change_runs_inside_the_engine_and_its_history_is_cached(tmp_path, monkeypatch):
+    from datetime import datetime
+    from test_findings_setup_change import setup_era
+    from laser_trim_analyzer.findings import engine
+    db = _db(tmp_path)
+    tracks = (setup_era(0, START, 200, {"laser_power": 50}, 0.80)
+             + setup_era(1000, datetime(2024, 9, 1), 200, {"laser_power": 62}, 0.50))
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: tracks)
+    assert engine.refresh_findings(db, ["SETUP"]) == 1
+    (found,) = db.get_process_findings("SETUP")
+    assert found["analyzer"] == "setup_change" and found["lever"] == "laser_settings"
+    assert found["tracks_per_year"] is None                       # no gain claimed
+    cached = db.get_process_facts("SETUP")["setup_change"]
+    assert len(cached) == 1 and cached[0]["setting"] == "laser_power"
     assert db.get_process_errors() == {}
 
 

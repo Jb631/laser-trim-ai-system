@@ -41,8 +41,8 @@ GROUPS: Tuple[GroupSpec, ...] = (
               "tracks", "check",
               "Nothing to check. A finding appears when a model is graded against more than one "
               "limit table, or when the laser and final test grade it to different limits."),
-    GroupSpec("history", "What changed", "Recipe changes, newest first", "pass-rate move", "act",
-              "No recipe changes found."),
+    GroupSpec("history", "What changed", "Recipe and setting changes, newest first",
+              "pass-rate move", "act", "No recipe changes found."),
 )
 OTHER = GroupSpec("other", "Other findings",
                   "From an analyzer this page does not know how to group yet", "", "check", "")
@@ -61,6 +61,7 @@ ANALYZER_GROUP: Dict[str, str] = {
     "limit_tables": "check",
     "station_setup": "check",
     "recipe_change": "history",
+    "setup_change": "history",
 }
 
 _GRADE_TAG = {"same_days": "same days", "side_by_side": "side by side",

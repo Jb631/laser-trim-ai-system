@@ -95,6 +95,10 @@ class TrackView:
     passes: Tuple[PassView, ...]      # REAL cuts only, in order
     track_name: str = "default"       # "Track A", "TRK1" ... a model's tracks may carry different limits
     final_positions: Optional[Tuple] = None
+    # The laser settings beyond the cut recipe (trim_setup.parameters), for findings/analyzers/
+    # setup_change.py. Track 1's own block, except a TRK2 track whose file captured a Track 2
+    # block (Task 9): {**parameters, **track2_parameters} then -- see load_model_tracks below.
+    setup: Optional[Dict[str, Any]] = None
 
     @cached_property
     def limit_table(self) -> Optional[LimitTable]:
@@ -159,7 +163,7 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
             "       t.trimmed_resistance, t.error_data, t.upper_limits, t.lower_limits, t.linearity_pass, "
             "       s.initial_resistance_low, s.initial_resistance_high, "
             "       s.final_resistance_low, s.final_resistance_high, t.track_id, t.position_data, "
-            "       s.track2_parameters "
+            "       s.track2_parameters, s.parameters "
             "FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
             "LEFT JOIN trim_setup s ON s.analysis_id = a.id "
             "WHERE a.model = :m AND a.system IN ('A','B','C') "
@@ -194,8 +198,9 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
         # track was graded against, and one side alone could even invert it
         # (low above high). Absent or incomplete, r[10:14] (Track 1's/the
         # file's) are used, unchanged from before this feature existed.
-        if track_name == "TRK2":
-            t2 = _track2_resistance_limits(_dict(r[16]))
+        t2_params = _dict(r[16]) if track_name == "TRK2" else None
+        if t2_params is not None:
+            t2 = _track2_resistance_limits(t2_params)
             if (t2["initial_resistance_low"] is not None
                     and t2["initial_resistance_high"] is not None):
                 initial_r_low = t2["initial_resistance_low"]
@@ -204,6 +209,11 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
                     and t2["final_resistance_high"] is not None):
                 final_r_low = t2["final_resistance_low"]
                 final_r_high = t2["final_resistance_high"]
+        # setup (findings/analyzers/setup_change.py): Track 1's own block, except a TRK2 track
+        # whose file captured a Track 2 block, which gets that block's values layered on top --
+        # the same "captured overrides, else Track 1's" rule the resistance limits above follow.
+        params = _dict(r[17])
+        setup = {**(params or {}), **t2_params} if t2_params else params
         out.append(TrackView(
             track_id=r[0], file_date=d, system=str(r[2]),
             untrimmed_errors=_arr(r[3]), untrimmed_resistance=r[4], trimmed_resistance=r[5],
@@ -212,7 +222,7 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
             initial_r_low=initial_r_low, initial_r_high=initial_r_high,
             final_r_low=final_r_low, final_r_high=final_r_high,
             passes=tuple(passes.get(r[0], ())),
-            track_name=track_name, final_positions=_arr(r[15])))
+            track_name=track_name, final_positions=_arr(r[15]), setup=setup))
     return out
 
 

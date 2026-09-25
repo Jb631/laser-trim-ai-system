@@ -123,6 +123,43 @@ def test_a_stored_final_sweep_of_exact_zeros_loses_its_verdict_but_keeps_its_lim
     assert not _is_blank_template([0.0] * 50 + [1e-9]) and not _is_blank_template(None)
 
 
+def test_setup_is_track1s_parameters_except_a_captured_track2_block_overrides_it(fixture_db):
+    """T6 ruling (setup_change): a TRK2 track's setup is {**parameters, **track2_parameters} when
+    a Track 2 block was captured, else parameters. dlts_8074_18.xls is a real two-track file (the
+    Task 9 fixture): TRK1 keeps its own `alias` ("Outer Track"); TRK2's is overridden by its OWN
+    captured block ("Inner Track"), never Track 1's -- the same per-field override the resistance
+    limits above already apply, now checked for the whole block."""
+    from laser_trim_analyzer.findings.data import load_model_tracks
+    tracks = {t.track_name: t for t in load_model_tracks(fixture_db, "8074")}
+    assert set(tracks) == {"TRK1", "TRK2"}
+    assert tracks["TRK1"].setup["alias"] == "Outer Track"
+    assert tracks["TRK2"].setup["alias"] == "Inner Track"
+    # A key Track 2's own block does not repeat differently stays whatever Track 1's block had --
+    # confirming a MERGE (Track 1 as the base), not a wholesale replacement.
+    assert tracks["TRK1"].setup["laser_power"] == tracks["TRK2"].setup["laser_power"] == 62
+
+
+def test_a_lone_track2_file_still_gets_its_own_captured_block(fixture_db):
+    """dlts_7553_10B.xls carries only a TRK2 track_result (no TRK1 row at all in this file) --
+    the merge is keyed off THIS row's track_name, never off a sibling TRK1 row existing too."""
+    from laser_trim_analyzer.findings.data import load_model_tracks
+    (t,) = load_model_tracks(fixture_db, "7553")
+    assert t.track_name == "TRK2" and t.setup["alias"] == "Inner Track"
+
+
+def test_setup_is_none_when_the_trim_setup_row_is_missing(fixture_db):
+    from sqlalchemy import text
+    from laser_trim_analyzer.findings.data import load_model_tracks
+    victim = load_model_tracks(fixture_db, "8232-1")[0]
+    assert victim.setup is not None
+    with fixture_db.session() as s:
+        s.execute(text("DELETE FROM trim_setup WHERE analysis_id = "
+                       "(SELECT analysis_id FROM track_results WHERE id = :i)"), {"i": victim.track_id})
+        s.commit()
+    after = {t.track_id: t for t in load_model_tracks(fixture_db, "8232-1")}[victim.track_id]
+    assert after.setup is None
+
+
 def test_a_failed_processing_track_is_not_a_measurement(fixture_db):
     """An ERROR track stored with linearity_pass=0 (every such row on the rebuilt work
     database) must not reach the analyzers, which count every non-None verdict."""
