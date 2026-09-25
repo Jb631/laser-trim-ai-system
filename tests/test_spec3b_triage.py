@@ -124,7 +124,9 @@ def test_the_browse_legend_makes_no_claim_about_order(tk_root):
     z.set_models([_ms("B2"), _ms("A1")])
     legend = z._legend.cget("text")
     assert "worst first" not in legend
-    assert legend.startswith("Status = drift tier. Date = last processed. 'Active' scope = ")
+    # F5 review: "Date = last processed" beside "Inactive · last trimmed" read as a contradiction.
+    assert legend.startswith("Status = drift tier. Date = the model's newest laser or smoothness "
+                             "file of any kind")
     assert [r._summary.model for r in z._rows] == ["B2", "A1"]   # as given -- no ranking here
 
 
@@ -601,3 +603,34 @@ def test_triage_says_so_when_which_models_are_inactive_cannot_be_read(make_app, 
     assert page._load_banner.winfo_manager() == "pack"
     assert "Which models are inactive could not be worked out" in page._load_banner.cget("text")
     assert {r._summary.model: _statement(r) for r in page._browse._rows}["OLD"] == "Stable"
+
+
+# ---- F5 review (Important 2): the date column says what it is -------------------------------------
+# It is the model's newest laser or smoothness file of ANY kind (ml/manager.list_known_models), so an
+# inactive model's date can be later than its last trim: 8275's trim files end 2024-08-27 while its
+# smoothness tests run to 2026-08-26 (and its final tests to 2026-09-21, which the column never
+# counts). "Inactive · last trimmed Aug 2024" beside "2026-08-26" must read as two facts.
+
+def test_an_inactive_rows_date_is_named_the_newest_file_of_any_kind(make_app):
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import (
+        FinalTestResult, SmoothnessResult, StatusType)
+    from test_model_activity import NEWEST, _file
+    app = make_app()
+    _file(app.db, "LIVE", NEWEST)
+    _file(app.db, "OLD", datetime(2024, 8, 27, 8, 31))
+    with app.db.session() as s:
+        s.add(SmoothnessResult(filename="old_smooth.xls", model="OLD", serial="OLD-7",
+                               file_date=datetime(2026, 8, 26), overall_status=StatusType.PASS))
+        s.add(FinalTestResult(filename="old_ft.xls", model="OLD", serial="OLD-8",
+                              file_date=datetime(2026, 9, 21), overall_status=StatusType.PASS))
+    page = app.page_container.get_page("triage")
+    page._on_scope_change("All models")
+    page.reload_now()
+    row = next(r for r in page._browse._rows if r._summary.model == "OLD")
+    assert _statement(row) == "Inactive · last trimmed Aug 2024"
+    assert "2026-08-26" in _labels(row)                    # the smoothness test, never the final test
+    assert "2026-09-21" not in _labels(row)
+    assert "newest file, any kind" in _labels(page._browse._header)      # the column's own heading
+    legend = page._browse._legend.cget("text")
+    assert "not a final test" in legend and "later than its last trim" in legend

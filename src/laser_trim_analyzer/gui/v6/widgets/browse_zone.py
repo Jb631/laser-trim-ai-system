@@ -35,11 +35,16 @@ class BrowseZone(ctk.CTkFrame):
         # this used to be a bare colour dot, word-less (a colour-blind reader had nothing to read).
         # No claim about ORDER (final review, 2026-09-24: it said "worst first" over an
         # alphabetical list): this is the lookup list; "Needs a look" above is the ranked one.
+        # The date is list_known_models' "last processed": the newest analysis OR smoothness file,
+        # any kind, never a final test (F5 review: 8275 read "Inactive · last trimmed Aug 2024"
+        # beside "2026-08-26", a smoothness test -- two facts, which the words must say they are).
         self._legend = ctk.CTkLabel(self, text=(
-                "Status = drift tier. Date = last processed. 'Active' scope = "
-                "models with recent data or pinned in Settings → Active Models. A model not "
-                "trimmed in the two years before the newest file reads Inactive instead — still "
-                "listed, never hidden."),
+                "Status = drift tier. Date = the model's newest laser or smoothness file of any "
+                "kind (a trim, a sweep with no cut, one that failed to process, a smoothness test "
+                "— not a final test), so an inactive model's date can be later than its last "
+                "trim. 'Active' scope = models with recent data or pinned in Settings → Active "
+                "Models. A model not trimmed in the two years before the newest trim on record "
+                "reads Inactive instead — still listed, never hidden."),
                 font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w", justify="left")
         self._legend.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         # Bound ONCE: `self` (this zone) is never destroyed/rebuilt for its own lifetime, so this
@@ -97,7 +102,8 @@ class BrowseZone(ctk.CTkFrame):
         # can only be right once the current filter/scope is applied. Packed BEFORE the legend,
         # which is built once in __init__ and never moves.
         self._header = blocks.group_header(self, t, "All models",
-                                           None if self._failed else len(matches))
+                                           None if self._failed else len(matches),
+                                           column="newest file, any kind")      # the date column
         self._header.pack(side="top", fill="x", pady=(0, t.SPACE_XS), before=self._legend)
         if self._failed:
             lbl = ctk.CTkLabel(self._list, text="Unavailable — the notice above says why.",

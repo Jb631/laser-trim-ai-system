@@ -3417,9 +3417,15 @@ def check_usability_glosses() -> None:
         # (a colour-blind reader had nothing to read); the legend explains it in words. Final
         # review (same date): "worst first" dropped -- the list is alphabetical, the lookup list
         # -- so the needle pins all three glosses in one string, with no order claim between.
+        # F5 review (2026-09-25): "Date = last processed" beside "Inactive · last trimmed" read as
+        # a contradiction -- the date is the newest laser or smoothness file of any kind, and says so.
         ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
-         "Status = drift tier. Date = last processed. 'Active' scope =",
-         "browse list explains status/date/Active"),
+         "Status = drift tier. Date = the model's newest laser or smoothness file of any kind",
+         "browse list explains status/date"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
+         "'Active' scope = models with recent data", "browse list explains the Active scope"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
+         '"newest file, any kind"', "browse list's date column names itself"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
          '"Sigma gradient"', "units table headers are full words"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
@@ -3485,6 +3491,7 @@ def check_usability_glosses() -> None:
 _GLOSS_KINDS = {
     '"Sigma gradient"': ("exact", "Sigma gradient"),
     '"Linearity error"': ("exact", "Linearity error"),
+    '"newest file, any kind"': ("exact", "newest file, any kind"),
     "How it's running": ("exact", None),
     "What you're looking at": ("exact", None),
     "Needs a look": ("exact", None),
