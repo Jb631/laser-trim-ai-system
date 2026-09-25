@@ -426,6 +426,22 @@ def resolve_ft_heavy_model(db, *, exclude: Optional[str] = None) -> Optional[str
     return row[0] if row else None
 
 
+def resolve_inactive_model(db, *, exclude=()) -> Optional[str]:
+    """An INACTIVE model (core/activity, F5: not trimmed in the two years before the newest file)
+    with the most cached findings, tie-break alphabetical -- so the audit renders the Model page's
+    "Inactive — last trimmed" caption and its tagged findings rows, which neither model above
+    shows. `exclude`d models are passed over first. Falls back to the first inactive model when
+    none has findings; None when nothing is inactive. Resolved by query, like the other two."""
+    from collections import Counter
+    from laser_trim_analyzer.core.activity import load_activity
+    inactive = load_activity(db).inactive()
+    if not inactive:
+        return None
+    candidates = sorted(set(inactive) - set(exclude or ())) or sorted(inactive)
+    counts = Counter(f.get("model") for f in db.get_process_findings())
+    return max(candidates, key=lambda m: counts.get(m, 0))
+
+
 # Each view: (report label, PNG filename stub, page_container key, setup(app)).
 View = Tuple[str, str, str, Callable]
 
@@ -535,8 +551,43 @@ def _open_first_row(view) -> bool:
     return view.open_key == key and view._detail is not None
 
 
-def run_audit(app, target_model: Optional[str],
-               ft_model: Optional[str]) -> Tuple[List[ClippedWidget], List[str]]:
+def _walk_triage_all_models(app, size_label: str, clipped: List[ClippedWidget]) -> None:
+    """Triage with its scope on "All models" -- where an inactive model's status reads "Inactive ·
+    last trimmed Mon YYYY" (F5); the default "Active" scope hardly ever lists one. Back to the
+    scope it was on afterwards, so every other pass audits what it always did."""
+    app.show_page("triage")
+    _pump(app)
+    page = app.page_container.get_page("triage")
+    was = page._scope.get()
+    page._scope.set("All models")
+    page._on_scope_change("All models")
+    _pump(app, 1.0)
+    app.update_idletasks()
+    _walk_page(app, "triage", "triage:all models", size_label, clipped)
+    page._scope.set(was)
+    page._on_scope_change(was)
+
+
+def _walk_findings_show_all(app, size_label: str, clipped: List[ClippedWidget]) -> None:
+    """The Findings page with every group expanded ("Show all"): a preview lists active models
+    first (F5), so an inactive model's tagged row may only appear in the full list. Collapsed
+    again afterwards."""
+    from laser_trim_analyzer.findings import presentation as P
+    page = app.page_container.get_page("findings")
+    view = getattr(page, "_view", None)
+    if view is None or not view.row_widgets:
+        return
+    for spec in (*P.GROUPS, P.OTHER):
+        view.show_all(spec.key)
+    _pump(app, 1.0)
+    app.update_idletasks()
+    _walk_page(app, "findings", "findings:show all", size_label, clipped)
+    view._expanded.clear()
+    view._render()
+
+
+def run_audit(app, target_model: Optional[str], ft_model: Optional[str],
+              inactive_model: Optional[str] = None) -> Tuple[List[ClippedWidget], List[str]]:
     """Walk every view at every audited size; return (every clip found, every
     audit-tooling FAILURE -- a state this script could not itself get the app
     into, as distinct from a clip, which is the app's own text being cut off).
@@ -545,7 +596,10 @@ def run_audit(app, target_model: Optional[str],
     linked to a trim -- deliberately a different data shape) each get the FULL
     Model-page tab sweep, labeled "model:<tab>" and "model2:<tab>" respectively,
     so the densest page in the app is checked against two independently-chosen
-    real data shapes, not one.
+    real data shapes, not one. `inactive_model` (F5) gets a third, "model3:<tab>":
+    its caption starts "Inactive — last trimmed" and its findings rows carry the tag.
+    Triage is also walked on "All models" and the Findings page with every group
+    expanded, the two places an inactive model's label is drawn in full.
     """
     from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 
@@ -587,10 +641,13 @@ def run_audit(app, target_model: Optional[str],
             _pump(app)
             app.update_idletasks()
             _walk_page(app, key, key, size_label, clipped)
+        _walk_triage_all_models(app, size_label, clipped)
         if target_model:
             _sweep_model_tabs(app, target_model, "model", size_label, clipped)
         if ft_model:
             _sweep_model_tabs(app, ft_model, "model2", size_label, clipped)
+        if inactive_model:
+            _sweep_model_tabs(app, inactive_model, "model3", size_label, clipped)
         # Findings PAGE with its first row opened -- the current page is "model"
         # (or "home", if neither model resolved), never "findings", so this is
         # always a real transition; no detour needed.
@@ -617,6 +674,7 @@ def run_audit(app, target_model: Optional[str],
             _pump(app)
             app.update_idletasks()
             _walk_page(app, "findings", "findings:opened", size_label, clipped)
+        _walk_findings_show_all(app, size_label, clipped)
     # Optional (review, 2026-09-24): _load_banner ("Could not load: ...") was
     # fixed in the base report by ANALOGY to _spec_banner two lines above it in
     # the same file -- the real database never fails a loader, so it had never
@@ -735,6 +793,10 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
     try:
         target_model = resolve_findings_model(db)
         ft_model = resolve_ft_heavy_model(db, exclude=target_model)
+        inactive_model = resolve_inactive_model(db, exclude=(target_model, ft_model))
+        if inactive_model is None:
+            print("note: no model on this database is inactive -- skipping the third model's "
+                  "tab sweep (the Model page's Inactive caption is not audited)")
         if target_model is None:
             print("note: this database has no findings and no analysis rows -- "
                   "auditing every Sidebar.ITEMS page, but not the Model page's loaded state")
@@ -748,10 +810,10 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
                   f"re-tests it, which is still real coverage, just not a second model")
         app.withdraw()      # never flash on-screen before run_audit positions it off-screen
         n_sizes = len(_audit_sizes(app))
-        clipped, failures = run_audit(app, target_model, ft_model)
+        clipped, failures = run_audit(app, target_model, ft_model, inactive_model=inactive_model)
         # Written BEFORE the teardown below, so a crash in destroy() cannot lose the results.
         _write_audit(outdir, clipped, failures, n_sizes, target_model, ft_model,
-                     scaling=_effective_scaling(app))
+                     scaling=_effective_scaling(app), inactive_model=inactive_model)
         _settle_before_destroy(app)
     finally:
         app.destroy()
@@ -760,7 +822,7 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
 
 
 def _write_audit(outdir: Path, clipped, failures, n_sizes, target_model, ft_model,
-                 scaling: float = 1.0) -> None:
+                 scaling: float = 1.0, inactive_model: Optional[str] = None) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     # Failures first: a state this script could not verify at all outranks a
     # confirmed clip -- and either one means the run is not clean, so both
@@ -769,7 +831,8 @@ def _write_audit(outdir: Path, clipped, failures, n_sizes, target_model, ft_mode
     header = (f"{len(clipped)} clipped widget(s), {len(failures)} audit failure(s), "
               f"across {n_sizes} window size(s) at {scaling:.0%} scaling; "
               f"model (most findings): {target_model!r}; "
-              f"model2 (most linked final-test rows): {ft_model!r}")
+              f"model2 (most linked final-test rows): {ft_model!r}; "
+              f"model3 (inactive, most findings): {inactive_model!r}")
     (outdir / "audit.txt").write_text(header + "\n" + "\n".join(lines) + ("\n" if lines else ""))
     print(header, flush=True)
     for line in lines:

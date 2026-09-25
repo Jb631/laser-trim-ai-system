@@ -381,8 +381,9 @@ def test_the_results_are_written_before_the_window_is_torn_down(tmp_path, monkey
     monkeypatch.setattr(rp, "_build_app", lambda path: (App(), Db()))
     monkeypatch.setattr(rp, "resolve_findings_model", lambda db: None)
     monkeypatch.setattr(rp, "resolve_ft_heavy_model", lambda db, exclude=None: None)
+    monkeypatch.setattr(rp, "resolve_inactive_model", lambda db, exclude=(): None)
     monkeypatch.setattr(rp, "_audit_sizes", lambda app: [(1280, 720)])
-    monkeypatch.setattr(rp, "run_audit", lambda app, a, b: ([], []))
+    monkeypatch.setattr(rp, "run_audit", lambda app, a, b, inactive_model=None: ([], []))
     monkeypatch.setattr(rp, "_settle_before_destroy", lambda app: None)
     with pytest.raises(RuntimeError, match="teardown crashed"):
         rp._run_audit_mode(tmp_path / "copy.db", tmp_path / "out")
@@ -504,3 +505,25 @@ def test_the_detector_sees_a_line_wrapped_to_the_wrong_unit_at_150_percent(tk_ro
         ctk.set_widget_scaling(1.0)
         tk_root._set_scaled_min_max()
         tk_root.withdraw()
+
+
+# ---- F5 (2026-09-25): the audit renders an inactive model's page ---------------------------------
+
+def test_the_inactive_model_resolver_picks_an_inactive_model_with_the_most_findings(tmp_path):
+    from datetime import timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from scripts import render_pages as rp
+    from test_model_activity import NEWEST, _file
+    db = DatabaseManager(tmp_path / "resolve.db")
+    assert rp.resolve_inactive_model(db) is None                      # nothing inactive: no sweep
+    _file(db, "LIVE", NEWEST)
+    for m in ("OLD-A", "OLD-B", "OLD-C"):
+        _file(db, m, NEWEST - timedelta(days=900))
+    finding = {"analyzer": "ink_target", "category": "Ink target", "lever": "ink", "title": "t",
+               "summary": "s", "systems": ["B"], "n_units": 1, "tracks_per_year": 1.0, "evidence": {}}
+    db.replace_process_findings("OLD-B", {"tracks": 1}, [dict(finding, model="OLD-B")] * 2)
+    db.replace_process_findings("OLD-C", {"tracks": 1}, [dict(finding, model="OLD-C")])
+    db.replace_process_findings("LIVE", {"tracks": 1}, [dict(finding, model="LIVE")] * 5)
+    assert rp.resolve_inactive_model(db) == "OLD-B"                   # never the active LIVE
+    assert rp.resolve_inactive_model(db, exclude=("OLD-B",)) == "OLD-C"
+    db.close()
