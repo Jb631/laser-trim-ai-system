@@ -8,10 +8,17 @@ then pooled per limit table over exactly those shared-month cells: never a laser
 month the other laser did not also run there, and never two tables pooled as if they were one
 test (`test_findings_limit_tables.py`'s domain rule applies here too).
 
+`facts` holds every COMPARABLE measurement, not only the ones worth a finding: a (limit table,
+month) group qualifies once its lasers each clear MIN_TRACKS_PER_LASER over the months they
+share, whether or not the gap between them reaches MIN_GAP_POINTS -- the population floor gates
+a comparable measurement, the gap only gates a FINDING (review fix, 2026-09-24: this was already
+the code's behaviour -- `facts[table_key]` is written before the gap check below -- but it went
+undocumented and untested until now). A laser under the population floor is left out of facts as
+well as the comparison, never guessed into either.
+
 Measured on the rebuild, read-only, 2026-09-24: 6126 -- same limit table, same months -- laser 2
-(DLTS) 99% of 488 against laser 1 (LTS) 76% of 610; 6952 laser 2 96% of 156 against laser 1 84%
-of 160, with laser 3 also on the same table and months at 85% of 62 -- too few to be crowned
-best or worst, so it is left out of the comparison rather than guessed in. On the real data this
+(DLTS) 99% of 488 against laser 1 (LTS) 76% of 610; 6952 laser 2 (DLTS) 95% of 288 against laser
+1 (LTS) 84% of 221, pooled per limit table over their shared months. On the real data this
 analyzer produces exactly two findings.
 
 This says WHERE the two lasers differ, never WHY. The gap could be a laser setting, wear, an
@@ -52,6 +59,10 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
 
     # A month counts for a table only once >= 2 lasers ran it that month -- computed once,
     # before any pooling, so a table that never shares a laser never produces a "shared" month.
+    # This is per TABLE across ANY two lasers, not per PAIR: with three lasers running staggered
+    # months on one table, a two-laser comparison below can pool a month that only ONE of its
+    # two lasers actually ran, because a third laser covered it -- the plan's (table, month)
+    # algorithm, not a bug.
     shared_months: Dict[str, List[str]] = {}
     for (table_key, month), by_laser in cells.items():
         if len(by_laser) >= 2:
@@ -97,6 +108,9 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
             f"against {laser_label(worst)}'s {rates[worst]:.0f}% of {len(qualifying[worst]):,}. "
             "Settings that work on one laser may not transfer; this compares what each laser "
             "achieved on the same test in the same months, not why.")
+        # The finding itself only ever names the best/worst PAIR: n_units and systems cover
+        # exactly those two. A third laser that also qualified on this table shows up in `facts`
+        # and `by_laser_facts` above, never in a finding's own n_units or systems.
         findings.append(Finding(
             model=model, analyzer="machine_compare", category="Machine comparison",
             lever="laser_settings", systems=tuple(sorted((best, worst))),

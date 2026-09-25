@@ -82,6 +82,16 @@ def test_a_gap_under_ten_points_says_nothing():
     tracks = block(0, START, 200, "A", 0.86) + block(1000, START, 200, "B", 0.77)   # 9-point gap
     facts, findings = machine_compare.analyze("M", tracks, label)
     assert findings == []
+    # Under MIN_GAP_POINTS is still a COMPARABLE measurement: both lasers cleared
+    # MIN_TRACKS_PER_LASER over the same shared month, so it is a FACT, just never a finding --
+    # the population floor gates facts, the gap only gates a finding (review fix, 2026-09-24).
+    table_key = tracks[0].limit_table.key
+    assert set(facts) == {table_key}
+    assert facts[table_key]["months"] == ["2024-01"]
+    assert facts[table_key]["by_laser"] == {
+        "Laser 2 (DLTS)": {"n": 200, "pass_pct": pytest.approx(86.0)},
+        "Laser 1 (LTS)": {"n": 200, "pass_pct": pytest.approx(77.0)},
+    }
 
 
 def test_one_laser_under_the_track_floor_says_nothing():
