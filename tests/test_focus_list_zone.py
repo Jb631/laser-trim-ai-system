@@ -448,3 +448,17 @@ def test_zone_renders_the_real_focus_row_verbatim(tk_root, tmp_path):
     assert e.verdict in texts and e.sub_line in texts   # producer's words, verbatim
     assert "HOT" in texts
     assert z._rows[0].entry is e                        # the same object the chart gets
+
+
+
+def test_a_failed_load_says_unavailable_never_within_tolerance(tk_root):
+    """A crashed FOCUS computation reached this zone as an empty result and read "All models
+    within tolerance" -- the most reassuring sentence the zone has (final review, 2026-09-24)."""
+    from laser_trim_analyzer.gui.v6.focus_data import FocusLoadFailed
+    z = _zone(tk_root)
+    z.set_result(FocusLoadFailed(focus=[], chronic=[], anchor=None, error="RuntimeError: x"),
+                 last_processed=datetime(2026, 9, 20))
+    texts = _labels(z)
+    assert not any("within tolerance" in t for t in texts)
+    assert any(t.startswith("Unavailable") for t in texts)
+    assert not any(t.startswith("FOCUS —") and t.endswith("(0)") for t in texts)

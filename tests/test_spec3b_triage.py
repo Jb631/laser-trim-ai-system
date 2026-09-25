@@ -391,3 +391,91 @@ def test_the_browse_list_keeps_its_minimum_at_every_scaling(make_app, scale, siz
     finally:
         ctk.set_widget_scaling(1.0)
         ctk.set_window_scaling(1.0)
+
+
+
+# ---- final review (2026-09-24, I2): a failed load is named, never drawn as a zero ---------------
+
+def _count_pills(header):
+    return [t for t in _labels(header) if str(t).replace(",", "").isdigit()]
+
+
+def test_a_focus_crash_is_a_banner_with_no_count_pill(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.focus_data as fd
+
+    def boom(_db):
+        raise RuntimeError("invented focus crash")
+    monkeypatch.setattr(fd, "compute_focus_list", boom)
+    app, triage = _drifting_app(make_app)
+    assert triage._load_banner.winfo_manager() == "pack"
+    text = triage._load_banner.cget("text")
+    assert "drifting" in text and "RuntimeError: invented focus crash" in text
+    assert "Needs a look" in _labels(triage._focus_header)
+    assert _count_pills(triage._focus_header) == []          # never "Needs a look · 0"
+    zone = " ".join(_labels(triage._focus))
+    assert "within tolerance" not in zone and "Unavailable" in zone
+    assert {r._summary.model for r in triage._browse._rows} == {"HOT"}   # browse unaffected
+
+
+def test_a_failed_model_list_is_a_banner_with_no_count_pill(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.pages.triage_page as tp
+
+    def boom(*a, **k):
+        raise RuntimeError("invented inventory crash")
+    monkeypatch.setattr(tp, "list_known_models", boom)
+    app, triage = _drifting_app(make_app)
+    text = triage._load_banner.cget("text")
+    assert triage._load_banner.winfo_manager() == "pack"
+    assert "model list" in text and "RuntimeError: invented inventory crash" in text
+    assert "All models" in _labels(triage._browse._header)
+    assert _count_pills(triage._browse._header) == []        # never "All models · 0"
+    assert "Unavailable" in " ".join(_labels(triage._browse))
+    triage._on_scope_change("All models")                      # the toggle keeps it unavailable
+    assert _count_pills(triage._browse._header) == []
+
+
+def test_a_good_triage_load_after_a_failure_clears_the_banner(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.pages.triage_page as tp
+
+    def boom(*a, **k):
+        raise RuntimeError("invented inventory crash")
+    monkeypatch.setattr(tp, "list_known_models", boom)
+    app, triage = _drifting_app(make_app)
+    assert triage._load_banner.winfo_manager() == "pack"
+    monkeypatch.undo()
+    triage.reload_now()
+    assert triage._load_banner.winfo_manager() == ""
+    assert _count_pills(triage._focus_header) == ["1"]
+    assert _count_pills(triage._browse._header) == ["1"]
+
+
+def test_the_failure_banner_never_squeezes_the_browse_list(make_app, monkeypatch):
+    """The banner takes room above the focus zone; the fit has to count it, or at the app's
+    minimum 960x640 the browse list drops below its guaranteed minimum."""
+    import laser_trim_analyzer.gui.v6.focus_data as fd
+    from laser_trim_analyzer.gui.v6.pages import triage_page as tp
+
+    def boom(_db):
+        raise RuntimeError("invented focus crash " + "with a long explanation " * 6)
+    monkeypatch.setattr(fd, "compute_focus_list", boom)
+    app = make_app()
+    for i in range(15):
+        _seed(app.db, f"PLAIN-{i}", fails_last=2, base_fails=2)
+    triage = app.page_container.get_page("triage")
+    app.show_page("triage")
+    triage.reload_now()
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.overrideredirect(True)
+    app.geometry("960x640+20000+20000")
+    app.deiconify()
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
+    try:
+        assert triage._load_banner.winfo_manager() == "pack"
+        assert triage._browse.winfo_height() >= tp._BROWSE_MIN_H - 2, triage._browse.winfo_height()
+    finally:
+        app.withdraw()

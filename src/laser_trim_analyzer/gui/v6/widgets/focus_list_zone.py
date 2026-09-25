@@ -30,6 +30,7 @@ import customtkinter as ctk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from laser_trim_analyzer.gui.v6.focus_data import focus_failed
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import spc_draw_params
@@ -256,12 +257,25 @@ class FocusListZone(ctk.CTkFrame):
         self._rendered = []
         self._rows = []
         self._chronic_rows = []
+        failed = focus_failed(res)
         if self._heading is not None:
+            # A failed load has no count: "(0)" over a crash is a failure drawn as a result.
             self._heading.configure(
-                text=f"FOCUS — drifting now, biggest first ({len(res.focus)})")
+                text="FOCUS — drifting now, biggest first"
+                     + ("" if failed else f" ({len(res.focus)})"))
         self._caption.configure(text=self._caption_text(res.anchor))
 
-        if not res.focus:
+        if failed:
+            # The page names the failure in a banner above (Home, Triage); here the list only
+            # says it has nothing to show -- never "All models within tolerance", the most
+            # reassuring sentence this zone has, over a computation that never finished
+            # (final review, 2026-09-24).
+            lbl = ctk.CTkLabel(self._body, anchor="w",
+                               text="Unavailable — the notice above says why.",
+                               font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
+            lbl.pack(side="top", fill="x", pady=t.SPACE_LG)
+            self._rendered.append(lbl)
+        elif not res.focus:
             # Same copy as the zone this replaced: an empty list must say WHEN
             # it was empty, or it reads as "the app didn't run".
             stamp = self._last_processed or res.anchor

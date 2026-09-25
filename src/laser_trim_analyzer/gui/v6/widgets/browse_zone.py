@@ -23,6 +23,7 @@ class BrowseZone(ctk.CTkFrame):
         self.theme = theme
         self._cb = on_row_click
         self._models: List[ModelSummary] = []
+        self._failed = False                           # set_models(None): the load failed
         self._rows: List[ctk.CTkFrame] = []
         self._header: Optional[ctk.CTkFrame] = None   # blocks.group_header wrap; rebuilt each _render()
         t = theme
@@ -53,8 +54,12 @@ class BrowseZone(ctk.CTkFrame):
         self._list.pack(side="top", fill="both", expand=True)
         self._render()
 
-    def set_models(self, models: List[ModelSummary]) -> None:
-        self._models = list(models)
+    def set_models(self, models: Optional[List[ModelSummary]]) -> None:
+        """`None` means the model list could not be LOADED -- say so, with no count: a failed
+        query drawn as "All models · 0" reads as an empty database (final review, 2026-09-24).
+        The page's banner names the failure."""
+        self._failed = models is None
+        self._models = list(models or [])
         self._render()
 
     def set_filter(self, text: str) -> None:
@@ -78,8 +83,16 @@ class BrowseZone(ctk.CTkFrame):
         # Rebuilt each render (same pattern as findings_view.py's own _render()): the count pill
         # can only be right once the current filter/scope is applied. Packed BEFORE the legend,
         # which is built once in __init__ and never moves.
-        self._header = blocks.group_header(self, t, "All models", len(matches))
+        self._header = blocks.group_header(self, t, "All models",
+                                           None if self._failed else len(matches))
         self._header.pack(side="top", fill="x", pady=(0, t.SPACE_XS), before=self._legend)
+        if self._failed:
+            lbl = ctk.CTkLabel(self._list, text="Unavailable — the notice above says why.",
+                               font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY, anchor="w")
+            lbl.pack(side="top", fill="x", pady=t.SPACE_MD)
+            self._rows.append(lbl)                 # destroyed with the rows on the next render
+            self._cap_label.configure(text="")
+            return
         for m in matches[:ROW_CAP]:
             row = blocks.row(self._list, t, m.model, _tier_label(m.tier),
                              m.last_processed.strftime("%Y-%m-%d") if m.last_processed else "—",

@@ -10,6 +10,7 @@ Worker-safe: no Tk, no widget, no page state. Callers run it on a thread and
 marshal the result back through `safe_after`/`ui_dispatch`.
 """
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Sequence, Tuple
 
@@ -20,14 +21,29 @@ logger = logging.getLogger(__name__)
 EMPTY = FocusResult(focus=[], chronic=[], anchor=None)
 
 
+@dataclass
+class FocusLoadFailed(FocusResult):
+    """What load_focus returns when the computation RAISED: empty lists, so a caller that only
+    iterates still works, but a different thing from EMPTY -- `error` names the exception.
+    Until the final review (2026-09-24) a crash came back as EMPTY itself, and the screens drew
+    it as "0 drifting now", "Needs a look · 0" and "All models within tolerance": a failure
+    looking like the best possible result. Every screen that draws the list checks
+    focus_failed()."""
+    error: str = ""
+
+
+def focus_failed(result) -> Optional[str]:
+    """The failure's "ExcType: message" when `result` is a failed load, else None."""
+    return result.error if isinstance(result, FocusLoadFailed) else None
+
+
 def load_focus(db, models: Optional[Sequence] = None
                ) -> Tuple[FocusResult, Optional[datetime]]:
     """(FocusResult, last_processed). Never raises.
 
-    A compute crash degrades to an empty list — which reads as "all models
-    within tolerance" — so it is logged loudly here. Without the log, a crash
-    and a clean shop floor look identical on screen, which is exactly the bug
-    this posture was written for.
+    A compute crash is logged loudly and returned as a FocusLoadFailed -- empty, like a clean
+    shop floor, but marked, so a screen can name the failure in a banner instead of reading it
+    as "all models within tolerance".
 
     `models` is the caller's already-loaded model list (Triage has one for its
     browse list); pass it to avoid a second inventory query. Without it the
@@ -35,9 +51,10 @@ def load_focus(db, models: Optional[Sequence] = None
     """
     try:
         result = compute_focus_list(db)
-    except Exception:
+    except Exception as exc:
         logger.exception("FOCUS computation failed")
-        result = EMPTY
+        result = FocusLoadFailed(focus=[], chronic=[], anchor=None,
+                                 error=f"{type(exc).__name__}: {exc}")
     return result, _last_processed(db, models)
 
 

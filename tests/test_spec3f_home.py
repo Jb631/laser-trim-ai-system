@@ -285,9 +285,11 @@ def test_focus_row_click_routes_to_the_model_page(make_app):
     assert app.page_container.get_page("model")._current_model == "8340-1"
 
 
-def test_load_focus_returns_an_empty_result_when_the_computation_blows_up(
+def test_load_focus_never_raises_but_a_crash_is_distinguishable_from_empty(
         monkeypatch, make_app):
-    """A crash must read as 'no data', never as a clean shop floor with no log."""
+    """Still non-raising for its callers (the lists are empty, so iterating works), but a crash
+    is marked -- it used to come back as the very EMPTY a clean shop floor returns, so Home said
+    "0 drifting now" and Triage "Needs a look · 0" over a crash (final review, 2026-09-24)."""
     from laser_trim_analyzer.gui.v6 import focus_data
 
     def boom(_db):
@@ -297,6 +299,10 @@ def test_load_focus_returns_an_empty_result_when_the_computation_blows_up(
     app = make_app()
     result, last = focus_data.load_focus(app.db)
     assert result.focus == [] and result.chronic == []
+    assert focus_data.focus_failed(result) == "RuntimeError: db gone"
+    monkeypatch.undo()
+    healthy, _ = focus_data.load_focus(app.db)
+    assert focus_data.focus_failed(healthy) is None
 
 
 def test_load_focus_on_an_empty_database_is_empty(make_app):
@@ -642,3 +648,42 @@ def test_the_drifting_now_list_has_one_heading(make_app):
     page = _home(app)
     assert page._focus._heading is None
     assert not any(t.startswith("FOCUS —") for t in _labels(page))
+
+
+
+def _crash_focus(monkeypatch):
+    import laser_trim_analyzer.gui.v6.focus_data as fd
+
+    def boom(_db):
+        raise RuntimeError("invented focus crash")
+    monkeypatch.setattr(fd, "compute_focus_list", boom)
+
+
+def test_a_focus_crash_is_a_banner_and_never_zero_drifting_now(make_app, monkeypatch):
+    """I2 (final review, 2026-09-24): the crash read as "0 drifting now" in the caption and
+    "All models within tolerance" in the list."""
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    _crash_focus(monkeypatch)
+    page = _home(app)
+    page.reload_now()
+    assert page._focus_banner.winfo_manager() == "pack"
+    assert "RuntimeError: invented focus crash" in page._focus_banner.cget("text")
+    assert page._focus_banner.cget("fg_color") == page.theme.CHECK_TINT
+    caption = page._caption.cget("text")
+    assert caption.startswith("Last processed") and "drifting now" not in caption
+    zone = " ".join(_labels(page._focus))
+    assert "within tolerance" not in zone and "Unavailable" in zone
+
+
+def test_a_good_focus_load_after_a_crash_clears_the_banner(make_app, monkeypatch):
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    _crash_focus(monkeypatch)
+    page = _home(app)
+    page.reload_now()
+    assert page._focus_banner.winfo_manager() == "pack"
+    monkeypatch.undo()
+    page.reload_now()
+    assert page._focus_banner.winfo_manager() == ""
+    assert page._caption.cget("text").endswith("0 drifting now")

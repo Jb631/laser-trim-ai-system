@@ -42,7 +42,7 @@ from laser_trim_analyzer.core.ingest_run import (
     EtaEstimator, ProgressCoalescer, ProgressTicker, format_ingest_summary,
     format_progress_line, unreadable_count, unreadable_notice)
 from laser_trim_analyzer.findings import presentation as P
-from laser_trim_analyzer.gui.v6.focus_data import load_focus
+from laser_trim_analyzer.gui.v6.focus_data import focus_failed, load_focus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
@@ -73,7 +73,8 @@ class HomePage(PageBase):
         self._running = False
         self._cancel = None            # threading.Event while a run is in flight
         self._last_processed = None    # datetime | None -- the caption's date (from load_focus)
-        self._focus_count = 0          # M -- len(FocusResult.focus) (from load_focus)
+        self._focus_count = 0          # M -- len(FocusResult.focus) (from load_focus); None
+                                        # while unknown (the FOCUS computation failed)
         self._worth_count = None       # N -- yield-group rows; None while unknown (not yet
                                         # loaded, or the findings read failed)
         self._worth_view = None        # the "Worth changing" FindingsView, when there is one
@@ -204,6 +205,9 @@ class HomePage(PageBase):
         self._focus_header = self._zone_header(parent, "Drifting now",
                                                "biggest first — one verdict per lot, "
                                                "self-clearing")
+        # Packed (just under "Drifting now") only when the FOCUS computation failed: a crash is
+        # named, never drawn as "0 drifting now" (final review, 2026-09-24).
+        self._focus_banner = blocks.banner(parent, t, "")
         # show_heading=False, like Triage: the zone header above already says "Drifting now";
         # the list's own "FOCUS — drifting now, biggest first (N)" under it said it twice.
         self._focus = FocusListZone(parent, theme=t,
@@ -445,7 +449,16 @@ class HomePage(PageBase):
         # Same two values the caption reads (design doc §2 ruling 2 item 1) -- load_focus
         # already computed both, so this is not a second query, just a second consumer.
         self._last_processed = last_processed
-        self._focus_count = len(result.focus)
+        failed = focus_failed(result)
+        self._focus_count = None if failed else len(result.focus)
+        if failed:
+            self._focus_banner.configure(
+                text=f"What is drifting could not be worked out ({failed}). This is an error, "
+                     f"not an all-clear — the log has the details.")
+            self._focus_banner.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM),
+                                    before=self._focus)
+        else:
+            self._focus_banner.pack_forget()
         self._update_caption()
 
     # ---- "Worth changing" ---------------------------------------------------
@@ -538,8 +551,8 @@ class HomePage(PageBase):
         means no caption, the same posture the Findings page takes on its own empty/failed
         states: zeros are not a real reading of an app that has never run. N drops out of the
         sentence (never shown as a misleading "0") while the findings read failed or nothing
-        is cached at all (_apply_findings); M never does, because load_focus() itself never
-        raises."""
+        is cached at all (_apply_findings); M drops out while the FOCUS computation failed
+        (load_focus never raises, but marks the failure -- focus_data.focus_failed)."""
         if self._last_processed is None:
             self.set_caption("")
             return
@@ -547,7 +560,8 @@ class HomePage(PageBase):
         parts = [f"Last processed {dt.day} {dt:%b}"]      # NOT %-d: it raises on Windows
         if self._worth_count is not None:
             parts.append(f"{self._worth_count:,} worth changing")
-        parts.append(f"{self._focus_count:,} drifting now")
+        if self._focus_count is not None:
+            parts.append(f"{self._focus_count:,} drifting now")
         self.set_caption(" · ".join(parts))
 
     # ---- routing -----------------------------------------------------------
