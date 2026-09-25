@@ -102,8 +102,10 @@ def test_the_golden_covers_what_it_claims(db, tmp_path):
 
 def test_the_body_with_carried_values_stores_the_same_rows_and_touches_no_file(db, tmp_path, monkeypatch):
     """The whole scenario through `_save_analysis_in`, each file in a session the TEST owns, with
-    every stat, open and hash trapped: identical rows, and not one file touched."""
+    every stat, open and hash trapped: not one file touched, and rows EXACTLY those save_analysis
+    stores beside it in this process (and the golden's, within its cross-platform tolerance)."""
     steps = save_rows.build_scenario(tmp_path)
+    reference = save_rows.reference_snapshot(steps, tmp_path)
     carried = [db._file_identity(result.metadata.file_path) for _, result in steps]
     ids = []
     with save_rows.no_file_io(monkeypatch) as touched:
@@ -111,7 +113,9 @@ def test_the_body_with_carried_values_stores_the_same_rows_and_touches_no_file(d
             with db.session() as s:
                 ids.append((label, db._save_analysis_in(s, result, stat, file_hash)))
     assert touched == [], f"the save touched the file system: {touched}"
-    save_rows.assert_matches_golden(save_rows.snapshot(Path(db.database_path), tmp_path, ids))
+    snap = save_rows.snapshot(Path(db.database_path), tmp_path, ids)
+    save_rows.assert_same_rows(snap, reference, "_save_analysis_in with carried values")
+    save_rows.assert_matches_golden(snap)
 
 
 def test_the_marker_records_the_carried_stat_and_hash_not_the_disk(db, tmp_path):

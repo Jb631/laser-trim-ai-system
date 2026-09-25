@@ -301,7 +301,8 @@ class BatchCommitError(DatabaseError):
 class TrimWrite:
     """One trim result for `write_batch`, with the (size, mtime) and SHA-256 of the bytes that
     were PARSED -- recorded on its processed-files marker as given (ruling 10). (None, None):
-    the file could not be statted; its rows are written, no marker is."""
+    the file could not be statted; its rows are written, no marker is, and `write_batch` says so
+    in a WARNING naming the file -- the file will be offered again next run (review m-4)."""
     analysis: AnalysisResult
     stat: Optional[Tuple[int, float]]
     file_hash: Optional[str]
@@ -318,9 +319,14 @@ _BATCH_GUARD = "lta_batch_guard"
 class WriteOutcome:
     """What `write_batch` did with one item, once the batch COMMITTED.
 
-    `saved` carries the row id. `duplicate` is a UNIQUE constraint -- the unit is already stored
-    (the bucket the ingest has always called "skipped"). `failed` carries why. A duplicate or a
-    failed item left nothing behind: its savepoint was rolled back, rows and marker together.
+    `saved` carries the row id. `failed` carries why. `duplicate` is a UNIQUE constraint that the
+    file's OWN rows broke -- in practice a malformed result, such as two tracks with one track_id.
+    It never means "this unit is already stored": the body finds a stored unit by its UNIQUE key
+    and updates it, and relinks a processed row by content hash, and under BEGIN IMMEDIATE nothing
+    can be stored between that lookup and the write (review m-3). It is kept apart because it is
+    the bucket the ingest has always called "skipped"; whether it stays one is Task 10's to decide.
+    A duplicate or a failed item left nothing behind: its savepoint was rolled back, rows and
+    marker together.
     """
     status: str
     row_id: Optional[int] = None
@@ -2046,6 +2052,12 @@ class DatabaseManager:
             # delete in bulk and lean on ON DELETE CASCADE, and neither tells the session -- so an
             # earlier file's object can never stand in for a row a later file's body reads.
             session.expunge_all()
+        if item.stat is None:
+            # Right for a file that could not be statted (an ERROR result for a file gone or
+            # locked has always kept its row); otherwise a caller dropped the parse's own stat,
+            # and the file would be re-parsed on every run without a word (review m-4).
+            logger.warning(f"{item.analysis.metadata.filename}: saved WITHOUT a processed marker -- "
+                           "no (size, mtime) came with it, so the next run offers it again")
         return WriteOutcome(SAVED, row_id=row_id)
 
     @staticmethod
@@ -2053,7 +2065,7 @@ class DatabaseManager:
         name = item.analysis.metadata.filename
         why = f"{type(exc).__name__}: {exc}"[:500]
         if isinstance(exc, IntegrityError) and "UNIQUE constraint" in str(exc):
-            logger.warning(f"{name}: not saved, a UNIQUE constraint says it is already stored: {why}")
+            logger.warning(f"{name}: not saved -- its own rows broke a UNIQUE constraint: {why}")
             return WriteOutcome(DUPLICATE, reason=why)
         logger.error(f"Save failed for {name}: {why}")
         return WriteOutcome(FAILED, reason=why)

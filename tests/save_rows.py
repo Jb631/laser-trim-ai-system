@@ -29,9 +29,14 @@ mtime, content hash or skip-marker hash is replaced by its NAME ("<sha256 of fil
 EQUALS what the file on disk says -- so the golden still pins that the right value was stored,
 without pinning the tmp directory, the time zone, or the bytes of a workbook generated per run.
 JSON columns are compared as data; the JSON text 'null' stays distinct from SQL NULL on purpose
-(the save writes each deliberately -- see `_write_trim_passes`). Floats are compared to 1e-6,
-absolute and relative: `tests/test_parse_all_models.py`'s tolerance, for the same reason (another
-platform's BLAS).
+(the save writes each deliberately -- see `_write_trim_passes`).
+
+HOW EXACT. Two paths run in ONE process are compared EXACTLY (`assert_same_rows`): every save path
+against `save_analysis`, run beside it (`reference_snapshot`) -- same machine, same bits, so any
+difference at all is a difference in what the path stores. Only the comparison against the
+COMMITTED golden allows a tolerance, for another platform's BLAS: relative 1e-6 (the parser gate's)
+with an absolute floor of 1e-12 -- not the parser gate's 1e-6, under which a 0.1% move of a
+4.7e-4 sigma threshold passed (review m-1; 373 of the golden's floats are below 1e-3).
 """
 from __future__ import annotations
 
@@ -251,8 +256,10 @@ def snapshot(db_path: Path, root: Path, ids) -> Dict[str, Any]:
     return {"ids": [[label, rid] for label, rid in ids], "tables": dump_rows(db_path, root)}
 
 
-def differences(got, want, where: str = "", out=None, limit: int = 40) -> List[str]:
-    """Every place `got` differs from `want`, as readable lines (at most `limit`)."""
+def differences(got, want, where: str = "", out=None, limit: int = 40,
+                exact: bool = False) -> List[str]:
+    """Every place `got` differs from `want`, as readable lines (at most `limit`). `exact`: two
+    paths in one process -- no tolerance at all; else the committed golden's (see the docstring)."""
     out = [] if out is None else out
     if len(out) >= limit:
         return out
@@ -261,22 +268,44 @@ def differences(got, want, where: str = "", out=None, limit: int = 40) -> List[s
             and not isinstance(got, bool) and not isinstance(want, bool)):
         both_nan = (isinstance(got, float) and isinstance(want, float)
                     and math.isnan(got) and math.isnan(want))     # a stored NaN is a value too
-        if not both_nan and not math.isclose(got, want, rel_tol=1e-6, abs_tol=1e-6):
+        same = (got == want and type(got) is type(want)) if exact else \
+            math.isclose(got, want, rel_tol=1e-6, abs_tol=1e-12)
+        if not both_nan and not same:
             out.append(f"{where}: {want!r} -> {got!r}")
     elif isinstance(got, dict) and isinstance(want, dict):
         for k in sorted(set(got) | set(want)):
             if k not in got or k not in want:
                 out.append(f"{where}.{k}: {'missing now' if k not in got else 'new column'}")
             else:
-                differences(got[k], want[k], f"{where}.{k}", out, limit)
+                differences(got[k], want[k], f"{where}.{k}", out, limit, exact)
     elif isinstance(got, list) and isinstance(want, list):
         if len(got) != len(want):
             out.append(f"{where}: {len(want)} items -> {len(got)}")
         for i, (g, w) in enumerate(zip(got, want)):
-            differences(g, w, f"{where}[{i}]", out, limit)
+            differences(g, w, f"{where}[{i}]", out, limit, exact)
     elif type(got) is not type(want) or got != want:
         out.append(f"{where}: {want!r} -> {got!r}")
     return out
+
+
+def reference_snapshot(steps, root: Path) -> Dict[str, Any]:
+    """The scenario through `save_analysis`, into a database of its own, in THIS process -- from
+    deep copies, so nothing a path under test does to the results can reach it. What every other
+    save path must store EXACTLY."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    path = root / "reference.db"
+    ref = DatabaseManager(path)
+    try:
+        ids = [(label, ref.save_analysis(result.model_copy(deep=True))) for label, result in steps]
+    finally:
+        ref.close()
+    return snapshot(path, root, ids)
+
+
+def assert_same_rows(snap: Dict[str, Any], reference: Dict[str, Any], what: str) -> None:
+    diffs = differences(snap, reference, exact=True)
+    assert not diffs, (f"{what} stored different rows than save_analysis did in the same process "
+                       "(compared exactly):\n  " + "\n  ".join(diffs))
 
 
 def load_golden() -> Dict[str, Any]:

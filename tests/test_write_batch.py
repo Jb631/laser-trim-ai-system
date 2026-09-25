@@ -174,7 +174,9 @@ def test_a_file_that_fails_mid_save_rolls_back_alone_and_the_others_commit(db, m
         return real(session, analysis_id, setup)
 
     monkeypatch.setattr(db, "_write_trim_setup", fails_for_one)
-    outcomes = db.write_batch(items)
+    with save_rows.no_file_io(monkeypatch) as touched:      # the failure path touches no file either
+        outcomes = db.write_batch(items)
+    assert touched == [], touched
     assert [o.status for o in outcomes] == ["saved", "saved", "failed", "saved"]
     assert "invented failure" in outcomes[2].reason and outcomes[2].row_id is None
     rows = _rows_by_file(db.database_path)
@@ -549,7 +551,8 @@ def _refusal(make):
 # ---- outcomes, and ruling 22: a failed batch commit is named and counted -------------------------
 
 def test_each_file_gets_an_outcome_saved_duplicate_or_failed(db, monkeypatch):
-    """saved(row id) | duplicate (a UNIQUE constraint: the unit is already stored -- the bucket
+    """saved(row id) | duplicate (a UNIQUE constraint the file's OWN rows broke -- here two tracks
+    with one track_id; never "already stored", which the body turns into an update -- the bucket
     the ingest has always called 'skipped') | failed(why) -- one per item, in order. Only UNIQUE
     is a duplicate: any other IntegrityError is a failure, never quietly a skip."""
     import sqlite3 as _sqlite3
@@ -639,22 +642,52 @@ def test_write_batch_refuses_what_it_cannot_write(db):
     assert outcomes[0].status == "failed" and "final_test" in outcomes[0].reason
 
 
+def test_a_file_with_no_carried_stat_is_saved_without_a_marker_and_says_so(db, caplog):
+    """Review m-4. stat=None keeps its one meaning -- the file could not be statted: its rows are
+    saved and no processed marker is, so the next run offers it again (the golden pins this for a
+    file gone before its save). WARNED, not refused: an ERROR result for a file that could not be
+    statted legitimately has no stat and has always kept its row, and refusing would also split
+    save_batch from save_analysis for a gone file. But once the ingest carries the parse's own stat,
+    any other None is a caller that dropped it -- a file re-parsed every run -- and must be heard."""
+    import logging
+    from laser_trim_analyzer.database.manager import TrimWrite
+    items = [TrimWrite(_parsed(FOUR[0]), None, None)] + _items(db, FOUR[1:2])
+    with caplog.at_level(logging.WARNING, logger="laser_trim_analyzer.database.manager"):
+        outcomes = db.write_batch(items)
+    assert [o.status for o in outcomes] == ["saved", "saved"]
+    warned = [r.getMessage() for r in caplog.records
+              if r.name == "laser_trim_analyzer.database.manager" and r.levelno == logging.WARNING]
+    assert len(warned) == 1 and FOUR[0] in warned[0] and "marker" in warned[0], warned
+    rows = _rows_by_file(db.database_path)
+    assert rows[FOUR[0]][0] == 1 and rows[FOUR[0]][4] == 0, "rows saved, no marker"
+    assert rows[FOUR[1]][4] == 1
+
+
 # ---- every stored value: the golden, through write_batch and save_batch --------------------------
 
 @pytest.mark.parametrize("per_batch", [1, 4, 20])
-def test_write_batch_stores_exactly_todays_rows(db, tmp_path, per_batch):
+def test_write_batch_stores_exactly_todays_rows(db, tmp_path, monkeypatch, per_batch):
     """The whole golden scenario (every kind, both update paths, two paths with one content hash)
     through write_batch -- one file per batch, four, and all of it in ONE transaction, where a
-    later file updates rows an earlier one wrote in the same, still-uncommitted transaction."""
+    later file updates rows an earlier one wrote in the same, still-uncommitted transaction.
+
+    Every write_batch call runs inside the file-I/O trap (ruling 10, review m-2): handed the carried
+    values, the whole batch -- savepoints, outcomes, the tripwire, the guard -- touches no file. Its
+    rows are compared EXACTLY with save_analysis's in this process, then with the golden."""
     from laser_trim_analyzer.database.manager import TrimWrite
     steps = save_rows.build_scenario(tmp_path)
+    reference = save_rows.reference_snapshot(steps, tmp_path)
     items = [TrimWrite(r, *db._file_identity(r.metadata.file_path)) for _, r in steps]
     outcomes = []
-    for i in range(0, len(items), per_batch):
-        outcomes += db.write_batch(items[i:i + per_batch])
+    with save_rows.no_file_io(monkeypatch) as touched:
+        for i in range(0, len(items), per_batch):
+            outcomes += db.write_batch(items[i:i + per_batch])
+    assert touched == [], f"write_batch touched the file system: {touched}"
     assert all(o.status == "saved" for o in outcomes), outcomes
     ids = [(label, o.row_id) for (label, _), o in zip(steps, outcomes)]
-    save_rows.assert_matches_golden(save_rows.snapshot(Path(db.database_path), tmp_path, ids))
+    snap = save_rows.snapshot(Path(db.database_path), tmp_path, ids)
+    save_rows.assert_same_rows(snap, reference, f"write_batch, {per_batch} per batch")
+    save_rows.assert_matches_golden(snap)
 
 
 def test_save_batch_stores_exactly_what_save_analysis_stores(db, tmp_path):
@@ -662,10 +695,13 @@ def test_save_batch_stores_exactly_what_save_analysis_stores(db, tmp_path):
     writes trim_passes and trim_setup as save_analysis does (the parked C2 finding: it never did),
     and a final-test or smoothness result passes through exactly as save_analysis returns it."""
     steps = save_rows.build_scenario(tmp_path)
+    reference = save_rows.reference_snapshot(steps, tmp_path)
     ids = db.save_batch([r for _, r in steps])
     assert ids == [rid for _, rid in save_rows.load_golden()["ids"]]
     labelled = [(label, rid) for (label, _), rid in zip(steps, ids)]
-    save_rows.assert_matches_golden(save_rows.snapshot(Path(db.database_path), tmp_path, labelled))
+    snap = save_rows.snapshot(Path(db.database_path), tmp_path, labelled)
+    save_rows.assert_same_rows(snap, reference, "save_batch")
+    save_rows.assert_matches_golden(snap)
     ft, sm = _parsed(FOUR[0]), _parsed(FOUR[1])
     ft.file_type, ft.final_test_id = "final_test", 77
     sm.file_type, sm.smoothness_id = "smoothness", None
