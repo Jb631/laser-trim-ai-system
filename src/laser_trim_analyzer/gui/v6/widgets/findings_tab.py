@@ -1,10 +1,20 @@
 """Model page tab: what the process data says about THIS model, and what to do about it.
 
 Facts first (always shown -- they are measurements), then findings (only where
-there is something a person could act on), then the recipe history. A model
-with no findings reads as "nothing to act on", never as a gap. Text only: no
-chart in v1, so nothing here touches matplotlib or the chart QA harness.
+there is something a person could act on), then the recipe history and the rest of
+what the analyzers measured -- the station limits, the laser comparison, the rework
+count and, last, where the loss is made, directly above the Model page's Predictor
+panel: spec ruling 2 (2026-09-24) sets loss_origin's AUC beside the predictor's, and
+the predictor's stored AUC is quoted with it. A model with no findings reads as
+"nothing to act on", never as a gap. Text only: no chart in v1, so nothing here
+touches matplotlib or the chart QA harness.
+
+The section texts are built by the module's `*_lines` functions -- pure, so every
+rule they follow is tested without a window -- and read a cache written before a
+facts shape changed (machine_compare's window, rework_load's per-laser split) too:
+only the models an ingest touches are refreshed.
 """
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import customtkinter as ctk
@@ -30,11 +40,40 @@ def _txt(v) -> str:
     return "—" if v in (None, "") else str(v)
 
 
+def _auc(v) -> str:
+    return "—" if v is None else f"{v:.2f}"
+
+
+def _share(v) -> str:
+    """A ratio as a percentage (0.41 -> "41%"); "—" when absent."""
+    return "—" if v is None else f"{v:.0%}"
+
+
+def _mon(month) -> str:
+    try:
+        return datetime.strptime(str(month)[:7], "%Y-%m").strftime("%b %Y")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _span(months) -> str:
+    months = [m for m in (months or []) if m]
+    if not months:
+        return "—"
+    first, last = _mon(months[0]), _mon(months[-1])
+    return first if first == last else f"{first} – {last}"
+
+
 # What the engine calls each analyzer -> what a person would call it.
 _ANALYZER_NAMES = {"recipe_change": "the recipe history", "ink_target": "the ink target",
                    "trim_effort": "what each cut buys", "limit_tables": "the limit tables",
                    "cut_setting": "the cut settings",
-                   "pass_burden": "the multi-pass burden"}
+                   "pass_burden": "the multi-pass burden",
+                   "setup_change": "the setting changes",
+                   "machine_compare": "the laser comparison",
+                   "loss_origin": "where the loss is made",
+                   "station_setup": "the station limits comparison",
+                   "rework_load": "the rework count"}
 
 # NOT COMPUTED, in one set of words: this tab and the model page's "Worth changing" section both
 # say it (final review, 2026-09-24 -- the section used to read "nothing worth changing" instead).
@@ -52,6 +91,106 @@ def failed_text(error: str) -> str:
     -- "not worked out yet" over a crash is a failure looking like a result."""
     return (f"The process findings for this model could not be loaded ({error}). This is an "
             f"error, not a result — the log has the details.")
+
+
+def station_lines(ss: Dict[str, Any]) -> List[str]:
+    """station_setup: its own note, and whose limits it compared."""
+    lasers = ", ".join(ss.get("sampled_lasers") or []) or "The laser"
+    return [f"{lasers} against final test: {_txt(ss.get('note'))}.",
+            f"{_num(ss.get('matched_positions'))} positions measured by both stations, on the "
+            "newest units linked to a final test."]
+
+
+def machine_lines(mc: Dict[str, Any]) -> List[str]:
+    """machine_compare: each comparable (limit table, shared months) period, its per-laser rates --
+    a period before the window dated as such, never a recommendation."""
+    window = mc.get("window") or {}
+    comps = mc.get("comparisons")
+    if comps is None:                   # a cache from before the window: {table: {months, by_laser}}
+        comps = [{"months": v.get("months"), "by_laser": v.get("by_laser"), "in_window": None,
+                  "graded_points": None} for _, v in sorted(mc.items()) if isinstance(v, dict)]
+    lines = []
+    for c in comps:
+        parts = [_span(c.get("months"))]
+        if c.get("graded_points") is not None:
+            parts.append(f"{_num(c.get('graded_points'))}-point limit table")
+        by_laser = c.get("by_laser") or {}
+        parts += [f"{laser} {_pct((by_laser[laser] or {}).get('pass_pct'))} of "
+                  f"{_num((by_laser[laser] or {}).get('n'))}" for laser in sorted(by_laser)]
+        if c.get("in_window") is False:
+            parts.append(f"before the {window.get('months', 24)} months to {_mon(window.get('last'))}, "
+                         "so not a finding")
+        lines.append(" · ".join(parts))
+    return lines
+
+
+def rework_lines(rw: Dict[str, Any]) -> List[str]:
+    """rework_load: the model's counts, then each laser's verdict -- confirmed, or why not -- with
+    both sizes, the p-value and the effect the verdict rests on."""
+    lines = [f"{_num(rw.get('linked'))} final tests linked to this model's trim files in the last "
+             f"year · {_num(rw.get('rework_unit_days'))} unit-days failed at the laser and passed "
+             "final test"]
+    if not rw.get("linked"):
+        if rw.get("note"):
+            lines.append(f"Nothing to test: {rw['note']}.")
+        return lines
+    per = rw.get("by_laser")
+    if per is None:                     # a cache from before the per-laser split
+        per = {"This model": rw}
+    for laser in sorted(per):
+        f = per[laser] or {}
+        verdict = ("confirmed as hand trim" if f.get("confirmed")
+                   else f"not confirmed: {_txt(f.get('note'))}")
+        p = f.get("p_value")
+        lines.append(
+            f"{laser} · {verdict} · {_num(f.get('rework_ratio_n'))} reworked unit-days against the "
+            f"{_num(f.get('control_top_third_n'))} untouched units with the largest laser errors "
+            f"(of {_num(f.get('control_n'))}) · median final-test/laser error "
+            f"{_share(f.get('median_ratio_rework'))} against "
+            f"{_share(f.get('median_ratio_control_top_third'))} · effect "
+            f"{_auc(f.get('effect_ratio'))} · p = {'—' if p is None else f'{p:.2g}'}")
+    return lines
+
+
+def loss_origin_lines(lo: Dict[str, Any]) -> List[str]:
+    """loss_origin: one line per laser -- tracks, fails, both AUCs ("—" when uncomputable, never
+    0) and the one limit table it was scored on."""
+    lines = []
+    for laser in sorted(lo):
+        f = lo[laser] or {}
+        line = (f"{laser} · {_num(f.get('n'))} tracks, {_num(f.get('fails'))} failed at the laser · "
+                f"AUC {_auc(f.get('auc_error'))} from incoming linearity, "
+                f"{_auc(f.get('auc_resistance'))} from incoming resistance")
+        table = f.get("limit_table") or {}
+        if table:
+            line += f" · on the {_num(table.get('graded_points'))}-point limit table"
+            if f.get("other_tables_n"):
+                line += f" ({_num(f['other_tables_n'])} tracks on other tables left out)"
+        lines.append(line)
+    return lines
+
+
+def predictor_line(data: Dict[str, Any]) -> Optional[str]:
+    """The final-test predictor's own AUC as its last training stored it (the Model page reads
+    it), set beside loss_origin's -- or why it cannot be. None when the caller supplied neither."""
+    if data.get("predictor_auc_error"):
+        return (f"The final-test predictor's own AUC could not be read "
+                f"({_txt(data['predictor_auc_error'])}).")
+    if "predictor_auc" not in data:
+        return None
+    auc = data["predictor_auc"]
+    if auc is None:
+        return ("No final-test predictor is trained for this model, so there is no predictor AUC "
+                "to set beside these.")
+    return (f"The final-test predictor's own AUC, for comparison: {auc:.2f} -- how well it ranks "
+            "units at final test (the Predictor panel below), not where the loss starts.")
+
+
+def _loss_reading() -> str:
+    from laser_trim_analyzer.findings.analyzers import loss_origin as lo
+    return (f"An AUC of 0.5 is no better than chance and 1.0 a perfect split. A finding needs "
+            f"{lo.STRONG_AUC:.2f} over {lo.MIN_TRACKS} tracks with {lo.MIN_PER_OUTCOME} of each "
+            "outcome; below that it is a fact, not a call.")
 
 
 class FindingsTab(ctk.CTkFrame):
@@ -140,8 +279,38 @@ class FindingsTab(ctk.CTkFrame):
                            f"{_txt(run.get('last'))} · {_txt(run.get('recipe'))} · {_num(run.get('n'))} tracks · "
                            f"{_pct(run.get('trim_pass_pct'))} left the laser inside limits · "
                            f"median incoming {_num(run.get('median_incoming_r'))} Ω", muted=True)
+        # A None here is an analyzer that did not run (its crash is named at the top) or a cache
+        # written before it existed; {} is "computed, nothing comparable" -- neither draws a
+        # section, the way the sections above behave.
+        self._section("Laser and final test limits", station_lines,
+                      facts.get("station_setup"))
+        self._section("Two lasers on the same test", machine_lines, facts.get("machine_compare"))
+        self._section("Hand trim after a laser fail (last year)", rework_lines,
+                      facts.get("rework_load"))
+        loss = facts.get("loss_origin") or {}
+        if loss:
+            # Last: directly above the Model page's Predictor panel (spec ruling 2).
+            lines = loss_origin_lines(loss)
+            self._group_heading("Where the loss is made (last year)", len(lines))
+            for line in lines:
+                self._line(line, muted=True)
+            self._line(_loss_reading(), muted=True)
+            said = predictor_line(data or {})
+            if said:
+                self._line(said, muted=True)
 
     # ---- pieces ----
+    def _section(self, title: str, build, facts) -> None:
+        """One fact section: `build(facts)` -> its lines, under a counted heading."""
+        if not facts:
+            return
+        lines = build(facts)
+        if not lines:
+            return
+        self._group_heading(title, len(lines))
+        for line in lines:
+            self._line(line, muted=True)
+
     def _heading(self, text: str) -> None:
         # A SECTION of the tab ("What to do about it") holds the FindingsView's group headers
         # (SIZE_HEADING, bold), so it can be no smaller than they are -- a caption-sized section

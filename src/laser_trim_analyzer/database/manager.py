@@ -5949,6 +5949,20 @@ class DatabaseManager:
                         written += 1
         return written
 
+    def get_predictor_auc(self, model: str) -> Optional[float]:
+        """The final-test predictor's own AUC for `model`, as its last training stored it in
+        model_ml_state -- None when no predictor is trained. Read without loading the ML manager
+        (which reads every predictor pickle), for the Model page's Findings tab, where spec
+        ruling 2 (2026-09-24) sets loss_origin's AUC beside the predictor's. Raises on a failed
+        read: the tab names that, never shows it as "no predictor"."""
+        from laser_trim_analyzer.database.models import ModelMLState
+        with self.session() as session:
+            row = (session.query(ModelMLState.predictor_trained, ModelMLState.predictor_auc)
+                   .filter(ModelMLState.model == model).first())
+        if row is None or not row[0] or row[1] is None:
+            return None
+        return float(row[1])
+
     def get_ml_staleness(self) -> List[Dict[str, Any]]:
         """
         Get ML training staleness info for each trained model.

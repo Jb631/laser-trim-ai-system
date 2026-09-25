@@ -495,6 +495,15 @@ class ModelPage(PageBase):
                 logger.exception("Model %s: process findings failed", model)
                 failed.append("process findings")
                 findings_error = f"{type(exc).__name__}: {exc}"
+            if findings_data is not None:
+                # The final-test predictor's own AUC, set beside loss_origin's on the Findings
+                # tab (spec ruling 2). Its own guard: a failed read is named on the tab, and it
+                # must not cost the tab the findings themselves.
+                try:
+                    findings_data["predictor_auc"] = self.app.db.get_predictor_auc(model)
+                except Exception as exc:
+                    logger.exception("Model %s: predictor AUC failed", model)
+                    findings_data["predictor_auc_error"] = f"{type(exc).__name__}: {exc}"
 
             def apply():
                 if gen != self._reload_gen:

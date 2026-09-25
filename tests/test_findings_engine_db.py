@@ -485,3 +485,16 @@ def test_a_crash_in_loss_origin_is_named_like_any_other(tmp_path, monkeypatch):
     assert facts["loss_origin"] is None
     assert facts["machine_compare"] is not None and facts["station_setup"] is not None  # the rest ran
     assert [f.analyzer for f in findings] == ["ink_target"]
+
+
+def test_the_stored_predictor_auc_is_read_without_loading_the_ml_manager(tmp_path):
+    """The Findings tab sets loss_origin's AUC beside the final-test predictor's (spec ruling 2);
+    the predictor's is the one its last training stored in model_ml_state."""
+    from laser_trim_analyzer.database.models import ModelMLState
+    db = _db(tmp_path)
+    assert db.get_predictor_auc("NONE") is None
+    with db.session() as s:
+        s.add(ModelMLState(model="UNTRAINED", predictor_trained=False, predictor_auc=0.9))
+        s.add(ModelMLState(model="TRAINED", predictor_trained=True, predictor_auc=0.8123))
+    assert db.get_predictor_auc("UNTRAINED") is None
+    assert db.get_predictor_auc("TRAINED") == 0.8123

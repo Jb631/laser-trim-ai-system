@@ -285,3 +285,161 @@ def test_the_three_states_follow_each_other_and_recover(tk_root):
     tab.set_data({"facts": FACTS, "findings": []})                 # computed, nothing found
     text = " | ".join(_texts(tab))
     assert "Nothing to act on" in text and "could not be loaded" not in text
+
+
+# ---- I3 (final review, 2026-09-25): the tab shows the five new facts keys ----------------------
+# Example numbers are invented.
+
+LOSS = {"Laser 1 (LTS)": {"n": 1290, "fails": 465, "auc_error": 0.736, "auc_resistance": 0.61,
+                          "limit_table": {"key": "k1", "graded_points": 57, "tracks": 1290},
+                          "other_tables_n": 40},
+        "Laser 2 (DLTS)": {"n": 12, "fails": 0, "auc_error": None, "auc_resistance": None,
+                           "limit_table": {"key": "k2", "graded_points": 45, "tracks": 12},
+                           "other_tables_n": 0}}
+REWORK = {"linked": 1300, "rework_unit_days": 300, "skipped_pairs": 3, "junk_readings": 0,
+          "unpaired_final_tests": 0, "reduction": "r", "confirmed": True,
+          "by_laser": {
+              "Laser 1 (LTS)": {"rework_unit_days": 261, "rework_ratio_n": 244, "control_n": 415,
+                                "control_top_third_n": 139, "control_top_third_min_laser_error": 0.05,
+                                "mann_whitney_u": 1.0, "p_value": 5.2e-06, "median_ratio_rework": 0.41,
+                                "median_ratio_control_top_third": 0.51, "effect_ratio": 0.805,
+                                "confirmed": True},
+              "Laser 2 (DLTS)": {"rework_unit_days": 39, "rework_ratio_n": 12, "control_n": 5,
+                                 "control_top_third_n": 2, "control_top_third_min_laser_error": None,
+                                 "mann_whitney_u": None, "p_value": None, "median_ratio_rework": 0.5,
+                                 "median_ratio_control_top_third": None, "effect_ratio": None,
+                                 "confirmed": False, "note": "12 reworked unit-days and 2 comparable "
+                                 "pass/pass units could be read -- the test needs 30 and 20"}}}
+STATION = {"status": "differs", "pct_positions_differing": 1.0, "matched_positions": 225,
+           "trim_typ_band": 0.05, "ft_typ_band": 0.03, "sampled_lasers": ["Laser 1 (LTS)"],
+           "differing_ratio": 1.7, "differing_wider_share": 1.0,
+           "note": "100% of the positions both stations measure are graded to different limits "
+                   "(trim ±0.050 V, final test ±0.030 V)"}
+MACHINE = {"window": {"first": "2024-10", "last": "2026-09", "months": 24, "anchored_to": "2026-09-22"},
+           "comparisons": [
+               {"table": "t1", "graded_points": 31, "in_window": False, "months": ["2023-07", "2024-09"],
+                "by_laser": {"Laser 1 (LTS)": {"n": 480, "pass_pct": 75.2},
+                             "Laser 2 (DLTS)": {"n": 314, "pass_pct": 99.1}}},
+               {"table": "t1", "graded_points": 31, "in_window": True, "months": ["2024-10", "2025-02"],
+                "by_laser": {"Laser 1 (LTS)": {"n": 130, "pass_pct": 82.3},
+                             "Laser 2 (DLTS)": {"n": 174, "pass_pct": 97.7}}}]}
+NEW = dict(FACTS, loss_origin=LOSS, rework_load=REWORK, station_setup=STATION,
+           machine_compare=MACHINE, setup_change=[], errors={})
+
+
+def test_every_analyzer_the_engine_runs_has_a_name_a_person_would_say():
+    from laser_trim_analyzer.findings.engine import compute_for_model
+    from laser_trim_analyzer.gui.v6.widgets.findings_tab import analyzer_name
+    from findings_helpers import START
+    import inspect
+    names = {"recipe_change", "setup_change", "ink_target", "limit_tables", "cut_setting",
+             "pass_burden", "machine_compare", "loss_origin", "station_setup", "rework_load",
+             "trim_effort"}
+    src = inspect.getsource(compute_for_model)
+    assert all(f'failed("{n}"' in src for n in names)          # the list is the engine's own
+    for n in names:
+        assert analyzer_name(n) != n and "_" not in analyzer_name(n), n
+
+
+def test_loss_origin_sits_last_beside_the_predictors_own_auc(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": NEW, "findings": [], "predictor_auc": 0.78})
+    texts = _texts(tab)
+    text = " | ".join(texts)
+    assert "Laser 1 (LTS) · 1,290 tracks, 465 failed at the laser · AUC 0.74 from incoming " \
+           "linearity, 0.61 from incoming resistance" in text
+    assert "on the 57-point limit table (40 tracks on other tables left out)" in text
+    assert "Laser 2 (DLTS) · 12 tracks, 0 failed at the laser · AUC — from incoming linearity, " \
+           "— from incoming resistance" in text                    # None is a dash, never 0
+    assert any("predictor's own AUC" in x and "0.78" in x for x in texts)
+    heading = texts.index("Where the loss is made (last year)")
+    assert all(not x.startswith(("Hand trim", "Two lasers", "Laser and final test"))
+               for x in texts[heading:])                          # the last section, above the panel
+
+
+def test_no_trained_predictor_and_an_unreadable_one_are_told_apart(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": NEW, "findings": [], "predictor_auc": None})
+    assert any("No final-test predictor is trained" in x for x in _texts(tab))
+    tab.set_data({"facts": NEW, "findings": [], "predictor_auc_error": "OperationalError: locked"})
+    text = " | ".join(_texts(tab))
+    assert "could not be read" in text and "OperationalError: locked" in text
+    assert "No final-test predictor is trained" not in text
+
+
+def test_rework_says_its_verdict_per_laser_with_both_sizes_p_and_the_effect(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": NEW, "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "Hand trim after a laser fail (last year)" in text
+    assert "1,300 final tests linked" in text and "300 unit-days" in text
+    assert ("Laser 1 (LTS) · confirmed as hand trim · 244 reworked unit-days against the 139 "
+            "untouched units with the largest laser errors (of 415)") in text
+    assert "effect 0.81" in text and "p = 5.2e-06" in text
+    assert "Laser 2 (DLTS) · not confirmed: 12 reworked unit-days and 2 comparable" in text
+    assert "effect —" in text and "p = —" in text
+
+
+def test_station_setup_shows_its_note(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": NEW, "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "Laser and final test limits" in text
+    assert "Laser 1 (LTS) against final test: 100% of the positions both stations measure" in text
+    assert "225 positions" in text
+
+
+def test_machine_compare_shows_its_per_table_rates_and_dates_the_old_ones(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": NEW, "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "Two lasers on the same test" in text
+    assert ("Oct 2024 – Feb 2025 · 31-point limit table · Laser 1 (LTS) 82% of 130 · "
+            "Laser 2 (DLTS) 98% of 174") in text
+    assert ("Jul 2023 – Sep 2024 · 31-point limit table · Laser 1 (LTS) 75% of 480 · Laser 2 "
+            "(DLTS) 99% of 314 · before the 24 months to Sep 2026, so not a finding") in text
+
+
+def test_a_cache_written_before_these_shapes_still_renders(tk_root):
+    """Only the models an ingest touches are refreshed: an older cache keeps machine_compare's
+    table-keyed facts and rework_load's flat ones until the next full refresh."""
+    old_machine = {"t1": {"months": ["2025-01", "2025-02"],
+                          "by_laser": {"Laser 1 (LTS)": {"n": 130, "pass_pct": 82.3}}}}
+    old_rework = {"linked": 10, "rework_unit_days": 4, "rework_ratio_n": 4, "control_n": 6,
+                  "control_top_third_n": 2, "p_value": None, "effect_ratio": None,
+                  "confirmed": False, "note": "too few"}
+    old_loss = {"Laser 1 (LTS)": {"n": 300, "fails": 60, "auc_error": 0.6, "auc_resistance": None}}
+    tab = _tab(tk_root)
+    tab.set_data({"facts": dict(FACTS, machine_compare=old_machine, rework_load=old_rework,
+                                loss_origin=old_loss, errors={}), "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "Jan 2025 – Feb 2025 · Laser 1 (LTS) 82% of 130" in text
+    assert "not confirmed: too few" in text
+    assert "AUC 0.60 from incoming linearity" in text
+
+
+def test_a_crashed_new_analyzer_is_named_and_its_section_is_not_drawn(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": dict(NEW, rework_load=None, errors={"rework_load": "RuntimeError: locked"}),
+                  "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "Could not be worked out this time — the rework count (RuntimeError: locked)" in text
+    assert "Hand trim after a laser fail" not in text
+    assert "Where the loss is made (last year)" in text           # the rest still drawn
+
+
+def test_the_model_page_puts_the_stored_predictor_auc_beside_loss_origin(make_app):
+    from test_spec3c_model import _seed
+    from laser_trim_analyzer.database.models import ModelMLState
+    app = make_app()
+    _seed(app.db, "HOT", fails_last=12)
+    app.db.replace_process_findings("HOT", NEW, [FINDING])
+    with app.db.session() as s:
+        s.add(ModelMLState(model="HOT", predictor_trained=True, predictor_auc=0.8123))
+    app.set_model_route("HOT")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    assert any("predictor's own AUC" in x and "0.81" in x for x in _texts(page._findings_tab))
