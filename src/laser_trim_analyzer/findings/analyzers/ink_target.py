@@ -96,6 +96,12 @@ def _best_window(ts) -> Optional[dict]:
     return best
 
 
+def _overlaps(a, b) -> bool:
+    """Do the two CLOSED intervals `(low, high)` share at least one point? Touching at a single
+    boundary point counts as overlap -- closed intervals include their endpoints."""
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
 def analyze(model: str, tracks, laser_label) -> List[Finding]:
     groups = {}
     for t in tracks:
@@ -159,6 +165,11 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
     if with_window:
         newest = max(with_window, key=lambda t: t.file_date)
         configured = (newest.initial_r_low, newest.initial_r_high)
+    # Does the station's own setting disagree with what the data says did best? Only asked when
+    # there IS a configured window; "disagrees" means no overlap at all -- a window that merely
+    # differs from the configured one (but still catches some of it) is not a disagreement.
+    configured_disagrees = None if configured is None else \
+        not _overlaps(configured, (best["r_low"], best["r_high"]))
     first, last = min(t.file_date for t in ts).date(), max(t.file_date for t in ts).date()
     # The rate is claimed over THIS group only -- the tracks it was measured on, in the last year of
     # the group's own data. Scaling it by the whole model overstated one real two-laser case 14x.
@@ -179,7 +190,9 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
                     f"resistance window has changed since {last} (the current setup has too few tracks "
                     f"to judge). Treat it as history unless you go back to it. "
                     if superseded else "")
-                 + (f"The station is set to accept {configured[0]:,.0f} to {configured[1]:,.0f} Ω incoming. "
+                 + (f"The station is set to accept {configured[0]:,.0f} to {configured[1]:,.0f} Ω, and the "
+                    f"window that did best lies outside it. " if configured_disagrees else
+                    f"The station is set to accept {configured[0]:,.0f} to {configured[1]:,.0f} Ω incoming. "
                     if configured else "These files carry no configured incoming window, so this is a computed "
                     "target, not a comparison with a setting. ")
                  + "Laser, recipe, limit table and the station's final-resistance window are held constant, "
@@ -194,6 +207,7 @@ def analyze(model: str, tracks, laser_label) -> List[Finding]:
                          "final limits"),
         evidence={"bins": bins, "window": best, "overall_pct": overall, "recipe": describe(recipe),
                   "out_of_sample_gain_each_fold": folds,
-                  "configured_incoming": configured, "period": [first.isoformat(), last.isoformat()],
+                  "configured_incoming": configured, "configured_disagrees": configured_disagrees,
+                  "period": [first.isoformat(), last.isoformat()],
                   "limit_table": None if table is None else {"rows": table.rows, "graded": table.graded},
                   "final_resistance_window": [final_r_low, final_r_high], "superseded": superseded})]

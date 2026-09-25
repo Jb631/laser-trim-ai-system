@@ -160,6 +160,13 @@ def _different_test(finding) -> bool:
     return bool(ev.get("limit_table_changed") or ev.get("limit_tables_mixed"))
 
 
+def _configured_disagrees(finding) -> bool:
+    """ink_target: the recommended incoming-resistance window lies wholly outside the station's
+    own configured window (evidence["configured_disagrees"] -- None when nothing is configured)."""
+    ev = finding.get("evidence") or {}
+    return bool(ev.get("configured_disagrees"))
+
+
 def readout(finding: Dict[str, Any]) -> Optional[float]:
     g = group_key(finding)
     ev = finding.get("evidence") or {}
@@ -274,6 +281,8 @@ def _tags(members: Sequence[Dict[str, Any]]) -> List[str]:
         tags.append(_GRADE_TAG[min(grades, key=_GRADE_ORDER.index)])   # the weakest, honestly
     if group_key(members[0]) == "history" and any(_different_test(m) for m in members):
         tags.append("different test")        # its move is not coloured either -- see value_tone
+    if any(_configured_disagrees(m) for m in members):
+        tags.append("outside the configured window")
     return tags
 
 

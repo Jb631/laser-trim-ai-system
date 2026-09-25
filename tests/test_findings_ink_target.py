@@ -185,3 +185,53 @@ def test_advice_drawn_from_a_setup_the_model_no_longer_runs_says_so():
     # ...and when the eligible group IS the current one, that sentence is absent
     (g,) = ink_target.analyze("M", old_era, label)
     assert g.evidence["superseded"] is False and "NOT the setup" not in g.summary
+
+
+# ---- #8: the configured window can disagree with the one the data says did best -------------------
+
+def _yield_tags(finding_dict):
+    from laser_trim_analyzer.findings.presentation import arrange
+    rows = [r for g in arrange([finding_dict]) if g.spec.key == "yield" for r in g.rows]
+    assert len(rows) == 1                       # otherwise this helper is not asking what it thinks
+    return rows[0].tags
+
+
+def test_the_overlap_test_treats_touching_closed_intervals_as_overlapping():
+    """Pinned on its own, ahead of any analyzer scenario, because it is what a mutation check bites
+    on: closed intervals share their endpoints, so touching at one point is NOT a disagreement."""
+    from laser_trim_analyzer.findings.analyzers.ink_target import _overlaps
+    assert _overlaps((4000.0, 4400.0), (4400.0, 4800.0)) is True     # share the single point 4400
+    assert _overlaps((4400.0, 4800.0), (4000.0, 4400.0)) is True     # order does not matter
+    assert _overlaps((4000.0, 4400.0), (4400.001, 4800.0)) is False  # one thousandth apart: disjoint
+    assert _overlaps((4800.0, 5000.0), (4000.0, 4400.0)) is False    # wholly outside, reversed order
+    assert _overlaps((4000.0, 5000.0), (4200.0, 4300.0)) is True     # one wholly nested in the other
+
+
+def test_a_recommended_window_wholly_outside_the_configured_one_disagrees():
+    tracks = ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25)
+    tracks = [replace(t, initial_r_low=4600.0, initial_r_high=4900.0) for t in tracks]
+    (f,) = ink_target.analyze("M", tracks, label)
+    assert f.evidence["window"]["r_high"] < 4600.0            # otherwise this test proves nothing
+    assert f.evidence["configured_disagrees"] is True
+    assert ("The station is set to accept 4,600 to 4,900 Ω, and the window that did best lies "
+            "outside it.") in f.summary
+    assert "outside the configured window" in _yield_tags(f.to_dict())
+
+
+def test_an_overlapping_configured_window_does_not_disagree():
+    tracks = ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25)
+    tracks = [replace(t, initial_r_low=4200.0, initial_r_high=4600.0) for t in tracks]
+    (f,) = ink_target.analyze("M", tracks, label)
+    assert f.evidence["window"]["r_high"] > 4200.0             # otherwise this test proves nothing
+    assert f.evidence["configured_disagrees"] is False
+    assert "The station is set to accept 4,200 to 4,600 Ω incoming." in f.summary
+    assert "lies outside it" not in f.summary
+    assert "outside the configured window" not in _yield_tags(f.to_dict())
+
+
+def test_no_configured_window_means_no_disagreement_and_no_tag():
+    (f,) = ink_target.analyze(
+        "M", ink_tracks(600, START, (1.0, 2.0), lambda r: 0.75 if r < 4400 else 0.25), label)
+    assert f.evidence["configured_incoming"] is None
+    assert f.evidence.get("configured_disagrees") is None
+    assert "outside the configured window" not in _yield_tags(f.to_dict())
