@@ -53,16 +53,6 @@ _VIEW_LOTS, _VIEW_UNITS = "Lots · SPC", "Units"
 # choice, not an absence of one.
 _ALL_HISTORY = "All history (no lot)"
 
-# The Units chart view's own default framing (facelift step 2 Task 3b, James:
-# "that chart looks horrible" on 6607's whole-history render). The window
-# control below (_WINDOW_DAYS: 30d/90d/365d/All) is untouched and still
-# decides what data reaches the chart at all. The 12-month framing applies
-# ONLY while that control is at its default (_DEFAULT_WINDOW_CHOICE): an
-# explicit choice is honoured (final review, 2026-09-24 -- "All" used to be
-# cut to the newest year, silently), and past ~18 months the rolling median
-# widens to 90 days, as designed. See FocusChart.set_series's own docstring.
-_UNITS_VIEW_DEFAULT_DAYS = 366
-
 # Default focus metric when no alert-triggered focus is supplied. The headline
 # element-production drift signal (post-trim sigma_gradient is no longer
 # watched — see drift_types.WATCHED_METRICS / the D-SIGMA rationale).
@@ -759,13 +749,11 @@ class ModelPage(PageBase):
             self._focus_chart.set_spc_series(self._spc_series)
             return
         metric, dates, values, baseline = self._unit_series
-        # The 12-month framing only while the window control is at its default; an explicit
-        # choice ("All" above all) is what the user asked to see (final review, 2026-09-24).
-        framing = (_UNITS_VIEW_DEFAULT_DAYS if self._window_choice == _DEFAULT_WINDOW_CHOICE
-                   else None)
+        # Exactly the window the control loaded (_WINDOW_DAYS), no framing on top: the view shows
+        # what the user picked, "All" included, and past ~18 months the rolling median widens to
+        # 90 days, as designed (FocusChart.set_series).
         self._focus_chart.set_series(metric=metric, dates=dates, values=values,
-                                     baseline_mean=baseline[0], baseline_std=baseline[1],
-                                     default_window_days=framing)
+                                     baseline_mean=baseline[0], baseline_std=baseline[1])
 
     # ---- loaders (all materialize to plain values inside the session — I8) ----
     def _window_cutoff(self, model: Optional[str] = None,

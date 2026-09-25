@@ -461,8 +461,9 @@ def _long_history_with_outliers(n_years=3, outlier_every=15):
 
 def test_units_view_opens_on_the_last_12_months_when_more_exists(tk_root):
     """James: "that chart looks horrible" on 6607's whole-history render.
-    default_window_days is the Model page's opt-in for the Units toggle
-    (model_page.py's _UNITS_VIEW_DEFAULT_DAYS) -- exercised directly here."""
+    default_window_days is FocusChart's own opt-in for a shorter opening view
+    (no page passes it since facelift F4, when the Model page's never-trimming
+    12-month framing was removed) -- exercised directly here."""
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
 
@@ -1428,14 +1429,15 @@ def test_model_page_units_toggle_draws_the_unit_view(make_app, monkeypatch):
     assert page._chart_view == "units"
     assert [kind for kind, _ in calls] == ["units"]
     assert calls[0][1]["metric"] == "linearity_fail_fraction"
-    # The Units view opens on the last 12 months (James: the all-history wall "looks
-    # horrible"); dropping the kwarg at this call site would bring the wall back -- while the
-    # window control is at its default. An explicit choice is honoured (final review I6).
-    assert calls[0][1].get("default_window_days") == 366
-    page._window_choice = "All"
-    calls.clear()
-    page._render_focus_chart()
-    assert calls[0][1].get("default_window_days") is None
+    # The page's window control decides what the Units view shows, and nothing else: the chart
+    # is handed exactly the window loaded, with no framing of its own on top, whichever window
+    # is chosen (facelift F4 -- a 12-month framing passed at the default 90-day window could
+    # never trim anything, and it is gone).
+    for choice in ("90d", "30d", "365d", "All"):
+        page._window_choice = choice
+        calls.clear()
+        page._render_focus_chart()
+        assert calls[0][1].get("default_window_days") is None, (choice, calls[0][1])
     page._window_choice = "90d"
     calls.clear()
     page._on_chart_view_change("Lots · SPC")           # and back
@@ -1474,9 +1476,9 @@ def _units_view(page):
 
 def test_the_units_view_honours_an_explicit_all_window(make_app, monkeypatch):
     """I6 (final review, 2026-09-24): with the Units view's 12-month default passed on every
-    call, choosing "All" still showed only the last 12 months -- silently. Ruling: the default
-    applies only while the window control is at its default; an explicit choice is honoured,
-    and past 18 months the rolling median becomes 90 days, as designed."""
+    call, choosing "All" still showed only the last 12 months -- silently. The window control
+    decides what the view shows (facelift F4 removed the framing altogether): "All" is the
+    whole history, and past 18 months the rolling median becomes 90 days, as designed."""
     app, page = _two_years_app(make_app, monkeypatch)
     span, key = _units_view(page)                      # the page's default window (90d)
     assert span <= 100 and "30-day median" in key, (span, key)

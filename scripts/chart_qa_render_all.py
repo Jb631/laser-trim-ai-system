@@ -322,22 +322,30 @@ def main(out_dir: str, db_path: Path) -> int:
     _save(fc, out / "focus_8340-1_window_switch.png", manifest,
           f"FocusChart window-switch: All(xlim {wide_span:.0f}d) -> 90d(xlim {narrow_span:.0f}d) — axis tracks the window; off-scale note present")
 
-    # ---- 1c. The Units view's own default (facelift step 2 Task 3b, James:
-    # "that chart looks horrible" on focus_6607_linearity_error.png above --
-    # 487 off-scale dots crowning the whole 2011-2026 history). That render
-    # (and every other one in section 1) calls set_series() the way this
-    # harness always has, with NO default_window_days -- it shows what the
-    # page's window control would show on "All". The Model page's Units
-    # toggle passes default_window_days=366 (model_page.py's
-    # _UNITS_VIEW_DEFAULT_DAYS); rendered here on the SAME two models so the
-    # "before" (above) and "after" (here) are directly comparable.
-    for model, metric in [(DENSE, "linearity_error"), ("8340-1", "untrimmed_error_max")]:
-        d, v, (bm, bs) = series(model, metric)
+    # ---- 1c. The Units view, as the Model page draws it (facelift F4, 2026-09-25).
+    # Every render in section 1 above hands set_series() a model's WHOLE history -- what the
+    # page's window control shows on "All" (James, facelift step 2 Task 3b: "that chart looks
+    # horrible" on focus_6607_linearity_error.png, 487 off-scale dots over 2011-2026). Here the
+    # SAME two models go through the page's own loader (ModelPage._load_focus_series) at the
+    # control's default window, and into set_series() exactly as _render_focus_chart passes
+    # them: no framing of the chart's own. Until F4 this section rendered the whole history cut
+    # to 366 days -- a framing the page passed only at its 90-day default, where it could never
+    # trim anything, so the app never drew that view at all.
+    from laser_trim_analyzer.gui.v6.pages import model_page as _mp
+    for model, metric, against in [
+            (DENSE, "linearity_error", f"focus_{DENSE}_linearity_error.png (the whole history)"),
+            ("8340-1", "untrimmed_error_max",
+             "focus_8340-1_window_switch.png (1b: 90 days back from the newest reading)")]:
+        page = _mp.ModelPage.__new__(_mp.ModelPage)       # the loader only, no widgets
+        page.app = types.SimpleNamespace(db=db)
+        page._current_model, page._window_choice = model, _mp._DEFAULT_WINDOW_CHOICE
+        d, v, (bm, bs) = page._load_focus_series(model, metric)
         fc = _focus()
-        fc.set_series(metric, d, v, baseline_mean=bm, baseline_std=bs, default_window_days=366)
+        fc.set_series(metric, d, v, baseline_mean=bm, baseline_std=bs)
         _save(fc, out / f"focus_{model}_{metric}_units_view.png", manifest,
-              f"FocusChart {model}/{metric}, Units view (default_window_days=366) — "
-              f"compare against focus_{model}_{metric}.png / _window_switch")
+              f"FocusChart {model}/{metric}, Units view as the Model page draws it at its "
+              f"default {_mp._DEFAULT_WINDOW_CHOICE} window (n={len(v)}) — compare against "
+              f"{against}")
 
     # ---- 1d. SPC lot p-chart (2026-08-29 FOCUS redesign) ----
     # The view the Model page opens on and the FOCUS list links to. Rendered
