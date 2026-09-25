@@ -1,12 +1,20 @@
-"""Spec 3b — BrowseZone: search + scrollable model list (visible tier dot, last-processed date)."""
-from typing import Callable, List
+"""Spec 3b — BrowseZone: search + scrollable model list (tier word, last-processed date)."""
+from typing import Callable, List, Optional
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.ml.drift_types import ModelSummary
 
 ROW_CAP = 200  # render cap for responsiveness; cap is disclosed (Q10)
+
+
+def _tier_label(tier) -> str:
+    """DriftTier -> sentence case ('OUT_OF_CONTROL' -> 'Out of control'), the same pattern
+    drift_metrics_tab.py uses (ms.tier.name.replace('_', ' ').title()), lower-cased to sentence
+    case since this is body text, not a verdict badge (global-constraints.md)."""
+    return tier.name.replace("_", " ").capitalize()
 
 
 class BrowseZone(ctk.CTkFrame):
@@ -15,19 +23,21 @@ class BrowseZone(ctk.CTkFrame):
         self.theme = theme
         self._cb = on_row_click
         self._models: List[ModelSummary] = []
-        self._rows: List["_BrowseRow"] = []
+        self._rows: List[ctk.CTkFrame] = []
+        self._header: Optional[ctk.CTkFrame] = None   # blocks.group_header wrap; rebuilt each _render()
         t = theme
-        ctk.CTkLabel(self, text="All models", font=t.font(t.SIZE_HEADING, "bold"),
-                     text_color=t.TEXT_PRIMARY, anchor="w").pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-        # Row anatomy, spelled out (live-walk finding, 2026-07-08: unexplained
-        # colored dots + an unlabeled date column read as decoration).
-        ctk.CTkLabel(self, text=("Dot = drift status: red out-of-control · orange drift · "
-                                 "yellow warning · gray stable/untrained. Date = last processed. "
-                                 "'Active' scope = models with recent data or pinned in "
-                                 "Settings → Active Models."),
-                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
-                     anchor="w", justify="left", wraplength=950)\
-            .pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        # Row anatomy, spelled out (live-walk finding, 2026-07-08: an unlabeled date column read
+        # as decoration). The status word IS the row's own "statement" column now (blocks.row) --
+        # this used to be a bare colour dot, word-less (a colour-blind reader had nothing to read).
+        self._legend = ctk.CTkLabel(self, text=(
+                "Status = drift tier, worst first. Date = last processed. 'Active' scope = "
+                "models with recent data or pinned in Settings → Active Models."),
+                font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w", justify="left")
+        self._legend.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        # Bound ONCE: `self` (this zone) is never destroyed/rebuilt for its own lifetime, so this
+        # never stacks a second <Configure> handler (blocks.wrap_to_width's own rule). Replaces a
+        # fixed wraplength=950 (global-constraints.md: no fixed pixel wraplength on page-width text).
+        blocks.wrap_to_width(self._legend, self)
         # NOTE: no textvariable — CTkEntry silently drops placeholder_text when
         # a textvariable is attached (the 'mystery empty box' finding). Filter
         # reacts on KeyRelease instead.
@@ -41,6 +51,7 @@ class BrowseZone(ctk.CTkFrame):
         self._cap_label.pack(side="top", fill="x")
         self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
+        self._render()
 
     def set_models(self, models: List[ModelSummary]) -> None:
         self._models = list(models)
@@ -53,43 +64,31 @@ class BrowseZone(ctk.CTkFrame):
         self._render()
 
     def _render(self) -> None:
+        t = self.theme
         for r in self._rows:
             r.destroy()
         self._rows.clear()
+        if self._header is not None:
+            try:
+                self._header.destroy()
+            except Exception:
+                pass
         flt = self._search_entry.get().strip().lower()
         matches = [m for m in self._models if not flt or flt in m.model.lower()]
+        # Rebuilt each render (same pattern as findings_view.py's own _render()): the count pill
+        # can only be right once the current filter/scope is applied. Packed BEFORE the legend,
+        # which is built once in __init__ and never moves.
+        self._header = blocks.group_header(self, t, "All models", len(matches))
+        self._header.pack(side="top", fill="x", pady=(0, t.SPACE_XS), before=self._legend)
         for m in matches[:ROW_CAP]:
-            row = _BrowseRow(self._list, summary=m, theme=self.theme, on_click=self._cb)
-            row.pack(side="top", fill="x", pady=1)
+            row = blocks.row(self._list, t, m.model, _tier_label(m.tier),
+                             m.last_processed.strftime("%Y-%m-%d") if m.last_processed else "—",
+                             on_click=lambda mm=m.model: self._cb(mm))
+            row._summary = m     # test hook, alongside blocks.row's own _on_click_all/_set_hover
+            row.pack(side="top", fill="x")
             self._rows.append(row)
         if len(matches) > ROW_CAP:
             self._cap_label.configure(
                 text=f"Showing {ROW_CAP} of {len(matches)} — narrow with search.")
         else:
             self._cap_label.configure(text="")
-
-
-class _BrowseRow(ctk.CTkFrame):
-    def __init__(self, master, summary: ModelSummary, theme: ThemeManager,
-                 on_click: Callable[[str], None]):
-        super().__init__(master, fg_color=theme.SURFACE, corner_radius=theme.RADIUS_SM)
-        self.theme = theme
-        self.summary = summary
-        self._cb = on_click
-        t = theme
-        dot = ctk.CTkFrame(self, width=12, height=12, corner_radius=6,
-                           fg_color=t.tier_dot_color(summary.tier))   # FIX I4: visible STABLE dot
-        dot.pack(side="left", padx=(t.SPACE_SM, t.SPACE_XS))
-        dot.pack_propagate(False)
-        name = ctk.CTkLabel(self, text=summary.model, font=t.font(t.SIZE_BODY),
-                            text_color=t.TEXT_PRIMARY, anchor="w")
-        name.pack(side="left", fill="x", expand=True, padx=(t.SPACE_XS, t.SPACE_SM))
-        date_txt = summary.last_processed.strftime("%Y-%m-%d") if summary.last_processed else "—"
-        date = ctk.CTkLabel(self, text=date_txt, font=t.font(t.SIZE_CAPTION),
-                            text_color=t.TEXT_SECONDARY)
-        date.pack(side="right", padx=t.SPACE_SM)
-        for w in (self, dot, name, date):
-            w.bind("<Button-1>", lambda e: self._on_click())
-
-    def _on_click(self):
-        self._cb(self.summary.model)

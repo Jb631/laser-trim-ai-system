@@ -69,6 +69,59 @@ def test_process_page_initial_state(make_app):
     assert str(page._start_button.cget("state")) == "disabled"
 
 
+# ---- facelift step 2, Task 7: one button, a way to what changed ------------
+
+def test_start_processing_is_the_one_teal_button(make_app):
+    """blocks.primary_button, and the only one on this page (global-constraints.md: at most
+    ONE teal-filled button per screen)."""
+    app = make_app()
+    page = app.page_container.get_page("process")
+    t = page.theme
+    assert page._start_button.cget("text") == "Start processing"
+    assert page._start_button.cget("fg_color") == t.ACCENT
+    assert page._see_changed.cget("fg_color") != t.ACCENT
+
+
+def test_see_what_changed_appears_after_a_run_and_routes_to_findings(make_app):
+    """Replaces the old 'Go to Triage' teal button (ruling 6): a blocks.link_button that
+    routes to Findings, not Triage -- 'what changed' is what the findings engine says. It used
+    to make a SECOND teal button appear next to Start processing the moment a run finished."""
+    app = make_app()
+    page = app.page_container.get_page("process")
+    t = page.theme
+
+    def _packed(w):
+        return w.winfo_manager() == "pack"
+
+    assert _packed(page._see_changed) is False        # not shown before any run
+    page._on_done()
+    assert _packed(page._see_changed) is True
+    assert page._see_changed.cget("fg_color") != t.ACCENT   # never a second teal button
+    page._see_changed.invoke()
+    assert app.page_container.current_page == "findings"
+
+
+def test_db_info_wraps_to_its_container(make_app):
+    """global-constraints.md: no fixed pixel wraplength on page-width text -- was a fixed
+    wraplength=1200 (same class of bug the Home/Triage wrap tests guard)."""
+    app = make_app()
+    page = app.page_container.get_page("process")
+    page._db_info.configure(text="Database: /some/path — 0 trim units on record")
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.geometry("1280x720+20000+20000")
+    app.deiconify()
+    app.update_idletasks()
+    app.update()
+    try:
+        assert page._db_info.cget("wraplength") == page._db_info.master.winfo_width()
+        assert page._db_info.cget("wraplength") != 1200
+    finally:
+        app.withdraw()
+
+
 def test_apply_progress_counts_skipped_from_processing_status(make_app):
     """C2: progress driven by ProcessingStatus (filename + a local done counter), not an index;
     skipped comes from status.status=='skipped', not a result status."""

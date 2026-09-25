@@ -32,9 +32,19 @@ logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.gui.v6.focus_data import EMPTY as _EMPTY, load_focus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
 from laser_trim_analyzer.gui.v6.widgets.focus_list_zone import FocusListZone
 from laser_trim_analyzer.ml.manager import active_model_set, list_known_models
+
+# The 1280x720 audit's one known clip (carried in from facelift step 1's review): the FOCUS
+# list's sparkline rows are the richest thing on the page, so on a tall window it can fill it,
+# leaving the browse list squeezed to nothing. _FOCUS_ZONE_MAX_H caps it at roughly today's look
+# (a handful of rich rows); _FOCUS_ZONE_MIN_H is "a heading and one row, scrollable" -- never
+# less; _BROWSE_MIN_H is what the browse list is guaranteed no matter how short the window is.
+_FOCUS_ZONE_MAX_H = 320
+_FOCUS_ZONE_MIN_H = 130
+_BROWSE_MIN_H = 200
 
 
 class TriagePage(PageBase):
@@ -46,6 +56,7 @@ class TriagePage(PageBase):
         # without a second trip to the database.
         self._models = []
         self._active = set()
+        self._focus_header = None      # blocks.group_header wrap; rebuilt in _apply() (needs the count)
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     def header_actions(self, parent):
@@ -59,17 +70,42 @@ class TriagePage(PageBase):
         self._scope.pack(side="left")
 
     def build_content(self, parent):
-        # Same two-zone framing as the Model page (2026-07-13 design pass):
-        # the app's read first, the raw model list below it.
-        self._zone_header(parent, "What the app is telling you",
-                          "drifting now, biggest first — one verdict per lot, self-clearing")
-        self._focus = FocusListZone(parent, theme=self.theme,
-                                    on_row_click=self._on_focus_click)
-        self._focus.pack(side="top", fill="x", pady=(0, self.theme.SPACE_LG))
-        self._zone_header(parent, "What you're looking at",
-                          "every model on record — click one to see its data")
-        self._browse = BrowseZone(parent, theme=self.theme, on_row_click=self._on_row_click)
+        t = self.theme
+        self._content_parent = parent
+        # The focus zone's own heading is suppressed (show_heading=False) -- Triage draws its
+        # OWN "Needs a look" blocks.group_header in _apply(), once the count is known, rather
+        # than the zone's generic default text (see focus_list_zone.py). The zone is wrapped in
+        # a height-BOUNDED frame (see _fit_focus_zone) so a short window always leaves the
+        # browse list below it a usable minimum, instead of squeezing it out entirely.
+        self._focus_wrap = ctk.CTkFrame(parent, fg_color="transparent", height=_FOCUS_ZONE_MAX_H)
+        self._focus_wrap.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
+        self._focus_wrap.pack_propagate(False)
+        self._focus = FocusListZone(self._focus_wrap, theme=t,
+                                    on_row_click=self._on_focus_click, show_heading=False)
+        self._focus.pack(side="top", fill="both", expand=True)
+        self._browse = BrowseZone(parent, theme=t, on_row_click=self._on_row_click)
         self._browse.pack(side="top", fill="both", expand=True)
+        # Bound ONCE, on `parent` -- this page (self) is never destroyed/rebuilt for its own
+        # lifetime, so this never stacks a second handler (same rule blocks.wrap_to_width's own
+        # docstring states for a label+container bound once).
+        parent.bind("<Configure>", self._fit_focus_zone, add="+")
+        self._fit_focus_zone()
+
+    def _fit_focus_zone(self, _event=None) -> None:
+        """Give the focus zone at most a share of the page's actual height, leaving the browse
+        list its guaranteed minimum -- see the module docstring's "1280x720 clip" note."""
+        t = self.theme
+        try:
+            total = self._content_parent.winfo_height()
+        except Exception:
+            return
+        if total <= 1:
+            return          # not laid out yet; a real <Configure> follows once it is
+        header_h = self._focus_header.winfo_height() if self._focus_header is not None else 0
+        budget = total - header_h - t.SPACE_XS - _BROWSE_MIN_H - t.SPACE_LG
+        focus_h = max(_FOCUS_ZONE_MIN_H, min(_FOCUS_ZONE_MAX_H, budget))
+        if self._focus_wrap.winfo_height() != focus_h:
+            self._focus_wrap.configure(height=focus_h)
 
     # ---- data ----
     def reload_now(self):
@@ -108,11 +144,24 @@ class TriagePage(PageBase):
         return result, models, active, last
 
     def _apply(self, result, models, active, last):
+        # Rebuilt whole each load, like every other dynamic blocks.group_header in the app
+        # (findings_view.py's own _render()) -- the count pill can only be right once the data
+        # is in hand.
+        if self._focus_header is not None:
+            try:
+                self._focus_header.destroy()
+            except Exception:
+                pass
+        self._focus_header = blocks.group_header(self._content_parent, self.theme,
+                                                  "Needs a look", len(result.focus))
+        self._focus_header.pack(side="top", fill="x", pady=(0, self.theme.SPACE_XS),
+                                before=self._focus_wrap)
         # The FocusResult goes to the zone untouched — one computation owns the
         # membership, the ranking and the wording (see module docstring).
         self._focus.set_result(result, last_processed=last)
         self._models, self._active = models, active
         self._apply_browse()
+        self._fit_focus_zone()
 
     def _apply_browse(self):
         """Render the browse list at the current scope. No DB access."""

@@ -243,6 +243,42 @@ def test_zone_heading_counts_and_caption_names_the_anchor(tk_root):
             "discounted for lots run clean since") in texts
 
 
+def test_show_heading_false_suppresses_the_zones_own_heading(tk_root):
+    """Triage (facelift step 2, Task 7) draws its own 'Needs a look' blocks.group_header and
+    passes show_heading=False so this zone's generic default text never also appears; Home
+    (7bc0743, unchanged by this task) keeps the default and is covered by
+    test_zone_heading_counts_and_caption_names_the_anchor above."""
+    z = FocusListZone(tk_root, theme=ThemeManager(), on_row_click=lambda *_: None,
+                      show_heading=False)
+    assert z._heading is None
+    z.set_result(_result([_entry("A")]))     # must not raise with no heading to update
+    assert not any(t.startswith("FOCUS —") for t in _labels(z))
+
+
+def test_the_caption_wraps_to_its_container(tk_root):
+    """global-constraints.md: no fixed pixel wraplength on page-width text. The caption was a
+    fixed wraplength=1200 before this (module docstring) -- confirm it now tracks the zone's
+    own real width, the same assertion Home's wrap test makes for its own lines
+    (test_spec3f_home.py::test_the_folders_and_summary_lines_wrap_to_their_container). Added
+    per the Home review (7bc0743 changed this zone's caption) as a guard that the fix stays."""
+    z = _zone(tk_root)
+    z.set_result(_result([_entry("A")]))
+    z.pack(fill="both", expand=True)
+    try:
+        tk_root.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    tk_root.geometry("1280x720+20000+20000")
+    tk_root.deiconify()
+    tk_root.update_idletasks()
+    tk_root.update()
+    try:
+        assert z._caption.cget("wraplength") == z.winfo_width()
+        assert z._caption.cget("wraplength") != 1200
+    finally:
+        tk_root.withdraw()
+
+
 def test_zone_empty_state_names_last_processed(tk_root):
     z = _zone(tk_root)
     z.set_result(FocusResult(focus=[], chronic=[], anchor=None),

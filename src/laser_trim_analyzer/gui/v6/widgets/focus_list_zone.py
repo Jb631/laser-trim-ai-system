@@ -160,7 +160,8 @@ class FocusListZone(ctk.CTkFrame):
     """Heading + caption + ranked rows (+ expander) + the chronic strip."""
 
     def __init__(self, master, theme: ThemeManager,
-                 on_row_click: Callable[[str, str], None], **kwargs):
+                 on_row_click: Callable[[str, str], None], *,
+                 show_heading: bool = True, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
         self._cb = on_row_click
@@ -173,10 +174,18 @@ class FocusListZone(ctk.CTkFrame):
         # its internal canvas/scrollbar, not the rows.
         self._rendered: List[ctk.CTkBaseClass] = []
         t = theme
-        self._heading = ctk.CTkLabel(self, text="", anchor="w",
-                                     font=t.font(t.SIZE_HEADING, "bold"),
-                                     text_color=t.TEXT_PRIMARY)
-        self._heading.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        # show_heading=False (Triage, facelift step 2 Task 7): Triage draws its OWN
+        # "Needs a look" blocks.group_header, with a count known only once data has loaded, so
+        # this zone stays a plain sparkline list with no heading of its own -- unlike Home, which
+        # keeps this default text ("FOCUS -- drifting now, biggest first (N)") exactly as before
+        # (this widget is shared by both pages; Home's own review already shipped and is not
+        # part of this change).
+        self._heading: Optional[ctk.CTkLabel] = None
+        if show_heading:
+            self._heading = ctk.CTkLabel(self, text="", anchor="w",
+                                         font=t.font(t.SIZE_HEADING, "bold"),
+                                         text_color=t.TEXT_PRIMARY)
+            self._heading.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
         # The membership rule, stated where the list is read. "Why is this model
         # here / why did it leave?" was the top question about the old wall.
         self._caption = ctk.CTkLabel(self, text="", anchor="w", justify="left",
@@ -248,8 +257,9 @@ class FocusListZone(ctk.CTkFrame):
         self._rendered = []
         self._rows = []
         self._chronic_rows = []
-        self._heading.configure(
-            text=f"FOCUS — drifting now, biggest first ({len(res.focus)})")
+        if self._heading is not None:
+            self._heading.configure(
+                text=f"FOCUS — drifting now, biggest first ({len(res.focus)})")
         self._caption.configure(text=self._caption_text(res.anchor))
 
         if not res.focus:

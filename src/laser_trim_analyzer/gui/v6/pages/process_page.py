@@ -18,6 +18,7 @@ from laser_trim_analyzer.core.ingest_run import (
     EtaEstimator, ProgressCoalescer, ProgressTicker, format_progress_line)
 from laser_trim_analyzer.core.models import ProcessingStatus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.folder_picker import FolderPicker
 from laser_trim_analyzer.gui.v6.widgets.process_progress_section import ProcessProgressSection
 
@@ -42,10 +43,9 @@ class ProcessPage(PageBase):
                         fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
                         checkmark_color=t.TEXT_INVERSE)\
             .pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
-        self._start_button = ctk.CTkButton(parent, text="Start processing", state="disabled",
-                                           fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
-                                           text_color=t.TEXT_INVERSE, command=self._start,
-                                           corner_radius=t.RADIUS_SM)
+        # One teal button per screen (global-constraints.md): Start processing is it.
+        self._start_button = blocks.primary_button(parent, t, "Start processing", self._start)
+        self._start_button.configure(state="disabled")
         self._start_button.pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
         # Packed only while a run is in flight (see _set_running) — same
         # cooperative stop Home offers, on the same shared runner.
@@ -56,17 +56,23 @@ class ProcessPage(PageBase):
                                           corner_radius=t.RADIUS_SM)
         self._progress = ProcessProgressSection(parent, theme=t)
         self._progress.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
-        self._goto_triage = ctk.CTkButton(parent, text="Go to Triage", fg_color=t.ACCENT,
-                                          hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
-                                          command=lambda: self.app.show_page("triage"),
-                                          corner_radius=t.RADIUS_SM)  # packed on completion
+        # A link, not a second teal button (that used to make TWO ACCENT buttons visible at
+        # once, alongside "Start processing", the moment a run finished -- the "at most ONE
+        # teal-filled button per screen" rule caught by the facelift step 2 brief). Routes to
+        # Findings, not Triage: after a run, "what changed" is what the findings engine says
+        # about it, not the raw model list.
+        self._see_changed = blocks.link_button(parent, t, "See what changed",
+                                               lambda: self.app.show_page("findings"))
+        # packed on completion (see _on_done)
         # Which database + how much it knows — BEFORE processing starts. The
         # work incident (2026-07-09) would have been obvious in one glance if
         # this had said "0 units": wrong/empty database, don't hit Start.
         self._db_info = ctk.CTkLabel(parent, text="", font=t.font(t.SIZE_CAPTION),
-                                     text_color=t.TEXT_SECONDARY, anchor="w",
-                                     justify="left", wraplength=1200)
+                                     text_color=t.TEXT_SECONDARY, anchor="w", justify="left")
         self._db_info.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
+        # Bound ONCE: `parent` (this page's content frame) is never destroyed/rebuilt for the
+        # page's own lifetime, so this never stacks a second <Configure> handler.
+        blocks.wrap_to_width(self._db_info, parent)
 
     def on_show(self):
         def work():
@@ -92,7 +98,7 @@ class ProcessPage(PageBase):
             return
         self._cancel = Event()          # fresh per run; never a reused event
         self._set_running(True)
-        self._goto_triage.pack_forget()
+        self._see_changed.pack_forget()
         self._progress.reset()
         self._done = 0
         # Read the Tk variable HERE, on the UI thread — the worker previously
@@ -209,4 +215,4 @@ class ProcessPage(PageBase):
         drop = getattr(self.app, "unregister_ingest", None)
         if drop is not None and self._cancel is not None:
             drop(self._cancel)
-        self._goto_triage.pack(side="top", anchor="w", pady=(self.theme.SPACE_SM, 0))
+        self._see_changed.pack(side="top", anchor="w", pady=(self.theme.SPACE_SM, 0))

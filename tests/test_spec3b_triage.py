@@ -129,7 +129,9 @@ def test_browse_filter_substring(tk_root):
     # 8-2-3-2 has no consecutive "83" — inconsistent with the substring impl.)
     z.set_models([_ms("8340-1"), _ms("8830-1"), _ms("8877")])
     z.set_filter("83")
-    shown = {r.summary.model for r in z._rows}
+    # _summary: a test hook browse_zone.py stashes on the blocks.row frame it builds, the same
+    # way blocks.row's own _on_click_all/_set_hover/_on_leave are stashed for tests.
+    shown = {r._summary.model for r in z._rows}
     assert shown == {"8340-1", "8830-1"}
 
 
@@ -139,7 +141,7 @@ def test_browse_row_click_emits_model(tk_root):
     got = []
     z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=got.append)
     z.set_models([_ms("CLICKED")])
-    z._rows[0]._on_click()
+    z._rows[0]._on_click_all()          # blocks.row's own click test hook
     assert got == ["CLICKED"]
 
 
@@ -242,8 +244,12 @@ def test_set_model_route_without_a_tab_clears_any_earlier_tab_route(make_app):
 
 def test_triage_focus_zone_shows_the_drifting_model(make_app):
     app, triage = _drifting_app(make_app)
-    # The heading's count is the zone's, not the page's — one computation.
-    assert "(1)" in triage._focus._heading.cget("text")
+    # The zone's own heading is suppressed (show_heading=False) -- Triage draws its own
+    # "Needs a look" blocks.group_header instead, in _apply(); its count pill is a SEPARATE
+    # label from the title (count_pill(), not text baked into one string), so check both are
+    # present rather than one substring.
+    header_texts = _labels(triage._focus_header)
+    assert "Needs a look" in header_texts and "1" in header_texts
     assert [r.entry.model for r in triage._focus._rows] == ["HOT"]
 
 
@@ -263,13 +269,13 @@ def test_scope_toggle_filters_browse_only(make_app):
     """FOCUS membership belongs to compute_focus_list; the toggle is a browse filter."""
     app, triage = _drifting_app(make_app)
     n_focus = len(triage._focus._rows)
-    assert {r.summary.model for r in triage._browse._rows} == {"HOT"}   # Active scope
+    assert {r._summary.model for r in triage._browse._rows} == {"HOT"}   # Active scope
     triage._on_scope_change("All models")
-    assert {r.summary.model for r in triage._browse._rows} == {"HOT", "OLD"}
+    assert {r._summary.model for r in triage._browse._rows} == {"HOT", "OLD"}
     assert len(triage._focus._rows) == n_focus == 1
     assert [r.entry.model for r in triage._focus._rows] == ["HOT"]
     triage._on_scope_change("Active")
-    assert {r.summary.model for r in triage._browse._rows} == {"HOT"}
+    assert {r._summary.model for r in triage._browse._rows} == {"HOT"}
     assert len(triage._focus._rows) == n_focus
 
 
@@ -291,5 +297,41 @@ def test_triage_empty_db_shows_within_tolerance(make_app):
     app = make_app()
     triage = app.page_container.get_page("triage")
     triage.reload_now()
-    assert "(0)" in triage._focus._heading.cget("text")
+    header_texts = _labels(triage._focus_header)
+    assert "Needs a look" in header_texts and "0" in header_texts
     assert any("within tolerance" in t for t in _labels(triage._focus))
+
+
+def test_the_browse_list_is_not_squeezed_out_at_1280_by_720(make_app):
+    """The one known clip carried in from facelift step 1's review: the FOCUS list's fixed
+    height (320px, regardless of window size) left the browse list squeezed to nothing on a
+    short window -- 48 of its text widgets unmapped entirely. Seeds enough drifting models to
+    fill FOCUS_CAP (a full-height focus zone) plus enough plain ones for a real browse list,
+    then checks with the audit's own detector (render_pages.py) on a real mapped window
+    (invisible: alpha 0), the same technique test_spec3f_home.py's own 1280x720 test uses."""
+    import pathlib
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    from render_pages import find_clipped_text_widgets
+
+    app = make_app()
+    for i in range(9):                                    # > FOCUS_CAP (7): a full focus zone
+        _seed(app.db, f"DRIFT-{i}", fails_last=12)
+    for i in range(15):                                    # stay in control -> browse-only rows
+        _seed(app.db, f"PLAIN-{i}", fails_last=2, base_fails=2)
+    triage = app.page_container.get_page("triage")
+    app.show_page("triage")
+    triage.reload_now()
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.geometry("1280x720+20000+20000")
+    app.deiconify()
+    app.update_idletasks()
+    app.update()
+    try:
+        hits = find_clipped_text_widgets(triage, page="triage", window_size="1280x720")
+        assert not hits, [h.line() for h in hits]
+    finally:
+        app.withdraw()
