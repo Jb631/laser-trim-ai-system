@@ -203,3 +203,144 @@ def test_increment_volts_a_pass_refused_at_ingest_is_a_warn_not_a_miss(tmp_path)
     assert "1 refused" in carries[0][2] and "0 missed" in carries[0][2], carries
     refused = [r for r in results if r[0] == "WARN" and "REFUSED at ingest" in r[1]]
     assert len(refused) == 1 and "shifted.xlsx Trim 1" in refused[0][2], results
+
+
+# ============================================== a check that crashes (facelift F4, TRACKER C2)
+# Several of the sweep's check blocks had no try/except, so ONE exception ended the whole sweep:
+# every check after it silently never ran, and the tally line never printed. A block that crashes
+# is now ONE FAIL naming the block and the exception, and the sweep goes on.
+
+_RUNNER_CODE = r"""
+import json, sys
+sys.path.insert(0, "scripts")
+import app_qa_sweep as sweep
+exec(sys.argv[1])
+print("RESULTS_JSON=" + json.dumps(sweep.RESULTS))
+"""
+
+
+def _run_code(code):
+    r = subprocess.run([sys.executable, "-c", _RUNNER_CODE, code], cwd=REPO, capture_output=True,
+                       text=True, timeout=300)
+    line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULTS_JSON=")), None)
+    return r, ([tuple(x) for x in json.loads(line[len("RESULTS_JSON="):])] if line else None)
+
+
+def test_a_block_that_crashes_is_one_fail_and_the_sweep_goes_on():
+    r, results = _run_code(
+        "with sweep._guard('invented block'):\n"
+        "    sweep.check('invented block: a check before the crash', True)\n"
+        "    raise ValueError('invented crash')\n"
+        "sweep.check('the next block still runs', True)\n")
+    assert r.returncode == 0 and results is not None, r.stdout[-2000:] + r.stderr[-2000:]
+    assert results == [
+        ("PASS", "invented block: a check before the crash", ""),
+        ("FAIL", "invented block (the check itself crashed)", "ValueError: invented crash"),
+        ("PASS", "the next block still runs", "")]
+    assert "Traceback" in r.stdout and "invented crash" in r.stdout     # where, not only what
+
+
+def test_stopping_the_run_is_never_swallowed():
+    r, results = _run_code("with sweep._guard('invented block'):\n    raise KeyboardInterrupt\n")
+    assert r.returncode != 0 and results is None                     # it propagated
+    assert "KeyboardInterrupt" in r.stderr
+
+
+# ============================================== check_error_rows_have_a_reason
+
+def _error_analysis(s, *, file_path, error_reason=None):
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR, StatusType, SystemType
+    ar = DBAR(model="7000", serial="1", system=SystemType.A, filename=file_path.replace("\\", "/")
+              .rsplit("/", 1)[-1], file_path=file_path, file_date=datetime(2026, 2, 3),
+              overall_status=StatusType.ERROR, error_reason=error_reason)
+    s.add(ar)
+    s.flush()
+    return ar
+
+
+def _marker(s, *, file_path, reason):
+    """A per-path failure marker, the shape _write_failure_marker leaves (invented values)."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import ProcessedFile, UNREADABLE_PREFIX
+    s.add(ProcessedFile(filename=file_path.replace("\\", "/").rsplit("/", 1)[-1],
+                        file_path=file_path, file_hash=DatabaseManager.skip_marker_hash(file_path),
+                        file_size=1, file_modified_date=datetime(2026, 2, 3),
+                        error_message=UNREADABLE_PREFIX + reason, analysis_id=None, success=True))
+
+
+def _reason(results):
+    return [r for r in results if r[1].startswith("every ERROR row has a reason")]
+
+
+def test_a_marker_spelled_another_way_still_explains_its_error_row(tmp_path):
+    """The marker is matched to its ERROR row by PATH. It used to be exact string equality -- true
+    today only because one write path writes both -- so the same file spelled with forward
+    slashes (a forward-slash config root) or in another case (Windows paths are case-insensitive)
+    read as an ERROR row with no reason at all: a FAIL for a reason that is there."""
+    db = _scratch_db(tmp_path)
+    with db.session() as s:
+        _error_analysis(s, file_path="C:\\Shop\\Trim Data\\7000_1.xls")
+        _marker(s, file_path="c:/shop/trim data/7000_1.xls", reason="No valid track data found")
+        s.commit()
+    results = _reason(_run_check(db, "check_error_rows_have_a_reason", tmp_path))
+    assert results[0][0] == "PASS", results
+    assert [r[0] for r in results] == ["PASS", "WARN"], results          # marker-only: a WARN
+    assert "1 of 1" in results[1][2]
+
+
+def test_an_error_row_with_no_reason_anywhere_still_fails(tmp_path):
+    db = _scratch_db(tmp_path)
+    with db.session() as s:
+        _error_analysis(s, file_path="C:\\Shop\\Trim Data\\7000_1.xls")
+        _marker(s, file_path="C:\\Shop\\Trim Data\\7000_2.xls", reason="another file entirely")
+        _error_analysis(s, file_path="C:\\Shop\\Trim Data\\7000_3.xls",
+                        error_reason="Insufficient data points")               # explained
+        s.commit()
+    results = _reason(_run_check(db, "check_error_rows_have_a_reason", tmp_path))
+    assert [r[0] for r in results] == ["FAIL"], results
+    assert "reasonless=1 of 2" in results[0][2]
+
+
+# ============================================== check_screens_count_what_they_draw (M9 wording)
+
+_RUNNER_DB = r"""
+import json, sys
+from pathlib import Path
+sys.path.insert(0, "scripts")
+import app_qa_sweep as sweep
+import laser_trim_analyzer.database.manager as _m, laser_trim_analyzer.database as _d
+_guard = _m.DatabaseManager(Path(sys.argv[3]) / "guard.db")
+_m._db_manager = _guard; _d._db_manager = _guard     # nothing may reach the configured DB
+getattr(sweep, sys.argv[2])(_m.DatabaseManager(Path(sys.argv[1])))
+print("RESULTS_JSON=" + json.dumps(sweep.RESULTS))
+"""
+
+
+def test_the_screens_check_names_what_it_counts(tmp_path):
+    """Re-review Minor 4: the check said it matched "the rows its section draws" and printed
+    "drawn=5" -- but it counts the rows a page HANDS its FindingsView, and the view draws at most
+    3 of a group (rows_per_group) behind "Show all 5". Five yield findings: the count holds, and
+    the line says what it counted."""
+    db = _scratch_db(tmp_path)
+    yields = [{"model": "7000", "analyzer": "ink_target", "category": "Ink target", "lever": "ink",
+               "title": f"Invented finding {i}", "summary": "invented", "n_units": 10 + i,
+               "tracks_per_year": 100.0 - i, "expected_gain_points": 2.0, "evidence": {}}
+              for i in range(5)]
+    db.replace_process_findings("7000", {"tracks": 1, "errors": {}}, yields)
+    db.close()
+    guard = tmp_path / "runner"
+    guard.mkdir(exist_ok=True)
+    r = subprocess.run([sys.executable, "-c", _RUNNER_DB, str(db.database_path),
+                        "check_screens_count_what_they_draw", str(guard)],
+                       cwd=REPO, capture_output=True, text=True, timeout=300)
+    line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULTS_JSON=")), None)
+    assert r.returncode == 0 and line, r.stdout[-3000:] + r.stderr[-3000:]
+    results = [tuple(x) for x in json.loads(line[len("RESULTS_JSON="):])]
+    home = [x for x in results if x[1].startswith("home: 'N worth changing'")]
+    assert len(home) == 1 and home[0][0] == "PASS", results
+    assert "draws" not in home[0][1] and "hands its view" in home[0][1], home
+    assert "drawn=" not in home[0][2] and "handed=5" in home[0][2], home
+    model = [x for x in results if x[1].startswith("model page: the 'Worth changing' count")]
+    assert len(model) == 1 and model[0][0] == "PASS", results
+    assert "draws" not in model[0][1] and "hands its view" in model[0][1], model
+    assert "drawn=" not in model[0][2] and "handed=5" in model[0][2], model

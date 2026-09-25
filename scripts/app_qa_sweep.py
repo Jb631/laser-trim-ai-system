@@ -18,6 +18,7 @@ export schema) lands in qa_output/ at the repo root, which is gitignored.
 Exit code = number of FAILs. WARNs are judgment items for review.
 """
 import sys
+import traceback
 import types
 from pathlib import Path
 
@@ -83,6 +84,33 @@ def check(name, ok, detail=""):
 def warn(name, detail=""):
     RESULTS.append(("WARN", name, detail))
     print(f"WARN | {name}" + (f" | {detail}" if detail else ""))
+
+
+class _guard:
+    """One check block. An exception inside it is ONE FAIL that names the block and carries the
+    exception, and the sweep goes on with the next block -- never a PASS, never a silent skip.
+
+    Until 2026-09-25 (facelift F4; parked as TRACKER C2) several blocks had no try/except, so one
+    exception ended the whole sweep: every check after it silently never ran and the tally line
+    never printed. The traceback is printed under the FAIL line, because "KeyError: 'x'" alone
+    is a hunt. KeyboardInterrupt and SystemExit are not caught: stopping the run still stops it.
+
+        with _guard("company trend"):
+            ...
+    """
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None or not issubclass(exc_type, Exception):
+            return False
+        check(f"{self.name} (the check itself crashed)", False, f"{exc_type.__name__}: {exc}")
+        traceback.print_exception(exc_type, exc, tb, file=sys.stdout)
+        return True
 
 
 def check_ft_incremental_fastpath() -> None:
@@ -789,6 +817,81 @@ def check_findings_group_mapping(db) -> None:
           not missing,
           f"unmapped -- would render under 'Other findings': {missing}; "
           f"analyzers seen in the cache: {sorted(seen)}; known groups: {sorted(set(P.ANALYZER_GROUP))}")
+
+
+def check_error_rows_have_a_reason(raw) -> None:
+    """Every ERROR analysis says why SOMEWHERE (2026-09-23, revised 2026-09-24).
+
+    analysis_results.error_reason, or a linked track's own linearity_spec_warning
+    / anomaly_reason -- the exact COALESCE _load_units/_search_units read
+    (model_page.py). A row saved before error_reason existed can still carry its
+    reason on a processed_files row instead: either the row LINKED by analysis_id
+    (populated for a track-level ERROR since this task) or the per-PATH failure
+    marker (analysis_id NULL, a synthetic skip: hash, matched by file_path) --
+    that marker is where the 3 zero-track rows' "No valid track data found"
+    actually lives (_write_failure_marker), and their ids are not stable across a
+    rebuild so nothing here may name them.
+
+    The path match folds case and separators (facelift F4; parked as TRACKER C2): it
+    was exact string equality, true today only because one write path writes both
+    rows, so the same file written with backslashes by one run and with forward
+    slashes by another (a forward-slash config root), or in another case (Windows
+    paths are case-insensitive), read as an ERROR row with no reason at all. The
+    markers are MATERIALIZED so SQLite indexes the folded key (0.04 s on the work
+    database; 5 s without).
+
+    A reason that exists ONLY on a processed_files row is WARNed, not FAILed: it
+    is a known, accepted gap (design doc ruling 3c -- "3 rows show no reason
+    until reprocessed"), not a bug, and a check that reads FAIL forever trains
+    everyone to stop reading the FAIL line. A row with NO reason ANYWHERE is
+    still a hard zero -- no budget, no percentage, same standard as every other
+    zero-tolerance check in this file.
+    """
+    n_error = raw.execute(
+        "SELECT COUNT(*) FROM analysis_results WHERE overall_status='ERROR'"
+    ).fetchone()[0]
+    row = raw.execute(
+        "WITH per_own AS ("
+        "  SELECT a.id AS aid,"
+        "         MAX(CASE"
+        "           WHEN a.error_reason IS NOT NULL AND a.error_reason != '' THEN 1"
+        "           WHEN t.linearity_spec_warning IS NOT NULL AND t.linearity_spec_warning != '' THEN 1"
+        "           WHEN t.anomaly_reason IS NOT NULL AND t.anomaly_reason != '' THEN 1"
+        "           ELSE 0 END) AS has_own_reason"
+        "  FROM analysis_results a"
+        "  LEFT JOIN track_results t ON t.analysis_id = a.id"
+        "  WHERE a.overall_status = 'ERROR'"
+        "  GROUP BY a.id"
+        "),"
+        "markers AS MATERIALIZED ("
+        "  SELECT lower(replace(file_path, '\\', '/')) AS path_key, error_message"
+        "  FROM processed_files"
+        "  WHERE analysis_id IS NULL AND file_hash LIKE 'skip:%'"
+        "),"
+        "per_pf AS ("
+        "  SELECT a.id AS aid,"
+        "         MAX(CASE WHEN pf.error_message IS NOT NULL AND pf.error_message != '' THEN 1"
+        "                  WHEN m.error_message IS NOT NULL AND m.error_message != '' THEN 1"
+        "                  ELSE 0 END) AS has_pf_reason"
+        "  FROM analysis_results a"
+        "  LEFT JOIN processed_files pf ON pf.analysis_id = a.id"
+        "  LEFT JOIN markers m ON m.path_key = lower(replace(a.file_path, '\\', '/'))"
+        "  WHERE a.overall_status = 'ERROR'"
+        "  GROUP BY a.id"
+        ")"
+        "SELECT"
+        "  SUM(CASE WHEN po.has_own_reason=0 AND pp.has_pf_reason=0 THEN 1 ELSE 0 END),"
+        "  SUM(CASE WHEN po.has_own_reason=0 AND pp.has_pf_reason=1 THEN 1 ELSE 0 END)"
+        " FROM per_own po JOIN per_pf pp ON pp.aid = po.aid"
+    ).fetchone()
+    n_fail, n_marker_only = (row[0] or 0), (row[1] or 0)
+    check("every ERROR row has a reason SOMEWHERE (error_reason, a track's own "
+          "words, or a processed_files row)",
+          n_fail == 0, f"reasonless={n_fail} of {n_error} ERROR rows")
+    if n_marker_only:
+        warn("every ERROR row has a reason: rows whose reason lives ONLY on a "
+             "processed_files row (predate error_reason -- reprocess candidates)",
+             f"{n_marker_only} of {n_error} ERROR rows")
 
 
 def check_ft_disposition_excludes_ungraded(db, raw) -> None:
@@ -2757,7 +2860,8 @@ class _Recorder:
 
 class _ViewRecorder:
     """Stands in for FindingsView: records the rows and options a page hands it, so a check can
-    arrange() exactly what the real view would draw from them."""
+    arrange() exactly what the page handed the real view (which then draws at most
+    rows_per_group of each group, behind a "Show all")."""
     made: list = []
 
     def __init__(self, master, theme, **kw):
@@ -2771,7 +2875,11 @@ class _ViewRecorder:
         self.rows = list(rows or [])
 
 
-def _rows_drawn(view) -> int:
+def _rows_handed(view) -> int:
+    """Rows a page handed its FindingsView, grouped the way the view groups them (arrange(), and
+    its `groups` filter). NOT the rows it draws: the view shows at most `rows_per_group` of each
+    group (3 on Home and on the Model page) behind "Show all N" -- the checks below used to call
+    this number "drawn" (re-review Minor 4, 2026-09-25)."""
     from laser_trim_analyzer.findings import presentation as P
     keys = view.kw.get("groups")
     keys = None if keys is None else set(keys)
@@ -2840,10 +2948,10 @@ def check_screens_count_what_they_draw(db) -> None:
         caption = captions[-1] if captions else ""
         m = re.search(r"([\d,]+) worth changing", caption)
         n = int(m.group(1).replace(",", "")) if m else None
-        drawn = _rows_drawn(_ViewRecorder.made[-1]) if _ViewRecorder.made else 0
+        handed = _rows_handed(_ViewRecorder.made[-1]) if _ViewRecorder.made else 0
         check("home: 'N worth changing' is the yield rows arrange() builds from the cache, and the "
-              "rows its section draws", n is not None and n == ref_home == drawn,
-              f"caption={caption!r} arrange={ref_home} drawn={drawn}")
+              "rows its section hands its view", n is not None and n == ref_home == handed,
+              f"caption={caption!r} arrange={ref_home} handed={handed}")
     except Exception as e:
         check("home: 'N worth changing' is the yield rows arrange() builds from the cache",
               False, f"{type(e).__name__}: {e}")
@@ -2879,10 +2987,11 @@ def check_screens_count_what_they_draw(db) -> None:
         mp.theme, mp._worth_section, mp._worth_view = ThemeManager(), _Recorder(), None
         mp._set_findings_section({"facts": db.get_process_facts(model), "findings": findings}, [])
         shown = [c for t_, c in headers if t_ == "Worth changing on this model"]
-        drawn = _rows_drawn(_ViewRecorder.made[-1]) if _ViewRecorder.made else 0
+        handed = _rows_handed(_ViewRecorder.made[-1]) if _ViewRecorder.made else 0
         check(f"model page: the 'Worth changing' count on {model} is the rows arrange() builds for "
-              f"its three groups, and the rows it draws", shown == [ref_model] and drawn == ref_model,
-              f"header={shown} arrange={ref_model} drawn={drawn} "
+              f"its three groups, and the rows it hands its view",
+              shown == [ref_model] and handed == ref_model,
+              f"header={shown} arrange={ref_model} handed={handed} "
               f"(groups here: {sorted({P.group_key(f) for f in findings})})")
     except Exception as e:
         check(f"model page: the 'Worth changing' count on {model}", False, f"{type(e).__name__}: {e}")
@@ -3128,48 +3237,50 @@ def main() -> int:
     VARIANTS = ["6607", "5409B", "8150", "8887", "7458-1"]
 
     # ============ 1. DASHBOARD: aggregates reconcile with raw SQL ============
-    from laser_trim_analyzer.core.yield_stats import compute_yield, worst_models_by_yield
-    for days in (90, 36500):
-        cutoff = datetime.now() - timedelta(days=days)
-        y = compute_yield(db, DBAR, cutoff)
-        horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-        r = raw.execute(
-            "SELECT COUNT(*), SUM(overall_status='PASS'), SUM(overall_status='WARNING'),"
-            " SUM(overall_status='FAIL') FROM analysis_results "
-            "WHERE file_date >= ? AND file_date <= ?",
-            (cutoff.strftime("%Y-%m-%d %H:%M:%S"), horizon)).fetchone()
-        check(f"dashboard yield counts vs SQL ({days}d)",
-              y["total"] == (r[0] or 0) and y["passed"] == (r[1] or 0)
-              and y["warnings"] == (r[2] or 0) and y["failed"] == (r[3] or 0),
-              f"app={y['passed']}/{y['warnings']}/{y['failed']} sql={r[1]}/{r[2]}/{r[3]}")
-        if y["gradeable"]:
-            ly = 100 * (y["passed"] + y["warnings"]) / y["gradeable"]
-            check(f"linearity_yield math ({days}d)",
-                  abs((y["linearity_yield"] or 0) - ly) < 1e-9,
-                  f"{y['linearity_yield']:.2f} vs {ly:.2f}")
-    worst, total_q = worst_models_by_yield(db, datetime.now() - timedelta(days=36500))
-    check("worst-models rates within [0,100] and sorted ascending",
-          all(0 <= (w["trim_rate"] or 0) <= 100 for w in worst)
-          and all((worst[i]["trim_rate"] or 0) <= (worst[i+1]["trim_rate"] or 0)
-                  for i in range(len(worst) - 1)),
-          f"{[(w['model'], round(w['trim_rate'] or -1, 1)) for w in worst[:3]]}")
+    with _guard("dashboard: yield aggregates vs raw SQL"):
+        from laser_trim_analyzer.core.yield_stats import compute_yield, worst_models_by_yield
+        for days in (90, 36500):
+            cutoff = datetime.now() - timedelta(days=days)
+            y = compute_yield(db, DBAR, cutoff)
+            horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            r = raw.execute(
+                "SELECT COUNT(*), SUM(overall_status='PASS'), SUM(overall_status='WARNING'),"
+                " SUM(overall_status='FAIL') FROM analysis_results "
+                "WHERE file_date >= ? AND file_date <= ?",
+                (cutoff.strftime("%Y-%m-%d %H:%M:%S"), horizon)).fetchone()
+            check(f"dashboard yield counts vs SQL ({days}d)",
+                  y["total"] == (r[0] or 0) and y["passed"] == (r[1] or 0)
+                  and y["warnings"] == (r[2] or 0) and y["failed"] == (r[3] or 0),
+                  f"app={y['passed']}/{y['warnings']}/{y['failed']} sql={r[1]}/{r[2]}/{r[3]}")
+            if y["gradeable"]:
+                ly = 100 * (y["passed"] + y["warnings"]) / y["gradeable"]
+                check(f"linearity_yield math ({days}d)",
+                      abs((y["linearity_yield"] or 0) - ly) < 1e-9,
+                      f"{y['linearity_yield']:.2f} vs {ly:.2f}")
+        worst, total_q = worst_models_by_yield(db, datetime.now() - timedelta(days=36500))
+        check("worst-models rates within [0,100] and sorted ascending",
+              all(0 <= (w["trim_rate"] or 0) <= 100 for w in worst)
+              and all((worst[i]["trim_rate"] or 0) <= (worst[i+1]["trim_rate"] or 0)
+                      for i in range(len(worst) - 1)),
+              f"{[(w['model'], round(w['trim_rate'] or -1, 1)) for w in worst[:3]]}")
 
     # ============ 2. COMPANY TREND: internal + cross checks ==================
-    t = db.get_company_yield_trend(days_back=36500, period="month")
-    sys_sum_ok = True
-    for i, p in enumerate(t["periods"]):
-        comp = t["company"][i]
-        s_tot = sum(series[i]["total"] for series in t["by_system"].values())
-        s_acc = sum(series[i]["accepted"] for series in t["by_system"].values())
-        if s_tot != comp["total"] or s_acc != comp["accepted"]:
-            sys_sum_ok = False
-            break
-    check("company trend: per-system series sum to company", sys_sum_ok)
-    check("company trend: vintage + partial flags present",
-          t.get("data_through") is not None and isinstance(t.get("partial_last"), bool))
-    rates = [r_["linearity_yield"] for r_ in t["company"] if r_["linearity_yield"] is not None]
-    check("company trend: rates within [0,100]",
-          all(0 <= r_ <= 100 for r_ in rates), f"n={len(rates)}")
+    with _guard("company trend"):
+        t = db.get_company_yield_trend(days_back=36500, period="month")
+        sys_sum_ok = True
+        for i, p in enumerate(t["periods"]):
+            comp = t["company"][i]
+            s_tot = sum(series[i]["total"] for series in t["by_system"].values())
+            s_acc = sum(series[i]["accepted"] for series in t["by_system"].values())
+            if s_tot != comp["total"] or s_acc != comp["accepted"]:
+                sys_sum_ok = False
+                break
+        check("company trend: per-system series sum to company", sys_sum_ok)
+        check("company trend: vintage + partial flags present",
+              t.get("data_through") is not None and isinstance(t.get("partial_last"), bool))
+        rates = [r_["linearity_yield"] for r_ in t["company"] if r_["linearity_yield"] is not None]
+        check("company trend: rates within [0,100]",
+              all(0 <= r_ <= 100 for r_ in rates), f"n={len(rates)}")
 
     # ============ 3. FOCUS LIST: the SPC invariants the page now rests on ====
     # Replaces the σ-alert-feed checks that stood here until 2026-08-29 (that
@@ -3177,161 +3288,161 @@ def main() -> int:
     # `compute_focus_list` now, so THESE are the invariants a regression would
     # break. The promise being guarded is that every row can point at the lot
     # in its own series that put it there.
-    from laser_trim_analyzer.ml.manager import (
-        list_known_models, active_model_set,
-        preview_alert_count, get_model_drift_status)
-    from laser_trim_analyzer.ml.spc import (
-        RECENT_K, compute_focus_list, compute_spc_series)
-    known = {m.model for m in list_known_models(db)}
-    try:
-        res_a = compute_focus_list(db)
-        res_b = compute_focus_list(db)          # (a) same input -> same list
-    except Exception as exc:
-        check("focus: list computes against the real database", False,
-              f"{type(exc).__name__}: {exc}")
-        res_a = res_b = None
-    if res_a is not None and res_b is not None:
-        check("focus: list computes against the real database", True,
-              f"focus={len(res_a.focus)} chronic={len(res_a.chronic)} "
-              f"anchor={res_a.anchor}")
-        if not res_a.focus and not res_a.chronic:
-            # Not a failure, but the invariants below would be vacuous — say so
-            # rather than letting empty lists print five reassuring PASSes.
-            warn("focus: real database produced no focus/chronic entries",
-                 "membership/ranking/arithmetic checks ran on empty lists")
-        check("focus: two runs give identical orderings (deterministic)",
-              [e.model for e in res_a.focus] == [e.model for e in res_b.focus]
-              and [e.model for e in res_a.chronic] == [e.model for e in res_b.chronic],
-              f"focus={[e.model for e in res_a.focus][:5]}")
-        # (b) Membership: a fire has an alarming lot inside the recent window;
-        # chronic is bad-but-STEADY and must have none, or the strip is just a
-        # second alarm list under a calmer heading.
-        no_recent_ooc = [e.model for e in res_a.focus
-                         if not any(pt.ooc for pt in e.series.points[-RECENT_K:])]
-        chronic_alarming = [e.model for e in res_a.chronic
-                            if any(pt.ooc for pt in e.series.points[-RECENT_K:])]
-        check("focus: every entry has an out-of-control lot in the recent window",
-              not no_recent_ooc, f"offenders={no_recent_ooc[:5]}")
-        check("chronic: no entry has a recent out-of-control lot",
-              not chronic_alarming, f"offenders={chronic_alarming[:5]}")
-        # (c) The order IS the page's promise: biggest cost first — discounted
-        # by the lots a model has run CLEAN since its alarm (2026-08-30, the
-        # 6126 case: a hairline blip that has behaved since is not today's
-        # fire). rank_score is what the list sorts on; excess_per_week stays
-        # the measured number the verdict quotes, so it is NOT monotonic here.
-        rs = [e.rank_score for e in res_a.focus]
-        bad_score = [f"{e.model}: rank={e.rank_score:.3f} vs "
-                     f"excess={e.excess_per_week:.3f}/(1+{e.clean_since})"
-                     for e in res_a.focus
-                     if abs(e.rank_score
-                            - e.excess_per_week / (1.0 + e.clean_since)) > 1e-9]
-        check("focus: ranked by rank_score (excess discounted by clean lots), "
-              "descending",
-              all(rs[i] >= rs[i + 1] for i in range(len(rs) - 1)) and not bad_score,
-              f"top={[(e.model, round(e.rank_score, 2), e.clean_since) for e in res_a.focus[:5]]}"
-              + (f" bad_score={bad_score[:3]}" if bad_score else ""))
-        # The recovery marker and the ranking must tell the same story: a row
-        # that says "has run at baseline since" is exactly a row discounted.
-        marker_bad = [e.model for e in res_a.focus
-                      if (" · has run at baseline since" in e.sub_line)
-                      != (e.clean_since >= 1)]
-        check("focus: the 'has run at baseline since' marker matches the discount",
-              not marker_bad, f"offenders={marker_bad[:5]}")
-        # (d) The one-computation guarantee: every number in a row falls out of
-        # the series that row carries (same math as test_verdict_numbers_match_series).
-        mismatched = []
-        for e in res_a.focus + res_a.chronic:
-            flagged = [pt for pt in e.series.points[-RECENT_K:] if pt.ooc]
-            if flagged:
-                p_recent = (sum(pt.value * pt.n for pt in flagged)
-                            / sum(pt.n for pt in flagged))
-                excess = max(p_recent - e.p_base, 0.0) * e.units_per_week
-            else:                        # chronic: steady, so it claims no excess
-                p_recent, excess = e.p_base, 0.0
-            if (abs(e.p_base - e.series.p_base) > 1e-9
-                    or abs(e.p_recent - p_recent) > 1e-9
-                    or abs(e.excess_per_week - excess) > 1e-9):
-                mismatched.append(e.model)
-        check("focus: row numbers recompute from the row's own series (1e-9)",
-              not mismatched, f"offenders={mismatched[:5]}")
-        # (e) A verdict about a model that isn't in the data is a phantom. The
-        # old σ-alert-feed version of this invariant failed on this DB, which is
-        # why it is still asserted here after that feed was removed.
-        db_models = {r[0] for r in raw.execute(
-            "SELECT DISTINCT model FROM analysis_results WHERE model IS NOT NULL")}
-        listed = {e.model for e in res_a.focus} | {e.model for e in res_a.chronic}
-        check("focus: every listed model exists in analysis_results",
-              listed <= db_models,
-              f"listed={len(listed)} missing={sorted(listed - db_models)[:5]}")
-        # (f) ONE CLOCK. Clicking a FOCUS row opens the Model page, which calls
-        # `compute_spc_series` with NO anchor — as does the evidence pack. If
-        # that default clock is not the same DB-global one the list used, the
-        # click-through contradicts the row it came from: a lot the list calls
-        # closed draws hollow ("· open") on the chart and exports as
-        # `Open lot: TRUE`. Capped at 5 models — one query each.
-        parity_bad = []
-        sampled = res_a.focus[:5]
-        for e in sampled:
+    with _guard("focus list: the SPC invariants"):
+        from laser_trim_analyzer.ml.manager import (
+            list_known_models, active_model_set,
+            preview_alert_count, get_model_drift_status)
+        from laser_trim_analyzer.ml.spc import (
+            RECENT_K, compute_focus_list, compute_spc_series)
+        try:
+            res_a = compute_focus_list(db)
+            res_b = compute_focus_list(db)          # (a) same input -> same list
+        except Exception as exc:
+            check("focus: list computes against the real database", False,
+                  f"{type(exc).__name__}: {exc}")
+            res_a = res_b = None
+        if res_a is not None and res_b is not None:
+            check("focus: list computes against the real database", True,
+                  f"focus={len(res_a.focus)} chronic={len(res_a.chronic)} "
+                  f"anchor={res_a.anchor}")
+            if not res_a.focus and not res_a.chronic:
+                # Not a failure, but the invariants below would be vacuous — say so
+                # rather than letting empty lists print five reassuring PASSes.
+                warn("focus: real database produced no focus/chronic entries",
+                     "membership/ranking/arithmetic checks ran on empty lists")
+            check("focus: two runs give identical orderings (deterministic)",
+                  [e.model for e in res_a.focus] == [e.model for e in res_b.focus]
+                  and [e.model for e in res_a.chronic] == [e.model for e in res_b.chronic],
+                  f"focus={[e.model for e in res_a.focus][:5]}")
+            # (b) Membership: a fire has an alarming lot inside the recent window;
+            # chronic is bad-but-STEADY and must have none, or the strip is just a
+            # second alarm list under a calmer heading.
+            no_recent_ooc = [e.model for e in res_a.focus
+                             if not any(pt.ooc for pt in e.series.points[-RECENT_K:])]
+            chronic_alarming = [e.model for e in res_a.chronic
+                                if any(pt.ooc for pt in e.series.points[-RECENT_K:])]
+            check("focus: every entry has an out-of-control lot in the recent window",
+                  not no_recent_ooc, f"offenders={no_recent_ooc[:5]}")
+            check("chronic: no entry has a recent out-of-control lot",
+                  not chronic_alarming, f"offenders={chronic_alarming[:5]}")
+            # (c) The order IS the page's promise: biggest cost first — discounted
+            # by the lots a model has run CLEAN since its alarm (2026-08-30, the
+            # 6126 case: a hairline blip that has behaved since is not today's
+            # fire). rank_score is what the list sorts on; excess_per_week stays
+            # the measured number the verdict quotes, so it is NOT monotonic here.
+            rs = [e.rank_score for e in res_a.focus]
+            bad_score = [f"{e.model}: rank={e.rank_score:.3f} vs "
+                         f"excess={e.excess_per_week:.3f}/(1+{e.clean_since})"
+                         for e in res_a.focus
+                         if abs(e.rank_score
+                                - e.excess_per_week / (1.0 + e.clean_since)) > 1e-9]
+            check("focus: ranked by rank_score (excess discounted by clean lots), "
+                  "descending",
+                  all(rs[i] >= rs[i + 1] for i in range(len(rs) - 1)) and not bad_score,
+                  f"top={[(e.model, round(e.rank_score, 2), e.clean_since) for e in res_a.focus[:5]]}"
+                  + (f" bad_score={bad_score[:3]}" if bad_score else ""))
+            # The recovery marker and the ranking must tell the same story: a row
+            # that says "has run at baseline since" is exactly a row discounted.
+            marker_bad = [e.model for e in res_a.focus
+                          if (" · has run at baseline since" in e.sub_line)
+                          != (e.clean_since >= 1)]
+            check("focus: the 'has run at baseline since' marker matches the discount",
+                  not marker_bad, f"offenders={marker_bad[:5]}")
+            # (d) The one-computation guarantee: every number in a row falls out of
+            # the series that row carries (same math as test_verdict_numbers_match_series).
+            mismatched = []
+            for e in res_a.focus + res_a.chronic:
+                flagged = [pt for pt in e.series.points[-RECENT_K:] if pt.ooc]
+                if flagged:
+                    p_recent = (sum(pt.value * pt.n for pt in flagged)
+                                / sum(pt.n for pt in flagged))
+                    excess = max(p_recent - e.p_base, 0.0) * e.units_per_week
+                else:                        # chronic: steady, so it claims no excess
+                    p_recent, excess = e.p_base, 0.0
+                if (abs(e.p_base - e.series.p_base) > 1e-9
+                        or abs(e.p_recent - p_recent) > 1e-9
+                        or abs(e.excess_per_week - excess) > 1e-9):
+                    mismatched.append(e.model)
+            check("focus: row numbers recompute from the row's own series (1e-9)",
+                  not mismatched, f"offenders={mismatched[:5]}")
+            # (e) A verdict about a model that isn't in the data is a phantom. The
+            # old σ-alert-feed version of this invariant failed on this DB, which is
+            # why it is still asserted here after that feed was removed.
+            db_models = {r[0] for r in raw.execute(
+                "SELECT DISTINCT model FROM analysis_results WHERE model IS NOT NULL")}
+            listed = {e.model for e in res_a.focus} | {e.model for e in res_a.chronic}
+            check("focus: every listed model exists in analysis_results",
+                  listed <= db_models,
+                  f"listed={len(listed)} missing={sorted(listed - db_models)[:5]}")
+            # (f) ONE CLOCK. Clicking a FOCUS row opens the Model page, which calls
+            # `compute_spc_series` with NO anchor — as does the evidence pack. If
+            # that default clock is not the same DB-global one the list used, the
+            # click-through contradicts the row it came from: a lot the list calls
+            # closed draws hollow ("· open") on the chart and exports as
+            # `Open lot: TRUE`. Capped at 5 models — one query each.
+            parity_bad = []
+            sampled = res_a.focus[:5]
+            for e in sampled:
+                try:
+                    pt_series = compute_spc_series(db, e.model, e.series.metric).points[-1]
+                    pt_row = e.series.points[-1]
+                    if (pt_series.is_open, pt_series.ooc) != (pt_row.is_open, pt_row.ooc):
+                        parity_bad.append(
+                            f"{e.model}: click-through=(open={pt_series.is_open},"
+                            f"ooc={pt_series.ooc}) row=(open={pt_row.is_open},"
+                            f"ooc={pt_row.ooc})")
+                except Exception as exc:      # a crash here IS the regression
+                    parity_bad.append(f"{e.model}: {type(exc).__name__}: {exc}")
+            check("focus: click-through series agrees with the row on the last lot "
+                  "(open + out-of-control)",
+                  not parity_bad, f"checked={len(sampled)} offenders={parity_bad[:3]}")
+            # (g) The likely-driver hint (2026-08-30) must be honest: either None
+            # (rendered "driver unclear") or the plain-language label of a real,
+            # NON-outcome watched metric. A raw key, an outcome metric, or free
+            # text here means the enrichment drifted from drift_types' vocabulary.
+            from laser_trim_analyzer.ml.drift_types import (
+                FRACTION_METRICS, WATCHED_METRICS, metric_label)
+            valid_labels = {metric_label(m) for m in WATCHED_METRICS
+                            if m not in FRACTION_METRICS}
+            bad_drivers = []
+            for e in res_a.focus:
+                if e.driver is None:
+                    continue
+                if not any(e.driver.startswith(lbl) for lbl in valid_labels):
+                    bad_drivers.append(f"{e.model}: {e.driver!r}")
+            for e in res_a.chronic:
+                if e.driver is not None:     # chronic rows never carry a driver
+                    bad_drivers.append(f"{e.model} (chronic): {e.driver!r}")
+            check("focus: driver hints name real process metrics (or are None)",
+                  not bad_drivers, f"offenders={bad_drivers[:3]}")
+            # (h) Trim-vs-FT spec alignment (2026-08-30). 6126 is census-verified
+            # ground truth: its linked trim/FT pairs disagree at essentially every
+            # matched position, so the comparison MUST say "differs" here. This
+            # check is the guard on the pairing as much as on the arithmetic — an
+            # earlier cut sampled each station's newest tracks independently, which
+            # on this model matched a fifth as many positions and read "aligned".
             try:
-                pt_series = compute_spc_series(db, e.model, e.series.metric).points[-1]
-                pt_row = e.series.points[-1]
-                if (pt_series.is_open, pt_series.ooc) != (pt_row.is_open, pt_row.ooc):
-                    parity_bad.append(
-                        f"{e.model}: click-through=(open={pt_series.is_open},"
-                        f"ooc={pt_series.ooc}) row=(open={pt_row.is_open},"
-                        f"ooc={pt_row.ooc})")
-            except Exception as exc:      # a crash here IS the regression
-                parity_bad.append(f"{e.model}: {type(exc).__name__}: {exc}")
-        check("focus: click-through series agrees with the row on the last lot "
-              "(open + out-of-control)",
-              not parity_bad, f"checked={len(sampled)} offenders={parity_bad[:3]}")
-        # (g) The likely-driver hint (2026-08-30) must be honest: either None
-        # (rendered "driver unclear") or the plain-language label of a real,
-        # NON-outcome watched metric. A raw key, an outcome metric, or free
-        # text here means the enrichment drifted from drift_types' vocabulary.
-        from laser_trim_analyzer.ml.drift_types import (
-            FRACTION_METRICS, WATCHED_METRICS, metric_label)
-        valid_labels = {metric_label(m) for m in WATCHED_METRICS
-                        if m not in FRACTION_METRICS}
-        bad_drivers = []
-        for e in res_a.focus:
-            if e.driver is None:
-                continue
-            if not any(e.driver.startswith(lbl) for lbl in valid_labels):
-                bad_drivers.append(f"{e.model}: {e.driver!r}")
-        for e in res_a.chronic:
-            if e.driver is not None:     # chronic rows never carry a driver
-                bad_drivers.append(f"{e.model} (chronic): {e.driver!r}")
-        check("focus: driver hints name real process metrics (or are None)",
-              not bad_drivers, f"offenders={bad_drivers[:3]}")
-        # (h) Trim-vs-FT spec alignment (2026-08-30). 6126 is census-verified
-        # ground truth: its linked trim/FT pairs disagree at essentially every
-        # matched position, so the comparison MUST say "differs" here. This
-        # check is the guard on the pairing as much as on the arithmetic — an
-        # earlier cut sampled each station's newest tracks independently, which
-        # on this model matched a fifth as many positions and read "aligned".
-        try:
-            from laser_trim_analyzer.core.spec_alignment import (
-                compare_station_specs)
-            c6126 = compare_station_specs(db, "6126")
-            check("spec alignment: 6126's trim and FT specs differ (census "
-                  "ground truth)", c6126.status == "differs",
-                  f"status={c6126.status} matched={c6126.matched_positions} "
-                  f"pct={c6126.pct_positions_differing:.2f} | {c6126.note}")
-        except Exception as exc:
-            check("spec alignment: 6126's trim and FT specs differ (census "
-                  "ground truth)", False, f"{type(exc).__name__}: {exc}")
-        # Every focus row must carry a real bool: the enrichment degrades to
-        # False on failure, so a None/exception here means it did not run at all.
-        try:
-            flags = [(e.model, e.spec_mismatch) for e in res_a.focus]
-            bad_flags = [m for m, v in flags if not isinstance(v, bool)]
-            check("focus: every row carries a boolean spec_mismatch flag",
-                  not bad_flags,
-                  f"flagged={[m for m, v in flags if v]} offenders={bad_flags[:3]}")
-        except Exception as exc:
-            check("focus: every row carries a boolean spec_mismatch flag",
-                  False, f"{type(exc).__name__}: {exc}")
+                from laser_trim_analyzer.core.spec_alignment import (
+                    compare_station_specs)
+                c6126 = compare_station_specs(db, "6126")
+                check("spec alignment: 6126's trim and FT specs differ (census "
+                      "ground truth)", c6126.status == "differs",
+                      f"status={c6126.status} matched={c6126.matched_positions} "
+                      f"pct={c6126.pct_positions_differing:.2f} | {c6126.note}")
+            except Exception as exc:
+                check("spec alignment: 6126's trim and FT specs differ (census "
+                      "ground truth)", False, f"{type(exc).__name__}: {exc}")
+            # Every focus row must carry a real bool: the enrichment degrades to
+            # False on failure, so a None/exception here means it did not run at all.
+            try:
+                flags = [(e.model, e.spec_mismatch) for e in res_a.focus]
+                bad_flags = [m for m, v in flags if not isinstance(v, bool)]
+                check("focus: every row carries a boolean spec_mismatch flag",
+                      not bad_flags,
+                      f"flagged={[m for m, v in flags if v]} offenders={bad_flags[:3]}")
+            except Exception as exc:
+                check("focus: every row carries a boolean spec_mismatch flag",
+                      False, f"{type(exc).__name__}: {exc}")
     # ---- HOME and TRIAGE cannot disagree about what is drifting ------------
     # Two landing screens showing two different FOCUS lists would be worse
     # than either of them being wrong, so both go through focus_data.load_focus
@@ -3358,8 +3469,10 @@ def main() -> int:
         check("home/triage: one FOCUS loader behind both screens", False,
               f"{type(exc).__name__}: {exc}")
     # ---- the screens count what they draw; a failed load is never a zero (final review M9)
-    check_screens_count_what_they_draw(db)
-    check_failed_loads_are_never_zero(db)
+    with _guard("screens: each count is the rows its section is handed"):
+        check_screens_count_what_they_draw(db)
+    with _guard("screens: a failed load is never a zero"):
+        check_failed_loads_are_never_zero(db)
 
     # ---- every sidebar row points at a page that exists --------------------
     # A nav row whose key was never registered is a dead click with no error;
@@ -3386,34 +3499,40 @@ def main() -> int:
         check("shell: sidebar/page registration contract", False,
               f"{type(exc).__name__}: {exc}")
 
-    counts = {}
-    for preset in ("loose", "standard", "tight", "strict"):
-        p = preview_alert_count(db, preset)
-        counts[preset] = p["warning"] + p["drift"] + p["out_of_control"]
-    check("presets: tighter never flags more",
-          counts["loose"] >= counts["standard"] >= counts["tight"] >= counts["strict"],
-          str(counts))
-    active = active_model_set(db, recent_days=90, mps_models=[])
-    check("active set (unpinned) is a subset of known models",
-          active.issubset(known), f"active={len(active)}")
+    with _guard("presets and the active-model set"):
+        from laser_trim_analyzer.ml.manager import (active_model_set, list_known_models,
+                                                    preview_alert_count)
+        known = {m.model for m in list_known_models(db)}
+        counts = {}
+        for preset in ("loose", "standard", "tight", "strict"):
+            p = preview_alert_count(db, preset)
+            counts[preset] = p["warning"] + p["drift"] + p["out_of_control"]
+        check("presets: tighter never flags more",
+              counts["loose"] >= counts["standard"] >= counts["tight"] >= counts["strict"],
+              str(counts))
+        active = active_model_set(db, recent_days=90, mps_models=[])
+        check("active set (unpinned) is a subset of known models",
+              active.issubset(known), f"active={len(active)}")
 
     # ============ 4. MODEL PAGE loaders across variants =======================
-    from laser_trim_analyzer.export.evidence import compute_recent_means
-    for m in VARIANTS:
-        try:
-            st = get_model_drift_status(db, m)
-            means, meta = compute_recent_means(db, m, with_meta=True)
-            tf = db.get_model_trim_ft_agreement(m)
-            hist = db.get_model_measurement_history(m)
-            ok = st is not None and isinstance(means, dict) and isinstance(hist, dict)
-            check(f"model loaders run clean ({m})", ok,
-                  f"metrics={len(st.per_metric)} hist_n={hist.get('n')}")
-            if tf.get("linked"):
-                check(f"trim-ft agreement arithmetic ({m})",
-                      tf["escapes"] + tf["overkills"] + tf["agreements"] == tf["linked"],
-                      f"{tf['escapes']}+{tf['overkills']}+{tf['agreements']} vs {tf['linked']}")
-        except Exception as exc:
-            check(f"model loaders run clean ({m})", False, f"{type(exc).__name__}: {exc}")
+    with _guard("model loaders across variants"):
+        from laser_trim_analyzer.ml.manager import get_model_drift_status
+        from laser_trim_analyzer.export.evidence import compute_recent_means
+        for m in VARIANTS:
+            try:
+                st = get_model_drift_status(db, m)
+                means, meta = compute_recent_means(db, m, with_meta=True)
+                tf = db.get_model_trim_ft_agreement(m)
+                hist = db.get_model_measurement_history(m)
+                ok = st is not None and isinstance(means, dict) and isinstance(hist, dict)
+                check(f"model loaders run clean ({m})", ok,
+                      f"metrics={len(st.per_metric)} hist_n={hist.get('n')}")
+                if tf.get("linked"):
+                    check(f"trim-ft agreement arithmetic ({m})",
+                          tf["escapes"] + tf["overkills"] + tf["agreements"] == tf["linked"],
+                          f"{tf['escapes']}+{tf['overkills']}+{tf['agreements']} vs {tf['linked']}")
+            except Exception as exc:
+                check(f"model loaders run clean ({m})", False, f"{type(exc).__name__}: {exc}")
 
     # ---- INVESTIGATE stats table vs RAW SQL (2026-08-30) -------------------
     # The table replaces an Excel round trip, so it has to agree with the
@@ -3421,95 +3540,48 @@ def main() -> int:
     # (median, then the 100x band) rather than assuming it: on 6607 the raw
     # average of untrimmed_resistance is 32,079 ohms against a true 4,282, so a
     # check that compared against a bare AVG() would pass on the wrong number.
-    check_model_stats_vs_sql(db, raw)
+    with _guard("stats table vs raw SQL"):
+        check_model_stats_vs_sql(db, raw)
 
     # ---- trim-vs-FT disposition vs RAW SQL (2026-08-30) --------------------
     # Escapes/overkills read the LAST trim attempt of the day, because a unit
     # is re-trimmed until it passes and only the final attempt is the
     # disposition it carried to final test. Bounded to the day on purpose:
     # shop numbers get reused across lots.
-    check_trim_ft_disposition_vs_sql(db, raw)
+    with _guard("trim-vs-FT disposition vs raw SQL"):
+        check_trim_ft_disposition_vs_sql(db, raw)
 
     # ---- final-test graded window (2026-09-13) -----------------------------
     # The app grades a final test on the rows the SHEET grades, and only
     # those. These three sections cover the parse, the repair tool that
     # re-applies the grade to rows written before the fix, and the rule that
     # a row with no disposition stays out of every rate built on one.
-    check_ft_disposition_excludes_ungraded(db, raw)
-    check_ft_regrade_dry_run(db)
-    check_findings_fixtures()
-    check_findings_on_database(db)
-    check_findings_group_mapping(db)
+    with _guard("final test: an ungraded row stays out of every rate"):
+        check_ft_disposition_excludes_ungraded(db, raw)
+    with _guard("final test: the re-grade dry run"):
+        check_ft_regrade_dry_run(db)
+    with _guard("findings: fixtures"):
+        check_findings_fixtures()
+    with _guard("findings: on the database"):
+        check_findings_on_database(db)
+    with _guard("findings: group mapping"):
+        check_findings_group_mapping(db)
 
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
-    with db.session() as s:
-        from sqlalchemy import func
-        anchor = s.query(func.max(DBAR.file_date)).filter(DBAR.model == "8887").scalar()
-    cutoff = anchor - timedelta(days=90)
-    n_win = raw.execute(
-        "SELECT COUNT(*) FROM analysis_results WHERE model='8887' AND file_date >= ?",
-        (cutoff.strftime("%Y-%m-%d %H:%M:%S"),)).fetchone()[0]
-    check("stale model: anchored 90d window is non-empty (alert clickthrough)",
-          n_win > 0, f"units={n_win}")
+    with _guard("stale model: anchored 90d window"):
+        with db.session() as s:
+            from sqlalchemy import func
+            anchor = s.query(func.max(DBAR.file_date)).filter(DBAR.model == "8887").scalar()
+        cutoff = anchor - timedelta(days=90)
+        n_win = raw.execute(
+            "SELECT COUNT(*) FROM analysis_results WHERE model='8887' AND file_date >= ?",
+            (cutoff.strftime("%Y-%m-%d %H:%M:%S"),)).fetchone()[0]
+        check("stale model: anchored 90d window is non-empty (alert clickthrough)",
+              n_win > 0, f"units={n_win}")
 
     # ---- every ERROR row has a reason (2026-09-23, revised 2026-09-24) ------
-    # analysis_results.error_reason, or a linked track's own linearity_spec_warning
-    # / anomaly_reason -- the exact COALESCE _load_units/_search_units read
-    # (model_page.py). A row saved before error_reason existed can still carry its
-    # reason on a processed_files row instead: either the row LINKED by analysis_id
-    # (populated for a track-level ERROR since this task) or the per-PATH failure
-    # marker (analysis_id NULL, a synthetic skip: hash, matched by file_path) --
-    # that marker is where the 3 zero-track rows' "No valid track data found"
-    # actually lives (_write_failure_marker), and their ids are not stable across a
-    # rebuild so nothing here may name them.
-    #
-    # A reason that exists ONLY on a processed_files row is WARNed, not FAILed: it
-    # is a known, accepted gap (design doc ruling 3c -- "3 rows show no reason
-    # until reprocessed"), not a bug, and a check that reads FAIL forever trains
-    # everyone to stop reading the FAIL line. A row with NO reason ANYWHERE is
-    # still a hard zero -- no budget, no percentage, same standard as every other
-    # zero-tolerance check in this file.
-    n_error = raw.execute(
-        "SELECT COUNT(*) FROM analysis_results WHERE overall_status='ERROR'"
-    ).fetchone()[0]
-    row = raw.execute(
-        "WITH per_own AS ("
-        "  SELECT a.id AS aid,"
-        "         MAX(CASE"
-        "           WHEN a.error_reason IS NOT NULL AND a.error_reason != '' THEN 1"
-        "           WHEN t.linearity_spec_warning IS NOT NULL AND t.linearity_spec_warning != '' THEN 1"
-        "           WHEN t.anomaly_reason IS NOT NULL AND t.anomaly_reason != '' THEN 1"
-        "           ELSE 0 END) AS has_own_reason"
-        "  FROM analysis_results a"
-        "  LEFT JOIN track_results t ON t.analysis_id = a.id"
-        "  WHERE a.overall_status = 'ERROR'"
-        "  GROUP BY a.id"
-        "),"
-        "per_pf AS ("
-        "  SELECT a.id AS aid,"
-        "         MAX(CASE WHEN pf.error_message IS NOT NULL AND pf.error_message != '' "
-        "                  THEN 1 ELSE 0 END) AS has_pf_reason"
-        "  FROM analysis_results a"
-        "  LEFT JOIN processed_files pf"
-        "    ON pf.analysis_id = a.id"
-        "    OR (pf.file_path = a.file_path AND pf.analysis_id IS NULL"
-        "        AND pf.file_hash LIKE 'skip:%')"
-        "  WHERE a.overall_status = 'ERROR'"
-        "  GROUP BY a.id"
-        ")"
-        "SELECT"
-        "  SUM(CASE WHEN po.has_own_reason=0 AND pp.has_pf_reason=0 THEN 1 ELSE 0 END),"
-        "  SUM(CASE WHEN po.has_own_reason=0 AND pp.has_pf_reason=1 THEN 1 ELSE 0 END)"
-        " FROM per_own po JOIN per_pf pp ON pp.aid = po.aid"
-    ).fetchone()
-    n_fail, n_marker_only = (row[0] or 0), (row[1] or 0)
-    check("every ERROR row has a reason SOMEWHERE (error_reason, a track's own "
-          "words, or a processed_files row)",
-          n_fail == 0, f"reasonless={n_fail} of {n_error} ERROR rows")
-    if n_marker_only:
-        warn("every ERROR row has a reason: rows whose reason lives ONLY on a "
-             "processed_files row (predate error_reason -- reprocess candidates)",
-             f"{n_marker_only} of {n_error} ERROR rows")
+    with _guard("every ERROR row has a reason"):
+        check_error_rows_have_a_reason(raw)
 
     # ============ 5. UNIT VERDICT CONSISTENCY (broad sample) ==================
     # Linearity is the ZERO-TOLERANCE customer disposition, so these are hard
@@ -3520,476 +3592,503 @@ def main() -> int:
     # tolerated the exact defect it existed to catch: 831 units rendering
     # "Fail Points: N" beside "Linearity Pass: YES" (2026-08-31, found on
     # 8415-1 SN 26). Weak assertions are forbidden in this sweep.
-    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
-        compute_fail_points, unmeasured_points)
-    from laser_trim_analyzer.export.unit_chart import (
-        build_unit_export_figure, corrected_errors)
-    import json as _json
+    with _guard("verdict consistency"):
+        from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+            compute_fail_points, unmeasured_points)
+        from laser_trim_analyzer.export.unit_chart import (
+            build_unit_export_figure, corrected_errors)
+        import json as _json
 
-    def _arr(v):
-        return _json.loads(v) if isinstance(v, str) else v
+        def _arr(v):
+            return _json.loads(v) if isinstance(v, str) else v
 
-    rows = raw.execute(
-        "SELECT id, linearity_pass, linearity_fail_points, optimal_offset,"
-        " optimal_slope, theory_data, error_data, upper_limits, lower_limits,"
-        " final_linearity_error_shifted FROM track_results "
-        "WHERE position_data IS NOT NULL AND error_data IS NOT NULL "
-        "AND linearity_fail_points IS NOT NULL ORDER BY id DESC LIMIT 4000"
-    ).fetchall()
+        rows = raw.execute(
+            "SELECT id, linearity_pass, linearity_fail_points, optimal_offset,"
+            " optimal_slope, theory_data, error_data, upper_limits, lower_limits,"
+            " final_linearity_error_shifted FROM track_results "
+            "WHERE position_data IS NOT NULL AND error_data IS NOT NULL "
+            "AND linearity_fail_points IS NOT NULL ORDER BY id DESC LIMIT 4000"
+        ).fetchall()
 
-    checked = rot_checked = 0
-    rot_bad: list = []
-    mag_bad: list = []
-    nan_checked = nan_inband = nan_offset_null = legacy_bad = 0
-    nan_bad: list = []
-    for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows:
-        try:
-            err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
-            if not err_l or not up_l or not lo_l:
-                continue
-            has_nan = any(e is None or (isinstance(e, float) and e != e)
-                          for e in err_l)
-            # NaN-bearing tracks used to be SKIPPED here: the analyzer counts an
-            # unmeasured point as a FAIL (zero-tolerance) and the renderer
-            # dropped it, so the counts disagreed by construction. Since the
-            # unmeasured points are marked and counted, these tracks are held to
-            # the same standard as every other. The one class that still cannot
-            # be reproduced is optimal_offset IS NULL: the NaN leak poisoned the
-            # analyzer's own offset search, so it stored "every point fails" and
-            # no magnitude (see scripts/backfill_linearity_error.py). Those are
-            # reprocess candidates, counted and warned about, never asserted on.
-            if has_nan and off is None:
-                nan_offset_null += 1
-                continue
-            off, k = off or 0.0, k or 0.0
-            if has_nan:
-                nan_checked += 1
-                if unmeasured_points(err_l, up_l, lo_l, offset=off, k=k,
-                                     theory=th_l):
-                    nan_inband += 1
-                if len(compute_fail_points(err_l, up_l, lo_l, offset=off, k=k,
-                                           theory=th_l)) != lfp:
-                    nan_bad.append(_id)
-            checked += 1
-            fp = compute_fail_points(err_l, up_l, lo_l, offset=off, k=k, theory=th_l)
-            if k:
-                rot_checked += 1
-                if len(fp) != lfp:
-                    rot_bad.append(_id)
-            elif len(fp) != lfp:
-                legacy_bad += 1
-            # Mirror check: the renderer must also reproduce the analyzer's
-            # linearity MAGNITUDE. This catches a wrong corrected trace even
-            # when the fail-count coincidentally agrees.
-            if mag is not None:
-                vals = [abs(v) for v in corrected_errors(err_l, off, k, th_l)
-                        if v is not None]
-                if vals and abs(max(vals) - mag) > 1e-6:
-                    mag_bad.append(_id)
-        except Exception as exc:
-            check(f"verdict consistency: track {_id} raised", False, repr(exc))
+        checked = rot_checked = 0
+        rot_bad: list = []
+        mag_bad: list = []
+        nan_checked = nan_inband = nan_offset_null = legacy_bad = 0
+        nan_bad: list = []
+        for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows:
+            try:
+                err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
+                if not err_l or not up_l or not lo_l:
+                    continue
+                has_nan = any(e is None or (isinstance(e, float) and e != e)
+                              for e in err_l)
+                # NaN-bearing tracks used to be SKIPPED here: the analyzer counts an
+                # unmeasured point as a FAIL (zero-tolerance) and the renderer
+                # dropped it, so the counts disagreed by construction. Since the
+                # unmeasured points are marked and counted, these tracks are held to
+                # the same standard as every other. The one class that still cannot
+                # be reproduced is optimal_offset IS NULL: the NaN leak poisoned the
+                # analyzer's own offset search, so it stored "every point fails" and
+                # no magnitude (see scripts/backfill_linearity_error.py). Those are
+                # reprocess candidates, counted and warned about, never asserted on.
+                if has_nan and off is None:
+                    nan_offset_null += 1
+                    continue
+                off, k = off or 0.0, k or 0.0
+                if has_nan:
+                    nan_checked += 1
+                    if unmeasured_points(err_l, up_l, lo_l, offset=off, k=k,
+                                         theory=th_l):
+                        nan_inband += 1
+                    if len(compute_fail_points(err_l, up_l, lo_l, offset=off, k=k,
+                                               theory=th_l)) != lfp:
+                        nan_bad.append(_id)
+                checked += 1
+                fp = compute_fail_points(err_l, up_l, lo_l, offset=off, k=k, theory=th_l)
+                if k:
+                    rot_checked += 1
+                    if len(fp) != lfp:
+                        rot_bad.append(_id)
+                elif len(fp) != lfp:
+                    legacy_bad += 1
+                # Mirror check: the renderer must also reproduce the analyzer's
+                # linearity MAGNITUDE. This catches a wrong corrected trace even
+                # when the fail-count coincidentally agrees.
+                if mag is not None:
+                    vals = [abs(v) for v in corrected_errors(err_l, off, k, th_l)
+                            if v is not None]
+                    if vals and abs(max(vals) - mag) > 1e-6:
+                        mag_bad.append(_id)
+            except Exception as exc:
+                check(f"verdict consistency: track {_id} raised", False, repr(exc))
 
-    check("verdict consistency: sample is non-empty (guard against a vacuous pass)",
-          checked > 0, f"checked={checked} nan_offset_null={nan_offset_null}")
-    # Zero-tolerance, like every other verdict check here: an unmeasured point
-    # is counted, so the renderer's count must equal the stored one EXACTLY.
-    # Both non-emptiness guards matter — without the second, a data shift that
-    # removed every in-band NaN would let this pass without exercising the
-    # unmeasured path at all.
-    check("verdict consistency: NaN-bearing tracks reproduce the stored "
-          "fail-point count EXACTLY (unmeasured points counted, not skipped)",
-          not nan_bad and nan_checked > 0 and nan_inband > 0,
-          f"{len(nan_bad)}/{nan_checked} disagree, {nan_inband} with NaN inside "
-          f"the graded band" + (f" e.g. track ids {nan_bad[:5]}" if nan_bad else ""))
-    if nan_offset_null:
-        warn("verdict consistency: NaN tracks with NULL optimal_offset (the "
-             "analyzer's offset search was itself poisoned — reprocess candidates)",
-             f"{nan_offset_null} skipped")
-    check("verdict consistency: rotation tracks (k != 0) reproduce the stored "
-          "fail-point count EXACTLY",
-          not rot_bad, f"{len(rot_bad)}/{rot_checked} disagree"
-                       + (f" e.g. track ids {rot_bad[:5]}" if rot_bad else ""))
-    check("verdict consistency: renderer reproduces stored linearity MAGNITUDE "
-          "(final_linearity_error_shifted)",
-          not mag_bad, f"{len(mag_bad)}/{checked} disagree"
-                       + (f" e.g. track ids {mag_bad[:5]}" if mag_bad else ""))
-    if legacy_bad:
-        warn("verdict consistency: k==0 tracks disagreeing (stale stored offsets "
-             "from an older analyzer — reprocess candidates)",
-             f"{legacy_bad}/{checked}")
+        check("verdict consistency: sample is non-empty (guard against a vacuous pass)",
+              checked > 0, f"checked={checked} nan_offset_null={nan_offset_null}")
+        # Zero-tolerance, like every other verdict check here: an unmeasured point
+        # is counted, so the renderer's count must equal the stored one EXACTLY.
+        # Both non-emptiness guards matter — without the second, a data shift that
+        # removed every in-band NaN would let this pass without exercising the
+        # unmeasured path at all.
+        check("verdict consistency: NaN-bearing tracks reproduce the stored "
+              "fail-point count EXACTLY (unmeasured points counted, not skipped)",
+              not nan_bad and nan_checked > 0 and nan_inband > 0,
+              f"{len(nan_bad)}/{nan_checked} disagree, {nan_inband} with NaN inside "
+              f"the graded band" + (f" e.g. track ids {nan_bad[:5]}" if nan_bad else ""))
+        if nan_offset_null:
+            warn("verdict consistency: NaN tracks with NULL optimal_offset (the "
+                 "analyzer's offset search was itself poisoned — reprocess candidates)",
+                 f"{nan_offset_null} skipped")
+        check("verdict consistency: rotation tracks (k != 0) reproduce the stored "
+              "fail-point count EXACTLY",
+              not rot_bad, f"{len(rot_bad)}/{rot_checked} disagree"
+                           + (f" e.g. track ids {rot_bad[:5]}" if rot_bad else ""))
+        check("verdict consistency: renderer reproduces stored linearity MAGNITUDE "
+              "(final_linearity_error_shifted)",
+              not mag_bad, f"{len(mag_bad)}/{checked} disagree"
+                           + (f" e.g. track ids {mag_bad[:5]}" if mag_bad else ""))
+        if legacy_bad:
+            warn("verdict consistency: k==0 tracks disagreeing (stale stored offsets "
+                 "from an older analyzer — reprocess candidates)",
+                 f"{legacy_bad}/{checked}")
 
     # The DOCUMENT invariant James actually reads: the print export must never
     # show a fail count beside a passing verdict or a green PASS stamp. Both
     # now derive from ONE re-grade, so this is zero-tolerance by construction —
     # asserted on real rows, including deliberately falsified fail points.
-    def _doc_texts(fig):
-        return [t.get_text() for ax in fig.axes for t in ax.texts]
+    with _guard("unit export document"):
+        def _doc_texts(fig):
+            return [t.get_text() for ax in fig.axes for t in ax.texts]
 
-    doc_bad: list = []
-    doc_checked = 0
-    for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows[:60]:
-        try:
-            err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
-            if not err_l or not up_l:
-                continue
-            data = {"position_data": list(range(len(err_l))), "error_data": err_l,
-                    "upper_limits": up_l, "lower_limits": lo_l,
-                    "optimal_offset": off or 0.0, "optimal_slope": k or 0.0,
-                    "theory_data": th_l, "linearity_pass": bool(lp),
-                    "linearity_error": mag, "sigma_pass": True}
-            for forced in (None, [0], list(range(min(5, len(err_l))))):
-                fp = (compute_fail_points(err_l, up_l, lo_l, offset=off or 0.0,
-                                          k=k or 0.0, theory=th_l)
-                      if forced is None else forced)
-                fig = build_unit_export_figure(
-                    {"model": "QA", "serial": str(_id), "n_tracks": 1},
-                    data, fail_points=fp, kind="trim")
-                txt = _doc_texts(fig)
-                n_line = next((t for t in txt if t.startswith("Fail Points:")), "")
-                v_line = next((t for t in txt if t.startswith("Linearity Pass:")), "")
-                stamp = next((t for t in txt if t in ("PASS", "FAIL", "PASS (WATCH)",
-                                                      "PASS*", "NOT EVALUATED")), "")
-                doc_checked += 1
-                if n_line != "Fail Points: 0" and (
-                        v_line == "Linearity Pass: YES" or stamp == "PASS"):
-                    doc_bad.append((_id, n_line, v_line, stamp))
-                import matplotlib.pyplot as _plt
-                _plt.close(fig)
-        except Exception as exc:
-            check(f"unit export document: track {_id} raised", False, repr(exc))
+        doc_bad: list = []
+        doc_checked = 0
+        for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows[:60]:
+            try:
+                err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
+                if not err_l or not up_l:
+                    continue
+                data = {"position_data": list(range(len(err_l))), "error_data": err_l,
+                        "upper_limits": up_l, "lower_limits": lo_l,
+                        "optimal_offset": off or 0.0, "optimal_slope": k or 0.0,
+                        "theory_data": th_l, "linearity_pass": bool(lp),
+                        "linearity_error": mag, "sigma_pass": True}
+                for forced in (None, [0], list(range(min(5, len(err_l))))):
+                    fp = (compute_fail_points(err_l, up_l, lo_l, offset=off or 0.0,
+                                              k=k or 0.0, theory=th_l)
+                          if forced is None else forced)
+                    fig = build_unit_export_figure(
+                        {"model": "QA", "serial": str(_id), "n_tracks": 1},
+                        data, fail_points=fp, kind="trim")
+                    txt = _doc_texts(fig)
+                    n_line = next((t for t in txt if t.startswith("Fail Points:")), "")
+                    v_line = next((t for t in txt if t.startswith("Linearity Pass:")), "")
+                    stamp = next((t for t in txt if t in ("PASS", "FAIL", "PASS (WATCH)",
+                                                          "PASS*", "NOT EVALUATED")), "")
+                    doc_checked += 1
+                    if n_line != "Fail Points: 0" and (
+                            v_line == "Linearity Pass: YES" or stamp == "PASS"):
+                        doc_bad.append((_id, n_line, v_line, stamp))
+                    import matplotlib.pyplot as _plt
+                    _plt.close(fig)
+            except Exception as exc:
+                check(f"unit export document: track {_id} raised", False, repr(exc))
 
-    check("unit export document: rendered fail count NEVER shown beside a "
-          "passing verdict or green PASS stamp",
-          not doc_bad and doc_checked > 0,
-          f"{len(doc_bad)}/{doc_checked} contradictions"
-          + (f" e.g. {doc_bad[:3]}" if doc_bad else ""))
+        check("unit export document: rendered fail count NEVER shown beside a "
+              "passing verdict or green PASS stamp",
+              not doc_bad and doc_checked > 0,
+              f"{len(doc_bad)}/{doc_checked} contradictions"
+              + (f" e.g. {doc_bad[:3]}" if doc_bad else ""))
 
     # Every point that is COUNTED is a point that is DRAWN. The unmeasured ones
     # have no y, so they are marked on the axis line instead of an X — but they
     # must still appear, or the document reports a number the picture doesn't
     # show (the 2026-08-31 divergence: 597 gradeable tracks whose marker count
     # was short of their stored linearity_fail_points).
-    mark_bad: list = []
-    mark_checked = 0
-    for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows:
-        if mark_checked >= 40:
-            break
-        try:
-            err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
-            if not err_l or not up_l or not lo_l or off is None:
-                continue
-            if not any(e is None or (isinstance(e, float) and e != e)
-                       for e in err_l):
-                continue
-            if not unmeasured_points(err_l, up_l, lo_l, offset=off,
-                                     k=k or 0.0, theory=th_l):
-                continue
-            mark_checked += 1
-            fp = compute_fail_points(err_l, up_l, lo_l, offset=off, k=k or 0.0,
-                                     theory=th_l)
-            data = {"position_data": list(range(len(err_l))), "error_data": err_l,
-                    "upper_limits": up_l, "lower_limits": lo_l,
-                    "optimal_offset": off, "optimal_slope": k or 0.0,
-                    "theory_data": th_l, "linearity_pass": bool(lp),
-                    "linearity_error": mag, "sigma_pass": True}
-            fig = build_unit_export_figure(
-                {"model": "QA", "serial": str(_id), "n_tracks": 1},
-                data, fail_points=fp, kind="trim")
-            drawn = sum(len(c.get_offsets()) for c in fig.axes[0].collections
-                        if (c.get_label() or "").startswith(
-                            ("Fail points", "Unmeasured points")))
-            if drawn != len(fp) or len(fp) != lfp:
-                mark_bad.append((_id, drawn, len(fp), lfp))
-            import matplotlib.pyplot as _plt
-            _plt.close(fig)
-        except Exception as exc:
-            check(f"unmeasured markers: track {_id} raised", False, repr(exc))
+    with _guard("unit export document: unmeasured markers"):
+        mark_bad: list = []
+        mark_checked = 0
+        for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows:
+            if mark_checked >= 40:
+                break
+            try:
+                err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
+                if not err_l or not up_l or not lo_l or off is None:
+                    continue
+                if not any(e is None or (isinstance(e, float) and e != e)
+                           for e in err_l):
+                    continue
+                if not unmeasured_points(err_l, up_l, lo_l, offset=off,
+                                         k=k or 0.0, theory=th_l):
+                    continue
+                mark_checked += 1
+                fp = compute_fail_points(err_l, up_l, lo_l, offset=off, k=k or 0.0,
+                                         theory=th_l)
+                data = {"position_data": list(range(len(err_l))), "error_data": err_l,
+                        "upper_limits": up_l, "lower_limits": lo_l,
+                        "optimal_offset": off, "optimal_slope": k or 0.0,
+                        "theory_data": th_l, "linearity_pass": bool(lp),
+                        "linearity_error": mag, "sigma_pass": True}
+                fig = build_unit_export_figure(
+                    {"model": "QA", "serial": str(_id), "n_tracks": 1},
+                    data, fail_points=fp, kind="trim")
+                drawn = sum(len(c.get_offsets()) for c in fig.axes[0].collections
+                            if (c.get_label() or "").startswith(
+                                ("Fail points", "Unmeasured points")))
+                if drawn != len(fp) or len(fp) != lfp:
+                    mark_bad.append((_id, drawn, len(fp), lfp))
+                import matplotlib.pyplot as _plt
+                _plt.close(fig)
+            except Exception as exc:
+                check(f"unmeasured markers: track {_id} raised", False, repr(exc))
 
-    check("unit export document: on tracks with unmeasured points, the DRAWN "
-          "marker count equals the reported count equals the STORED count",
-          not mark_bad and mark_checked > 0,
-          f"{len(mark_bad)}/{mark_checked} disagree (id, drawn, reported, stored)"
-          + (f" e.g. {mark_bad[:3]}" if mark_bad else ""))
+        check("unit export document: on tracks with unmeasured points, the DRAWN "
+              "marker count equals the reported count equals the STORED count",
+              not mark_bad and mark_checked > 0,
+              f"{len(mark_bad)}/{mark_checked} disagree (id, drawn, reported, stored)"
+              + (f" e.g. {mark_bad[:3]}" if mark_bad else ""))
 
     # ---- trim-vs-FT overlay (V6 unit chart; was V5 Compare's alone) ----------
     # The overlay must resolve real linkages, grade the FT sweep on the FT's
     # OWN adjustment, and refuse rather than guess. Run on real linked pairs.
-    from laser_trim_analyzer.core.ft_overlay import (
-        MIN_MATCH_CONFIDENCE, load_ft_overlay)
-    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import load_unit_track
+    with _guard("trim/FT overlay"):
+        from laser_trim_analyzer.core.ft_overlay import (
+            MIN_MATCH_CONFIDENCE, load_ft_overlay)
+        from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import load_unit_track
 
-    ov_rows = raw.execute(
-        "SELECT DISTINCT f.linked_trim_id "
-        "FROM final_test_results f JOIN final_test_tracks t "
-        "  ON t.final_test_id = f.id "
-        "WHERE f.linked_trim_id IS NOT NULL AND f.match_confidence >= ? "
-        "  AND t.position_data IS NOT NULL AND t.error_data IS NOT NULL "
-        "ORDER BY f.id DESC LIMIT 40", (MIN_MATCH_CONFIDENCE,)).fetchall()
-    ov_ok = ov_refused = ov_multi = 0
-    ov_bad: list = []
-    for (aid,) in ov_rows:
-        try:
-            trim = load_unit_track(db, aid)
-            if not trim:
-                continue
-            ov = load_ft_overlay(db, aid, trim_track_id=trim.get("track_id"),
-                                 trim_positions=trim.get("position_data"))
-            if not ov.get("available"):
-                # A refusal is a PASS as long as it carries a reason — that is
-                # the contract: never an empty chart with no explanation.
-                if ov.get("reason"):
-                    ov_refused += 1
-                else:
-                    ov_bad.append((aid, "refused with no reason"))
-                continue
-            ov_ok += 1
-            if (ov.get("confidence") or 0) < MIN_MATCH_CONFIDENCE:
-                ov_bad.append((aid, "below the confidence floor"))
-            # A unit can be final-tested many times; the NEWEST qualifying test
-            # is the one to show. Verified against SQL, not against the code's
-            # own idea of newest.
-            newest, n_links = raw.execute(
-                "SELECT id, COUNT(*) OVER () FROM final_test_results "
-                "WHERE linked_trim_id = ? AND match_confidence >= ? "
-                "ORDER BY COALESCE(test_date, file_date) DESC, id DESC LIMIT 1",
-                (aid, MIN_MATCH_CONFIDENCE)).fetchone()
-            if n_links > 1:
-                ov_multi += 1
-                if str(ov["n_links"]) not in ov["label"]:
-                    ov_bad.append((aid, "multi-test unit does not say so"))
-            if ov["ft_id"] != newest:
-                ov_bad.append((aid, f"showed ft {ov['ft_id']}, newest is {newest}"))
-            # The FT trace carries the FT's OWN offset — never the trim's. Read
-            # back from the exact FT track the overlay chose.
-            row = raw.execute(
-                "SELECT optimal_offset FROM final_test_tracks "
-                "WHERE final_test_id = ? AND track_id = ?",
-                (ov["ft_id"], ov["track_id"])).fetchone()
-            ft_off = (row[0] if row else None) or 0.0
-            if abs(ov["offset"] - ft_off) > 1e-9:
-                ov_bad.append((aid, "FT offset is not the FT's own"))
-            trim_off = trim.get("optimal_offset") or 0.0
-            if abs(trim_off - ft_off) > 1e-9 and abs(ov["offset"] - trim_off) < 1e-12:
-                ov_bad.append((aid, "trim offset leaked onto the FT trace"))
-        except Exception as exc:
-            ov_bad.append((aid, repr(exc)))
-    check("trim/FT overlay: shows the NEWEST linked test and grades its sweep "
-          "on the FT's OWN offset (never the trim's)",
-          not ov_bad and ov_ok > 0 and ov_multi > 0,
-          f"{ov_ok} drawn ({ov_multi} multi-test units), {ov_refused} refused "
-          f"with a reason, {len(ov_bad)} wrong"
-          + (f" e.g. {ov_bad[:3]}" if ov_bad else ""))
+        ov_rows = raw.execute(
+            "SELECT DISTINCT f.linked_trim_id "
+            "FROM final_test_results f JOIN final_test_tracks t "
+            "  ON t.final_test_id = f.id "
+            "WHERE f.linked_trim_id IS NOT NULL AND f.match_confidence >= ? "
+            "  AND t.position_data IS NOT NULL AND t.error_data IS NOT NULL "
+            "ORDER BY f.id DESC LIMIT 40", (MIN_MATCH_CONFIDENCE,)).fetchall()
+        ov_ok = ov_refused = ov_multi = 0
+        ov_bad: list = []
+        for (aid,) in ov_rows:
+            try:
+                trim = load_unit_track(db, aid)
+                if not trim:
+                    continue
+                ov = load_ft_overlay(db, aid, trim_track_id=trim.get("track_id"),
+                                     trim_positions=trim.get("position_data"))
+                if not ov.get("available"):
+                    # A refusal is a PASS as long as it carries a reason — that is
+                    # the contract: never an empty chart with no explanation.
+                    if ov.get("reason"):
+                        ov_refused += 1
+                    else:
+                        ov_bad.append((aid, "refused with no reason"))
+                    continue
+                ov_ok += 1
+                if (ov.get("confidence") or 0) < MIN_MATCH_CONFIDENCE:
+                    ov_bad.append((aid, "below the confidence floor"))
+                # A unit can be final-tested many times; the NEWEST qualifying test
+                # is the one to show. Verified against SQL, not against the code's
+                # own idea of newest.
+                newest, n_links = raw.execute(
+                    "SELECT id, COUNT(*) OVER () FROM final_test_results "
+                    "WHERE linked_trim_id = ? AND match_confidence >= ? "
+                    "ORDER BY COALESCE(test_date, file_date) DESC, id DESC LIMIT 1",
+                    (aid, MIN_MATCH_CONFIDENCE)).fetchone()
+                if n_links > 1:
+                    ov_multi += 1
+                    if str(ov["n_links"]) not in ov["label"]:
+                        ov_bad.append((aid, "multi-test unit does not say so"))
+                if ov["ft_id"] != newest:
+                    ov_bad.append((aid, f"showed ft {ov['ft_id']}, newest is {newest}"))
+                # The FT trace carries the FT's OWN offset — never the trim's. Read
+                # back from the exact FT track the overlay chose.
+                row = raw.execute(
+                    "SELECT optimal_offset FROM final_test_tracks "
+                    "WHERE final_test_id = ? AND track_id = ?",
+                    (ov["ft_id"], ov["track_id"])).fetchone()
+                ft_off = (row[0] if row else None) or 0.0
+                if abs(ov["offset"] - ft_off) > 1e-9:
+                    ov_bad.append((aid, "FT offset is not the FT's own"))
+                trim_off = trim.get("optimal_offset") or 0.0
+                if abs(trim_off - ft_off) > 1e-9 and abs(ov["offset"] - trim_off) < 1e-12:
+                    ov_bad.append((aid, "trim offset leaked onto the FT trace"))
+            except Exception as exc:
+                ov_bad.append((aid, repr(exc)))
+        check("trim/FT overlay: shows the NEWEST linked test and grades its sweep "
+              "on the FT's OWN offset (never the trim's)",
+              not ov_bad and ov_ok > 0 and ov_multi > 0,
+              f"{ov_ok} drawn ({ov_multi} multi-test units), {ov_refused} refused "
+              f"with a reason, {len(ov_bad)} wrong"
+              + (f" e.g. {ov_bad[:3]}" if ov_bad else ""))
 
     # ============ 6. EXPORTS ===================================================
-    from laser_trim_analyzer.export.evidence import export_evidence_pack, build_summary_text
-    import pandas as pd
-    out = QA_OUTPUT
-    out.mkdir(parents=True, exist_ok=True)
-    pack = export_evidence_pack(db, "6607", out / "qa_evidence_6607.xlsx")
-    sheets = pd.read_excel(pack, sheet_name=None)
-    _all7 = {"Drift evidence", "Lots (SPC)", "Unit history", "Monthly summary",
-             "Final test units", "Smoothness", "Stats table"}
-    check("evidence pack: all 7 sheets, stable shape + expected columns",
-          set(sheets) == _all7
-          and "Expected max (UCL)" in sheets["Lots (SPC)"].columns
-          and "Suspect excluded" in sheets["Drift evidence"].columns
-          and "Linearity yield %" in sheets["Monthly summary"].columns
-          and "FT result" in sheets["Unit history"].columns
-          and "Trimmed resistance" in sheets["Unit history"].columns
-          and "Mean max smoothness" in sheets["Monthly summary"].columns
-          and "First-pass yield %" in sheets["Monthly summary"].columns
-          and "Final yield %" in sheets["Monthly summary"].columns,
-          f"sheets={sorted(sheets)}")
-    if "Final test units" in sheets:
-        check("evidence pack: FT sheet columns",
-              {"Serial", "Test date", "Result"} <= set(sheets["Final test units"].columns))
-    # The pack must quote the SAME lots the Model page draws — a sheet that did
-    # its own arithmetic is the "third story" the SPC redesign exists to end.
-    from laser_trim_analyzer.ml.spc import compute_spc_series
-    _screen = compute_spc_series(db, "6607")
-    _lots = sheets["Lots (SPC)"]
-    check("evidence pack: Lots sheet IS the on-screen SPC series",
-          len(_lots) == len(_screen.points)
-          and _lots["Out of control"].tolist() == [pt.ooc for pt in _screen.points]
-          and all(abs(a - b) < 1e-9 for a, b in
-                  zip(_lots["Fail rate"].tolist(), [pt.value for pt in _screen.points])),
-          f"rows={len(_lots)} lots={len(_screen.points)} "
-          f"ooc={sum(pt.ooc for pt in _screen.points)}")
-    # ---- the Excel stats sheet IS the on-screen table (spec line 95) -------
-    # Not "agrees with": the same characters. The sheet is what James hands an
-    # engineer, so a value rounded differently there than on the page he read
-    # it off is the contradiction this whole redesign exists to end. Rebuilt
-    # here from the SCREEN's own helpers and compared cell by cell.
-    try:
-        from laser_trim_analyzer.core.model_stats import (
-            cell_texts, compute_model_stats, disclosure_text)
-        _stats = compute_model_stats(db, "6607")
-        _sheet = pd.read_excel(pack, sheet_name="Stats table", header=2)
-        _by_metric = {r["Metric"]: r for _, r in _sheet.iterrows()}
-        _bad = []
-        for _row in _stats.rows:
-            _cells = _by_metric.get(_row.label)
-            if _cells is None:
-                _bad.append(f"{_row.label}: missing from the sheet")
-                continue
-            for _side, _cell, _prefix in (("ALL", _row.all_, "ALL"),
-                                          ("LIN", _row.lin_passing, "LIN-PASSING")):
-                _shown = cell_texts(_row, _cell)
-                # n stays a NUMBER in the sheet so Excel can sort and sum it;
-                # the screen prints the same number with a thousands separator.
-                # Everything else is compared as characters.
-                if int(_cells[f"{_prefix} n"]) != _cell.n:
-                    _bad.append(f"{_row.label}[{_side}] n "
-                                f"{_cells[f'{_prefix} n']} != {_cell.n}")
-                _sheet_cells = [_cells[f"{_prefix} avg / count"],
-                                _cells[f"{_prefix} min / %"]]
-                if _row.kind == "distribution":
-                    _sheet_cells.append(_cells[f"{_prefix} max"])
-                if _sheet_cells != _shown[1:]:
-                    _bad.append(f"{_row.label}[{_side}] {_sheet_cells} != {_shown[1:]}")
-            _left = _cells["Left out"]
-            _left = _left if isinstance(_left, str) else ""
-            if _left != disclosure_text(_row.all_):
-                _bad.append(f"{_row.label} disclosure {_left!r} "
-                            f"!= {disclosure_text(_row.all_)!r}")
-        check("evidence pack: Stats sheet is character-for-character the screen",
-              not _bad and len(_sheet) == len(_stats.rows),
-              "; ".join(_bad[:3]) or f"{len(_sheet)} rows match the table")
-        # The window and the lot the numbers describe, above the table: a
-        # column of numbers with neither on it is not evidence.
-        _head = pd.read_excel(pack, sheet_name="Stats table", header=None, nrows=2)
-        check("evidence pack: Stats sheet says which window and lot it describes",
-              "track measurements over" in str(_head.iloc[0, 0])
-              and str(_head.iloc[1, 0]).strip() not in ("", "nan"),
-              f"{str(_head.iloc[0, 0])[:60]} | {str(_head.iloc[1, 0])[:40]}")
-    except Exception as _exc:
-        check("evidence pack: Stats sheet is character-for-character the screen",
-              False, f"{type(_exc).__name__}: {_exc}")
-    # Dates are day-granularity strings, not '… 00:00:00' (work finding #6).
-    _dates = sheets["Unit history"]["Date"].dropna().astype(str)
-    check("evidence pack: dates are clean day strings",
-          bool(len(_dates)) and not _dates.str.contains("00:00:00").any(),
-          _dates.iloc[0] if len(_dates) else "no rows")
-    n_hist = len(sheets["Unit history"])
-    # OUTER join now: analyses with zero track rows (ERROR files) still get
-    # one history row each (work convo 2026-07-10).
-    n_sql = raw.execute(
-        "SELECT COUNT(*) FROM analysis_results ar LEFT JOIN track_results tr "
-        "ON tr.analysis_id = ar.id WHERE ar.model='6607'").fetchone()[0]
-    check("evidence pack: unit history is the FULL record", n_hist == n_sql,
-          f"sheet={n_hist} sql={n_sql}")
-    mtot = int(sheets["Monthly summary"]["Units"].sum())
-    utot = raw.execute(
-        "SELECT COUNT(*) FROM analysis_results WHERE model='6607' "
-        "AND overall_status != 'UNTRIMMED'").fetchone()[0]
-    check("evidence pack: monthly units sum to gradeable total", mtot == utot,
-          f"monthly={mtot} sql={utot}")
-    m8887, meta8887 = compute_recent_means(db, "8887", with_meta=True)
-    txt = build_summary_text("8887", get_model_drift_status(db, "8887"),
-                             recent_means=m8887, recent_meta=meta8887)
-    check("copy summary: names model, shift, and lot language",
-          "8887" in txt and "shift" in txt and "last lot" in txt)
+    with _guard("evidence pack (6607)"):
+        from laser_trim_analyzer.export.evidence import export_evidence_pack, build_summary_text
+        import pandas as pd
+        out = QA_OUTPUT
+        out.mkdir(parents=True, exist_ok=True)
+        pack = export_evidence_pack(db, "6607", out / "qa_evidence_6607.xlsx")
+        sheets = pd.read_excel(pack, sheet_name=None)
+        _all7 = {"Drift evidence", "Lots (SPC)", "Unit history", "Monthly summary",
+                 "Final test units", "Smoothness", "Stats table"}
+        check("evidence pack: all 7 sheets, stable shape + expected columns",
+              set(sheets) == _all7
+              and "Expected max (UCL)" in sheets["Lots (SPC)"].columns
+              and "Suspect excluded" in sheets["Drift evidence"].columns
+              and "Linearity yield %" in sheets["Monthly summary"].columns
+              and "FT result" in sheets["Unit history"].columns
+              and "Trimmed resistance" in sheets["Unit history"].columns
+              and "Mean max smoothness" in sheets["Monthly summary"].columns
+              and "First-pass yield %" in sheets["Monthly summary"].columns
+              and "Final yield %" in sheets["Monthly summary"].columns,
+              f"sheets={sorted(sheets)}")
+        if "Final test units" in sheets:
+            check("evidence pack: FT sheet columns",
+                  {"Serial", "Test date", "Result"} <= set(sheets["Final test units"].columns))
+        # The pack must quote the SAME lots the Model page draws — a sheet that did
+        # its own arithmetic is the "third story" the SPC redesign exists to end.
+        from laser_trim_analyzer.ml.spc import compute_spc_series
+        _screen = compute_spc_series(db, "6607")
+        _lots = sheets["Lots (SPC)"]
+        check("evidence pack: Lots sheet IS the on-screen SPC series",
+              len(_lots) == len(_screen.points)
+              and _lots["Out of control"].tolist() == [pt.ooc for pt in _screen.points]
+              and all(abs(a - b) < 1e-9 for a, b in
+                      zip(_lots["Fail rate"].tolist(), [pt.value for pt in _screen.points])),
+              f"rows={len(_lots)} lots={len(_screen.points)} "
+              f"ooc={sum(pt.ooc for pt in _screen.points)}")
+        # ---- the Excel stats sheet IS the on-screen table (spec line 95) -------
+        # Not "agrees with": the same characters. The sheet is what James hands an
+        # engineer, so a value rounded differently there than on the page he read
+        # it off is the contradiction this whole redesign exists to end. Rebuilt
+        # here from the SCREEN's own helpers and compared cell by cell.
+        try:
+            from laser_trim_analyzer.core.model_stats import (
+                cell_texts, compute_model_stats, disclosure_text)
+            _stats = compute_model_stats(db, "6607")
+            _sheet = pd.read_excel(pack, sheet_name="Stats table", header=2)
+            _by_metric = {r["Metric"]: r for _, r in _sheet.iterrows()}
+            _bad = []
+            for _row in _stats.rows:
+                _cells = _by_metric.get(_row.label)
+                if _cells is None:
+                    _bad.append(f"{_row.label}: missing from the sheet")
+                    continue
+                for _side, _cell, _prefix in (("ALL", _row.all_, "ALL"),
+                                              ("LIN", _row.lin_passing, "LIN-PASSING")):
+                    _shown = cell_texts(_row, _cell)
+                    # n stays a NUMBER in the sheet so Excel can sort and sum it;
+                    # the screen prints the same number with a thousands separator.
+                    # Everything else is compared as characters.
+                    if int(_cells[f"{_prefix} n"]) != _cell.n:
+                        _bad.append(f"{_row.label}[{_side}] n "
+                                    f"{_cells[f'{_prefix} n']} != {_cell.n}")
+                    _sheet_cells = [_cells[f"{_prefix} avg / count"],
+                                    _cells[f"{_prefix} min / %"]]
+                    if _row.kind == "distribution":
+                        _sheet_cells.append(_cells[f"{_prefix} max"])
+                    if _sheet_cells != _shown[1:]:
+                        _bad.append(f"{_row.label}[{_side}] {_sheet_cells} != {_shown[1:]}")
+                _left = _cells["Left out"]
+                _left = _left if isinstance(_left, str) else ""
+                if _left != disclosure_text(_row.all_):
+                    _bad.append(f"{_row.label} disclosure {_left!r} "
+                                f"!= {disclosure_text(_row.all_)!r}")
+            check("evidence pack: Stats sheet is character-for-character the screen",
+                  not _bad and len(_sheet) == len(_stats.rows),
+                  "; ".join(_bad[:3]) or f"{len(_sheet)} rows match the table")
+            # The window and the lot the numbers describe, above the table: a
+            # column of numbers with neither on it is not evidence.
+            _head = pd.read_excel(pack, sheet_name="Stats table", header=None, nrows=2)
+            check("evidence pack: Stats sheet says which window and lot it describes",
+                  "track measurements over" in str(_head.iloc[0, 0])
+                  and str(_head.iloc[1, 0]).strip() not in ("", "nan"),
+                  f"{str(_head.iloc[0, 0])[:60]} | {str(_head.iloc[1, 0])[:40]}")
+        except Exception as _exc:
+            check("evidence pack: Stats sheet is character-for-character the screen",
+                  False, f"{type(_exc).__name__}: {_exc}")
+        # Dates are day-granularity strings, not '… 00:00:00' (work finding #6).
+        _dates = sheets["Unit history"]["Date"].dropna().astype(str)
+        check("evidence pack: dates are clean day strings",
+              bool(len(_dates)) and not _dates.str.contains("00:00:00").any(),
+              _dates.iloc[0] if len(_dates) else "no rows")
+        n_hist = len(sheets["Unit history"])
+        # OUTER join now: analyses with zero track rows (ERROR files) still get
+        # one history row each (work convo 2026-07-10).
+        n_sql = raw.execute(
+            "SELECT COUNT(*) FROM analysis_results ar LEFT JOIN track_results tr "
+            "ON tr.analysis_id = ar.id WHERE ar.model='6607'").fetchone()[0]
+        check("evidence pack: unit history is the FULL record", n_hist == n_sql,
+              f"sheet={n_hist} sql={n_sql}")
+        mtot = int(sheets["Monthly summary"]["Units"].sum())
+        utot = raw.execute(
+            "SELECT COUNT(*) FROM analysis_results WHERE model='6607' "
+            "AND overall_status != 'UNTRIMMED'").fetchone()[0]
+        check("evidence pack: monthly units sum to gradeable total", mtot == utot,
+              f"monthly={mtot} sql={utot}")
+    with _guard("copy summary (8887)"):
+        from laser_trim_analyzer.export.evidence import build_summary_text, compute_recent_means
+        from laser_trim_analyzer.ml.manager import get_model_drift_status
+        m8887, meta8887 = compute_recent_means(db, "8887", with_meta=True)
+        txt = build_summary_text("8887", get_model_drift_status(db, "8887"),
+                                 recent_means=m8887, recent_meta=meta8887)
+        check("copy summary: names model, shift, and lot language",
+              "8887" in txt and "shift" in txt and "last lot" in txt)
 
     # ============ 7. PROCESSING PIPELINE on real files ========================
-    from laser_trim_analyzer.core.processor import Processor
-    from laser_trim_analyzer.core.models import TrackData, AnalysisStatus
-    from laser_trim_analyzer.core.parser import detect_file_type
-    # Pipeline input: the tracked 645-model regression corpus (test_files/
-    # bulk samples were deleted 2026-07-08 to reclaim 2.3GB — user request).
-    tf_dir = REPO / "Work Files" / "Sample_Base_2026-04-10"
-    excel = sorted([p for p in tf_dir.rglob("*.xls*") if p.is_file()])[:3]
-    if excel:
-        proc = Processor(use_ml=False)
-        for f in excel:
-            try:
-                kind = detect_file_type(f)
-                res = proc.process_file(f) if kind == "trim" else None
-                # ERROR on a known-good test file is a REAL failure (a weak
-                # 'is not None' check here once passed missing-dependency
-                # errors as green — never again).
-                status = getattr(res, "overall_status", None)
-                ok = (res is None) or (status is not None
-                                       and status.name != "ERROR")
-                detail = f"status={status}"
-                if not ok and getattr(res, "errors", None):
-                    detail += f" | {res.errors[0][:80]}"
-                check(f"pipeline: {f.name[:40]} ({kind})", ok, detail)
-            except Exception as exc:
-                check(f"pipeline: {f.name[:40]}", False, f"{type(exc).__name__}: {exc}")
-    else:
-        warn("pipeline: no sample files found under Work Files/Sample_Base_2026-04-10/")
+    with _guard("pipeline: the sample files"):
+        from laser_trim_analyzer.core.processor import Processor
+        from laser_trim_analyzer.core.models import TrackData, AnalysisStatus
+        from laser_trim_analyzer.core.parser import detect_file_type
+        # Pipeline input: the tracked 645-model regression corpus (test_files/
+        # bulk samples were deleted 2026-07-08 to reclaim 2.3GB — user request).
+        tf_dir = REPO / "Work Files" / "Sample_Base_2026-04-10"
+        excel = sorted([p for p in tf_dir.rglob("*.xls*") if p.is_file()])[:3]
+        if excel:
+            proc = Processor(use_ml=False)
+            for f in excel:
+                try:
+                    kind = detect_file_type(f)
+                    res = proc.process_file(f) if kind == "trim" else None
+                    # ERROR on a known-good test file is a REAL failure (a weak
+                    # 'is not None' check here once passed missing-dependency
+                    # errors as green — never again).
+                    status = getattr(res, "overall_status", None)
+                    ok = (res is None) or (status is not None
+                                           and status.name != "ERROR")
+                    detail = f"status={status}"
+                    if not ok and getattr(res, "errors", None):
+                        detail += f" | {res.errors[0][:80]}"
+                    check(f"pipeline: {f.name[:40]} ({kind})", ok, detail)
+                except Exception as exc:
+                    check(f"pipeline: {f.name[:40]}", False, f"{type(exc).__name__}: {exc}")
+        else:
+            warn("pipeline: no sample files found under Work Files/Sample_Base_2026-04-10/")
 
-    check_ft_incremental_fastpath()
-    check_ft_parser_console_silence()
-    check_ft_graded_window()
-    check_ingest_group()
-    check_increment_volts_fixtures()
-    check_increment_volts_corpus()
-    check_increment_volts_on_database(raw)
-    check_initial_trim_value_fixtures()
-    check_initial_trim_value_on_database(raw)
-    check_track2_setup_fixtures()
-    check_track2_setup_on_database(raw)
+    with _guard("final test: the incremental fast path"):
+        check_ft_incremental_fastpath()
+    with _guard("final test: the parser is quiet"):
+        check_ft_parser_console_silence()
+    with _guard("final test: the graded window"):
+        check_ft_graded_window()
+    with _guard("ingest"):
+        check_ingest_group()
+    with _guard("increment volts: fixtures"):
+        check_increment_volts_fixtures()
+    with _guard("increment volts: corpus"):
+        check_increment_volts_corpus()
+    with _guard("increment volts: on the database"):
+        check_increment_volts_on_database(raw)
+    with _guard("initial trim value: fixtures"):
+        check_initial_trim_value_fixtures()
+    with _guard("initial trim value: on the database"):
+        check_initial_trim_value_on_database(raw)
+    with _guard("track 2 setup: fixtures"):
+        check_track2_setup_fixtures()
+    with _guard("track 2 setup: on the database"):
+        check_track2_setup_on_database(raw)
 
     # Ingest guard fires on a synthetic corrupt track.
-    guard_track = TrackData(
-        track_id="T1", status=AnalysisStatus.PASS, linearity_spec=0.05,
-        travel_length=12.0, position_data=list(range(12)), error_data=[0.01] * 12,
-        upper_limits=[0.05] * 12, lower_limits=[-0.05] * 12,
-        linearity_error=10.0, linearity_pass=False)
-    issues = Processor._validate_track_data([guard_track])
-    check("ingest guard flags scale-anomalous linearity error",
-          any("scale-anomalous" in i for i in issues), str(issues[:1]))
+    with _guard("ingest guard: a synthetic corrupt track"):
+        from laser_trim_analyzer.core.models import AnalysisStatus, TrackData
+        from laser_trim_analyzer.core.processor import Processor
+        guard_track = TrackData(
+            track_id="T1", status=AnalysisStatus.PASS, linearity_spec=0.05,
+            travel_length=12.0, position_data=list(range(12)), error_data=[0.01] * 12,
+            upper_limits=[0.05] * 12, lower_limits=[-0.05] * 12,
+            linearity_error=10.0, linearity_pass=False)
+        issues = Processor._validate_track_data([guard_track])
+        check("ingest guard flags scale-anomalous linearity error",
+              any("scale-anomalous" in i for i in issues), str(issues[:1]))
 
     # ============ 8. SETTINGS ACTIONS =========================================
-    prev_rc = db.recompute_overall_statuses(dry_run=True)
-    check("status recompute preview: no WARNING->PASS phantom class",
-          "WARNING->PASS" not in prev_rc["transitions"]
-          or prev_rc["transitions"].get("WARNING->PASS", 0) >= 0,
-          str(prev_rc["transitions"]))
-    check("status recompute: skipped rows are the NULL-flag population",
-          prev_rc["skipped_null_flags"] >= 0, f"skipped={prev_rc['skipped_null_flags']}")
-    from laser_trim_analyzer.gui.v6.sections.per_model_specs import build_spec_save_data
-    d = build_spec_save_data("QA-1", "±0.05", "0.05", "0-2, 48-50", "")
-    check("spec save round-trip builds valid payload",
-          d["model"] == "QA-1" and d["linearity_spec_pct"] == 0.05
-          and d["exclude_points"] is not None)
-    from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_cleanup_options
-    opts = build_cleanup_options(non_mps=False, before_date_enabled=True,
-                                 date_str="2016-01-01", suspect=True, unknown=False,
-                                 error=False, no_tracks=False, misclassified_ft=False,
-                                 mps_models=None)
-    check("cleanup options builder honors date+category selection",
-          opts is not None and opts["delete_suspect_quality"] is True
-          and opts["delete_before_date"] is not None)
+    with _guard("status recompute preview"):
+        prev_rc = db.recompute_overall_statuses(dry_run=True)
+        check("status recompute preview: no WARNING->PASS phantom class",
+              "WARNING->PASS" not in prev_rc["transitions"]
+              or prev_rc["transitions"].get("WARNING->PASS", 0) >= 0,
+              str(prev_rc["transitions"]))
+        check("status recompute: skipped rows are the NULL-flag population",
+              prev_rc["skipped_null_flags"] >= 0, f"skipped={prev_rc['skipped_null_flags']}")
+    with _guard("spec save payload"):
+        from laser_trim_analyzer.gui.v6.sections.per_model_specs import build_spec_save_data
+        d = build_spec_save_data("QA-1", "±0.05", "0.05", "0-2, 48-50", "")
+        check("spec save round-trip builds valid payload",
+              d["model"] == "QA-1" and d["linearity_spec_pct"] == 0.05
+              and d["exclude_points"] is not None)
+    with _guard("cleanup options builder"):
+        from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_cleanup_options
+        opts = build_cleanup_options(non_mps=False, before_date_enabled=True,
+                                     date_str="2016-01-01", suspect=True, unknown=False,
+                                     error=False, no_tracks=False, misclassified_ft=False,
+                                     mps_models=None)
+        check("cleanup options builder honors date+category selection",
+              opts is not None and opts["delete_suspect_quality"] is True
+              and opts["delete_before_date"] is not None)
 
     # ---- ingest folder list: survives a real YAML round trip ---------------
     # Home's one-click batch walks this list IN ORDER, so a round trip that
     # reorders it, de-dupes it or mangles a UNC path silently changes what
     # gets processed. Written to a temp file, not the user's config.
-    import tempfile as _tempfile
-    from laser_trim_analyzer.config import Config as _Config, missing_ingest_folders
-    with _tempfile.TemporaryDirectory() as _td:
-        _cfgp = Path(_td) / "config.yaml"
-        _c = _Config()
-        _c.database.path = Path(_td) / "unused.db"
-        # The offline entry is a path under this temp dir that is never
-        # created — unreachable on every platform, unlike a real UNC share
-        # which may genuinely exist on the work machine.
-        _offline = str(Path(_td) / "offline_share")
-        _wanted = ["\\\\192.168.66.9\\Public\\LaserTrim", str(REPO / "Work Files"),
-                   _offline]
-        for _f in _wanted:
-            _c.ingest.add(_f)
-        _c.ingest.add(_wanted[0] + "\\")          # duplicate: must not land
-        _c.save(_cfgp)
-        _back = _Config.load(_cfgp).ingest.folders
-        check("ingest folders: config round-trip preserves the exact order",
-              _back == _wanted, f"{_back}")
-        _bad = dict(missing_ingest_folders(_back))
-        check("ingest folders: an unreachable folder is reported with a reason",
-              str(REPO / "Work Files") not in _bad and bool(_bad.get(_offline)),
-              f"{len(_bad)} unreachable of {len(_back)}: {_bad.get(_offline)}")
+    with _guard("ingest folders: config round trip"):
+        import tempfile as _tempfile
+        from laser_trim_analyzer.config import Config as _Config, missing_ingest_folders
+        with _tempfile.TemporaryDirectory() as _td:
+            _cfgp = Path(_td) / "config.yaml"
+            _c = _Config()
+            _c.database.path = Path(_td) / "unused.db"
+            # The offline entry is a path under this temp dir that is never
+            # created — unreachable on every platform, unlike a real UNC share
+            # which may genuinely exist on the work machine.
+            _offline = str(Path(_td) / "offline_share")
+            _wanted = ["\\\\192.168.66.9\\Public\\LaserTrim", str(REPO / "Work Files"),
+                       _offline]
+            for _f in _wanted:
+                _c.ingest.add(_f)
+            _c.ingest.add(_wanted[0] + "\\")          # duplicate: must not land
+            _c.save(_cfgp)
+            _back = _Config.load(_cfgp).ingest.folders
+            check("ingest folders: config round-trip preserves the exact order",
+                  _back == _wanted, f"{_back}")
+            _bad = dict(missing_ingest_folders(_back))
+            check("ingest folders: an unreachable folder is reported with a reason",
+                  str(REPO / "Work Files") not in _bad and bool(_bad.get(_offline)),
+                  f"{len(_bad)} unreachable of {len(_back)}: {_bad.get(_offline)}")
 
     # ---- drift tab constructs against real drift state (2026-07-10) --------
     # The tab render at work failed with AttributeError inside _MetricRow and
@@ -4206,30 +4305,33 @@ def main() -> int:
         check("cost priorities: helper", False, f"{type(e).__name__}: {e}")
 
     # ---- unit-basis yield reconciles with raw SQL (QA audit 2026-07-13) ----
-    from laser_trim_analyzer.core.yield_stats import compute_unit_yield
-    uy = compute_unit_yield(db, None, model="6607")
-    n_sql_units = raw.execute(
-        "SELECT COUNT(DISTINCT unit_id) FROM analysis_results WHERE model='6607' "
-        "AND unit_id IS NOT NULL AND overall_status IN ('PASS','WARNING','FAIL')").fetchone()[0]
-    check("unit yield: gradeable units match SQL distinct unit_ids",
-          uy["gradeable_units"] == n_sql_units,
-          f"py={uy['gradeable_units']} sql={n_sql_units}")
-    check("unit yield: rates in range and coherent",
-          uy["first_pass_yield"] is not None and 0 <= uy["first_pass_yield"] <= 100
-          and 0 <= uy["final_yield"] <= 100 and uy["attempts_per_section"] >= 1.0)
+    with _guard("unit yield vs raw SQL"):
+        from laser_trim_analyzer.core.yield_stats import compute_unit_yield
+        uy = compute_unit_yield(db, None, model="6607")
+        n_sql_units = raw.execute(
+            "SELECT COUNT(DISTINCT unit_id) FROM analysis_results WHERE model='6607' "
+            "AND unit_id IS NOT NULL AND overall_status IN ('PASS','WARNING','FAIL')").fetchone()[0]
+        check("unit yield: gradeable units match SQL distinct unit_ids",
+              uy["gradeable_units"] == n_sql_units,
+              f"py={uy['gradeable_units']} sql={n_sql_units}")
+        check("unit yield: rates in range and coherent",
+              uy["first_pass_yield"] is not None and 0 <= uy["first_pass_yield"] <= 100
+              and 0 <= uy["final_yield"] <= 100 and uy["attempts_per_section"] >= 1.0)
 
-    check_usability_glosses()
+    with _guard("usability glosses"):
+        check_usability_glosses()
 
     # ---- data quality surface: future-dated records (mislabeled files) ------
-    horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-    for table in ("analysis_results", "final_test_results"):
-        n_future = raw.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE file_date > ?", (horizon,)).fetchone()[0]
-        if n_future:
-            warn(f"data quality: {n_future} future-dated record(s) in {table}",
-                 "excluded from trends; fix the source filename date")
-        else:
-            check(f"data quality: no future-dated records in {table}", True)
+    with _guard("data quality: future-dated records"):
+        horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        for table in ("analysis_results", "final_test_results"):
+            n_future = raw.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE file_date > ?", (horizon,)).fetchone()[0]
+            if n_future:
+                warn(f"data quality: {n_future} future-dated record(s) in {table}",
+                     "excluded from trends; fix the source filename date")
+            else:
+                check(f"data quality: no future-dated records in {table}", True)
 
     # ---- data quality: verdicts must be backed by a measurement (2026-08-31) --
     # SafeJSON binds Python None through SQLAlchemy's JSON type, which stores
@@ -4521,6 +4623,7 @@ if __name__ == "__main__":
             if not arg.startswith("--") and arg != name \
                     and _db_guard.is_production_db(Path(arg), REPO, by_name=True):
                 raise SystemExit(f"FATAL | {arg} is the PRODUCTION database")
-        STANDALONE[name]()
+        with _guard(name):
+            STANDALONE[name]()
         raise SystemExit(_tally())
     raise SystemExit(main())
