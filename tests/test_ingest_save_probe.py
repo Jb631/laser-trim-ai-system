@@ -241,7 +241,11 @@ def test_a_three_file_run_prints_every_save_line_and_leaves_nothing(probe, work,
     want = {(b, s, c) for b in ("1", "10", "50") for s in ("FULL", "NORMAL") for c in ("2", "64")}
     assert want | {("1", "OFF", "2")} == got
     assert len(rows) == 13
-    assert rows[0].split()[:3] == ["1", "FULL", "2MB"] and rows[0].endswith("<- today")
+    # `<- today` follows the app's REAL pragmas (test_today_is_the_row_that_matches_the_
+    # apps_own_pragmas covers the marker logic itself): since Task 4 (spec ruling 12) that
+    # is synchronous=NORMAL, cache_size=-65536 -- row 3, not row 0's FULL/2MB print position.
+    assert rows[0].split()[:3] == ["1", "FULL", "2MB"] and not rows[0].endswith("<- today")
+    assert rows[3].split()[:3] == ["1", "NORMAL", "64MB"] and rows[3].endswith("<- today")
     assert rows[-1].split()[:3] == ["1", "OFF", "2MB"]
     assert rows[-1].endswith("<- reference only: no flush at all")
     assert "LOOP" not in out                      # --no-loop stops after SAVE
