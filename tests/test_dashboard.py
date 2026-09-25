@@ -405,6 +405,38 @@ def test_dashboard_yield_failure_names_banner_and_blanks_only_yield(make_app, mo
     # Priorities is untouched by the yield failure -- real FT-fail data, not
     # the "No final-test failures" empty state.
     assert "No final-test failures" not in page._priorities._cap.cget("text")
+    # The lowest-yield list rests on the same loader: it says it is UNAVAILABLE,
+    # never the "no data" sentence a genuinely thin window gets (Task 6 review).
+    worst_text = page._worst._empty.cget("text")
+    assert page._worst._empty.winfo_manager() != ""
+    assert "Unavailable" in worst_text
+    assert "No models with enough recent data" not in worst_text
+
+
+def test_dashboard_recovers_after_a_failed_yield_load(make_app, monkeypatch):
+    """A failed load, then a good one: the banner goes, the real numbers and the
+    real rows come back -- nothing of the failure lingers on screen."""
+    import laser_trim_analyzer.gui.v6.pages.dashboard_page as dp
+    app = make_app()
+    now = datetime.now()
+    with app.db.session() as s:
+        for _ in range(6):
+            _add_ar(s, "DASH", StatusType.PASS, now)
+        s.commit()
+    real = dp.compute_yield
+
+    def _boom(*a, **kw):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(dp, "compute_yield", _boom)
+    page = app.page_container.get_page("dashboard")
+    page.reload_now()
+    assert page._load_banner.winfo_manager() != ""
+
+    monkeypatch.setattr(dp, "compute_yield", real)
+    page.reload_now()
+    assert page._load_banner.winfo_manager() == ""
+    assert page._trim_panel._rate.cget("text") != "—"
+    assert "Unavailable" not in page._worst._empty.cget("text") or page._worst._empty.winfo_manager() == ""
 
 
 def test_dashboard_company_trend_failure_names_banner_others_unaffected(make_app, monkeypatch, caplog):

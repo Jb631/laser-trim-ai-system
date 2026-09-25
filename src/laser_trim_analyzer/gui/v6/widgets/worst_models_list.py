@@ -52,7 +52,9 @@ class WorstModelsList(ctk.CTkFrame):
         self._empty = ctk.CTkLabel(self, text="", font=t.font(t.SIZE_BODY),
                                    text_color=t.TEXT_SECONDARY, anchor="w")
 
-    def set_rows(self, rows: List[dict], total: int) -> None:
+    def set_rows(self, rows: Optional[List[dict]], total: int) -> None:
+        """`rows=None` means the loader FAILED -- say so; `[]` means there was nothing
+        to rank. The two must never read alike (a failure is not "no data")."""
         for w in self._row_widgets:
             w.destroy()
         self._row_widgets.clear()
@@ -60,7 +62,8 @@ class WorstModelsList(ctk.CTkFrame):
         t = self.theme
         if not rows:
             self._cap.configure(text="")
-            self._empty.configure(text="No models with enough recent data to rank.")
+            self._empty.configure(text=("Unavailable — the notice above says why." if rows is None
+                                        else "No models with enough recent data to rank."))
             self._empty.pack(side="top", fill="x", pady=t.SPACE_MD)
             return
         self._empty.pack_forget()

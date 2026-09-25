@@ -203,7 +203,12 @@ class DashboardPage(PageBase):
             # Isolate the trend from the rest of the dashboard, but NEVER
             # silently (a swallowed error rendered as a blank chart).
             logger.exception("Dashboard: company trend render failed")
-        self._worst.set_rows(worst, total)
+        try:
+            # The lowest-yield list rests on the "yield" loader: when it failed, the list says
+            # it is unavailable (None), never the "nothing to rank" sentence ([]).
+            self._worst.set_rows(None if "yield" in failed else worst, total)
+        except Exception:
+            logger.exception("Dashboard: lowest-yield list render failed")
         try:
             self._priorities.set_rows(priorities or [])
         except Exception:
