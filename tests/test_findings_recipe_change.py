@@ -93,3 +93,9 @@ def test_a_change_in_the_MIX_of_limit_tables_is_disclosed_even_when_the_busiest_
     assert same["graded"] == 12 and same["before_pct"] == same["after_pct"] == 60.0
     assert "On the 12-point table alone the move was 60%" in f.summary and "to 60% (400 tracks" in f.summary
     assert f.evidence["moved_points"] == pytest.approx(25.0, abs=1.0)        # what the pooled figures claimed
+
+
+# ---- fix round 1 (task-6-review.md): the cut-length keys setup_change must never re-report -----
+
+def test_recipe_parameter_keys_is_the_cut_length_keys_each_laser_names():
+    assert recipe_change.RECIPE_PARAMETER_KEYS == frozenset({"laser_cut_length", "laser_cut_length_mm"})

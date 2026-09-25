@@ -332,6 +332,35 @@ def test_setup_change_runs_inside_the_engine_and_its_history_is_cached(tmp_path,
     assert db.get_process_errors() == {}
 
 
+# ---- fix round 1, Important #1: one real change, one finding (task-6-review.md) ----------------
+
+def test_a_real_laser1_cut_length_change_is_only_recipe_changes_finding(tmp_path, monkeypatch):
+    """The exact regression fix round 1 exists for: a genuine laser-1 cut-length change is
+    readable from BOTH trim_passes (recipe_change's own per-pass log, via TrackView.recipe/passes)
+    and trim_setup.parameters['laser_cut_length'] (the file-level nominal value, via
+    TrackView.setup) -- through the whole engine, it must produce exactly ONE finding
+    (recipe_change's), never a second, redundantly-worded one from setup_change."""
+    from datetime import datetime
+    from dataclasses import replace
+    from laser_trim_analyzer.findings import engine
+    from findings_helpers import days, make_track
+
+    def track(i, date, cut_length, good):
+        t = make_track(i, date=date, system="B", passes=((0.8 if good else 1.5, cut_length),))
+        return replace(t, setup={"laser_cut_length": cut_length})
+
+    before = [track(k, d, 4100.0, (k % 100) < 80) for k, d in enumerate(days(START, 200))]
+    after = [track(1000 + k, d, 4000.0, (k % 100) < 40)
+            for k, d in enumerate(days(datetime(2024, 9, 1), 200))]
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: before + after)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "M", fleet_latest=START)
+    setup_findings = [f for f in findings if f.analyzer == "setup_change"]
+    recipe_findings = [f for f in findings if f.analyzer == "recipe_change"]
+    assert setup_findings == []
+    assert len(recipe_findings) == 1
+    assert "4100" in recipe_findings[0].title and "4000" in recipe_findings[0].title
+
+
 # ---- Task 5: _fleet_latest -- what "now" means, and what cannot be trusted to say so ----
 
 def test_a_failed_processing_row_does_not_move_fleet_latest(tmp_path):

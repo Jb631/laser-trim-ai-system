@@ -23,7 +23,7 @@ disclosure at all -- and the like-for-like move on the lax table was zero.)
 """
 from collections import Counter
 from statistics import median
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, FrozenSet, List, Tuple
 
 from ..model import Finding
 from ..stats import pct
@@ -34,6 +34,20 @@ MIN_SIDE = 100         # graded tracks needed on EACH side before a change is a 
 MIN_MOVE_POINTS = 10.0 # a change that moved the result less than this is history, not a finding
 MAX_EVENTS = 3         # per laser, most recent first
 MATERIAL = 0.10        # a limit table carrying this share of a side is part of how that side was graded
+
+# This module's ENTIRE recipe is the cut-length setting of each pass (below, sourced from
+# trim_passes.laser_cut_length -- see findings/data.py's TrackView.recipe). The very same physical
+# setting is ALSO captured, once per file, as a file-level NOMINAL value in trim_setup.parameters
+# -- under a different normalised key per laser (core/trim_setup.normalise_key on "Laser Cut
+# Length" for laser 1/System B, "Laser Cut Length (mm)" for laser 2/System A; the CLAUDE.md "two
+# different quantities" split is about laser 1 vs laser 2 scale, not about which capture is which).
+# findings/analyzers/setup_change.py imports this constant (never re-lists the key names) so it
+# never re-reports a laser-1/laser-2 cut-length change this module already owns -- fix round 1,
+# 2026-09-25 (task-6-review.md, Important #1): a real cut-length change was readable from both
+# analyzers, producing two redundantly-worded findings in the same "What changed" group for one
+# real event. Owned here, not in setup_change, because THIS module is the one that knows what its
+# own recipe consists of; setup_change should never need to re-derive that list by hand.
+RECIPE_PARAMETER_KEYS: FrozenSet[str] = frozenset({"laser_cut_length", "laser_cut_length_mm"})
 
 
 def _quarter(d) -> str:

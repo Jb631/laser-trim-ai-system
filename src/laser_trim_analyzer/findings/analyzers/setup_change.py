@@ -51,17 +51,25 @@ as its `str()` form (the brief's "non-numeric values are compared as strings"), 
 value that arrived typed inconsistently (e.g. `"Linear"` one file, `Linear` -- already a str --
 the next) still compares equal instead of manufacturing a boundary out of a parsing accident.
 
-**Cut length stays in scope, worded with no direction.** `laser_cut_length` (System B/laser 1,
-unitless machine counts) and any resistance-window key (`initial_resistance_lower_limit`, etc.,
-System A/laser 2's `..._mm` cut-length variant does not appear in these fixtures at all) are NOT
-identity-like, so `EXCLUDED` leaves them in scope -- CLAUDE.md's "cut length is two different
-quantities" trap is about POOLING laser 1's and laser 2's numbers together, which never happens
-here (grouping is per (model, laser, track), so the two lasers' own runs are never compared to
-each other), and about calling a laser-1 move "longer"/"shorter", which this module's title and
-summary never do for ANY key: they always say "changed from A to B", never a direction or a unit.
-A `laser_cut_length` boundary can therefore also surface here alongside whatever `recipe_change`
-already says about the same period from the per-pass log -- two analyzers looking at two different
-captures of a related setting, not a bug to suppress.
+**One real change, one finding.** `recipe_change` already owns the cut-length setting (its per-pass
+`trim_passes.laser_cut_length` log), and the very same physical setting is ALSO captured, once per
+file, as a nominal value in `trim_setup.parameters` -- under the key `laser_cut_length` (laser
+1/System B) or `laser_cut_length_mm` (laser 2/System A; not observed in the six local fixtures,
+but `core.trim_setup.normalise_key` produces it deterministically from "Laser Cut Length (mm)"
+should a captured file ever carry it). Left in scope on the first pass of this analyzer, a real
+laser-1 cut-length change was independently readable from BOTH analyzers -- two redundantly-worded
+findings in the same "What changed" group for one real event (fix round 1, task-6-review.md,
+Important #1). `recipe_change.RECIPE_PARAMETER_KEYS` (imported here, never re-typed) is excluded
+in `_canonical_setup` for exactly this reason -- owned by `recipe_change` because that module is
+the one that knows what its own recipe consists of. Resistance-window keys
+(`initial_resistance_lower_limit`, etc.) STAY in scope: they are `ink_target`'s domain for the
+configured window's current STATE, never a change EVENT, so there is no equivalent overlap to
+guard against. `laser_cut_length`'s wording (were it ever reported) would in any case have been
+direction-free like every other key here -- CLAUDE.md's "cut length is two different quantities"
+trap is about POOLING laser 1's and laser 2's numbers, which never happens in this per-(model,
+laser, track) grouping, and about calling a laser-1 move "longer"/"shorter", which this module's
+title and summary never do for any key ("changed from A to B", never a direction or a unit) -- but
+the exclusion below means the wording question no longer arises for this specific setting at all.
 
 **Track 2 setup** (`findings/data.py::load_model_tracks`) is `{**parameters, **track2_parameters}`
 on a TRK2 track when a Track 2 block was captured (Task 9, System A two-track files only), else
@@ -73,6 +81,7 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from ..model import Finding
 from ..stats import pct
+from .recipe_change import RECIPE_PARAMETER_KEYS
 
 MIN_RUN_DAYS = 60          # each side of a change must span at least this many days
 MIN_TRACKS_SIDE = 100       # graded tracks needed on EACH side before a change is reported
@@ -98,7 +107,10 @@ def _normalise(v: Any):
 
 def _canonical_setup(setup: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """One track's `setup` dict, alias-mapped and identity-filtered, values normalised. `None`
-    values are dropped -- a key a file did not capture is absent, not a value of "None"."""
+    values are dropped -- a key a file did not capture is absent, not a value of "None". Also
+    drops `recipe_change.RECIPE_PARAMETER_KEYS` -- the cut-length keys that analyzer already
+    reports from its own per-pass log (fix round 1, task-6-review.md, Important #1) -- imported,
+    never re-typed, so the two analyzers can never silently drift apart on what "the recipe" is."""
     out: Dict[str, Any] = {}
     if not setup:
         return out
@@ -106,7 +118,7 @@ def _canonical_setup(setup: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if v is None:
             continue
         key = ALIASES.get(k, k)
-        if key in EXCLUDED:
+        if key in EXCLUDED or key in RECIPE_PARAMETER_KEYS:
             continue
         out[key] = _normalise(v)
     return out
@@ -165,9 +177,12 @@ def _finding(model: str, system: str, track_name: str, key: str,
 
 def analyze(model: str, tracks, laser_label) -> Tuple[List[Dict[str, Any]], List[Finding]]:
     """(one entry per reported boundary, for the facts strip; findings -- the same population,
-    Finding-shaped). Below `MIN_RUN_DAYS`/`MIN_TRACKS_SIDE` on either side, off a single shared
-    limit table, or ungraded throughout: not a comparable measurement, so neither a fact nor a
-    finding (ruling 6's spec is silent on "always"; this analyzer's floors gate both alike)."""
+    Finding-shaped). Facts hold every boundary that clears the floors on one shared limit table --
+    `machine_compare`'s rule, "facts only for comparable pairs" (fix round 1, task-6-review.md,
+    Minor #2, controller ruling): a run too short, too thin, or graded across more than one table
+    is not a COMPARISON, so it is neither a fact nor a finding here, exactly as it is neither for
+    `machine_compare`. `MIN_RUN_DAYS`/`MIN_TRACKS_SIDE`/the table rule gate both alike -- there is
+    no lower tier the way `recipe_change`'s quarter-binned `facts["recipe_history"]` has one."""
     history: List[Dict[str, Any]] = []
     findings: List[Finding] = []
     cut = [t for t in tracks if t.passes and t.setup]      # a real cut, with a captured setup block

@@ -115,6 +115,31 @@ def test_every_excluded_key_is_the_documented_four():
     assert setup_change.EXCLUDED == frozenset({"alias", "model", "model_number", "track_parameters"})
 
 
+# ---- fix round 1, Important #1: recipe_change owns cut length, setup_change never re-reports it -
+
+def test_laser_cut_length_alone_is_never_reported_by_setup_change():
+    before = setup_era(0, START, 200, {"laser_cut_length": 4100.0}, 0.80)
+    after = setup_era(1000, datetime(2024, 9, 1), 200, {"laser_cut_length": 4000.0}, 0.40)
+    history, findings = setup_change.analyze("M", before + after, label)
+    assert findings == [] and history == []
+
+
+def test_laser_cut_length_mm_is_also_never_reported():
+    before = setup_era(0, START, 200, {"laser_cut_length_mm": 0.75}, 0.80,
+                       system="A", track_name="TRK1")
+    after = setup_era(1000, datetime(2024, 9, 1), 200, {"laser_cut_length_mm": 0.55}, 0.40,
+                      system="A", track_name="TRK1")
+    history, findings = setup_change.analyze("M", before + after, label)
+    assert findings == [] and history == []
+
+
+def test_the_recipe_exclusion_is_imported_from_recipe_change_not_copied():
+    """Proven by IDENTITY (the same frozenset object), not by re-typing recipe_change's key names
+    here -- so the two analyzers can never silently drift apart on what "the recipe" covers."""
+    from laser_trim_analyzer.findings.analyzers import recipe_change
+    assert setup_change.RECIPE_PARAMETER_KEYS is recipe_change.RECIPE_PARAMETER_KEYS
+
+
 # ---- ALIASES: laser 1's `response` and laser 2's `response_linear_or_function` are one setting --
 
 def test_normalise_key_confirms_the_alias_source_and_target():
