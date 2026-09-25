@@ -3859,8 +3859,12 @@ def main() -> int:
         # new zone — say WHY a model is on the list and when it leaves.
         ("src/laser_trim_analyzer/gui/v6/widgets/focus_list_zone.py",
          "outside its own control limits", "FOCUS list states its membership rule"),
+        # 2026-09-24 (facelift step 2, T2): the three-sentence σ key moved to the Drift metrics
+        # tab, beside the numbers it explains; the model page keeps a ONE-line key. Both pinned.
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "historical lot medians", "model page explains σ in lot language"),
+         "history of lots", "model page explains σ in lot language (one line)"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
+         "historical lot medians", "drift tab explains σ in lot language (in full)"),
         ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
          "Gap = Trim − FT", "lowest-yield list explains Gap"),
         ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
@@ -3869,8 +3873,10 @@ def main() -> int:
          '"Sigma gradient"', "units table headers are full words"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
          '"Linearity error"', "units table headers are full words (2)"),
+        # 2026-09-24 (T3b): the legend box became a one-line key of drawn elements; the red
+        # dots must still be named in it (the round-2 key dropped them -- this check caught it).
         ("src/laser_trim_analyzer/gui/v6/widgets/focus_chart.py",
-         "Beyond ±3σ / off-scale", "focus chart names its red markers"),
+         "beyond ±3σ (red)", "focus chart names its red markers"),
         ("src/laser_trim_analyzer/gui/v6/pages/dashboard_page.py",
          "matched to trims", "FT panel count says what 'matched' means"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
@@ -3884,8 +3890,10 @@ def main() -> int:
         # sentence case app-wide -- the zone-marking obligation this check exists to pin is
         # unchanged, only the literal casing is, so the string here tracks the page, not the
         # other way round.
+        # 2026-09-24 (T2): the model page's app's-read zone is now "How it's running" (the
+        # verdict moved into the caption; findings got their own "Worth changing" group).
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "What the app is telling you", "model page marks the app's-read zone"),
+         "How it's running", "model page marks the app's-read zone"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
          "What you're looking at", "model page marks the data zone"),
         ("src/laser_trim_analyzer/gui/v6/pages/triage_page.py",

@@ -420,6 +420,10 @@ class FocusChart(ctk.CTkFrame):
             if median_drawn:
                 key_bits.append(f"━ {roll_days}-day median")
             key_bits.append("·  units")
+            if in_x:
+                # The red dots are the chart's news -- a drawn marker is always named
+                # (the 2026-07-08 walk found red markers nobody had explained).
+                key_bits.append("●  beyond ±3σ (red)")
             if limits_off_scale is None and baseline_std:
                 key_bits.append("┄ ±3σ control limit")
             key_bits.append("╌ baseline mean")

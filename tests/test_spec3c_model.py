@@ -691,6 +691,37 @@ def test_rolling_median_never_spans_a_gap_over_30_days(tk_root):
             assert step_days <= 30, f"a single line segment steps {step_days} days"
 
 
+def test_key_names_the_red_points_whenever_they_are_drawn(tk_root):
+    """The red dots (in-window, beyond the control limits) are the chart's news. The
+    2026-07-08 walk found red markers nobody had explained, and the round-2 key
+    dropped their name again while still drawing them (a usability-gloss sweep check
+    caught it). Drawn -> named; not drawn -> not named."""
+    from datetime import datetime, timedelta
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(60, 0, -1)]
+    # A band ON scale (7 sigma well inside 6x the data span), so the y-window keeps the
+    # limits in view and a point just past +3 sigma is drawn IN the window, as a red dot.
+    calm = [0.0495 + 0.00025 * (i % 5) for i in range(len(dates))]
+
+    def key_of(values):
+        chart = FocusChart(tk_root, theme=ThemeManager())
+        chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                         baseline_mean=0.0500, baseline_std=0.0005)
+        keys = [t.get_text() for t in chart._ax.texts if t.get_text().startswith("━")
+                or t.get_text().startswith("·")]
+        assert keys, "expected a key line"
+        return keys[0]
+
+    assert "beyond ±3σ" not in key_of(calm)
+    one_red = list(calm)
+    one_red[30] = 0.0517              # beyond +3σ (0.0515), inside the ±3.5σ window
+    assert "beyond ±3σ" in key_of(one_red)
+
+
 def test_key_names_only_what_is_actually_drawn(tk_root):
     """A chart whose +-3sigma band is off-scale (so the dotted line is not
     meaningfully on screen) must not claim it is in the key -- the same rule
