@@ -187,10 +187,13 @@ class _StubApp:
 
 
 def test_settings_page_has_an_ingest_folders_card(make_app):
+    """Sentence case since facelift step 2 ruling 3 (2026-09-24): 'Ingest folders', not
+    'Ingest Folders' -- see test_spec3d_settings.py::test_settings_page_has_six_cards for the
+    full order/expanded-state pin."""
     app = make_app()
     page = app.page_container.get_page("settings")
     titles = [c._title.cget("text") for c in page._cards]
-    assert any("Ingest Folders" in t for t in titles), titles
+    assert any("Ingest folders" in t for t in titles), titles
 
 
 def test_section_add_remove_reorder_writes_through_to_config(tk_root, tmp_path,
