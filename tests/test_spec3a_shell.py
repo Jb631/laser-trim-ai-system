@@ -229,6 +229,63 @@ def test_page_base_lifecycle_hooks(tk_root):
     assert ev == ["show", "hide"]
 
 
+def _pump_for(root, done, seconds=3.0):
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end and not done():
+        root.update()
+        time.sleep(0.01)
+
+
+def _logged(caplog, text):
+    return [r for r in caplog.records
+            if r.exc_info and isinstance(r.exc_info[1], RuntimeError) and text in str(r.exc_info[1])]
+
+
+def test_a_ui_update_that_raises_is_logged_never_swallowed(tk_root, caplog):
+    """F4 review (OOS 3): safe_after's guard swallowed a callback's exception with no trace at all
+    -- a render crash there left the screen stale and the log empty. It is logged now, with its
+    traceback, and the next update still runs. (Direct path: no dispatcher.)"""
+    import logging
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): pass
+
+    page = _P(tk_root, theme=ThemeManager())
+    ran = []
+
+    def boom():
+        ran.append("boom")
+        raise RuntimeError("invented render crash")
+    with caplog.at_level(logging.ERROR):
+        page.safe_after(boom)
+        page.safe_after(lambda: ran.append("next"))
+        _pump_for(tk_root, lambda: len(ran) == 2)
+    assert ran == ["boom", "next"]
+    (record,) = _logged(caplog, "invented render crash")
+    assert record.name == "laser_trim_analyzer.gui.v6.page_base"
+
+
+def test_a_ui_update_that_raises_through_the_dispatcher_is_logged_too(make_app, caplog):
+    import logging
+    app = make_app()
+    page = app.page_container.get_page("findings")
+    ran = []
+
+    def boom():
+        ran.append("boom")
+        raise RuntimeError("invented dispatched crash")
+    with caplog.at_level(logging.ERROR):
+        page.safe_after(boom)
+        _pump_for(app, lambda: bool(ran))
+        _pump_for(app, lambda: False, seconds=0.2)
+    assert ran == ["boom"]
+    assert len(_logged(caplog, "invented dispatched crash")) == 1
+
+
 def test_page_base_set_caption_shows_and_clears(tk_root):
     """set_caption packs a caption line under the title bar on text, and clears it on "".
 

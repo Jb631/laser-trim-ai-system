@@ -7,12 +7,15 @@ Subclass contract:
   * on_show() / on_hide()   — OPTIONAL
 PageBase stores `self.app` (V6App | None) and `self.theme`, and offers safe_after().
 """
+import logging
 from typing import Optional
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.widgets import blocks
+
+logger = logging.getLogger(__name__)
 
 HEADER_HEIGHT = 44
 
@@ -87,13 +90,22 @@ class PageBase(ctk.CTkFrame):
         thread-safe, and with the main thread blocked (e.g. on the DB lock)
         that could stall or deadlock the app. Now workers only enqueue onto a
         plain queue (ui_dispatch.py); every Tk call happens on the main loop.
+
+        A callback that raises is LOGGED, with its traceback, and the next one still runs (F4
+        review: this used to be a silent `pass`, so a render crash left a stale screen and no
+        trace). A page -- or an app -- already gone is not an error: nothing is left to update.
         """
         def guarded():
             try:
-                if self.winfo_exists():
-                    fn()
+                alive = self.winfo_exists()
             except Exception:
-                pass
+                return                   # the app itself is being torn down
+            if not alive:
+                return
+            try:
+                fn()
+            except Exception:
+                logger.exception("%s: a screen update failed", type(self).__name__)
 
         dispatcher = getattr(self.app, "ui", None)
         if dispatcher is not None:
