@@ -601,3 +601,25 @@ def test_the_caption_on_all_says_over_all_time(make_app):
     page._window_choice = "30d"
     page.reload_now()
     assert page._caption.cget("text").endswith("over the last 30 days")
+
+
+# ---- F4 review (out of scope 2): reload_now() is the newest load -----------------------------
+# The threaded path dropped a superseded load, but reload_now() never counted as a load, so an
+# in-flight one could still land after it and put its state back.
+
+def test_an_in_flight_dashboard_load_never_overwrites_reload_now(make_app, monkeypatch):
+    from test_spec3f_home import _older_then_newer, _pump_ui, _settle_workers
+    app = make_app()
+    page = app.page_container.get_page("dashboard")
+    _settle_workers(app)
+    healthy = page._query()
+    crashed = (None, None, [], 0, None, "week", None, [], ["yield"])
+    load = _older_then_newer(lambda: crashed, lambda: healthy)
+    monkeypatch.setattr(page, "_query", load)
+    page.on_show()                             # the older load, still in its query...
+    load.started()
+    page.reload_now()                          # ...when the synchronous one applies
+    assert page._load_banner.winfo_manager() == ""
+    load.release()
+    _pump_ui(app)
+    assert page._load_banner.winfo_manager() == "", "an in-flight load overwrote reload_now()"

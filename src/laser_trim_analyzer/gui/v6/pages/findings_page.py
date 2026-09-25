@@ -22,6 +22,10 @@ class FindingsPage(PageBase):
 
     def __init__(self, master, *, theme, app, page_title="Findings"):
         self._rows: List[Dict[str, Any]] = []
+        # Reload generation (the Model page's _reload_gen pattern, F4 review): a load's apply is
+        # dropped unless it is still the newest -- workers finish in any order, and an older, slower
+        # "could not be loaded" must never land over a newer list. Bumped and read on the Tk thread.
+        self._reload_gen = 0
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     def build_content(self, parent):
@@ -35,14 +39,24 @@ class FindingsPage(PageBase):
 
     # ---- data ----
     def reload_now(self):
-        """Synchronous reload + apply (the test path)."""
+        """Synchronous reload + apply (the test path). The newest load: anything still in flight
+        is dropped when it lands."""
+        self._reload_gen += 1
         self._apply(self._query())
 
     def on_show(self):
-        """Load on a background thread; apply on the Tk thread via safe_after."""
+        """Load on a background thread; apply on the Tk thread via safe_after -- unless a newer
+        load has started since."""
+        self._reload_gen += 1
+        gen = self._reload_gen
+
         def work():
             data = self._query()
-            self.safe_after(lambda: self._apply(data))
+
+            def apply():
+                if gen == self._reload_gen:         # else a newer load superseded this one
+                    self._apply(data)
+            self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
 
     def _query(self) -> Dict[str, Any]:

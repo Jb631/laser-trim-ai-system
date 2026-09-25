@@ -106,18 +106,22 @@ class DashboardPage(PageBase):
 
     # ---- lifecycle ----
     def on_show(self):
-        threading.Thread(target=self._reload_threaded, daemon=True).start()
+        # The generation is bumped HERE, on the Tk thread (Home, Triage and the Model page do the
+        # same); the worker only carries the number it was handed.
+        self._reload_gen += 1
+        threading.Thread(target=self._reload_threaded, args=(self._reload_gen,), daemon=True).start()
 
     def _cutoff(self):
         return datetime.now() - timedelta(days=_WINDOW_DAYS.get(self._window_choice, 90))
 
     def reload_now(self):
-        """Synchronous reload + apply (test path / main-thread apply)."""
+        """Synchronous reload + apply (test path / main-thread apply). The newest load: one still
+        in flight is dropped when it lands (F4 review -- it used to land after this and put its
+        state back)."""
+        self._reload_gen += 1
         self._apply(*self._query())
 
-    def _reload_threaded(self):
-        self._reload_gen += 1
-        gen = self._reload_gen
+    def _reload_threaded(self, gen):
         data = self._query()
         self.safe_after(lambda: self._apply(*data) if gen == self._reload_gen else None)
 

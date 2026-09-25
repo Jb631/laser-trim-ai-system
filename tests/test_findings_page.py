@@ -165,3 +165,35 @@ def test_all_four_groups_show_even_when_only_one_has_rows(make_app):
     assert "Check the test" in texts
     assert "What changed" in texts
     assert any(x.startswith("No recipe or setting changes found") for x in texts)   # the empty "What changed" group
+
+
+# ---- F4 review (out of scope 1): an older load never overwrites a newer one --------------------
+# Home, Triage and the Model page drop a load that is no longer the newest; the Findings page did
+# not, so a stale "Findings could not be loaded" could land over a newer, healthy list.
+
+import pytest
+
+
+@pytest.mark.parametrize("newer", ("async", "sync"))
+def test_an_older_findings_page_load_never_overwrites_a_newer_one(make_app, monkeypatch, newer):
+    from test_spec3f_home import _older_then_newer, _pump_ui, _pump_until, _settle_workers
+    app = make_app()
+    page = app.page_container.get_page("findings")
+    _settle_workers(app)
+    load = _older_then_newer(
+        lambda: {"rows": [], "errors": {}, "failed": "RuntimeError: invented findings crash",
+                 "errors_failed": None},                                  # older: crashed
+        lambda: {"rows": [], "errors": {}, "failed": None, "errors_failed": None})  # newer: healthy
+    monkeypatch.setattr(page, "_query", load)
+    page.on_show()                             # the older load, still in its query...
+    load.started()
+    if newer == "async":                       # ...when a newer one starts and finishes first
+        page.on_show()
+        assert _pump_until(app, lambda: any("No findings yet" in x for x in _labels(page._notices)))
+    else:
+        page.reload_now()
+    load.release()                             # the older load finishes LAST
+    _pump_ui(app)
+    notices = " | ".join(_labels(page._notices))
+    assert "could not be loaded" not in notices, "an older load overwrote a newer one"
+    assert "No findings yet" in notices
