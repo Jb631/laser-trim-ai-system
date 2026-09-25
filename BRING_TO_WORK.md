@@ -1,5 +1,25 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-25 morning — the review's fixes, and scripts now name the database
+
+The 2026-09-24 night section below (the other six pages) comes with this same pull — read it too;
+everything it describes has since been through a whole-branch review and one fix round. No schema
+change, nothing to retrain.
+
+1. **`git pull`.**
+2. **What the review changed that you might notice.** Wrapped text is no longer cut at 125% or 150%
+   Windows scaling (it was scaled twice). Every page that loads data now tells a failed load from an
+   empty one — a banner names what failed, and nothing reads "0", "nothing" or "no data" because a
+   query broke. The model page keeps one teal button whichever tab is open. On the Units chart,
+   "All" now really shows all of it.
+3. **Scripts now need the database named.** Only the app opens its default database by itself; a
+   script run without one says so and stops, before it opens anything
+   (`.\.venv\Scripts\python scripts\<name>.py data\analysis.db`, or `--db data\analysis.db` where the
+   script has that flag). Every command in this file is updated and shows which form it takes.
+4. **Known, fixed in the next pull:** if a scrolling tab (Findings, Drift metrics, Smoothness)
+   comes up blank after you click away and back, resize the window a little and it redraws. Seen
+   on the Mac; tell Claude if it happens at work too.
+
 ## ⚡ 2026-09-24 night — the other six pages, and a chart you can read (pull, then look)
 
 Step 2 of the facelift: every page now leads with the most important thing on it, in words. No
@@ -10,29 +30,37 @@ schema change, nothing to retrain, nothing to click on first launch. **If you ha
 2. **Look at each page** — at your saved window size, then drag the window down to about
    1280×720. Looking is the check; the audit helper at the end only catches cut-off text.
    - **Investigate (the model page).** The caption now says the drift verdict in words.
-     **"Worth changing on this model"** — the top three findings — comes first, with "Show all"
-     and a link to the Findings tab; then **"How it's running"**: the metric pills, a ONE-line σ key
+     **"Worth changing on this model"** — up to three findings from each of *Change a setting to
+     raise yield*, *Laser time you could save* and *Check the test* — comes first, with "Show all"
+     and a link to the Findings tab. If the findings could not be worked out it says so in a banner,
+     and if they have never been worked out it says that — it only says "nothing stands out" when
+     they were worked out and nothing did; then **"How it's running"**: the metric pills, a ONE-line σ key
      (the full explanation moved into the *Drift metrics* tab, beside its numbers), and the stats
      table. Tabs are in sentence case. The predictor panel starts with what it is: *how well the
      final-test predictor would have called these units (AUC …). It grades nothing.*
    - **The chart.** It opens on **Lots** (one point per production run). A lot's callout never
      contradicts itself any more ("55.2% of 67 units failed — expected at most 54.7%", not
      "55% … at most 55%"), and the shaded band stops at 100%. **Units** was redrawn after you
-     said it looked horrible: it opens on the **last 12 months**; faint dots are the units, the one
-     strong line is the **30-day median** (90-day when you pick a range longer than 18 months),
+     said it looked horrible: it shows the window you pick above it (**90 days** until you pick
+     another — **All** now really shows all of it); faint dots are the units, the one strong line is
+     the **30-day median** (90-day once the window is longer than 18 months, i.e. on All),
      **red dots** are units beyond ±3σ, and **▲** marks months that had points off the top of the
-     chart, with the total in the note above. The key above the chart names only what is drawn.
-     Chart numbers are in IBM Plex Mono; the unit chart's legend is dark like the rest.
+     chart, with the total in the note above. The key above the chart names only what is drawn
+     (the baseline mean only when it falls inside the chart). This chart's numbers are in IBM Plex
+     Mono (the other charts keep Plex Sans); the unit chart's legend is dark like the rest.
    - **Home.** The caption reads "Last processed … · N worth changing · M drifting now".
      **"Worth changing"** shows the top three from the Findings page's first group across all
-     models (click one → that model's Findings tab; "Open Findings" goes to the page); then
-     **"Drifting now"**. Still exactly one teal button ("Process everything new").
+     models (click one to open it up; the link inside takes you to that model's Findings tab;
+     "Open Findings" goes to the page); then **"Drifting now"**. If either could not be worked out,
+     a banner says so and its number drops out of the caption — never a "0". Still exactly one teal
+     button ("Process everything new").
    - **Settings.** Cards in this order: **Ingest folders** (open) · Backlog — active models and
      pricing · Alert thresholds · Per-model specs · ML training · Database. Every action is a
      link-style button now (no teal); the Database card's destructive actions ask before they act,
      exactly as before.
-   - **Dashboard.** Caption: "Laser x% · final test y% over the last …". A query that fails is
-     NAMED in a banner — never drawn as 0%; the lowest-yield list says "Unavailable" then.
+   - **Dashboard.** Caption: "Laser x% · final test y% over the last …" ("over all time" on All). A
+     query that fails is NAMED in a banner — never drawn as 0%; the lowest-yield list, the trend and
+     the priorities each say "Unavailable" then, never "no data".
    - **Triage.** "Needs a look" (what the app flagged) and "All models" (each row now has a
      status WORD, not just a coloured dot). It fits at 1280×720 now — the model list used to be
      squeezed out entirely there.
@@ -43,8 +71,12 @@ schema change, nothing to retrain, nothing to click on first launch. **If you ha
        .\.venv\Scripts\python scripts\snapshot_db.py data\analysis.db $env:TEMP\qa_copy.db
        .\.venv\Scripts\python scripts\render_pages.py $env:TEMP\qa_copy.db qa_output\pages --audit
 
-   **Expect ZERO clipped widgets now** — the one known Triage line is gone. Anything it lists is
-   new; tell Claude the line. Then `Remove-Item $env:TEMP\qa_copy.db`.
+   **Expect ZERO clipped widgets** — checked on the Mac at 100%, 125% and 150% display scaling
+   (wrapped text used to be cut above 100%, which is what Windows scaling does); at work it runs at
+   your laptop's own scaling, which is the real test. One known exception: a "… squeezed out" line
+   for the Findings, Drift metrics or Smoothness tab is the blank-tab fault below (TRACKER F4),
+   fixed next. Anything else it lists is new; tell Claude the line. Then
+   `Remove-Item $env:TEMP\qa_copy.db`.
 
 ## ⚡ 2026-09-24 — the new look and the parse fixes (pull, then look)
 
@@ -766,10 +798,18 @@ the DB:
 > passes. You do NOT need to run it again here. Run it on the WORK machine's
 > database when you next pull there — these commands, in this order:
 
-```bash
-cp data/analysis.db data/analysis.db.bak-2026-08-31-pre-linerror-fix
-python scripts/backfill_linearity_error.py --dry-run
-python scripts/backfill_linearity_error.py
+```powershell
+.\.venv\Scripts\python scripts\backfill_linearity_error.py --db data\analysis.db --dry-run
+```
+
+**Since the 2026-09-22 rebuild this should report nothing to recover** — the rebuild ran the fixed
+code (merged 2026-08-31, `8bfa146`), so every magnitude was stored the first time. Only if the dry
+run reports values: take the backup, then run it for real (every script now needs the database
+named — only the app opens the default one by itself):
+
+```powershell
+cp data\analysis.db data\analysis.db.bak-pre-linerror-fix
+.\.venv\Scripts\python scripts\backfill_linearity_error.py --db data\analysis.db
 ```
 
 Recovers 7,766 magnitudes across 20 models (8232-1: 5,506). Rehearsed on a
@@ -828,8 +868,8 @@ gains 20 real escapes** (30 → 50) that were being hidden as agreement.
 
 ### 2. Optional, when you want the last few percent
 
-```bash
-python scripts/repair_trim_ft_links.py
+```powershell
+.\.venv\Scripts\python scripts\repair_trim_ft_links.py data\analysis.db
 ```
 
 About six minutes, and it rewrites ~106k rows, so it's your call whether to

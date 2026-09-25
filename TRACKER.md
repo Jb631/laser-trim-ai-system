@@ -6,24 +6,28 @@ step-by-step instructions at the work machine; this is the index above it.
 
 Last updated: 2026-09-24
 
-## ▶ Where things stand (Claude, 2026-09-24)
+## ▶ Where things stand (Claude, 2026-09-25)
 
-**On `main`:** everything through `422da7a` (pushed the afternoon of 2026-09-24) — facelift step 1
-with the IBM Plex fonts, and every parse fix (section G), after a whole-branch review and its fix
-round. At work: `git pull`, then the 2026-09-24 section of `BRING_TO_WORK.md`. Nothing there needs
-running except one optional step (the TrimVolts back-fill). **Being built now:** facelift step 2.
+**On `main`:** everything through this push (2026-09-25 morning) — facelift step 2 (the other six
+pages, and the Units chart redrawn) after a whole-branch review, its fix round and a re-review; the
+database guard (only the app opens its default database — every script now names one); and three
+small fixes. Before it, `422da7a` (2026-09-24): facelift step 1 and every parse fix. At work:
+`git pull`, then the top section of `BRING_TO_WORK.md` (and the two 2026-09-24 sections if you have
+not pulled them yet). Nothing needs running except the optional TrimVolts back-fill. **Being built
+now:** the rest of the findings catalogue (B6 — every analyzer reviewed, its final review next),
+then the ingest-speed design (A4/A3/A5) and the facelift follow-ups (F4).
 
 **The rebuild is done** (B2: 168,501 files in 21.8 hours, finished 2026-09-22) and every number
 that rested on a final-test verdict has been re-derived on it (B3).
 
 | Workstream | State | Next move |
 |---|---|---|
-| **A. Processing speed** | the share and the scanner are cleared (A1a); the save is the serial half (A0) | A4 batch the saves, then A3 processes — Claude |
-| **B. More useful information** | rebuild done; findings engine + 6 analyzers shipped; laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
-| **C. Review and refactor** | the review is done (C1) | C2 refactors — Claude |
+| **A. Processing speed** | the share and the scanner are cleared (A1a); the save is the serial half (A0) | the A4/A3/A5 design (A4 first), after the findings catalogue — Claude |
+| **B. More useful information** | rebuild done; findings engine + 6 analyzers shipped; the rest of the catalogue (six more analyzers) built and reviewed, in the next pull (B6); laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
+| **C. Review and refactor** | the review is done (C1); C2 step 1, the database guard and three parked fixes shipped | C2 step 2 (`database/migrations.py`) — Claude |
 | **D. Checks at the shop** | D1, D3, D4, D5, D6, D7 open | James |
 | **E. Backlog upload** | shipped (E1) | — |
-| **F. Facelift** | step 1 shipped; step 2 (the other six pages) built and reviewed | its final review, then the push — Claude |
+| **F. Facelift** | steps 1 and 2 shipped | F4 follow-ups (a blank scrolling tab on the Mac, two load races) — Claude |
 | **G. Parse fixes** | all built, reviewed and pushed (`422da7a`) | — (the back-fill is yours, optional) |
 
 ### One thing of mine to own (2026-09-24): the home database was written to
@@ -46,13 +50,16 @@ lacks the one column the newest code adds (`track2_parameters`), so Findings can
 a writable launch adds it (seconds). (I first wrote here that the app would open it read-only; the
 final review proved it could not — my check had used an empty database, and an unguarded start-up
 backfill stopped the app. That backfill is guarded now, `9d10803`.) I put the write access back
-myself when this session's subagent work is over.
+myself when this session's subagent work is over. **Since 2026-09-25 the code itself prevents a
+repeat** (`ffd2516`): outside the app, asking for the database without naming one refuses before
+any file is opened, and says so once — so a script like those two stops with a message instead.
 
 ### Decisions that are yours
 
 **New since 2026-09-23** — D4 (what the old template's `Start Point` / `End point` means), D5 (what
-"Micro-Lin max. error slope" is for), D6 (were the 8506A/8506B limits loosened by ECN?) — all in
-section D. Plus D1 (which 8232-1 limit table is the intended one), D3 (the QA sweep's one remaining
+"Micro-Lin max. error slope" is for), D6 (were the 8506A/8506B limits loosened by ECN?), D7 (the work
+laptop's screen resolution and Windows scaling), D8 (which element 8397-2's "Section 3_0 Test" files
+test) — all in section D. Plus D1 (which 8232-1 limit table is the intended one), D3 (the QA sweep's one remaining
 red line) and H4 (retire V5).
 
 **Still open from 2026-09-20** (none answered yet):
@@ -62,7 +69,9 @@ red line) and H4 (retire V5).
 2. **One definition of yield.** The Excel export says 12.3 %, the app says 76.0 %, same data (the
    export counts WARNING as a failure; your rule says sigma is never a rejection).
 3. **"Fix Missing Tracks" writes invented numbers** (sigma 0, spec 0.02). Proposal: write blanks.
-4. **Five backfill scripts write to the work database by default**; one has no dry run at all.
+4. ~~**Five backfill scripts write to the work database by default**~~ — **settled by the guard
+   (2026-09-25, `ffd2516`), yours to undo:** each script now needs the database named
+   (`… data\analysis.db`); `backfill_trim_effort.py` still has no dry run (its header says back up first).
 5. **A full final-test rematch can fire at app startup** after a migration — the shape of the 09-14 night.
 6. Sidebar: **Findings** sits third, after Investigate. Say if you would rather it lived on Home.
 7. Backlog prices are MERGED on upload (a model that drops off the backlog keeps its last price).
@@ -521,20 +530,22 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
         connection**, silently. Any "unreferenced" scan must skip decorated definitions.
 
 - [ ] **C2 candidates parked by the parse-fixes reviews (2026-09-23/24)** — real, small, none urgent:
-      - `_update_existing_analysis` never calls `_record_processed_file`, so a REPROCESS leaves
-        `processed_files.success` / `error_message` as they were (pre-existing).
-      - Three chart exports default a track's `linearity_pass` to True when it has no error data
-        (`_export_comprehensive_chart`, `_export_single_chart`, `_export_multi_page_pdf`) —
-        unreachable for failed-processing tracks since G1, still a wrong default.
+      - ~~`_update_existing_analysis` never calls `_record_processed_file`~~ — **FIXED 2026-09-25
+        (`a6f2085`)**: a reprocess records what THIS run found.
+      - ~~Three chart exports default a track's `linearity_pass` to True when it has no error data~~
+        — **FIXED 2026-09-25 (`7b283c9`)**: such a track is "not graded" in all three (one shared helper).
       - Several `app_qa_sweep.py` check blocks have no try/except, so one exception ends the sweep
         instead of reporting one FAIL; the ERROR-reason check matches the marker row by exact path.
       - The TrimVolts back-fill re-selects passes whose file has no usable sheet on every run
-        (`IS NULL` cannot tell "never tried" from "nothing there") — harmless, a little slow.
+        (`IS NULL` cannot tell "never tried" from "nothing there") — harmless, a little slow. *Left
+        (2026-09-25): it runs once.*
       - `save_batch` does not write `trim_passes` (only `save_analysis` does) — fold into A4.
-      - **`get_database()` outside the app opens the production database read-write** (see the
-        2026-09-24 note at the top). A guard in code — refuse the default path unless the app
-        itself asked — would retire the Mac's `chmod`; it needs a survey of which of your scripts
-        rely on the default first.
+      - ~~**`get_database()` outside the app opens the production database read-write**~~ —
+        **FIXED 2026-09-25 (`ffd2516`, `0250d95`)** after surveying every script: only the app's
+        entry point allows the default; everything else names a database or is refused
+        (`DefaultDatabaseRefused`, logged once per process). The parser-audit snapshot reads the
+        default's `model_specs` read-only, so its numbers are what they were before the guard.
+        Also closes code-review #27 (five scripts wrote to `data/analysis.db` by default).
 
 ## D. Checks at the shop — James
 
@@ -573,6 +584,10 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
 - [ ] **D6 · 8506A / 8506B on laser 2: were the limits loosened by ECN?** Every band went from
       ±0.01 V to ±0.0375 V in the first week of July 2025 (pass rate 83 → 100 %, 70 → 100 %). The
       limit-table analyzer reports it as a change of TEST, never as a yield gain.
+- [ ] **D8 · 8397-2: which element does a "Section 3_0 Test" final-test file test?** Its serials are
+      digits only, so the rework-load analyzer (next pull) pairs each one with the unit's one
+      trimmed track. If Section 3 is a different element, that pairing is wrong. It changes nothing
+      today (only 5 comparable untouched units a year, too few to judge), but it will once there are more.
 
 ## E. Settings: one backlog upload instead of two inputs
 
@@ -645,18 +660,37 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       Windows call itself (faked — this Mac can't take that branch for real). See
       `BRING_TO_WORK.md` for what James will see and how to confirm it at the work machine.
 - [x] **F3 · The other six pages — DONE 2026-09-24** (plan `docs/superpowers/plans/2026-09-24-facelift-step2-pages.md`,
-      every task reviewed; `render_pages.py --audit`: 0 clipped widgets at the saved size and 1280×720).
+      every task reviewed; then a whole-branch review, ONE fix round (9 commits, `f194a2b..e415fcd`) and a
+      re-review, 2026-09-25; `render_pages.py --audit --scaling 1.0/1.25/1.5`: 0 clipped at the saved
+      size and 1280×720 at each — wrapped text used to be scaled twice, so above 100% Windows scaling
+      every wrapped line was cut; every failed load is named, never "0" or "nothing"; one teal button
+      on the model page whichever tab is open).
       Each page now leads with its most important thing, in words: **Investigate** — the verdict
       in the caption, "Worth changing on this model" first, then "How it's running"; **Home** —
       N worth changing · M drifting now; **Settings** — Ingest folders first, sentence case, no
       teal; **Dashboard** — every failed query named, never drawn as zero; **Triage** — "Needs a
       look" / "All models", fits at 1280×720; **Process** — one button, "See what changed".
-      **The Units chart was redrawn after James said it "looks horrible"** (2026-09-24): last 12
-      months, faint units, one 30-day median line, red = beyond ±3σ, ▲ = months off the chart —
-      prototyped on real data first, then built. Was: *Relayout each remaining page*, one design round each: Model, Home,
+      **The Units chart was redrawn after James said it "looks horrible"** (2026-09-24): faint units,
+      one 30-day median line (90-day past 18 months), red = beyond ±3σ, ▲ = months off the chart —
+      prototyped on real data first, then built; it shows the window you pick (90 days by default;
+      "All" really is all since the fix round). Was: *Relayout each remaining page*, one design round each: Model, Home,
       Dashboard, Triage, Process, Settings. **Designed and planned 2026-09-24** (rulings, yours to
       overturn once you have seen the pages): `docs/superpowers/specs/2026-09-24-facelift-step2-pages-design.md`,
       plan `docs/superpowers/plans/2026-09-24-facelift-step2-pages.md`. Next to build.
+
+- [ ] **F4 · Step 2 follow-ups** — found by the fix round's re-review (2026-09-25); all
+      pre-existing, none blocking. Claude, next:
+      - **A scrolling tab comes up blank after you click away and back** (Findings, Drift metrics,
+        Smoothness) — seen on the Mac at every scaling; probably not on Windows, unverified.
+        Resizing the window brings it back. Fix: nudge the tab's scroll frames when it is shown.
+      - A CustomTkinter race: a click on a tab within 100 ms of the app switching tabs itself leaves
+        the tab area empty (reachable only right after a findings link).
+      - The Findings tab on a failed facts load says "not computed yet" under the banner that names
+        the crash — the three-state rule, on the tab itself.
+      - Home and Triage can let an older, slower load overwrite a newer one (the Model page guards
+        against this; they do not).
+      - The Units view's 12-month framing never trims anything now (the page window defaults to 90
+        days) — dead code that one test and one chart-QA section still rest on.
 
 ## G. Parse fixes — found 2026-09-23, BUILT 2026-09-23/24
 
