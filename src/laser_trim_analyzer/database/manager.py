@@ -270,11 +270,16 @@ class NestedSessionError(DatabaseError):
 
 
 class BatchCommitError(DatabaseError):
-    """A `write_batch` transaction could not be opened or committed: NOTHING of it is stored.
+    """A `write_batch` transaction could not be opened or committed.
 
-    (One exception, which its cause says in words: the transaction was found to have ENDED
-    mid-batch -- the tripwire in `write_batch`. Files before that point may then have been stored
-    one by one; each has its marker or not, so the next scan decides which are new.)
+    WHAT IS STORED. Normally nothing of the batch: its one transaction was rolled back. The one
+    exception, which the cause says in words, is a transaction ENDED UNDER the batch -- a COMMIT or
+    ROLLBACK that was not its own, on the one shared connection (review I-1). Whatever such a COMMIT
+    made durable stays: the files before it, whole with their markers, and the file it interrupted,
+    whose first rows may be stored WITHOUT its marker. Nothing after it is, since the batch then
+    refuses to commit. Either way every marker that exists sits on a whole file, so the next scan
+    still decides correctly which files are new, and re-processing a half-stored one completes it
+    (its identity takes the update path).
 
     `outcomes` holds one `failed` outcome per item -- never `saved`. `cause` is the underlying
     error. `consecutive` is how many batch commits in a row have now failed on this database
@@ -303,6 +308,10 @@ class TrimWrite:
 
 
 SAVED, DUPLICATE, FAILED = "saved", "duplicate", "failed"
+
+# The savepoint a write batch holds for its whole life, just inside BEGIN IMMEDIATE: if anything
+# ends the batch's transaction under it, this is gone, and its RELEASE before the COMMIT fails.
+_BATCH_GUARD = "lta_batch_guard"
 
 
 @dataclass(frozen=True)
@@ -1927,8 +1936,18 @@ class DatabaseManager:
             raise NestedSessionError(tl.batch_violation)
 
     def _new_session(self) -> Session:
-        """The one place a Session is made: refused mid-batch, as above."""
+        """The one place a Session is made: refused mid-batch, as above, and refused to a caller
+        that does not hold `_write_lock` (review I-1). A Session made without it would share the one
+        SQLite connection with a write batch on another thread: it would read the batch's
+        uncommitted rows, and its commit -- or its close, whose pool reset is a ROLLBACK -- would end
+        the batch's transaction under it. `session()` takes the lock first; a direct caller must."""
         self._refuse_inside_batch()
+        # RLock._is_owned(): True only for the thread that holds it (CPython's RLock, C and
+        # Python alike; Condition relies on it). Owned by ANOTHER thread is not enough.
+        if not self._write_lock._is_owned():
+            raise DatabaseError("a database session was requested without holding _write_lock: "
+                                "on the app's one shared SQLite connection it could end another "
+                                "thread's write batch -- use session(), or take the lock first")
         return self._session_maker()
 
     # =========================================================================
@@ -1951,12 +1970,18 @@ class DatabaseManager:
         * No other session on this thread until the batch is done (ruling 6): `session()`
           raises NestedSessionError, and a refusal a caller swallowed still fails its file.
         * The whole batch holds `_write_lock` (through `session()`): other threads wait for it,
-          they are never refused.
+          they are never refused -- and no Session is made without that lock (`_new_session`).
+        * A guard savepoint, held from just after BEGIN to just before the COMMIT, proves the
+          COMMIT is the batch's own transaction's (review I-1): a COMMIT or ROLLBACK that ended it
+          under the batch destroys the guard, and the batch then raises instead of committing
+          whatever pysqlite silently began after it.
 
         Returns one WriteOutcome per item, in order, once the batch has COMMITTED. If the
-        transaction cannot be opened or committed, NOTHING is stored and BatchCommitError is
-        raised carrying every item as `failed` and how many batch commits in a row have failed.
-        The flush policy -- how many files, how often -- is the caller's (spec 3.1, ruling 5).
+        transaction cannot be opened or committed, BatchCommitError is raised carrying every item
+        as `failed` and how many batch commits in a row have failed; nothing of the batch is
+        stored, except what a foreign COMMIT that ended its transaction had already made durable
+        (see BatchCommitError). The flush policy -- how many files, how often -- is the caller's
+        (spec 3.1, ruling 5).
         """
         items = list(items)
         for item in items:
@@ -1975,9 +2000,15 @@ class DatabaseManager:
                     connection.exec_driver_sql("BEGIN IMMEDIATE")
                     dbapi = connection.connection.dbapi_connection
                     self._batch_still_open(dbapi, "BEGIN IMMEDIATE")
+                    # The batch's GUARD: a savepoint only this transaction holds. Any COMMIT or
+                    # ROLLBACK that ends the transaction destroys it -- even though pysqlite then
+                    # silently BEGINs a new one at the next INSERT, which the tripwire cannot see
+                    # (review I-1) -- so its RELEASE below fails, and nothing is committed.
+                    connection.exec_driver_sql(f"SAVEPOINT {_BATCH_GUARD}")
                     for item in items:
                         outcomes.append(self._write_one(session, item))
                         self._batch_still_open(dbapi, item.analysis.metadata.filename)
+                    self._release_batch_guard(connection)
                 # session() has committed: the batch is stored.
             except Exception as exc:
                 if not opened and isinstance(exc, NestedSessionError):
@@ -2029,13 +2060,33 @@ class DatabaseManager:
 
     @staticmethod
     def _batch_still_open(dbapi_connection, after: str) -> None:
-        """Tripwire: the batch's transaction must stand from BEGIN IMMEDIATE to its COMMIT. If it
-        has ended -- a commit through another route, or pysqlite's transaction handling changed
-        under us (spec F4) -- files may have been stored one by one: say so, and stop."""
+        """Early tripwire: the batch's transaction must stand from BEGIN IMMEDIATE to its COMMIT.
+
+        After BEGIN it proves the BEGIN began one (spec F4: pysqlite could otherwise leave the
+        savepoints to start it). Between files it catches a transaction ended with no statement
+        after it. It CANNOT see one ended and followed by an INSERT or UPDATE -- pysqlite's legacy
+        transaction control silently BEGINs again -- which is why the batch's guard savepoint,
+        released just before the COMMIT, is the check that settles it (review I-1)."""
         if not dbapi_connection.in_transaction:
             raise DatabaseError(
                 f"the batch's transaction ended before its commit (after {after}): files of this "
                 "batch may have been stored one by one; the next scan decides which")
+
+    @staticmethod
+    def _release_batch_guard(connection) -> None:
+        """RELEASE the batch's guard savepoint, the last statement before the COMMIT. It fails with
+        "no such savepoint" if and only if the transaction the batch opened has been ended under it
+        -- the one case in which the COMMIT to come would commit a different transaction."""
+        try:
+            connection.exec_driver_sql(f"RELEASE SAVEPOINT {_BATCH_GUARD}")
+        except OperationalError as exc:
+            if "no such savepoint" not in str(exc):
+                raise
+            raise DatabaseError(
+                "the batch's transaction was ended under it -- a COMMIT or ROLLBACK that was not "
+                "the batch's -- so it was not committed: whatever that COMMIT made durable stays "
+                "(the files before it, and perhaps the interrupted file's first rows without "
+                "their marker); the next scan decides which files are new") from exc
 
     # =========================================================================
     # Analysis Results

@@ -411,6 +411,141 @@ def test_another_thread_waits_for_the_batch_instead_of_being_refused(db, monkeyp
     assert seen["rows"] == 2 and [o.status for o in seen["outcomes"]] == ["saved", "saved"]
 
 
+# ---- review I-1: a transaction ended UNDER the batch is never reported as a committed batch ------
+
+def _orphans(db_path):
+    """Track rows with no analysis row, and pass rows with no track row."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        return (con.execute("SELECT COUNT(*) FROM track_results WHERE analysis_id NOT IN "
+                            "(SELECT id FROM analysis_results)").fetchone()[0]
+                + con.execute("SELECT COUNT(*) FROM trim_passes WHERE track_result_id NOT IN "
+                              "(SELECT id FROM track_results)").fetchone()[0])
+    finally:
+        con.close()
+
+
+def _assert_what_survives_and_that_a_rerun_completes_it(db, items, ended_by):
+    """After a transaction was ended under the batch: only what that foreign COMMIT made durable
+    survives -- the first file whole, the second's first rows WITHOUT their marker -- or nothing,
+    after a ROLLBACK. So every marker that exists sits on a whole file, the scan re-offers every
+    file that is not whole, and running the same batch again completes all four."""
+    stored = {n: (r[0], r[4]) for n, r in _rows_by_file(db.database_path).items()}
+    paths = [i.analysis.metadata.file_path for i in items]
+    if ended_by == "commit":
+        assert stored == {FOUR[0]: (1, 1), FOUR[1]: (1, 0)}, stored
+        assert _scan(paths) == ["processed", "new", "new", "new"]
+    else:
+        assert stored == {}, stored
+        assert _scan(paths) == ["new"] * 4
+    assert [o.status for o in db.write_batch(_items(db))] == ["saved"] * 4
+    rows = _rows_by_file(db.database_path)
+    assert all(rows[n][0] == 1 and rows[n][4] == 1 for n in FOUR) and _orphans(db.database_path) == 0, rows
+
+
+@pytest.mark.parametrize("how", ["commit", "rollback"])
+def test_a_transaction_ended_under_the_batch_makes_it_raise(db, monkeypatch, how):
+    """Review I-1. A COMMIT or ROLLBACK that is not the batch's -- straight on the one shared
+    connection -- ends its transaction while the second file is half-written, and the file carries
+    on writing. pysqlite silently BEGINs again at the next INSERT, so the per-file tripwire saw a
+    transaction, the file's failed RELEASE was booked as that file's own failure, and the batch
+    committed the rest: outcomes that contradicted the rows. Now the batch's guard savepoint is gone
+    with the transaction it lived in, and the batch raises instead of committing."""
+    from laser_trim_analyzer.database.manager import BatchCommitError
+    items = _items(db)
+    real, armed = db._write_trim_setup, [True]
+
+    def ends_it_once(session, analysis_id, setup):
+        from laser_trim_analyzer.database.models import AnalysisResult as A
+        if armed and session.get(A, analysis_id).filename == FOUR[1]:
+            armed.clear()
+            getattr(session.connection().connection.dbapi_connection, how)()
+        return real(session, analysis_id, setup)
+
+    monkeypatch.setattr(db, "_write_trim_setup", ends_it_once)
+    with pytest.raises(BatchCommitError) as e:
+        db.write_batch(items)
+    assert [o.status for o in e.value.outcomes] == ["failed"] * 4
+    assert "ended" in str(e.value)
+    _assert_what_survives_and_that_a_rerun_completes_it(db, items, how)
+
+
+@pytest.mark.parametrize("action", ["commit", "close"])
+def test_a_lockless_session_on_another_thread_cannot_end_the_batch_quietly(db, monkeypatch, action):
+    """The reviewer's counterfactual (I-1): while the batch is paused inside its second file,
+    another thread makes a Session WITHOUT `_write_lock` -- only the raw sessionmaker can, now that
+    `_new_session` refuses -- and commits it, or only closes it (the pool's reset is a ROLLBACK).
+    Before the fix write_batch returned normally: file 2 'failed' yet stored whole with its marker,
+    or file 1 'saved' yet stored nowhere. Now it raises, with the same invariants as above."""
+    from laser_trim_analyzer.database.manager import BatchCommitError
+    items = _items(db)
+    paused, release, result = threading.Event(), threading.Event(), {}
+    real, calls = db._write_trim_setup, [0]
+
+    def pauses_in_the_second(session, analysis_id, setup):
+        calls[0] += 1
+        if calls[0] == 2:
+            paused.set()
+            release.wait(20)
+        return real(session, analysis_id, setup)
+
+    monkeypatch.setattr(db, "_write_trim_setup", pauses_in_the_second)
+
+    def run():
+        try:
+            result["outcomes"] = db.write_batch(items)
+        except Exception as e:
+            result["error"] = e
+
+    def lockless():
+        s = db._session_maker()                    # the counterfactual: no lock, no guard
+        s.execute(text("SELECT 1"))
+        if action == "commit":
+            s.commit()
+        s.close()
+
+    batch = threading.Thread(target=run)
+    batch.start()
+    try:
+        assert paused.wait(20)
+        other = threading.Thread(target=lockless)
+        other.start()
+        other.join(20)
+    finally:
+        release.set()
+        batch.join(30)
+    assert isinstance(result.get("error"), BatchCommitError), result
+    calls[0] = 99                                  # the rerun below must not pause
+    _assert_what_survives_and_that_a_rerun_completes_it(
+        db, items, "commit" if action == "commit" else "rollback")
+
+
+def test_no_session_can_be_made_without_holding_the_lock(db):
+    """I-1's other half: `session()` takes `_write_lock` before it makes a Session, and
+    `_new_session` now REFUSES a caller that does not hold it -- on this thread -- so the lockless
+    Session above cannot be written by accident."""
+    from laser_trim_analyzer.database.manager import DatabaseError
+    with pytest.raises(DatabaseError, match="_write_lock"):
+        db._new_session()
+    with db._write_lock:
+        db._new_session().close()
+        refused = []
+        t = threading.Thread(target=lambda: refused.append(_refusal(db._new_session)))
+        t.start()
+        t.join(10)
+    assert refused == ["DatabaseError"], "the lock held by ANOTHER thread is not this one's"
+    with db.session() as s:
+        assert s.execute(text("SELECT 1")).scalar() == 1
+
+
+def _refusal(make):
+    try:
+        make().close()
+        return None
+    except Exception as e:
+        return type(e).__name__
+
+
 # ---- outcomes, and ruling 22: a failed batch commit is named and counted -------------------------
 
 def test_each_file_gets_an_outcome_saved_duplicate_or_failed(db, monkeypatch):
