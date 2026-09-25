@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable, Generator, Tuple
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout   # builtin only from 3.11
 
 try:
     import psutil
@@ -196,6 +197,22 @@ def take_spec_snapshot(*, use_ml: bool = True, db=None) -> SpecSnapshot:
                         ml_thresholds=thresholds, ml_predictors=predictors)
 
 
+def record_row_id(result: Optional[AnalysisResult], write: Any, row_id: Optional[int]) -> None:
+    """The saved row's id onto the result, as the analysis did when it saved: a final test's (not
+    a header-only row's: that result is its ERROR), a smoothness file's. For every writer."""
+    if result is None:
+        return
+    if isinstance(write, FinalTestWrite):
+        if result.overall_status != AnalysisStatus.ERROR:
+            result.final_test_id = row_id
+            logger.debug(f"Processed Final Test: {result.metadata.filename} - "
+                         f"{result.overall_status.value} (ID: {row_id})")
+    elif isinstance(write, SmoothnessWrite):
+        result.smoothness_id = row_id
+        logger.debug(f"Processed Smoothness: {result.metadata.filename} - "
+                     f"{result.overall_status.value} (ID: {row_id})")
+
+
 @dataclass
 class Outcome:
     """What analysing ONE file found, and every database write it asks for -- as values.
@@ -213,6 +230,8 @@ class Outcome:
     (ruling 10): (None, None) when the file could not be statted. `started` is when the analysis
     began (`time.time()`), for the ERROR result a failed save becomes. `identity_error`: why a
     trim file that stats could not be hashed -- its save must fail, as `save_analysis`'s did.
+    `internal`: the analysis itself raised (in the pool) -- nothing to save; the file is an error,
+    and new again next run.
     """
     path: str
     result: Optional[AnalysisResult] = None
@@ -221,6 +240,13 @@ class Outcome:
     file_hash: Optional[str] = None
     started: float = 0.0
     identity_error: Optional[str] = None
+    internal: Optional[str] = None
+
+
+class WriterStop(Exception):
+    """Raised by a writer to END the batch: the folder cannot go on -- e.g. ruling 22's two
+    consecutive failed batch commits. It propagates out of `process_batch` (the pool's per-file
+    error handling never swallows it), and the folder fails with this message."""
 
 
 class Processor:
@@ -791,8 +817,8 @@ class Processor:
                             start_time: float) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
         """The final-test failure rule, ONE place: for an exception while the file was analysed
         (`_final_test_outcome`) and for one while its row was saved (`apply_outcome`, the
-        writer) -- what the old single try/except did for both. Call it from an except block (it
-        logs the traceback). Returns the ERROR result and the skip marker to write, if any."""
+        ingest's writer) -- what the old single try/except did for both. It logs the traceback of
+        the exception it is given. Returns the ERROR result and the skip marker to write, if any."""
         marker = None
         if self._is_permanent_failure(exc):
             # Permanently unprocessable (or already saved): record as
@@ -801,7 +827,9 @@ class Processor:
                            f"unprocessable — recorded as skipped: {exc}")
             marker = self._skip_marker(file_path)
         else:
-            logger.exception(f"Error processing Final Test {file_path.name}: {exc}")
+            # exc_info=exc: the traceback of THIS exception, whether or not it is the one being
+            # handled (the ingest's writer applies this rule to a save that failed in a batch).
+            logger.error(f"Error processing Final Test {file_path.name}: {exc}", exc_info=exc)
             # Same as the smoothness branch below: an FT error result is
             # never saved, so without this the file comes back tomorrow.
             if not self._is_transient_failure(exc):
@@ -897,6 +925,11 @@ class Processor:
             yield from self._process_sequential(
                 file_paths, progress_callback, incremental, summary, cancel, writer
             )
+
+        # The generator's end (a Stop lands here too): the writer commits what it
+        # still holds (spec 3.1, ruling 5) before anything reads the database.
+        if writer is not None and hasattr(writer, "flush"):
+            writer.flush()
 
         # Persist any stat repairs collected during the incremental scan (rows
         # whose content matched by hash but whose recorded size/mtime was
@@ -1235,53 +1268,22 @@ class Processor:
                     for f in batch
                 }
 
-                # Process as completed
-                for future in as_completed(future_to_file):
-                    file_path = future_to_file[future]
-                    completed += 1
-
+                # Process as completed. The consumer waits on the pool at most 1 s at a time
+                # (spec 3.1): a writer holding files flushes 2 s after the first of them even
+                # while the share stalls. `pending` keeps submission order, for as_completed.
+                pending = dict.fromkeys(future_to_file)
+                tick = getattr(writer, "tick", None)
+                while pending:
                     try:
-                        result = self._hand_over(future.result(), writer)
-
-                        # Skip non-trim files (process_file returns None)
-                        if result is None:
-                            summary.skipped += 1
-                            if progress_callback:
-                                progress_callback(ProcessingStatus(
-                                    filename=Path(file_path).name,
-                                    status="skipped",
-                                    message="Non-trim file skipped",
-                                    progress_percent=completed / len(files_to_process) * 100,
-                                ))
-                            continue
-
-                        self._update_summary(summary, result)
-
-                        if progress_callback:
-                            progress_callback(ProcessingStatus(
-                                filename=Path(file_path).name,
-                                status="completed",
-                                progress_percent=completed / len(files_to_process) * 100,
-                                result=result,
-                            ))
-
-                        yield result
-
-                    except Exception as e:
-                        logger.error(f"Error processing {file_path}: {e}")
-                        # Count as processed-with-error so the buckets sum to
-                        # `processed`, matching the sequential path (where
-                        # process_file returns an ERROR result via _update_summary).
-                        summary.processed += 1
-                        summary.errors += 1
-
-                        if progress_callback:
-                            progress_callback(ProcessingStatus(
-                                filename=Path(file_path).name,
-                                status="failed",
-                                message=str(e),
-                                progress_percent=completed / len(files_to_process) * 100,
-                            ))
+                        for future in as_completed(list(pending), timeout=1.0):
+                            del pending[future]
+                            completed += 1
+                            yield from self._one_completed(
+                                future, future_to_file[future], writer, summary,
+                                progress_callback, completed, len(files_to_process))
+                    except FuturesTimeout:
+                        if tick is not None:
+                            tick()
 
             # GC between batches
             gc.collect()
@@ -1290,6 +1292,66 @@ class Processor:
             if self._check_memory_warning():
                 logger.warning("Memory warning - reducing workers")
                 max_workers = max(1, max_workers - 1)
+
+    def _one_completed(self, future, file_path, writer, summary: BatchSummary,
+                       progress_callback, completed: int, total: int):
+        """One finished future of the pool, on the consumer's thread: its Outcome handed over,
+        the summary and progress updated, the result yielded (a generator: nothing is yielded for
+        a file that is not test data, or one that failed). A writer's WriterStop propagates; any
+        other failure is this file's error, as it always was."""
+        try:
+            try:
+                outcome = future.result()
+            except Exception as e:
+                if writer is not None:
+                    # The analysis itself raised: nothing to save. The writer counts it (an
+                    # error), so the buckets still sum to what was processed.
+                    writer.add(Outcome(path=str(file_path),
+                                       internal=f"{type(e).__name__}: {e}"))
+                raise
+            result = self._hand_over(outcome, writer)
+
+            # Skip non-trim files (process_file returns None)
+            if result is None:
+                summary.skipped += 1
+                if progress_callback:
+                    progress_callback(ProcessingStatus(
+                        filename=Path(file_path).name,
+                        status="skipped",
+                        message="Non-trim file skipped",
+                        progress_percent=completed / total * 100,
+                    ))
+                return
+
+            self._update_summary(summary, result)
+
+            if progress_callback:
+                progress_callback(ProcessingStatus(
+                    filename=Path(file_path).name,
+                    status="completed",
+                    progress_percent=completed / total * 100,
+                    result=result,
+                ))
+
+            yield result
+
+        except WriterStop:
+            raise
+        except Exception as e:
+            logger.error(f"Error processing {file_path}: {e}")
+            # Count as processed-with-error so the buckets sum to
+            # `processed`, matching the sequential path (where
+            # process_file returns an ERROR result via _update_summary).
+            summary.processed += 1
+            summary.errors += 1
+
+            if progress_callback:
+                progress_callback(ProcessingStatus(
+                    filename=Path(file_path).name,
+                    status="failed",
+                    message=str(e),
+                    progress_percent=completed / total * 100,
+                ))
 
     def _hand_over(self, outcome: Outcome, writer) -> Optional[AnalysisResult]:
         """One file's Outcome to whoever makes its writes -- on THIS thread, the consumer's: the
@@ -1469,7 +1531,7 @@ class Processor:
     def _smoothness_failure(self, file_path: Path, exc: Exception,
                             start_time: float) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
         """The smoothness failure rule, ONE place (see `_final_test_failure`)."""
-        logger.exception(f"Error processing Smoothness {file_path.name}: {exc}")
+        logger.error(f"Error processing Smoothness {file_path.name}: {exc}", exc_info=exc)
         error_result = self._create_error_result(
             self._create_minimal_metadata(file_path),
             f"Smoothness error: {exc}", start_time
@@ -1987,24 +2049,9 @@ class Processor:
                 if marker is not None:
                     self._write_marker(marker, db)
                 return result
-            self.record_row_id(result, write, row_id)
+            record_row_id(result, write, row_id)
         return result
 
-    @staticmethod
-    def record_row_id(result: Optional[AnalysisResult], write: Any, row_id: Optional[int]) -> None:
-        """The saved row's id onto the result, as the analysis did when it saved: a final test's
-        (not a header-only row's: that result is its ERROR), a smoothness file's."""
-        if result is None:
-            return
-        if isinstance(write, FinalTestWrite):
-            if result.overall_status != AnalysisStatus.ERROR:
-                result.final_test_id = row_id
-                logger.debug(f"Processed Final Test: {result.metadata.filename} - "
-                             f"{result.overall_status.value} (ID: {row_id})")
-        elif isinstance(write, SmoothnessWrite):
-            result.smoothness_id = row_id
-            logger.debug(f"Processed Smoothness: {result.metadata.filename} - "
-                         f"{result.overall_status.value} (ID: {row_id})")
 
     def _load_processed_hashes(self) -> None:
         """Load processed file info from database into memory cache.

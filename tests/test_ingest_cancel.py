@@ -70,6 +70,17 @@ class _FakeDb:
     def save_analysis(self, result):
         self.saved.append(result)
 
+    def write_batch(self, items):
+        """Since ingest-speed Task 10 the run's writer saves in batches: every item is saved,
+        and each trim it was handed is recorded as saved."""
+        from laser_trim_analyzer.database.manager import TrimWrite, WriteOutcome
+        out = []
+        for item in items:
+            if isinstance(item, TrimWrite):
+                self.saved.append(item.analysis)
+            out.append(WriteOutcome("saved", row_id=len(out) + 1))
+        return out
+
 
 def _paths(n):
     return [Path(f"/nowhere/f{i:05d}.xls") for i in range(n)]

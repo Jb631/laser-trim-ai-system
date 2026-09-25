@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Iterator, Sequence, Tuple
@@ -383,10 +383,16 @@ class WriteOutcome:
       (filename, file_date, model, serial). The body's own savepoint rolled its insert back, and
       the item's savepoint was then released with nothing in it: nothing of this file is stored,
       and the row that holds the identity -- with other content -- is left as it was.
+
+    `error` is the exception an item's own body raised (a `failed` or malformed `duplicate`
+    item), for a caller that applies a rule to it -- the ingest's final-test and smoothness
+    failure rules (Task 10). None for a batch that could not commit: that failure is the batch's,
+    not the file's.
     """
     status: str
     row_id: Optional[int] = None
     reason: Optional[str] = None
+    error: Optional[BaseException] = field(default=None, compare=False, repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -2152,9 +2158,9 @@ class DatabaseManager:
         why = f"{type(exc).__name__}: {exc}"[:500]
         if isinstance(exc, IntegrityError) and "UNIQUE constraint" in str(exc):
             logger.warning(f"{name}: not saved -- its own rows broke a UNIQUE constraint: {why}")
-            return WriteOutcome(DUPLICATE, reason=why)
+            return WriteOutcome(DUPLICATE, reason=why, error=exc)
         logger.error(f"Save failed for {name}: {why}")
-        return WriteOutcome(FAILED, reason=why)
+        return WriteOutcome(FAILED, reason=why, error=exc)
 
     @staticmethod
     def _batch_still_open(dbapi_connection, after: str) -> None:

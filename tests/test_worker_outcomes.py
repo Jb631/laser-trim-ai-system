@@ -240,28 +240,38 @@ def test_a_final_tests_stat_is_the_walks_converted_as_the_scan_reads_it(db, tmp_
     (RuntimeError("invented: UNIQUE constraint failed: final_test_results.x"), None),  # permanent
     (PermissionError("invented: the file is locked"), "no marker"),                     # transient
 ])
-@pytest.mark.parametrize("via", ["process_file", "the ingest's writer"])
+@pytest.mark.parametrize("via", ["process_file", "the ingest's batch writer"])
 def test_a_final_test_save_that_fails_is_handled_as_it_always_was(
         db, tmp_path, monkeypatch, failure, marker_reason, via):
-    """A final-test save that raises -- now on the consumer's thread, after the analysis -- gets
-    the rule the old try/except gave it: an ERROR result ("Final Test error: ..."), and a skip
-    marker WITH its reason for an ordinary failure, one WITHOUT a reason for a permanent one, and
-    none for a transient one."""
+    """A final-test save that raises -- now on the consumer's thread, after the analysis, and in
+    the ingest inside a batch -- gets the rule the old try/except gave it: an ERROR result
+    ("Final Test error: ..."), and a skip marker WITH its reason for an ordinary failure, one
+    WITHOUT a reason for a permanent one, and none for a transient one. In a batch the file counts
+    as an error, and its marker is written with the next batch."""
     import sqlite3
-    from laser_trim_analyzer.core.ingest_run import ApplyNowWriter
+    from laser_trim_analyzer.core.ingest_run import BatchWriter
     from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
     from laser_trim_analyzer.database.manager import DatabaseManager
     ft = save_rows._pinned_copy(
         save_rows.FIXTURES / "final_test" / "7458-sn7_4-2-2026_3-19 PM.xls",
         tmp_path / "Test Station" / "7458-sn7_4-2-2026_3-19 PM.xls")
 
-    def fails(self, **kw):
+    def fails(self, *a, **kw):
         raise failure
 
-    monkeypatch.setattr(DatabaseManager, "save_final_test", fails)
+    monkeypatch.setattr(DatabaseManager, "save_final_test" if via == "process_file"
+                        else "_save_final_test_in", fails)     # the public save / the batch body
     proc = Processor(use_ml=False, snapshot=take_spec_snapshot(use_ml=False, db=db))
-    result = (proc.process_file(ft) if via == "process_file"
-              else ApplyNowWriter(proc, db).add(proc.analyse_path(ft)))
+    if via == "process_file":
+        result = proc.process_file(ft)
+    else:
+        settled = []
+        writer = BatchWriter(proc, db, settled.append)
+        writer.add(proc.analyse_path(ft))
+        writer.flush()
+        (committed,) = settled
+        assert committed.bucket == "errors" and not committed.saved, committed
+        result = committed.result
     assert result.overall_status.value == "Error" and result.file_type == "final_test"
     assert result.errors == [f"Final Test error: {failure}"]
     con = sqlite3.connect(f"file:{db.database_path}?mode=ro", uri=True)

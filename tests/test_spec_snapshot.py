@@ -283,9 +283,11 @@ def test_a_manager_that_could_not_read_its_state_is_named_too(tmp_path, caplog, 
 
 def test_a_spec_edited_mid_run_takes_effect_at_the_next_folder(tmp_path, monkeypatch):
     """Ruling 16: the snapshot is taken at FOLDER start. A spec edited while folder 1 runs (here,
-    right after its first file is saved) does not reach folder 1's second file -- it takes effect
-    at folder 2. The 8232-1 angle spec is what moves the stored numbers."""
+    right after its first file is analysed -- when the old per-file lookup would have seen it)
+    does not reach folder 1's second file -- it takes effect at folder 2. The 8232-1 angle spec
+    is what moves the stored numbers."""
     from laser_trim_analyzer.core.ingest_run import run_folders
+    from laser_trim_analyzer.core.processor import Processor
     from laser_trim_analyzer.database.manager import DatabaseManager
     db = DatabaseManager(tmp_path / "run.db")
     save_rows.inject(db, monkeypatch)
@@ -296,19 +298,19 @@ def test_a_spec_edited_mid_run_takes_effect_at_the_next_folder(tmp_path, monkeyp
         folder.mkdir()
         for s in serials:
             shutil.copyfile(src, folder / f"dlts_8232-1_{s}.xls")
-    real_save = DatabaseManager.save_analysis
+    real_analyse = Processor.analyse_path
     edited = []
 
-    def save_then_edit(self, analysis):
-        out = real_save(self, analysis)
+    def analyse_then_edit(self, file_path, disk_stat=None):
+        out = real_analyse(self, file_path, disk_stat)
         if not edited:
-            edited.append(analysis.metadata.serial)
-            self.save_model_spec({"model": "8232-1", "electrical_angle": 340.0,
-                                  "electrical_angle_tol": 5.0,
-                                  "electrical_angle_tol_type": "bilateral"})
+            edited.append(out.result.metadata.serial)
+            db.save_model_spec({"model": "8232-1", "electrical_angle": 340.0,
+                                "electrical_angle_tol": 5.0,
+                                "electrical_angle_tol_type": "bilateral"})
         return out
 
-    monkeypatch.setattr(DatabaseManager, "save_analysis", save_then_edit)
+    monkeypatch.setattr(Processor, "analyse_path", analyse_then_edit)
     report = run_folders([str(one), str(two)], db=db, config=None, incremental=True)
     assert [r.ok for r in report.results] == [True, True], [r.error for r in report.results]
     con = sqlite3.connect(f"file:{db.database_path}?mode=ro", uri=True)
@@ -318,7 +320,7 @@ def test_a_spec_edited_mid_run_takes_effect_at_the_next_folder(tmp_path, monkeyp
             "JOIN track_results t ON t.analysis_id = a.id").fetchall())
     finally:
         con.close()
-    assert len(edited) == 1 and edited[0] in ("901", "902"), edited   # folder 1's first save
+    assert len(edited) == 1 and edited[0] in ("901", "902"), edited   # folder 1's first file
     assert fail_points == {"901": 5, "902": 5, "903": 1}, fail_points
 
 

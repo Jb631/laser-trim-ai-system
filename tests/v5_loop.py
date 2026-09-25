@@ -176,3 +176,31 @@ def v5_snapshot(db_path: Path, root: Path, seen) -> dict:
             row["file_date"] = "<now>"
             row["unit_id"] = "<now>"
     return snap
+
+
+def order_free(tables: dict) -> dict:
+    """The same rows with every id replaced by the natural key of the row it points at, in a
+    stable order. Two runs that stored the same rows in a different ORDER -- the batch writer
+    commits a failed save's marker with the NEXT batch, a pool completes files in any order --
+    compare equal; nothing else does."""
+    import json
+
+    def natural(row, *cols):
+        return json.dumps([row.get(c) for c in cols], default=str)
+
+    ak = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("analysis_results", [])}
+    tk = {r["id"]: json.dumps([ak.get(r["analysis_id"]), r["track_id"]])
+          for r in tables.get("track_results", [])}
+    fk = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("final_test_results", [])}
+    sk = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("smoothness_results", [])}
+    refs = {"analysis_id": ak, "linked_trim_id": ak, "track_result_id": tk,
+            "final_test_id": fk, "smoothness_id": sk}
+    out = {}
+    for table, rows in tables.items():
+        conv = [{c: (refs[c].get(v, f"<dangling {v}>") if c in refs and v is not None else v)
+                 for c, v in r.items() if c != "id"} for r in rows]
+        out[table] = sorted(conv, key=lambda r: json.dumps(r, sort_keys=True, default=str))
+    return out

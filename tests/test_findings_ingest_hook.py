@@ -51,21 +51,21 @@ def test_a_batch_that_saved_nothing_does_not_recompute_findings(tmp_path, monkey
 
 
 def test_the_batch_counts_the_final_tests_it_saved_for_the_findings_gate(tmp_path, monkeypatch):
-    """Only a final test that was SAVED counts (it carries its final_test_id); one the processor
-    could not read comes back as an error result without one."""
+    """Only a final test that was SAVED counts -- since ingest-speed Task 10, one whose save
+    COMMITTED (it then carries its final_test_id); one the processor could not read comes back as
+    an error result with no save to make."""
     from types import SimpleNamespace
     from laser_trim_analyzer.core import ingest_run
     from laser_trim_analyzer.core.models import AnalysisStatus
+    from laser_trim_analyzer.core.processor import Outcome
+    from laser_trim_analyzer.database.manager import FinalTestWrite, WriteOutcome
 
     (tmp_path / "a.xls").write_bytes(b"junk")
 
     def ft(i, saved):
-        r = SimpleNamespace(file_type="final_test",
-                            metadata=SimpleNamespace(model="FT1", filename=f"ft{i}.xls"),
-                            overall_status=AnalysisStatus.PASS if saved else AnalysisStatus.ERROR)
-        if saved:
-            r.final_test_id = 100 + i
-        return r
+        return SimpleNamespace(file_type="final_test",
+                               metadata=SimpleNamespace(model="FT1", filename=f"ft{i}.xls"),
+                               overall_status=AnalysisStatus.PASS if saved else AnalysisStatus.ERROR)
 
     class _Proc:
         last_scan_stats = {}
@@ -74,17 +74,24 @@ def test_the_batch_counts_the_final_tests_it_saved_for_the_findings_gate(tmp_pat
             pass
 
         def process_batch(self, *a, **k):
-            yield ft(0, True)
-            yield ft(1, True)
-            yield ft(2, False)
+            for i, saved in ((0, True), (1, True), (2, False)):
+                r = ft(i, saved)
+                writes = ((FinalTestWrite(metadata={"filename": f"ft{i}.xls"}, tracks=[],
+                                          test_results={}, file_hash=f"invented-{i}"),)
+                          if saved else ())
+                k["writer"].add(Outcome(path=f"/nowhere/ft{i}.xls", result=r, writes=writes))
+                yield r
             return SimpleNamespace(processed=3)
+
+    committing = SimpleNamespace(write_batch=lambda items: [
+        WriteOutcome("saved", row_id=100 + n) for n, _ in enumerate(items)])
 
     calls = []
     monkeypatch.setattr(ingest_run, "Processor", _Proc)
     monkeypatch.setattr(ingest_run, "_post_batch",
                         lambda db, models, new_trims, phases, on_phase, **k:
                         calls.append((sorted(models), new_trims, k.get("new_final_tests"))))
-    res = ingest_run.run_folder(str(tmp_path), db=SimpleNamespace(), config=None)
+    res = ingest_run.run_folder(str(tmp_path), db=committing, config=None)
     assert res.ok and calls == [(["FT1"], 0, 2)]
 
 

@@ -3421,6 +3421,153 @@ def check_worker_outcomes() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _order_free(tables: dict) -> dict:
+    """Rows with every id replaced by the natural key of the row it points at, in a stable
+    order: two runs that stored the same rows in a different ORDER compare equal."""
+    import json
+
+    def natural(row, *cols):
+        return json.dumps([row.get(c) for c in cols], default=str)
+
+    ak = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("analysis_results", [])}
+    tk = {r["id"]: json.dumps([ak.get(r["analysis_id"]), r["track_id"]])
+          for r in tables.get("track_results", [])}
+    fk = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("final_test_results", [])}
+    sk = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("smoothness_results", [])}
+    refs = {"analysis_id": ak, "linked_trim_id": ak, "track_result_id": tk,
+            "final_test_id": fk, "smoothness_id": sk}
+    out = {}
+    for table, rows in tables.items():
+        conv = [{c: (refs[c].get(v, f"<dangling {v}>") if c in refs and v is not None else v)
+                 for c, v in r.items() if c != "id"} for r in rows]
+        out[table] = sorted(conv, key=lambda r: json.dumps(r, sort_keys=True, default=str))
+    return out
+
+
+def check_batched_ingest() -> None:
+    """run_folder on the batch writer (ingest-speed Task 10; spec 3.1, 3.9; rulings 5, 22) over
+    REAL corpus files of every kind -- trims from both lasers, final tests, smoothness exports --
+    into a throwaway database (--only batched-ingest). Three promises:
+      1. it stores exactly what the per-file way stores (process_file + save_analysis, one file
+         after another, into a database of its own) -- every column of every row but the clocks,
+         in whatever order its batches wrote them;
+      2. its buckets are counted from what COMMITTED, and sum to the files it processed;
+      3. it wrote in batches of 20 files -- never a transaction per file. The 2-second rule is
+         switched off here (tests/test_batch_writer.py pins it), so the count does not depend on
+         how fast this machine is.
+    `_post_batch` (the final-test rematch, drift, findings) is switched off too: this compares
+    the SAVE paths, and the per-file way has no post-batch work.
+
+    Falsify before trusting (2026-09-25): write the trims without their stat -- check 1 goes
+    FAIL; flush after every file -- check 3 goes FAIL.
+    """
+    import shutil
+    import tempfile
+    from laser_trim_analyzer.core import ingest_run
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.ml import invalidate_shared_ml_manager
+
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
+
+    def firsts(folder: Path, n: int) -> list:
+        if not folder.is_dir():
+            return []
+        out = []
+        for d in sorted(x for x in folder.iterdir() if x.is_dir()):
+            f = min((x for x in d.rglob("*") if x.is_file() and x.suffix.lower() in
+                     (".xls", ".xlsx") and not x.name.startswith("~$")), default=None)
+            if f is not None:
+                out.append(f)
+            if len(out) >= n:
+                break
+        return out
+
+    picks = {"laser": firsts(base / "DLTS", 12) + firsts(base / "LTS", 8),
+             "Test Station": firsts(base / "Test Station", 20),
+             "os": firsts(base / "Smoothness_Sample_2026-04-10" / "Test Station", 8)}
+    if not any(picks.values()):
+        warn("batched ingest: the corpus", f"no files under {base} -- not run")
+        return
+    tables = _SAVE_TABLES + ("final_test_results", "final_test_tracks", "smoothness_results",
+                             "smoothness_tracks")
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None), ingest_run._post_batch,
+             ingest_run.BatchWriter.FLUSH_SECONDS)
+    tmp = Path(tempfile.mkdtemp(prefix="batched_ingest_sweep_"))
+    opened = []
+    try:
+        root = tmp / "in"
+        for sub, files in picks.items():
+            for f in files:
+                dst = root / sub / f.parent.name / f.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dst)                           # the mtime travels
+        batched = _mgr.DatabaseManager(tmp / "batched.db")
+        opened.append(batched)
+        per_file = _mgr.DatabaseManager(tmp / "per_file.db")
+        opened.append(per_file)
+        calls = []
+        real_write_batch = batched.write_batch
+
+        def counted(items):
+            calls.append(len(items))
+            return real_write_batch(items)
+
+        batched.write_batch = counted
+        ingest_run._post_batch = lambda *a, **k: None
+        ingest_run.BatchWriter.FLUSH_SECONDS = 10 ** 9     # batches by count alone, here
+        invalidate_shared_ml_manager()
+        _mgr._db_manager = _dbpkg._db_manager = batched
+        res = ingest_run.run_folder(str(root), db=batched, config=None, incremental=True)
+        files, _ = ingest_run.discover_excel_files(str(root))
+        _mgr._db_manager = _dbpkg._db_manager = per_file
+        invalidate_shared_ml_manager()
+        one = Processor(use_ml=True)
+        for f in files:
+            result = one.process_file(Path(f))
+            if result is not None:
+                per_file.save_analysis(result)
+        invalidate_shared_ml_manager()
+
+        def rows(path):
+            out = _saved_rows(path, tables)
+            for row in out["analysis_results"]:
+                if row["model"] == "Unknown" and row["overall_status"] == "ERROR":
+                    row["file_date"] = row["unit_id"] = "<now>"   # _create_minimal_metadata
+            return _order_free(out)
+
+        got, want = rows(tmp / "batched.db"), rows(tmp / "per_file.db")
+        counts = {t: len(v) for t, v in got.items()}
+        check("batched ingest: run_folder stores exactly what the per-file way stores, real files "
+              "of every kind (every column but the clocks, in any order)",
+              res.ok and got == want and all(counts[t] for t in (
+                  "analysis_results", "final_test_results", "smoothness_results")),
+              f"{len(files)} files; ok={res.ok} {res.error or ''}; rows {counts}; "
+              f"identical={got == want}")
+        check("batched ingest: its buckets were counted from what committed and sum to the files "
+              "it processed",
+              sum(res.buckets.values()) == res.new_files > 0,
+              f"buckets {res.buckets} vs {res.new_files} processed")
+        most = -(-len(files) // ingest_run.BatchWriter.FLUSH_FILES) + 1   # + a fallback flush
+        check("batched ingest: it wrote in batches of 20 files, never a transaction per file",
+              calls and len(calls) <= most < len(files) and res.phases.get("save", 0) > 0,
+              f"{len(calls)} write_batch calls (at most {most}) for {len(files)} files, items "
+              f"per call {calls}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("batched ingest: the corpus runs through run_folder", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        (_mgr._db_manager, _dbpkg._db_manager, ingest_run._post_batch,
+         ingest_run.BatchWriter.FLUSH_SECONDS) = saved
+        for m in opened:
+            m.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _same_values(a, b) -> bool:
     """Exact equality of two model_dump()s, a NaN equal to a NaN (a stored NaN is a value)."""
     if isinstance(a, float) and isinstance(b, float):
@@ -4857,6 +5004,8 @@ def main() -> int:
         check_write_batch_fixtures()
     with _guard("worker outcomes: the corpus"):
         check_worker_outcomes()
+    with _guard("batched ingest: the corpus"):
+        check_batched_ingest()
     with _guard("spec snapshot: on the database"):
         check_spec_snapshot_on_database(db, raw)
 
@@ -5477,7 +5626,8 @@ STANDALONE = {"glosses": check_usability_glosses,
               "initial-trim-value": check_initial_trim_value_fixtures,
               "track2-setup": check_track2_setup_fixtures,
               "write-batch": check_write_batch_fixtures,
-              "worker-outcomes": check_worker_outcomes}
+              "worker-outcomes": check_worker_outcomes,
+              "batched-ingest": check_batched_ingest}
 
 
 if __name__ == "__main__":
