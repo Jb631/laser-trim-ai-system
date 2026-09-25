@@ -118,9 +118,10 @@ def test_one_laser_only_is_not_a_comparison():
 
 
 def test_a_third_laser_under_the_floor_is_left_out_of_the_comparison():
-    # 6952's real shape (measured 2026-09-24): three lasers share the table and months, but
-    # the third is too thin -- laser 2 96% of 156, laser 1 84% of 160, laser 3 85% of 62. It
-    # must not be averaged in, and must not accidentally become best or worst.
+    # 6952's real shape (measured 2026-09-24, corrected in 0afa628 after the pool-by-track-name
+    # bug -- see machine_compare.py's own docstring): laser 2 (DLTS) 95% of 288, laser 1 (LTS)
+    # 84% of 221. A third laser also ran this table and months but stayed under the 100-track
+    # floor. It must not be averaged in, and must not accidentally become best or worst.
     tracks = (block(0, START, 200, "A", 0.96)
               + block(1000, START, 200, "B", 0.84)
               + block(2000, START, 90, "C", 0.99))

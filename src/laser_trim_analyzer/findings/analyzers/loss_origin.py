@@ -6,22 +6,30 @@ the loss was made upstream (deposition), not at the laser: no amount of cutting 
 the wafer never had room to reach. If incoming and outcome are unrelated, the laser's own
 settings are still the first place to look -- the other analyzers already cover that ground.
 
-This is always a fact, per laser, for the Model page's Findings tab: how well the incoming
-measurement separates a laser PASS from a laser FAIL, as an AUC (the probability a FAIL's score
-is worse than a PASS's; 0.5 = no better than chance, 1.0 = perfect separation, half credit on a
-tie). Two scores are tracked -- the untrimmed sweep's largest error magnitude, and the untrimmed
-resistance -- but only the error AUC can ever produce a finding: resistance is `ink_target`'s
-question, with its own holdout and its own floor.
+This is always a fact, per laser, for the Model page's Findings tab, for ANY laser that graded at
+least one track in the window -- Ruling 2 says so explicitly ("Stored in facts["loss_origin"]...
+always"), and that is what this module does: how well the incoming measurement separates a laser
+PASS from a laser FAIL, as an AUC (the probability a FAIL's score is worse than a PASS's; 0.5 = no
+better than chance, 1.0 = perfect separation, half credit on a tie). Two scores are tracked -- the
+untrimmed sweep's largest error magnitude, and the untrimmed resistance -- but only the error AUC
+can ever produce a finding: resistance is `ink_target`'s question, with its own holdout and its
+own floor.
 
-`facts` holds every COMPARABLE measurement, exactly like `machine_compare` (review fix,
-2026-09-24, for consistency across this plan's analyzers): a laser's population must itself be
-trustworthy -- MIN_TRACKS scored tracks in the latest year, with at least MIN_PER_OUTCOME of
-each outcome -- before its AUC is stored at all, whether or not that AUC is strong. Below either
-floor the laser is left out of facts as well as findings, never guessed in. Above both floors, a
-FINDING additionally needs the error AUC to clear STRONG_AUC: a weak-but-populated AUC (8232-1
-and 8340-1 in the real data, both 0.57) is a fact, never a finding -- the other analyzers already
-cover the laser's own levers, and this one names deposition only when the incoming measurement
-itself is the strong predictor.
+`facts[laser]` = {"n", "fails", "auc_error", "auc_resistance"} for every laser with at least one
+graded track in the window -- unconditionally (fix, 2026-09-24: an earlier pass here copied
+`machine_compare`'s "facts only for a comparable population" rule for consistency across this
+plan's analyzers, which was right for `machine_compare` -- its spec is silent on the point -- but
+wrong here, where Ruling 2 says "always" in as many words). "n"/"fails" count the error-scored
+population; `auc_error`/`auc_resistance` are `None` only when they truly cannot be computed -- no
+scored track on one side at all (no fails, or no passes, with a usable reading), which `auc()`
+itself already reports as `None`. A FINDING additionally needs the population to be trustworthy --
+MIN_TRACKS scored tracks in the window, with at least MIN_PER_OUTCOME of each outcome -- AND the
+error AUC to clear STRONG_AUC: a real-but-thin AUC (8202-1, 0.71 over only 27 failures) or a
+real-but-weak one (8232-1 and 8340-1, both 0.57) is a fact, sitting on the tab beside its own
+"n"/"fails" so a sub-floor number is never mistaken for a call -- never a finding. The other
+analyzers already cover the laser's own levers, and this one names deposition only when the
+incoming measurement is both trustworthy and a strong predictor. `machine_compare` keeps its own
+"facts only for a comparable pair" rule -- this fix does not touch it.
 
 Score = the untrimmed sweep's largest error magnitude (max|error| across its recorded points)
 and, separately, the untrimmed resistance. A track with no usable untrimmed error reading is
@@ -30,11 +38,16 @@ Same for resistance: None and the work database's 1e9+ junk readings are skipped
 0 < r < 1e9. "n" and "fails" in facts count the error-scored population specifically -- what the
 error AUC is actually computed over.
 
+The window is the MODEL's own latest year -- LOOKBACK_DAYS back from the latest `file_date`
+among ALL its tracks, across every laser (the engine's own `annual_volume` convention), computed
+once before the per-laser split. Never each laser's own latest date: a laser that stopped running
+the model early must not quietly widen its own window relative to the others.
+
 Measured (latest year, 2026-09-24): 6607 on laser 1 (LTS) AUC 0.74 over 1,290 tracks, 465 failing
--- the only one of eight models checked that qualifies. 8232-1 0.57 and 8340-1 0.57: made at the
-laser, as the 2026-09-17 rework study already found. 8202-1 0.71 but only 27 failures, under the
-50-per-outcome floor -- a real number with too little of one outcome to trust, excluded from
-facts like any other laser under either floor.
+-- the only one of eight models checked that clears every floor. 8232-1 0.57 and 8340-1 0.57:
+made at the laser, as the 2026-09-17 rework study already found. 8202-1 0.71 but only 27 failures,
+under the 50-per-outcome floor -- a real, visible AUC with too little of one outcome to call a
+finding.
 
 This routes the question; it never grades a part, and the lever it names -- deposition -- is
 upstream of anything the laser or its settings can fix.
@@ -123,22 +136,26 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
     for system, rows in sorted(by_laser.items()):
         graded = [t for t in rows if t.linearity_pass is not None]
         if not graded:
-            continue
+            continue                                    # nothing scored at all -- not even a fact
         fails_e, passes_e = _split(graded, _score_error)
         n_fails, n_passes = len(fails_e), len(passes_e)
         n = n_fails + n_passes
-        # Not a comparable measurement below either floor -- left out of facts as well as
-        # findings, the same rule machine_compare applies to an under-track-floor laser.
-        if n < MIN_TRACKS or min(n_fails, n_passes) < MIN_PER_OUTCOME:
-            continue
-        auc_error = auc(fails_e, passes_e)             # never None here: both sides are non-empty
+        auc_error = auc(fails_e, passes_e)              # None only when one side scored nothing
         fails_r, passes_r = _split(graded, _score_resistance)
         auc_resistance = auc(fails_r, passes_r)
+        # A fact for every laser that graded at least one track here -- Ruling 2 says "always";
+        # the thresholds below gate only whether it is ALSO a finding (fix, 2026-09-24: an
+        # earlier pass wrongly excluded a sub-floor laser from facts too, copying machine_compare's
+        # rule where this module's own spec says otherwise -- see the module docstring).
         facts[laser_label(system)] = {"n": n, "fails": n_fails,
                                       "auc_error": auc_error, "auc_resistance": auc_resistance}
 
+        if n < MIN_TRACKS or min(n_fails, n_passes) < MIN_PER_OUTCOME:
+            continue                                    # not enough of one outcome to trust a CALL
+        # auc_error cannot be None here: clearing MIN_PER_OUTCOME (> 0) means both fails_e and
+        # passes_e are non-empty, the only case auc() returns None for.
         if auc_error < STRONG_AUC:
-            continue                                    # a real, weak AUC: a fact, not a finding
+            continue                                    # a real, weak AUC: a fact, never a finding
         findings.append(Finding(
             model=model, analyzer="loss_origin", category="Where the loss is made",
             lever="deposition", systems=(system,),

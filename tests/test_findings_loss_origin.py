@@ -4,6 +4,7 @@ Every silence test here was made to FAIL first by relaxing the control it names 
 test that cannot go red proves nothing.
 """
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
@@ -34,6 +35,21 @@ def mixed(first_id, start, n_each, system, *, hi, lo, hi_share):
             + scored_tracks(first_id + n_hi, start, n_lo, system, lo, False, n_days=10))
     # Mirror image of fails: the n_hi-sized share sits at LO here, and the n_lo-sized share at
     # HI -- e.g. hi_share=0.9 puts 90% of fails at hi and 90% of passes at lo.
+    passes = (scored_tracks(first_id + 2 * n_each, start, n_hi, system, lo, True, n_days=10)
+             + scored_tracks(first_id + 2 * n_each + n_hi, start, n_lo, system, hi, True, n_days=10))
+    return fails + passes
+
+
+def exact_split(first_id, start, n_each, system, n_hi, *, hi, lo):
+    """Like `mixed()`, but takes `n_hi` directly instead of rounding `hi_share * n_each` -- AUC =
+    n_hi / n_each EXACTLY (worked by hand from auc()'s rank-sum formula: two distinct values,
+    n_each items at each, n_hi of the "hi" value's items are fails; verified numerically too --
+    exact_split(1000, 699) gives auc() == 0.699 and exact_split(1000, 700) gives 0.7, not
+    0.6999999999999998 or the like), so a boundary test lands on an exact float, never a rounding
+    artefact of hi_share * n_each."""
+    n_lo = n_each - n_hi
+    fails = (scored_tracks(first_id, start, n_hi, system, hi, False, n_days=10)
+            + scored_tracks(first_id + n_hi, start, n_lo, system, lo, False, n_days=10))
     passes = (scored_tracks(first_id + 2 * n_each, start, n_hi, system, lo, True, n_days=10)
              + scored_tracks(first_id + 2 * n_each + n_hi, start, n_lo, system, hi, True, n_days=10))
     return fails + passes
@@ -105,25 +121,103 @@ def test_a_weak_laser_is_facts_only_no_finding():
     assert facts["Laser 1 (LTS)"]["n"] == 1000
 
 
-def test_under_the_outcome_floor_is_excluded_from_facts_too():
+def test_under_the_outcome_floor_is_a_fact_never_a_finding():
     # Perfect separation (AUC 1.0, well over STRONG_AUC) and the total clears MIN_TRACKS, but
     # only 40 of the outcome MIN_PER_OUTCOME names -- e.g. 8202-1 in the real data (AUC 0.71,
-    # 27 failures). Not a comparable measurement: excluded from facts, not only from findings,
-    # same as machine_compare excludes an under-the-floor laser from both.
+    # 27 failures). Ruling 2, reversing the earlier (machine_compare-modelled) reading of this:
+    # a fact ALWAYS once a laser has graded tracks here -- the outcome floor gates only whether
+    # it is ALSO a finding, never whether the measurement is visible on the tab at all.
     tracks = (scored_tracks(0, START, 40, "B", 3.0, False)
              + scored_tracks(1000, START, 300, "B", 1.0, True))
     facts, findings = loss_origin.analyze("M", tracks, label)
-    assert findings == [] and facts == {}
+    assert findings == []
+    f = facts["Laser 1 (LTS)"]
+    assert f["n"] == 340 and f["fails"] == 40
+    assert f["auc_error"] == pytest.approx(1.0)           # a real, visible AUC -- just too thin to call
+    assert f["auc_resistance"] is not None                # computed, not guessed away either
 
 
-def test_under_the_track_floor_is_excluded_from_facts_too():
+def test_under_the_track_floor_is_a_fact_never_a_finding():
     # 60 + 60 = 120 tracks: both outcomes individually clear the 50-per-outcome floor, but the
-    # total is under MIN_TRACKS (300). The two floors are independent -- either alone must be
-    # enough to exclude this laser from facts as well as findings.
+    # total is under MIN_TRACKS (300). Same ruling as the outcome floor above: still a fact,
+    # never a finding -- the two floors are independent, but neither excludes a laser from facts.
     tracks = (scored_tracks(0, START, 60, "B", 3.0, False)
              + scored_tracks(1000, START, 60, "B", 1.0, True))
     facts, findings = loss_origin.analyze("M", tracks, label)
-    assert findings == [] and facts == {}
+    assert findings == []
+    f = facts["Laser 1 (LTS)"]
+    assert f["n"] == 120 and f["fails"] == 60
+    assert f["auc_error"] == pytest.approx(1.0)
+
+
+# ---- boundary tests (review, 2026-09-24): each threshold isolated from the other two ----------
+
+def test_track_count_299_is_no_finding_300_is_one_all_else_equal():
+    # min(fails, passes) stays a safe 149/150 throughout -- only the TOTAL crosses MIN_TRACKS.
+    below = (scored_tracks(0, START, 150, "B", 3.0, False)
+            + scored_tracks(1000, START, 149, "B", 1.0, True))                  # 299
+    facts, findings = loss_origin.analyze("M", below, label)
+    assert findings == []
+    assert facts["Laser 1 (LTS)"]["n"] == 299 and facts["Laser 1 (LTS)"]["auc_error"] == pytest.approx(1.0)
+
+    at = (scored_tracks(0, START, 150, "B", 3.0, False)
+         + scored_tracks(1000, START, 150, "B", 1.0, True))                     # 300
+    f = only(loss_origin.analyze("M", at, label)[1])
+    assert f.n_units == 300
+
+
+def test_per_outcome_49_is_no_finding_50_is_one_all_else_equal():
+    # The passing side stays comfortably over both floors throughout -- only the FAIL side's
+    # count crosses MIN_PER_OUTCOME.
+    passes = scored_tracks(2000, START, 260, "B", 1.0, True)
+    below = scored_tracks(0, START, 49, "B", 3.0, False) + passes                # 49 + 260 = 309
+    facts, findings = loss_origin.analyze("M", below, label)
+    assert findings == []
+    assert facts["Laser 1 (LTS)"]["fails"] == 49
+
+    at = scored_tracks(0, START, 50, "B", 3.0, False) + passes                   # 50 + 260 = 310
+    f = only(loss_origin.analyze("M", at, label)[1])
+    assert f.n_units == 310
+
+
+def test_auc_699_is_no_finding_700_is_one_all_else_equal():
+    # n_each=1000 clears MIN_TRACKS (2000 total) and MIN_PER_OUTCOME (1000 each) by a wide
+    # margin on both sides -- only the AUC itself crosses STRONG_AUC (0.70).
+    below = exact_split(0, START, 1000, "B", 699, hi=3.0, lo=1.0)
+    facts, findings = loss_origin.analyze("M", below, label)
+    assert findings == []
+    assert facts["Laser 1 (LTS)"]["auc_error"] == pytest.approx(0.699)
+
+    at = exact_split(0, START, 1000, "B", 700, hi=3.0, lo=1.0)
+    f = only(loss_origin.analyze("M", at, label)[1])
+    assert f.strength_value == pytest.approx(0.7)
+
+
+def test_lookback_is_measured_from_the_models_latest_across_lasers_not_each_lasers_own():
+    # The docstring is explicit: the window is LOOKBACK_DAYS back from the MODEL's own latest
+    # file_date across every laser (the engine's annual_volume convention), computed once before
+    # the per-laser split -- never each laser's own latest date.
+    anchor = START + timedelta(days=1000)
+    # A single track on a DIFFERENT laser sets the model-wide latest date; it is ungraded, so it
+    # never itself appears in facts or findings -- its only job is to anchor "latest" away from
+    # laser B, so a bug that measured each laser's own latest instead would make BOTH batches
+    # below read as "day zero" and both would wrongly count.
+    anchor_track = replace(make_track(9000, date=anchor, system="A"), linearity_pass=None)
+
+    boundary = anchor - timedelta(days=365)             # exactly LOOKBACK_DAYS back -- included (>=)
+    just_outside = boundary - timedelta(days=1)          # one day further back -- excluded
+
+    inside = (scored_tracks(0, boundary, 150, "B", 3.0, False, n_days=1)
+             + scored_tracks(1000, boundary, 150, "B", 1.0, True, n_days=1))
+    outside = (scored_tracks(2000, just_outside, 150, "B", 3.0, False, n_days=1)
+              + scored_tracks(3000, just_outside, 150, "B", 1.0, True, n_days=1))
+
+    facts, findings = loss_origin.analyze("M", [anchor_track] + inside + outside, label)
+    # Only the 300 INSIDE tracks count -- if the 300 OUTSIDE ones were wrongly included too,
+    # n would read 600.
+    assert facts["Laser 1 (LTS)"]["n"] == 300
+    f = only(findings)
+    assert f.n_units == 300
 
 
 def test_tracks_without_an_untrimmed_sweep_are_skipped_never_scored_zero():
