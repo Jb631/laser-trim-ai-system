@@ -30,8 +30,10 @@ class BrowseZone(ctk.CTkFrame):
         # Row anatomy, spelled out (live-walk finding, 2026-07-08: an unlabeled date column read
         # as decoration). The status word IS the row's own "statement" column now (blocks.row) --
         # this used to be a bare colour dot, word-less (a colour-blind reader had nothing to read).
+        # No claim about ORDER (final review, 2026-09-24: it said "worst first" over an
+        # alphabetical list): this is the lookup list; "Needs a look" above is the ranked one.
         self._legend = ctk.CTkLabel(self, text=(
-                "Status = drift tier, worst first. Date = last processed. 'Active' scope = "
+                "Status = drift tier. Date = last processed. 'Active' scope = "
                 "models with recent data or pinned in Settings → Active Models."),
                 font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w", justify="left")
         self._legend.pack(side="top", fill="x", pady=(0, t.SPACE_SM))

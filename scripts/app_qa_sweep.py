@@ -3868,9 +3868,12 @@ def main() -> int:
         ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
          "Gap = Trim − FT", "lowest-yield list explains Gap"),
         # 2026-09-24 (facelift step 2, T7): the colour dot became a status WORD on each row
-        # (a colour-blind reader had nothing to read); the legend explains it in words.
+        # (a colour-blind reader had nothing to read); the legend explains it in words. Final
+        # review (same date): "worst first" dropped -- the list is alphabetical, the lookup list
+        # -- so the needle pins all three glosses in one string, with no order claim between.
         ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
-         "Status = drift tier", "browse list explains status/date/Active"),
+         "Status = drift tier. Date = last processed. 'Active' scope =",
+         "browse list explains status/date/Active"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
          '"Sigma gradient"', "units table headers are full words"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",

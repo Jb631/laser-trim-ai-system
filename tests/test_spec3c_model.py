@@ -757,6 +757,35 @@ def test_key_names_only_what_is_actually_drawn(tk_root):
     assert keys2 and "±3σ control limit" in keys2[0], keys2
 
 
+def test_key_names_the_baseline_mean_only_when_it_is_on_the_chart(tk_root):
+    """I5 (final review, 2026-09-24): the key always said "╌ baseline mean". On 8340-1's shape --
+    a baseline trained across mixed history, its mean far outside what the recent data spans --
+    the dashed line is drawn off the visible y-range, and the key named a line nobody can see."""
+    from datetime import datetime, timedelta
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(60, 0, -1)]
+    values = [0.05 + 0.001 * (i % 5) for i in range(len(dates))]
+
+    def key_and_ylim(mean, std):
+        chart = FocusChart(tk_root, theme=ThemeManager())
+        chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                         baseline_mean=mean, baseline_std=std)
+        keys = [t.get_text() for t in chart._ax.texts if t.get_text().startswith(("━", "·"))]
+        assert keys, "expected a key line"
+        return keys[0], chart._ax.get_ylim()
+
+    key, (y0, y1) = key_and_ylim(0.9, 1.3)            # mean and limits both far off-scale
+    assert not (y0 <= 0.9 <= y1)
+    assert "baseline mean" not in key, key
+    key, (y0, y1) = key_and_ylim(0.052, 0.001)        # the ordinary case: on the chart, named
+    assert y0 <= 0.052 <= y1
+    assert "baseline mean" in key, key
+
+
 # ---- Task 5: DriftMetricsTab ----------------------------------------------
 
 def test_drift_tab_row_per_metric_and_click(tk_root):

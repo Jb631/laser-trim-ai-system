@@ -426,7 +426,11 @@ class FocusChart(ctk.CTkFrame):
                 key_bits.append("●  beyond ±3σ (red)")
             if limits_off_scale is None and baseline_std:
                 key_bits.append("┄ ±3σ control limit")
-            key_bits.append("╌ baseline mean")
+            # Named only when its dashed line is actually on the chart (final review,
+            # 2026-09-24): a baseline trained across mixed history can sit far outside what the
+            # recent data spans (8340-1), and the key used to name a line nobody could see.
+            if y0 <= baseline_mean <= y1:
+                key_bits.append("╌ baseline mean")
         key_text = "    ".join(key_bits)
 
         show_header_row = bool(key_text) or bool(note)

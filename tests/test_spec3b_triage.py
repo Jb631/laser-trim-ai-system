@@ -114,6 +114,20 @@ def _ms(model, tier=None):
     return ModelSummary(model=model, tier=tier or DriftTier.STABLE)
 
 
+def test_the_browse_legend_makes_no_claim_about_order(tk_root):
+    """I5 (final review, 2026-09-24): the legend said "Status = drift tier, worst first" over an
+    ALPHABETICAL list. Ruling: the browse list is the lookup list ("Needs a look" is the ranked
+    one), so the order claim goes, the rest of the key stays."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    z.set_models([_ms("B2"), _ms("A1")])
+    legend = z._legend.cget("text")
+    assert "worst first" not in legend
+    assert legend.startswith("Status = drift tier. Date = last processed. 'Active' scope = ")
+    assert [r._summary.model for r in z._rows] == ["B2", "A1"]   # as given -- no ranking here
+
+
 def test_browse_one_row_per_model(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
