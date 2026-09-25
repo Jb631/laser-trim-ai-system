@@ -842,6 +842,72 @@ def test_drift_tab_metric_names_fit_their_column_at_every_scaling(tk_root, scale
         tk_root.withdraw()
 
 
+def _drift_header(tab):
+    """The drift tab's column-header row: the frame whose gridded labels ARE the column names."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.widgets import drift_metrics_tab as dm
+    for child in tab.winfo_children():
+        if isinstance(child, ctk.CTkFrame):
+            names = sorted((s.grid_info()["column"], s.cget("text")) for s in child.grid_slaves()
+                           if isinstance(s, ctk.CTkLabel))
+            if [n for _c, n in names] == dm._COLUMNS:
+                return child
+    raise AssertionError("no column-header row found on the drift tab")
+
+
+def test_the_drift_tabs_columns_follow_a_live_change_of_scaling(tk_root):
+    """F4 (re-review Minor 1, 2026-09-25): each row scaled its column minimums ONCE, when built. A
+    live change of display scaling -- on Windows, the window dragged onto a monitor with another
+    DPI -- left the header (built once, for the tab's whole life) at 240 px for the name column
+    while every row built afterwards got 360: out of line for the rest of the session. Measured on
+    a mapped window: after the change every row -- built before it and after it -- has the header's
+    minimums, and every column starts and ends where the header's does."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets import drift_metrics_tab as dm
+
+    def minimums(frame):
+        return [int(frame.grid_columnconfigure(i)["minsize"]) for i in range(len(dm._COLUMNS))]
+
+    def columns(frame):
+        return [frame.grid_bbox(column=i, row=0)[::2] for i in range(len(dm._COLUMNS))]   # (x, w)
+
+    def settle():
+        for _ in range(3):
+            tk_root.update_idletasks()
+            tk_root.update()
+
+    tab = dm.DriftMetricsTab(tk_root, theme=ThemeManager(), on_metric_select=lambda _: None)
+    tab.pack(fill="both", expand=True)
+    tab.set_status(_status())                          # rows built at 100%
+    try:
+        tk_root.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    tk_root.geometry("1300x600+20000+20000")
+    tk_root.deiconify()
+    settle()
+    try:
+        ctk.set_widget_scaling(1.5)                    # live
+        tk_root._set_scaled_min_max()
+        settle()
+        # Tk rounds a fractional screen distance half UP (175 x 1.5 = 262.5 -> 263; Python's
+        # round() would say 262).
+        want = [int(dm._COL_MINSIZE.get(i, 0) * 1.5 + 0.5) for i in range(len(dm._COLUMNS))]
+        header = _drift_header(tab)
+        assert minimums(header) == want, "the header kept the old scaling's column widths"
+        assert all(minimums(row) == want for row in tab._rows.values())
+        tab.set_status(_status())                      # rows rebuilt at 150%
+        settle()
+        for row in tab._rows.values():
+            assert minimums(row) == want
+            assert columns(row) == columns(header), (row.metric, columns(row), columns(header))
+    finally:
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()
+        tk_root.withdraw()
+
+
 # ---- Task 6: SmoothnessTab ------------------------------------------------
 
 def test_smoothness_tab_empty(tk_root):

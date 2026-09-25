@@ -164,3 +164,33 @@ def test_the_column_minimums_scale_with_the_widgets(tk_root):
         zone.destroy()
         ctk.set_widget_scaling(1.0)
         tk_root._set_scaled_min_max()
+
+
+def test_the_column_minimums_follow_a_live_change_of_scaling(tk_root):
+    """F4 (re-review Minor 1, 2026-09-25): the minimums were scaled ONCE, when the block was built.
+    A live change of display scaling -- on Windows, the window dragged onto a monitor with another
+    DPI -- left them at the old factor while the text grew, until the next reload rebuilt the
+    table. They follow the change now, both ways."""
+    import customtkinter as ctk
+
+    theme = ThemeManager()
+    zone = StatsTableZone(tk_root, theme=theme)
+    try:
+        zone.set_stats(_two_metric_stats())
+        frame = next(w for w in zone.winfo_children()
+                     if isinstance(w, ctk.CTkFrame) and w.grid_slaves())
+
+        def minimums():
+            return (int(frame.grid_columnconfigure(0)["minsize"]),
+                    int(frame.grid_columnconfigure(1)["minsize"]))
+        assert minimums() == (190, 78)
+        ctk.set_widget_scaling(1.5)                    # live, with the table on screen
+        tk_root._set_scaled_min_max()
+        assert minimums() == (285, 117), "the table kept the old scaling's column widths"
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()
+        assert minimums() == (190, 78)
+    finally:
+        zone.destroy()
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()

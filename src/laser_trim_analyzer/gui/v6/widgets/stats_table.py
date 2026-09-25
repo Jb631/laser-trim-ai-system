@@ -102,6 +102,36 @@ def _caption_count(row: StatRow, lot_rows: Dict[str, StatRow]) -> int:
             + (1 if row.key in lot_rows else 0))
 
 
+def _size_columns(frame, width: int) -> None:
+    """The block's column minimums: the label column, then every numeric one (the rule column
+    between the groups is as wide as its 1px). minsize is REAL pixels to Tk (CustomTkinter never
+    scales a column's minsize), so it is scaled here like every other size -- unscaled, these
+    columns stay 190/78 px at 150% Windows scaling while their text grows by half (final review,
+    2026-09-24)."""
+    rule_column = 1 + width
+    frame.grid_columnconfigure(0, weight=1, minsize=frame._apply_widget_scaling(190))
+    for column in range(1, 2 + 2 * width):
+        if column != rule_column:
+            frame.grid_columnconfigure(column, minsize=frame._apply_widget_scaling(78))
+
+
+class _TableGrid(ctk.CTkFrame):
+    """One block's grid (StatsTableZone._grid). Its scaled column minimums are numbers handed to
+    Tk once, which CustomTkinter never re-scales, so a live change of display scaling (on Windows,
+    the window dragged onto a monitor with another DPI) left them at the old factor until the next
+    reload rebuilt the table (re-review, 2026-09-25). Re-applied on the change, the way
+    CustomTkinter's own CTkSwitch._set_scaling re-applies its hand-scaled minsize."""
+
+    def __init__(self, master, width: int, **kwargs):
+        super().__init__(master, **kwargs)
+        self._group_width = width              # numeric columns per group (len(headers))
+        _size_columns(self, width)
+
+    def _set_scaling(self, *args, **kwargs):
+        super()._set_scaling(*args, **kwargs)       # updates this widget's own scaling first
+        _size_columns(self, self._group_width)
+
+
 class StatsTableZone(ctk.CTkFrame):
     """The stats table, and — when a lot is selected — how that lot compares."""
 
@@ -163,19 +193,12 @@ class StatsTableZone(ctk.CTkFrame):
         if not rows:
             return                  # header rows over nothing are just noise
         t = self.theme
-        frame = ctk.CTkFrame(self, fg_color="transparent")
-        frame.pack(side="top", fill="x", padx=t.SPACE_MD, pady=(0, t.SPACE_XS))
-        self._rendered.append(frame)
         width = len(headers)
         rule_column = 1 + width
         full = 2 + 2 * width        # label + both groups + the rule between them
-        # minsize is REAL pixels to Tk (CustomTkinter never scales a column's minsize), so it is
-        # scaled here like every other size -- unscaled, these columns stay 190/78 px at 150%
-        # Windows scaling while their text grows by half (final review, 2026-09-24).
-        frame.grid_columnconfigure(0, weight=1, minsize=frame._apply_widget_scaling(190))
-        for column in range(1, full):
-            if column != rule_column:   # the rule column is as wide as its 1px
-                frame.grid_columnconfigure(column, minsize=frame._apply_widget_scaling(78))
+        frame = _TableGrid(self, width, fg_color="transparent")
+        frame.pack(side="top", fill="x", padx=t.SPACE_MD, pady=(0, t.SPACE_XS))
+        self._rendered.append(frame)
 
         plan = band_plan([_caption_count(row, lot_rows) for row in rows])
         end_row = plan[-1][0] + plan[-1][1]

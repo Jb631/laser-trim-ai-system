@@ -29,10 +29,34 @@ _COLUMNS = ["Metric", "Tier", "Alert", "Baseline (lot mean±σ)", "Last lot", "S
 # shift) tops out at 64px, so narrowing them a little more to make room is safe.
 # CustomTkinter's UNSCALED units, like every other size in gui/v6 -- but grid_columnconfigure's
 # minsize goes straight to Tk as REAL pixels (CTk scales a grid's padx, never a column's minsize),
-# so both call sites below scale it (_apply_widget_scaling). Unscaled, the name column stayed
+# so _Columns below scales it (_apply_widget_scaling). Unscaled, the name column stayed
 # 240 real px at 150% Windows scaling while its text grew to 318 px, and every long metric name
 # was cut (render_pages.py --audit --scaling 1.5, final review 2026-09-24).
 _COL_MINSIZE = {0: 240, 3: 175}
+
+
+class _Columns(ctk.CTkFrame):
+    """One row of the table's six columns: the column header, or a metric (_MetricRow).
+
+    Every row is its own grid, so every row carries the same column plan, from one place -- and
+    re-applies it when the display scaling changes LIVE (on Windows, the window dragged onto a
+    monitor with another DPI). The scaled minsize is a number handed to Tk once, and CustomTkinter
+    never scales it again: the header, built once for the tab's whole life, kept its 240-px name
+    column while every row built after a change to 150% got 360 (re-review, 2026-09-25).
+    CustomTkinter's own CTkSwitch._set_scaling re-applies its hand-scaled minsize the same way."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self._size_columns()
+
+    def _size_columns(self) -> None:
+        for i in range(len(_COLUMNS)):
+            self.grid_columnconfigure(i, weight=1, uniform="dm",
+                                      minsize=self._apply_widget_scaling(_COL_MINSIZE.get(i, 0)))
+
+    def _set_scaling(self, *args, **kwargs):
+        super()._set_scaling(*args, **kwargs)       # updates this widget's own scaling first
+        self._size_columns()
 
 
 class DriftMetricsTab(ctk.CTkScrollableFrame):
@@ -60,11 +84,8 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         # lifetime, so this binds exactly once (blocks.wrap_to_width: call it once per
         # (label, container) lifetime, never from inside a re-render/apply path).
         blocks.wrap_to_width(self._sigma_key_lbl, self)
-        header = ctk.CTkFrame(self, fg_color=theme.CARD)
+        header = _Columns(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
-        for i in range(len(_COLUMNS)):
-            header.grid_columnconfigure(i, weight=1, uniform="dm",
-                                        minsize=header._apply_widget_scaling(_COL_MINSIZE.get(i, 0)))
         for i, col in enumerate(_COLUMNS):
             ctk.CTkLabel(header, text=col, font=theme.font(theme.SIZE_CAPTION, "bold"),
                          text_color=theme.TEXT_SECONDARY, anchor="w")\
@@ -142,7 +163,7 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         self._group_headers = []
 
 
-class _MetricRow(ctk.CTkFrame):
+class _MetricRow(_Columns):
     def __init__(self, master, ms, theme: ThemeManager, on_click, recent_override=None):
         bg, _ = theme.tier_color(ms.tier)
         super().__init__(master, fg_color=bg)
@@ -170,15 +191,8 @@ class _MetricRow(ctk.CTkFrame):
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
                  alert_txt,
                  f"{_fmt(ms.baseline_mean)} ± {_fmt(ms.baseline_std)}", recent, shift_txt]
-        for i in range(len(cells)):
-            # _COL_MINSIZE (module level): columns 0 and 3 need more than an equal
-            # 1/6 share once six columns are squeezed into a narrower window; taken
-            # from the other four, which hold short fixed-format values ("+1.50σ")
-            # with plenty of spare width. Kept in sync with the header row's OWN
-            # grid_columnconfigure call above (a separate grid instance) so the two
-            # stay column-aligned.
-            self.grid_columnconfigure(i, weight=1, uniform="dm",
-                                      minsize=self._apply_widget_scaling(_COL_MINSIZE.get(i, 0)))
+        # The columns themselves are _Columns' (the same plan as the header row, a separate grid
+        # instance, so the two stay aligned -- at every scaling, and across a live change of it).
         for i, txt in enumerate(cells):
             lbl = ctk.CTkLabel(self, text=txt, font=theme.font(theme.SIZE_BODY),
                                text_color=theme.TEXT_PRIMARY, anchor="w")
