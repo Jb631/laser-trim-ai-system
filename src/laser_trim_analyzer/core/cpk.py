@@ -16,7 +16,7 @@ lower term -- a max-abs-error can never be negative.)
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -140,30 +140,3 @@ def calculate_cpk(
     result.rating = rate_cpk(result.cpk)
 
     return result
-
-
-def calculate_cpk_trend(
-    deviations_by_period: List[Tuple[str, List[float]]],
-    spec_limit_pct: float,
-) -> List[dict]:
-    """
-    Calculate Cpk for each time period to show capability trend.
-
-    Args:
-        deviations_by_period: List of (period_label, deviations) tuples.
-        spec_limit_pct: The spec limit percentage.
-
-    Returns:
-        List of dicts with keys: period, cpk, ppk, n_samples, rating
-    """
-    results = []
-    for period_label, devs in deviations_by_period:
-        r = calculate_cpk(devs, spec_limit_pct, subgroup_size=1)
-        results.append({
-            "period": period_label,
-            "cpk": r.cpk,
-            "ppk": r.ppk,
-            "n_samples": r.n_samples,
-            "rating": r.rating,
-        })
-    return results
