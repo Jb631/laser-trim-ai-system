@@ -250,3 +250,34 @@ def test_a_section_heading_is_no_smaller_than_the_group_headings_inside_it(tk_ro
     assert group == ThemeManager().SIZE_HEADING
     for section in ("What was measured", "What to do about it", "Recipe history"):
         assert size_of(section) >= group, section
+
+
+# ---- facelift F4 (2026-09-25): a FAILED load is its own state on the tab too ------------------
+# The Model page's "Worth changing" section already had three states (failed / not computed /
+# empty); the tab did not -- a crashed facts load drew "No process findings have been computed
+# for this model yet..." under the banner that named the crash.
+
+def test_a_failed_load_says_it_failed_never_not_computed(tk_root):
+    from laser_trim_analyzer.gui.v6.widgets.findings_tab import NOT_COMPUTED_TEXT
+    tab = _tab(tk_root)
+    tab.set_data({"facts": FACTS, "findings": [FINDING]})       # a good load first
+    tab.set_data(None, failed="RuntimeError: invented database crash")
+    text = " | ".join(_texts(tab))
+    assert NOT_COMPUTED_TEXT not in text
+    assert "could not be loaded" in text and "RuntimeError: invented database crash" in text
+    assert "Nothing to act on" not in text and "Incoming resistance" not in text   # no stale rows
+    banners = [w for w in tab._body.winfo_children()
+               if isinstance(w, ctk.CTkLabel) and w.cget("fg_color") == tab.theme.CHECK_TINT]
+    assert banners, "a failure is a check-tone banner, never a quiet line"
+
+
+def test_the_three_states_follow_each_other_and_recover(tk_root):
+    from laser_trim_analyzer.gui.v6.widgets.findings_tab import NOT_COMPUTED_TEXT
+    tab = _tab(tk_root)
+    tab.set_data(None, failed="OperationalError: database is locked")
+    assert "could not be loaded" in " | ".join(_texts(tab))
+    tab.set_data(None)                                             # not computed
+    assert _texts(tab) == [NOT_COMPUTED_TEXT]
+    tab.set_data({"facts": FACTS, "findings": []})                 # computed, nothing found
+    text = " | ".join(_texts(tab))
+    assert "Nothing to act on" in text and "could not be loaded" not in text

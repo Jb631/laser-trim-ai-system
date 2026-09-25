@@ -388,6 +388,7 @@ class ModelPage(PageBase):
             units, smoothness, recent = [], [], {}
             trim_ft, history = {}, {}
             findings_data = None
+            findings_error = None          # "ExcType: message" when the findings load crashed
             # One anchored cutoff for every tab (None = All): anchored to the
             # model's latest data so stale-but-flagged models still show their
             # record instead of empty windows.
@@ -500,9 +501,10 @@ class ModelPage(PageBase):
                 if process_facts:
                     findings_data = {"facts": process_facts,
                                      "findings": self.app.db.get_process_findings(model)}
-            except Exception:
+            except Exception as exc:
                 logger.exception("Model %s: process findings failed", model)
                 failed.append("process findings")
+                findings_error = f"{type(exc).__name__}: {exc}"
 
             def apply():
                 if gen != self._reload_gen:
@@ -560,7 +562,10 @@ class ModelPage(PageBase):
                 _try("trim-vs-FT tab", lambda: self._trimft_tab.set_data(trim_ft))
                 _try("FT units tab", lambda: self._ft_units_tab.set_units(ft_units))
                 _try("history tab", lambda: self._history_tab.set_data(history))
-                _try("findings tab", lambda: self._findings_tab.set_data(findings_data))
+                # A failed load is the tab's own FAILED state, naming the error -- never its "not
+                # computed yet" line under the banner that names the crash (facelift F4).
+                _try("findings tab", lambda: self._findings_tab.set_data(
+                    findings_data, failed=findings_error))
             if sync:
                 apply()                 # already on the Tk thread — post nothing
             else:

@@ -2110,3 +2110,26 @@ def test_a_tab_click_right_after_the_app_switches_tabs_still_shows_a_tab(make_ap
     laid_out = [name for name in page._tabs._name_list if page._tabs.tab(name).winfo_manager()]
     assert page._tabs.get() == page._tabs._segmented_button.get() == "Units"
     assert laid_out == ["Units"], laid_out
+
+
+def test_a_failed_findings_load_says_so_on_the_findings_tab_too(make_app, monkeypatch):
+    """F4: the section above stays silent on a failed "process findings" load (the page banner
+    names it) -- the Findings TAB said "not computed yet" under that banner. It names the failure
+    now, with the error, and a later good load puts the findings back."""
+    from laser_trim_analyzer.gui.v6.widgets.findings_tab import NOT_COMPUTED_TEXT
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {}})
+
+    def _boom(*a, **kw):
+        raise RuntimeError("invented: database is locked")
+    real = app.db.get_process_facts
+    monkeypatch.setattr(app.db, "get_process_facts", _boom)
+    page.reload_now()
+    texts = [w.cget("text") for w in _all_labels(page._findings_tab)]
+    assert "process findings" in page._load_banner.cget("text")
+    assert NOT_COMPUTED_TEXT not in texts
+    assert any("could not be loaded" in t and "invented: database is locked" in t for t in texts), texts
+    monkeypatch.setattr(app.db, "get_process_facts", real)
+    page.reload_now()
+    texts = [w.cget("text") for w in _all_labels(page._findings_tab)]
+    assert not any("could not be loaded" in t for t in texts)
+    assert "What was measured" in texts

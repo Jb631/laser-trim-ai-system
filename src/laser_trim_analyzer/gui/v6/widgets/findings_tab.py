@@ -47,6 +47,13 @@ def analyzer_name(key: str) -> str:
     return _ANALYZER_NAMES.get(key, key)
 
 
+def failed_text(error: str) -> str:
+    """FAILED, in one set of words: the load itself crashed (facelift F4). Never NOT_COMPUTED_TEXT
+    -- "not worked out yet" over a crash is a failure looking like a result."""
+    return (f"The process findings for this model could not be loaded ({error}). This is an "
+            f"error, not a result — the log has the details.")
+
+
 class FindingsTab(ctk.CTkFrame):
     def __init__(self, master, theme: ThemeManager, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -56,10 +63,20 @@ class FindingsTab(ctk.CTkFrame):
         self.set_data(None)
 
     # ---- public ----
-    def set_data(self, data: Optional[Dict[str, Any]]) -> None:
+    def set_data(self, data: Optional[Dict[str, Any]], *, failed: Optional[str] = None) -> None:
+        """Three states, never two (facelift F4; the Model page's "Worth changing" section has had
+        them since the final review):
+          * FAILED -- the load itself crashed; `failed` names the error ("ExcType: message"). A
+            check-tone banner and nothing else: whatever this tab drew before is not this load's.
+          * NOT COMPUTED -- no facts cached (`data` None, or no "facts" in it).
+          * computed -- the facts, then the findings, or "Nothing to act on" (the EMPTY state).
+        """
         t = self.theme
         for child in self._body.winfo_children():
             child.destroy()
+        if failed:
+            blocks.banner(self._body, t, failed_text(failed)).pack(fill="x", pady=(0, t.SPACE_SM))
+            return
         facts = (data or {}).get("facts")
         findings: List[Dict[str, Any]] = (data or {}).get("findings") or []
         if not facts:
