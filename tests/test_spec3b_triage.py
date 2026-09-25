@@ -1,6 +1,8 @@
 """Spec 3b — Triage. Foundations §4.1/§4.3. Fixtures in tests/conftest.py."""
 from datetime import datetime, timedelta
 
+import pytest
+
 # ---- Task 1: helpers ------------------------------------------------------
 
 def test_metric_label_humanizes():
@@ -335,3 +337,57 @@ def test_the_browse_list_is_not_squeezed_out_at_1280_by_720(make_app):
         assert not hits, [h.line() for h in hits]
     finally:
         app.withdraw()
+
+
+@pytest.mark.parametrize("size", ((1280, 720), (960, 640)))
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_the_browse_list_keeps_its_minimum_at_every_scaling(make_app, scale, size):
+    """Final review (2026-09-24): _fit_focus_zone mixed its units -- winfo_height() is REAL
+    pixels, _BROWSE_MIN_H and the theme's spacing are CustomTkinter's unscaled units, and
+    configure(height=) scales its argument again. At 150% (the Windows laptop's likely setting)
+    the focus zone took its full 320 (480 real px) and the browse list's guaranteed 200 (300
+    real px) shrank to a sliver.
+
+    Windows applies the DPI factor to BOTH scalings, so a 1280x720 window there is 1920x1080
+    real pixels at 150%; the window is borderless (overrideredirect) so macOS does not clamp a
+    window that big back to this Mac's screen. Measured in real pixels on a mapped window, at
+    the audited 1280x720 and at 960x640 -- the app's own minimum size, where the page is short
+    enough for the old arithmetic to starve the list (at 1280x720 it happened to have room)."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.pages import triage_page as tp
+
+    ctk.set_widget_scaling(scale)
+    ctk.set_window_scaling(scale)
+    try:
+        app = make_app()
+        for i in range(9):                                  # > FOCUS_CAP (7): a full focus zone
+            _seed(app.db, f"DRIFT-{i}", fails_last=12)
+        for i in range(15):
+            _seed(app.db, f"PLAIN-{i}", fails_last=2, base_fails=2)
+        triage = app.page_container.get_page("triage")
+        app.show_page("triage")
+        triage.reload_now()
+        try:
+            app.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        app.overrideredirect(True)
+        width, height = size
+        app.geometry(f"{width}x{height}+20000+20000")
+        app.deiconify()
+        for _ in range(3):
+            app.update_idletasks()
+            app.update()
+        try:
+            assert app.winfo_height() == round(height * scale)    # really `height` units tall
+            browse_real = triage._browse.winfo_height()
+            assert browse_real >= tp._BROWSE_MIN_H * scale - 2, (
+                f"browse list {browse_real} px at {scale:.0%}: its guaranteed minimum is "
+                f"{tp._BROWSE_MIN_H} units = {tp._BROWSE_MIN_H * scale:.0f} px")
+            # and the focus zone is asked for a height in the unit configure() expects
+            assert tp._FOCUS_ZONE_MIN_H <= triage._focus_wrap.cget("height") <= tp._FOCUS_ZONE_MAX_H
+        finally:
+            app.withdraw()
+    finally:
+        ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)

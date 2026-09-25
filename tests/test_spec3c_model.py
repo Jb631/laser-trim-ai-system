@@ -772,6 +772,47 @@ def test_drift_tab_row_per_metric_and_click(tk_root):
     assert got == ["untrimmed_sigma_gradient"]
 
 
+
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_drift_tab_metric_names_fit_their_column_at_every_scaling(tk_root, scale):
+    """render_pages.py --audit --scaling 1.5 (final review, 2026-09-24) found every long metric
+    name squeezed -- "Escape rate (trim PASS → FT FAIL)" laid out 318 px wide in a 263-px cell:
+    grid_columnconfigure(minsize=) goes straight to Tk in REAL pixels (CustomTkinter scales the
+    grid's padx, not a column's minsize), so the 240 reserved for the name was 240 real px while
+    the text grew with the 150% Windows scaling. A 1300-unit-wide window at each scaling (so the
+    same page), checked with the audit's own detector on a mapped window."""
+    import pathlib
+    import sys
+    import customtkinter as ctk
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    from render_pages import find_clipped_text_widgets
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
+
+    ctk.set_widget_scaling(scale)
+    tk_root._set_scaled_min_max()          # a live window is pinned for a second otherwise
+    try:
+        tab = DriftMetricsTab(tk_root, theme=ThemeManager(), on_metric_select=lambda _: None)
+        tab.pack(fill="both", expand=True)
+        tab.set_status(_status())
+        try:
+            tk_root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        tk_root.geometry(f"{round(1300 * scale)}x600+20000+20000")
+        tk_root.deiconify()
+        for _ in range(3):
+            tk_root.update_idletasks()
+            tk_root.update()
+        hits = [h for h in find_clipped_text_widgets(tab)
+                if h.text.startswith(("Escape rate", "Sigma gradient", "Final-test fail"))]
+        assert not hits, [h.line() for h in hits]
+    finally:
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()
+        tk_root.withdraw()
+
+
 # ---- Task 6: SmoothnessTab ------------------------------------------------
 
 def test_smoothness_tab_empty(tk_root):

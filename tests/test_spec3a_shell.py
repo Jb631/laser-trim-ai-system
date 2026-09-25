@@ -3,6 +3,7 @@ Foundations: docs/superpowers/plans/2026-06-01-spec3-rewrite-foundations.md (§2
 Spec: docs/superpowers/specs/2026-05-30-spec3-ui-shell-design.md (Sub-spec 3a).
 Shared fixtures (tk_root, make_app) live in tests/conftest.py.
 """
+import pytest
 
 # ---- Task 1: ThemeManager -------------------------------------------------
 
@@ -264,7 +265,8 @@ def test_page_base_set_caption_shows_and_clears(tk_root):
     assert slaves.index(p._caption) < slaves.index(p._content)      # before the content frame
 
 
-def test_page_base_caption_wraps_to_the_page_instead_of_overflowing(tk_root):
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_page_base_caption_wraps_to_the_page_instead_of_overflowing(tk_root, scale):
     """Task 2 (facelift step 2, 2026-09-24): Investigate's caption can run to several
     clauses joined by " · " and genuinely overflows an unwrapped single line --
     render_pages.py --audit found it squeezed at both audited window sizes (a caption was
@@ -283,25 +285,40 @@ def test_page_base_caption_wraps_to_the_page_instead_of_overflowing(tk_root):
         page_title = "T"
         def build_content(self, parent): pass
 
-    t = ThemeManager()
-    p = _P(tk_root, theme=t)
-    p.pack(fill="both", expand=True)
-    tk_root.geometry("500x300")
+    import customtkinter as ctk
+    # At 150% too (final review, 2026-09-24): this used to pin `wraplength == 500 - 32`, true
+    # only at 100% -- the page width is real pixels, wraplength CustomTkinter's unscaled units,
+    # and on the Windows laptop the widget scaling is the monitor's DPI factor. set_widget_scaling
+    # on a live window pins it at its size for a second; _set_scaled_min_max is CTk's own release.
+    ctk.set_widget_scaling(scale)
+    tk_root._set_scaled_min_max()
     try:
-        tk_root.attributes("-alpha", 0.0)
-    except Exception:
-        pass
-    tk_root.geometry("+20000+20000")
-    tk_root.deiconify()
-    tk_root.update_idletasks()
-    tk_root.update()
-    try:
-        p.set_caption("One clause · Two clause · Three clause · Four clause · Five clause")
+        t = ThemeManager()
+        p = _P(tk_root, theme=t)
+        p.pack(fill="both", expand=True)
+        tk_root.geometry("500x300")
+        try:
+            tk_root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        tk_root.geometry("+20000+20000")
+        tk_root.deiconify()
         tk_root.update_idletasks()
         tk_root.update()
-        assert p._caption.cget("wraplength") == 500 - t.SPACE_LG * 2
+        try:
+            p.set_caption("One clause · Two clause · Three clause · Four clause · Five clause · "
+                          "Six clause · Seven clause · Eight clause · Nine clause · Ten clause")
+            tk_root.update_idletasks()
+            tk_root.update()
+            assert p.winfo_width() == 500
+            assert p._caption.cget("wraplength") == int(500 / scale) - t.SPACE_LG * 2
+            # laid out inside the page, less the caption's own padx=SPACE_LG each side (scaled)
+            assert p._caption._label.winfo_reqwidth() <= 500 - t.SPACE_LG * 2 * scale
+        finally:
+            tk_root.withdraw()
     finally:
-        tk_root.withdraw()
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()
 
 
 def test_page_container_add_get_show(tk_root):

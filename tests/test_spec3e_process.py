@@ -1,6 +1,8 @@
 """Spec 3e — Process page. Foundations §1.5. Fixtures in tests/conftest.py."""
 from pathlib import Path
 
+import pytest
+
 # ---- Task 1: FolderPicker -------------------------------------------------
 
 def test_folder_picker_initial_none(tk_root):
@@ -101,25 +103,37 @@ def test_see_what_changed_appears_after_a_run_and_routes_to_findings(make_app):
     assert app.page_container.current_page == "findings"
 
 
-def test_db_info_wraps_to_its_container(make_app):
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_db_info_wraps_to_its_container(make_app, scale):
     """global-constraints.md: no fixed pixel wraplength on page-width text -- was a fixed
-    wraplength=1200 (same class of bug the Home/Triage wrap tests guard)."""
-    app = make_app()
-    page = app.page_container.get_page("process")
-    page._db_info.configure(text="Database: /some/path — 0 trim units on record")
+    wraplength=1200 (same class of bug the Home/Triage wrap tests guard).
+
+    At 150% too (final review, 2026-09-24): this used to pin `wraplength == container width`,
+    true only at 100% -- wraplength is CustomTkinter's unscaled units, the width real pixels."""
+    import customtkinter as ctk
+    ctk.set_widget_scaling(scale)
     try:
-        app.attributes("-alpha", 0.0)
-    except Exception:
-        pass
-    app.geometry("1280x720+20000+20000")
-    app.deiconify()
-    app.update_idletasks()
-    app.update()
-    try:
-        assert page._db_info.cget("wraplength") == page._db_info.master.winfo_width()
-        assert page._db_info.cget("wraplength") != 1200
+        app = make_app()
+        page = app.page_container.get_page("process")
+        page._db_info.configure(text="Database: /some/invented/path/analysis.db — 0 trim units on "
+                                     "record · " * 6)
+        try:
+            app.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        app.geometry("1280x720+20000+20000")
+        app.deiconify()
+        app.update_idletasks()
+        app.update()
+        try:
+            width = page._db_info.master.winfo_width()
+            assert page._db_info.cget("wraplength") == int(width / scale)
+            assert page._db_info._label.winfo_reqwidth() <= width
+            assert page._db_info.cget("wraplength") != 1200
+        finally:
+            app.withdraw()
     finally:
-        app.withdraw()
+        ctk.set_widget_scaling(1.0)
 
 
 def test_apply_progress_counts_skipped_from_processing_status(make_app):

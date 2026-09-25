@@ -27,6 +27,11 @@ _COLUMNS = ["Metric", "Tier", "Alert", "Baseline (lot mean±σ)", "Last lot", "S
 # two real models (8232-1, 6607) stays under these with margin; the other four
 # columns' widest real content (a tier name, an alert type, a smoothness value, a
 # shift) tops out at 64px, so narrowing them a little more to make room is safe.
+# CustomTkinter's UNSCALED units, like every other size in gui/v6 -- but grid_columnconfigure's
+# minsize goes straight to Tk as REAL pixels (CTk scales a grid's padx, never a column's minsize),
+# so both call sites below scale it (_apply_widget_scaling). Unscaled, the name column stayed
+# 240 real px at 150% Windows scaling while its text grew to 318 px, and every long metric name
+# was cut (render_pages.py --audit --scaling 1.5, final review 2026-09-24).
 _COL_MINSIZE = {0: 240, 3: 175}
 
 
@@ -58,7 +63,8 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
         for i in range(len(_COLUMNS)):
-            header.grid_columnconfigure(i, weight=1, uniform="dm", minsize=_COL_MINSIZE.get(i, 0))
+            header.grid_columnconfigure(i, weight=1, uniform="dm",
+                                        minsize=header._apply_widget_scaling(_COL_MINSIZE.get(i, 0)))
         for i, col in enumerate(_COLUMNS):
             ctk.CTkLabel(header, text=col, font=theme.font(theme.SIZE_CAPTION, "bold"),
                          text_color=theme.TEXT_SECONDARY, anchor="w")\
@@ -171,7 +177,8 @@ class _MetricRow(ctk.CTkFrame):
             # with plenty of spare width. Kept in sync with the header row's OWN
             # grid_columnconfigure call above (a separate grid instance) so the two
             # stay column-aligned.
-            self.grid_columnconfigure(i, weight=1, uniform="dm", minsize=_COL_MINSIZE.get(i, 0))
+            self.grid_columnconfigure(i, weight=1, uniform="dm",
+                                      minsize=self._apply_widget_scaling(_COL_MINSIZE.get(i, 0)))
         for i, txt in enumerate(cells):
             lbl = ctk.CTkLabel(self, text=txt, font=theme.font(theme.SIZE_BODY),
                                text_color=theme.TEXT_PRIMARY, anchor="w")

@@ -3,6 +3,19 @@
     python scripts/render_pages.py <copy.db> <outdir>            # PNG capture (needs a real screen)
     python scripts/render_pages.py <copy.db> <outdir> --audit    # clipped-text widget audit, no capture
     python scripts/render_pages.py <copy.db>          --show     # open on screen, mainloop, no capture
+    ... --scaling 1.5                                            # any mode, as Windows at 150%
+
+--scaling S (final review, 2026-09-24): CustomTkinter scales every widget AND every window size by
+the Windows display-scaling factor (1.25 at 125%, 1.5 at 150%); on a Mac the factor is always 1.0.
+A defect that mixes real pixels with CTk's unscaled units -- the Critical finding of that review:
+wrap_to_width scaled every wrapped line twice -- is therefore invisible to every test, audit and
+render on this Mac and cuts text at work. --scaling sets both factors to S before any widget is
+built and turns CTk's own DPI detection off, so S replaces the monitor's factor on every OS (on a
+150% Windows screen it would otherwise multiply: 2.25). The audit's window sizes stay in CTk's
+units, so "1280x720" at --scaling 1.5 is a 1920x1080-pixel window -- what 1280x720 is on the
+laptop at 150%. The audit window is borderless (overrideredirect), because macOS clamps a titled
+window to its own screen (1512x917 px here) and would silently audit a smaller page than asked.
+Every audit.txt header names the scaling it ran at.
 
 PNG capture and --show use `build_views`: every page in `Sidebar.ITEMS`, plus the Model page loaded
 for the model with the most cached process findings, with its Findings tab selected (Task 7's own
@@ -544,6 +557,14 @@ def run_audit(app, target_model: Optional[str],
         app.attributes("-alpha", 0.0)
     except Exception:
         pass
+    try:
+        # Borderless, so macOS never clamps the window to its own screen: at --scaling 1.5 the
+        # audited 1400x900 is 2100x1350 real pixels, and a titled window that big is cut back
+        # to the screen (measured: 1512x917 px -- a 1008x611 page audited as if it were
+        # 1400x900). Set before the first deiconify below.
+        app.overrideredirect(True)
+    except Exception:
+        pass
     for width, height in _audit_sizes(app):
         size_label = f"{width}x{height}"
         # Off-screen but MAPPED -- see the module docstring, point 1.
@@ -551,6 +572,12 @@ def run_audit(app, target_model: Optional[str],
         app.deiconify()
         app.update_idletasks()
         app.update()
+        # The size really reached, in real pixels -- a window the OS cut back would otherwise be
+        # audited as the size it was asked to be (see the overrideredirect note above).
+        failure = _window_size_failure(app, width, height, size_label)
+        if failure:
+            print(failure)
+            failures.append(failure)
         # The sidebar is not inside any page's subtree, and it never changes
         # across a page switch, so it gets one walk per size rather than one
         # per view.
@@ -612,6 +639,23 @@ def run_audit(app, target_model: Optional[str],
     return clipped, failures
 
 
+def _window_size_failure(app, width: int, height: int, size_label: str) -> Optional[str]:
+    """An AUDIT FAILURE line when the window is not `width`x`height` in CTk's units -- i.e. not
+    round(width x window scaling) real pixels wide, the arithmetic CTk.geometry() itself does --
+    else None. Every clip count at this size would otherwise describe a different page."""
+    try:
+        scale = float(app._get_window_scaling())
+    except Exception:
+        scale = 1.0
+    want = (round(width * scale), round(height * scale))
+    got = (app.winfo_width(), app.winfo_height())
+    if got == want:
+        return None
+    return (f"AUDIT FAILURE | {size_label} | the window is {got[0]}x{got[1]} px, not the "
+            f"{want[0]}x{want[1]} px that {size_label} is at {scale:.0%} scaling -- this size "
+            f"was not audited")
+
+
 def load_banner_shows(page, loader: str) -> bool:
     """Is `page`'s load banner laid out AND naming `loader`? The forced-failure pass below walks
     the page only to check that banner's text -- if the banner never appeared, walking would
@@ -666,6 +710,26 @@ def _force_one_loader_failure(app, model: str, size_label: str,
         ModelPage._load_units = original
 
 
+def _apply_scaling(factor: float) -> None:
+    """CustomTkinter's widget AND window scaling = `factor`, as Windows sets both at
+    `factor`x100% display scaling -- before any widget exists: set on a live window, CTk pins
+    that window at its current size for a second (CTk._set_scaling). DPI detection is turned
+    off so `factor` replaces the monitor's own (it would multiply it on a scaled Windows screen)."""
+    import customtkinter as ctk
+    ctk.deactivate_automatic_dpi_awareness()
+    ctk.set_widget_scaling(factor)
+    ctk.set_window_scaling(factor)
+
+
+def _effective_scaling(app) -> float:
+    """The widget scaling the app's widgets really draw at: --scaling's, or the monitor's."""
+    try:
+        from customtkinter.windows.widgets.scaling import ScalingTracker
+        return float(ScalingTracker.get_widget_scaling(app))
+    except Exception:
+        return 1.0
+
+
 def _run_audit_mode(db_path: Path, outdir: Path) -> int:
     app, db = _build_app(db_path)
     try:
@@ -686,7 +750,8 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
         n_sizes = len(_audit_sizes(app))
         clipped, failures = run_audit(app, target_model, ft_model)
         # Written BEFORE the teardown below, so a crash in destroy() cannot lose the results.
-        _write_audit(outdir, clipped, failures, n_sizes, target_model, ft_model)
+        _write_audit(outdir, clipped, failures, n_sizes, target_model, ft_model,
+                     scaling=_effective_scaling(app))
         _settle_before_destroy(app)
     finally:
         app.destroy()
@@ -694,14 +759,15 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
     return 1 if (clipped or failures) else 0
 
 
-def _write_audit(outdir: Path, clipped, failures, n_sizes, target_model, ft_model) -> None:
+def _write_audit(outdir: Path, clipped, failures, n_sizes, target_model, ft_model,
+                 scaling: float = 1.0) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     # Failures first: a state this script could not verify at all outranks a
     # confirmed clip -- and either one means the run is not clean, so both
     # count toward the exit code together (never "0 clipped" alone).
     lines = list(failures) + [c.line() for c in clipped]
     header = (f"{len(clipped)} clipped widget(s), {len(failures)} audit failure(s), "
-              f"across {n_sizes} window size(s); "
+              f"across {n_sizes} window size(s) at {scaling:.0%} scaling; "
               f"model (most findings): {target_model!r}; "
               f"model2 (most linked final-test rows): {ft_model!r}")
     (outdir / "audit.txt").write_text(header + "\n" + "\n".join(lines) + ("\n" if lines else ""))
@@ -802,6 +868,19 @@ def _run_show_mode(db_path: Path) -> int:
 def main(argv: Optional[List[str]] = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
 
+    scaling: Optional[float] = None
+    if "--scaling" in argv:
+        i = argv.index("--scaling")
+        try:
+            scaling = float(argv[i + 1])
+        except (IndexError, ValueError):
+            scaling = None
+        if scaling is None or not 0.5 <= scaling <= 3.0:
+            print("usage: --scaling <factor between 0.5 and 3>, e.g. --scaling 1.5 "
+                  "for a Windows screen at 150%")
+            return 2
+        argv = argv[:i] + argv[i + 2:]
+
     mode = "capture"
     if "--audit" in argv and "--show" in argv:
         print("usage: --audit and --show are mutually exclusive")
@@ -829,11 +908,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"no such database: {db_path}")
         return 2
 
+    if scaling is not None:
+        _apply_scaling(scaling)           # before ANY widget is built (see _apply_scaling)
+
     if mode == "show":
         return _run_show_mode(db_path)
 
     if len(argv) < 2:
-        print("usage: python scripts/render_pages.py <copy.db> <outdir> [--audit]\n"
+        print("usage: python scripts/render_pages.py <copy.db> <outdir> [--audit] [--scaling S]\n"
               "(outdir is required for PNG capture and for --audit)")
         return 2
     outdir = Path(argv[1])

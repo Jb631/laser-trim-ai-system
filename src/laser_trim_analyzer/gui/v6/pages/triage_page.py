@@ -93,18 +93,26 @@ class TriagePage(PageBase):
 
     def _fit_focus_zone(self, _event=None) -> None:
         """Give the focus zone at most a share of the page's actual height, leaving the browse
-        list its guaranteed minimum -- see the module docstring's "1280x720 clip" note."""
+        list its guaranteed minimum -- see the module docstring's "1280x720 clip" note.
+
+        ONE unit throughout (final review, 2026-09-24): CustomTkinter's unscaled units, the
+        unit of the three constants above, the theme's spacing and configure(height=), which
+        CTk scales itself. winfo_height() is REAL pixels, so every measured height is turned
+        back first -- mixing the two let the zone take its full 320 at 150% Windows scaling
+        (480 real px) and squeezed the browse list's guaranteed 200 to a 56-px sliver."""
         t = self.theme
         try:
-            total = self._content_parent.winfo_height()
+            total_px = self._content_parent.winfo_height()
         except Exception:
             return
-        if total <= 1:
+        if total_px <= 1:
             return          # not laid out yet; a real <Configure> follows once it is
-        header_h = self._focus_header.winfo_height() if self._focus_header is not None else 0
+        unscaled = self._reverse_widget_scaling
+        total = unscaled(total_px)
+        header_h = unscaled(self._focus_header.winfo_height()) if self._focus_header is not None else 0
         budget = total - header_h - t.SPACE_XS - _BROWSE_MIN_H - t.SPACE_LG
-        focus_h = max(_FOCUS_ZONE_MIN_H, min(_FOCUS_ZONE_MAX_H, budget))
-        if self._focus_wrap.winfo_height() != focus_h:
+        focus_h = int(max(_FOCUS_ZONE_MIN_H, min(_FOCUS_ZONE_MAX_H, budget)))
+        if self._focus_wrap.cget("height") != focus_h:      # cget: unscaled, like configure
             self._focus_wrap.configure(height=focus_h)
 
     # ---- data ----
@@ -156,6 +164,11 @@ class TriagePage(PageBase):
                                                   "Needs a look", len(result.focus))
         self._focus_header.pack(side="top", fill="x", pady=(0, self.theme.SPACE_XS),
                                 before=self._focus_wrap)
+        # The fit below runs while this brand-new header is still 1 px tall; once it is laid out
+        # nothing else changes size, so without this the zone kept a budget computed without its
+        # header (the browse list ended 2 px short of its minimum at 100%, 4 at 150%). Bound on
+        # the header itself, which is destroyed with its binding on the next apply.
+        self._focus_header.bind("<Configure>", self._fit_focus_zone, add="+")
         # The FocusResult goes to the zone untouched — one computation owns the
         # membership, the ranking and the wording (see module docstring).
         self._focus.set_result(result, last_processed=last)

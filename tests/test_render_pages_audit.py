@@ -387,3 +387,120 @@ def test_the_results_are_written_before_the_window_is_torn_down(tmp_path, monkey
     with pytest.raises(RuntimeError, match="teardown crashed"):
         rp._run_audit_mode(tmp_path / "copy.db", tmp_path / "out")
     assert (tmp_path / "out" / "audit.txt").read_text().startswith("0 clipped widget(s), 0 audit failure(s)")
+
+
+# ---- --scaling (final review, 2026-09-24) --------------------------------------------------------
+# The review's Critical finding (wrap_to_width scaled every wrapped line twice) was invisible to the
+# audit because this Mac's CustomTkinter scaling is always 1.0; the Windows laptop's is its DPI
+# factor. --scaling makes the audit run at the laptop's factor on any machine.
+
+def _reset_scaling(previous_flag):
+    import customtkinter as ctk
+    from customtkinter.windows.widgets.scaling import ScalingTracker
+    ctk.set_widget_scaling(1.0)
+    ctk.set_window_scaling(1.0)
+    ScalingTracker.deactivate_automatic_dpi_awareness = previous_flag
+
+
+def test_scaling_is_set_before_any_widget_is_built_and_replaces_the_monitors(tmp_path, monkeypatch):
+    """Both factors (Windows scales widgets AND window sizes by its DPI factor), set before the app
+    exists -- a live window is pinned at its size for a second when its scaling changes -- and with
+    CTk's own DPI detection off, so on a 150% Windows screen --scaling 1.5 means 1.5, not 2.25."""
+    from customtkinter.windows.widgets.scaling import ScalingTracker
+    from scripts import render_pages as rp
+
+    previous = ScalingTracker.deactivate_automatic_dpi_awareness
+    seen = {}
+
+    def fake_audit(db_path, outdir):
+        seen.update(widget=ScalingTracker.widget_scaling, window=ScalingTracker.window_scaling,
+                    dpi_off=ScalingTracker.deactivate_automatic_dpi_awareness)
+        return 0
+
+    copy = tmp_path / "copy.db"
+    copy.write_bytes(b"")
+    monkeypatch.setattr(rp, "_run_audit_mode", fake_audit)
+    monkeypatch.setattr(rp._db_guard, "is_production_db", lambda *a, **k: False)
+    try:
+        assert rp.main([str(copy), str(tmp_path / "out"), "--audit", "--scaling", "1.5"]) == 0
+    finally:
+        _reset_scaling(previous)
+    assert seen == {"widget": 1.5, "window": 1.5, "dpi_off": True}
+
+
+def test_no_scaling_argument_leaves_the_scaling_alone(tmp_path, monkeypatch):
+    from customtkinter.windows.widgets.scaling import ScalingTracker
+    from scripts import render_pages as rp
+
+    seen = {}
+    copy = tmp_path / "copy.db"
+    copy.write_bytes(b"")
+    monkeypatch.setattr(rp, "_run_audit_mode",
+                        lambda db, out: seen.update(w=ScalingTracker.widget_scaling) or 0)
+    monkeypatch.setattr(rp._db_guard, "is_production_db", lambda *a, **k: False)
+    assert rp.main([str(copy), str(tmp_path / "out"), "--audit"]) == 0
+    assert seen == {"w": 1.0}
+
+
+def test_a_scaling_that_is_not_a_factor_is_refused(tmp_path, monkeypatch):
+    from scripts import render_pages as rp
+
+    copy = tmp_path / "copy.db"
+    copy.write_bytes(b"")
+    monkeypatch.setattr(rp, "_run_audit_mode", lambda db, out: 0)
+    monkeypatch.setattr(rp._db_guard, "is_production_db", lambda *a, **k: False)
+    for bad in (["--scaling"], ["--scaling", "150%"], ["--scaling", "0"]):
+        assert rp.main([str(copy), str(tmp_path / "out"), "--audit", *bad]) == 2
+
+
+def test_the_audit_header_names_the_scaling_it_ran_at(tmp_path):
+    from scripts import render_pages as rp
+
+    rp._write_audit(tmp_path, [], [], 2, None, None, scaling=1.5)
+    header = (tmp_path / "audit.txt").read_text().splitlines()[0]
+    assert header.startswith("0 clipped widget(s), 0 audit failure(s)")
+    assert "at 150% scaling" in header
+
+
+def test_a_window_the_os_cut_back_is_an_audit_failure_never_a_clean_size(tk_root):
+    """macOS clamps a titled window to its screen; at 150% a 1400x900 window is 2100x1350 px and
+    came back 1512x917. Auditing that as "1400x900" would describe a page nobody asked about."""
+    from scripts import render_pages as rp
+
+    _offscreen(tk_root, 400, 200)
+    try:
+        assert rp._window_size_failure(tk_root, 400, 200, "400x200") is None
+        msg = rp._window_size_failure(tk_root, 500, 200, "500x200")
+        assert msg and msg.startswith("AUDIT FAILURE | 500x200 |") and "400x200 px" in msg
+    finally:
+        tk_root.withdraw()
+
+
+def test_the_detector_sees_a_line_wrapped_to_the_wrong_unit_at_150_percent(tk_root):
+    """What --scaling is for: the double-scaled wrap (the review's Critical finding) IS a clip the
+    detector reports once the scaling is real, and the fixed wrap_to_width is not."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.widgets import blocks
+
+    ctk.set_widget_scaling(1.5)
+    tk_root._set_scaled_min_max()          # a live window is pinned for a second otherwise
+    try:
+        text = "Holding: last lot inside its history · 3 things worth changing · " * 4
+        container = ctk.CTkFrame(tk_root, fg_color="transparent")
+        container.pack(fill="both", expand=True)
+        wrong = ctk.CTkLabel(container, text=text, anchor="w", justify="left")
+        wrong.pack(fill="x")
+        right = ctk.CTkLabel(container, text="Right " + text, anchor="w", justify="left")
+        right.pack(fill="x")
+        _offscreen(tk_root, 700, 300)
+        wrong.configure(wraplength=container.winfo_width())      # the old arithmetic
+        blocks.wrap_to_width(right, container)
+        tk_root.update_idletasks()
+        tk_root.update()
+        found = find_clipped_text_widgets(tk_root)
+        assert _reported(found, text[:20])
+        assert not _reported(found, "Right ")
+    finally:
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()
+        tk_root.withdraw()

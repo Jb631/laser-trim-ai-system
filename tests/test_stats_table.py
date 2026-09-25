@@ -140,3 +140,27 @@ def test_the_two_rules_separate_the_headers_and_the_dispositions(tk_root):
         assert int(vertical.grid_info()["rowspan"]) == FIRST_DATA_ROW + 3
     finally:
         zone.destroy()
+
+
+def test_the_column_minimums_scale_with_the_widgets(tk_root):
+    """grid_columnconfigure's minsize is REAL pixels to Tk -- CustomTkinter scales a grid's padx,
+    never a column's minsize -- so the table scales its own 190/78 (final review, 2026-09-24:
+    at 150% Windows scaling the text grows by half and an unscaled minimum does not)."""
+    import customtkinter as ctk
+
+    ctk.set_widget_scaling(1.5)
+    tk_root._set_scaled_min_max()          # a live window is pinned for a second otherwise
+    theme = ThemeManager()
+    zone = StatsTableZone(tk_root, theme=theme)
+    try:
+        zone.set_stats(_two_metric_stats())
+        grids = [w for w in zone.winfo_children()
+                 if isinstance(w, ctk.CTkFrame) and w.grid_slaves()]
+        assert grids, "no gridded table frame found"
+        frame = grids[0]
+        assert int(frame.grid_columnconfigure(0)["minsize"]) == 285      # 190 x 1.5
+        assert int(frame.grid_columnconfigure(1)["minsize"]) == 117      # 78 x 1.5
+    finally:
+        zone.destroy()
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()

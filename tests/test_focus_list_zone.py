@@ -12,6 +12,8 @@ failure this redesign exists to end.
 """
 from datetime import datetime, timedelta
 
+import pytest
+
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import spc_draw_params
 from laser_trim_analyzer.gui.v6.widgets.focus_list_zone import (
@@ -255,28 +257,40 @@ def test_show_heading_false_suppresses_the_zones_own_heading(tk_root):
     assert not any(t.startswith("FOCUS —") for t in _labels(z))
 
 
-def test_the_caption_wraps_to_its_container(tk_root):
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_the_caption_wraps_to_its_container(tk_root, scale):
     """global-constraints.md: no fixed pixel wraplength on page-width text. The caption was a
     fixed wraplength=1200 before this (module docstring) -- confirm it now tracks the zone's
     own real width, the same assertion Home's wrap test makes for its own lines
     (test_spec3f_home.py::test_the_folders_and_summary_lines_wrap_to_their_container). Added
-    per the Home review (7bc0743 changed this zone's caption) as a guard that the fix stays."""
-    z = _zone(tk_root)
-    z.set_result(_result([_entry("A")]))
-    z.pack(fill="both", expand=True)
+    per the Home review (7bc0743 changed this zone's caption) as a guard that the fix stays.
+
+    At 150% too (final review, 2026-09-24): this used to pin `wraplength == zone width`, true
+    only at 100% -- wraplength is CustomTkinter's unscaled units, the width real pixels."""
+    import customtkinter as ctk
+    ctk.set_widget_scaling(scale)
+    tk_root._set_scaled_min_max()      # set_widget_scaling pins a live window for a second
     try:
-        tk_root.attributes("-alpha", 0.0)
-    except Exception:
-        pass
-    tk_root.geometry("1280x720+20000+20000")
-    tk_root.deiconify()
-    tk_root.update_idletasks()
-    tk_root.update()
-    try:
-        assert z._caption.cget("wraplength") == z.winfo_width()
-        assert z._caption.cget("wraplength") != 1200
+        z = _zone(tk_root)
+        z.set_result(_result([_entry("A")]))
+        z.pack(fill="both", expand=True)
+        try:
+            tk_root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        tk_root.geometry("1280x720+20000+20000")
+        tk_root.deiconify()
+        tk_root.update_idletasks()
+        tk_root.update()
+        try:
+            assert z._caption.cget("wraplength") == int(z.winfo_width() / scale)
+            assert z._caption._label.winfo_reqwidth() <= z.winfo_width()
+            assert z._caption.cget("wraplength") != 1200
+        finally:
+            tk_root.withdraw()
     finally:
-        tk_root.withdraw()
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()
 
 
 def test_zone_empty_state_names_last_processed(tk_root):

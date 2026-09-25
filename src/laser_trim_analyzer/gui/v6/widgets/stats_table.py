@@ -169,10 +169,13 @@ class StatsTableZone(ctk.CTkFrame):
         width = len(headers)
         rule_column = 1 + width
         full = 2 + 2 * width        # label + both groups + the rule between them
-        frame.grid_columnconfigure(0, weight=1, minsize=190)
+        # minsize is REAL pixels to Tk (CustomTkinter never scales a column's minsize), so it is
+        # scaled here like every other size -- unscaled, these columns stay 190/78 px at 150%
+        # Windows scaling while their text grows by half (final review, 2026-09-24).
+        frame.grid_columnconfigure(0, weight=1, minsize=frame._apply_widget_scaling(190))
         for column in range(1, full):
             if column != rule_column:   # the rule column is as wide as its 1px
-                frame.grid_columnconfigure(column, minsize=78)
+                frame.grid_columnconfigure(column, minsize=frame._apply_widget_scaling(78))
 
         plan = band_plan([_caption_count(row, lot_rows) for row in rows])
         end_row = plan[-1][0] + plan[-1][1]

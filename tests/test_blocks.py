@@ -1,4 +1,5 @@
 """The building blocks draw only from theme tokens and behave as the spec says (section 2)."""
+import contextlib
 import re
 import tkinter
 
@@ -171,6 +172,38 @@ def test_no_block_hard_codes_a_colour():
 # runs (winfo_width() reports the real number) -- confirmed empirically the same way
 # test_a_real_click_fires_on_click_exactly_once_per_leaf above did for event_generate: map the
 # window off-screen (alpha 0, +20000+20000) so real <Configure> events are actually dispatched.
+#
+# SCALING (final review, 2026-09-24 -- its one Critical finding). winfo_width() is REAL pixels;
+# CTkLabel.configure(wraplength=) takes CustomTkinter's UNSCALED units and multiplies them by the
+# widget scaling itself (ctk_label.py: `_apply_widget_scaling(self._wraplength)`). On Windows that
+# scaling is the monitor's DPI factor -- 1.25 at 125%, 1.5 at 150% -- and on this Mac it is always
+# 1.0, so every test here used to pin `wraplength == container width`, which is only true at 1.0:
+# at 150% the old code laid every wrapped line out 1.5x wider than its container, and Tk cut it.
+# ctk.set_widget_scaling reproduces the Windows arithmetic on any machine; every test below runs at
+# 100%, 125% and 150%, and resets the scaling whatever happens.
+
+SCALINGS = (1.0, 1.25, 1.5)
+SENTENCE = ("Holding: last lot inside its history · 3 things worth changing · the last lot ran "
+            "0.4 lot-sigma above its baseline · and enough further words that it has to wrap twice ")
+
+
+@contextlib.contextmanager
+def _widget_scaling(root, factor):
+    """set_widget_scaling on a window that already exists also PINS that window at its current
+    size for a second (CTk._set_scaling sets minsize == maxsize == the current size, then restores
+    them from an after(1000)) -- measured: a 400-px geometry() right after it stayed 600 px. So
+    the pin is released at once with CTk's own restore step. Reset to 1.0 whatever happens."""
+    ctk.set_widget_scaling(factor)
+    root._set_scaled_min_max()
+    try:
+        yield factor
+    finally:
+        ctk.set_widget_scaling(1.0)
+        try:
+            root._set_scaled_min_max()
+        except Exception:
+            pass
+
 
 def _mapped_offscreen(root):
     try:
@@ -183,64 +216,107 @@ def _mapped_offscreen(root):
     root.update()
 
 
-def test_wrap_to_width_sets_wraplength_from_the_container_after_update(tk_root, t):
-    container = ctk.CTkFrame(tk_root, fg_color="transparent")
-    container.pack(fill="both", expand=True)
-    label = ctk.CTkLabel(container, text="x" * 300)
-    label.pack(fill="x")
-    tk_root.geometry("400x200")
-    _mapped_offscreen(tk_root)
-    try:
-        blocks.wrap_to_width(label, container, padding=20)
-        assert container.winfo_width() == 400          # the container really is 400 wide
-        assert label.cget("wraplength") == 400 - 20      # set once, immediately
-    finally:
-        tk_root.withdraw()
+def _unscaled(px, scale):
+    """A real-pixel width in CustomTkinter's unscaled units, floored -- what wraplength must be."""
+    return int(px / scale)
 
 
-def test_wrap_to_width_follows_the_container_when_it_resizes(tk_root, t):
-    container = ctk.CTkFrame(tk_root, fg_color="transparent")
-    container.pack(fill="both", expand=True)
-    label = ctk.CTkLabel(container, text="x" * 300)
-    label.pack(fill="x")
-    tk_root.geometry("400x200")
-    _mapped_offscreen(tk_root)
-    try:
-        blocks.wrap_to_width(label, container, padding=20)
-        tk_root.geometry("300x200")
-        tk_root.update_idletasks()
-        tk_root.update()
-        assert label.cget("wraplength") == 300 - 20
-    finally:
-        tk_root.withdraw()
+@pytest.mark.parametrize("scale", SCALINGS)
+def test_a_wrapped_line_is_laid_out_inside_its_container_at_every_scaling(tk_root, t, scale):
+    """The Critical finding itself: the TEXT's own laid-out width (the real tk.Label inside the
+    CTkLabel) must fit the container. Red at 125% and 150% on the double-scaled code."""
+    with _widget_scaling(tk_root, scale):
+        container = ctk.CTkFrame(tk_root, width=500, height=200, fg_color="transparent")
+        container.pack(fill="both", expand=True)
+        label = ctk.CTkLabel(container, text=SENTENCE * 2, anchor="w", justify="left")
+        label.pack(fill="x")
+        tk_root.geometry("700x300")
+        _mapped_offscreen(tk_root)
+        try:
+            blocks.wrap_to_width(label, container)
+            tk_root.update_idletasks()
+            tk_root.update()
+            assert container.winfo_width() == 700
+            assert label._label.winfo_reqwidth() <= container.winfo_width(), (
+                f"laid out {label._label.winfo_reqwidth()} px wide in a "
+                f"{container.winfo_width()} px container at {scale:.0%}")
+        finally:
+            tk_root.withdraw()
 
 
-def test_wrap_to_width_never_drops_below_120(tk_root, t):
-    container = ctk.CTkFrame(tk_root, fg_color="transparent")
-    container.pack(fill="both", expand=True)
-    label = ctk.CTkLabel(container, text="x")
-    label.pack(fill="x")
-    tk_root.geometry("140x100")           # 140 - 40 padding would be 100, below the floor
-    _mapped_offscreen(tk_root)
-    try:
-        blocks.wrap_to_width(label, container, padding=40)
-        assert label.cget("wraplength") == 120
-    finally:
-        tk_root.withdraw()
+@pytest.mark.parametrize("scale", SCALINGS)
+def test_wrap_to_width_sets_wraplength_from_the_container_after_update(tk_root, t, scale):
+    with _widget_scaling(tk_root, scale):
+        container = ctk.CTkFrame(tk_root, fg_color="transparent")
+        container.pack(fill="both", expand=True)
+        label = ctk.CTkLabel(container, text=SENTENCE * 2)
+        label.pack(fill="x")
+        tk_root.geometry("400x200")
+        _mapped_offscreen(tk_root)
+        try:
+            blocks.wrap_to_width(label, container, padding=20)
+            assert container.winfo_width() == 400          # the container really is 400 px wide
+            # set once, immediately, in unscaled units: CTk scales it back up to <= 400 - 20
+            assert label.cget("wraplength") == _unscaled(400, scale) - 20
+            assert label._label.cget("wraplength") <= 400 - 20 * scale
+            tk_root.update_idletasks()
+            assert label._label.winfo_reqwidth() <= 400 - 20 * scale
+        finally:
+            tk_root.withdraw()
 
 
-def test_wrap_to_width_defaults_padding_to_zero(tk_root, t):
-    container = ctk.CTkFrame(tk_root, fg_color="transparent")
-    container.pack(fill="both", expand=True)
-    label = ctk.CTkLabel(container, text="x" * 50)
-    label.pack(fill="x")
-    tk_root.geometry("500x100")
-    _mapped_offscreen(tk_root)
-    try:
-        blocks.wrap_to_width(label, container)
-        assert label.cget("wraplength") == 500
-    finally:
-        tk_root.withdraw()
+@pytest.mark.parametrize("scale", SCALINGS)
+def test_wrap_to_width_follows_the_container_when_it_resizes(tk_root, t, scale):
+    with _widget_scaling(tk_root, scale):
+        container = ctk.CTkFrame(tk_root, fg_color="transparent")
+        container.pack(fill="both", expand=True)
+        label = ctk.CTkLabel(container, text=SENTENCE * 2)
+        label.pack(fill="x")
+        tk_root.geometry("400x200")
+        _mapped_offscreen(tk_root)
+        try:
+            blocks.wrap_to_width(label, container, padding=20)
+            tk_root.geometry("300x200")
+            tk_root.update_idletasks()
+            tk_root.update()
+            assert label.cget("wraplength") == _unscaled(300, scale) - 20
+            assert label._label.winfo_reqwidth() <= 300 - 20 * scale
+        finally:
+            tk_root.withdraw()
+
+
+@pytest.mark.parametrize("scale", SCALINGS)
+def test_wrap_to_width_never_drops_below_120(tk_root, t, scale):
+    """The floor is in unscaled units too: 120 is 180 real px at 150%, the same one-word-a-line
+    limit it is at 100%."""
+    with _widget_scaling(tk_root, scale):
+        container = ctk.CTkFrame(tk_root, fg_color="transparent")
+        container.pack(fill="both", expand=True)
+        label = ctk.CTkLabel(container, text="x")
+        label.pack(fill="x")
+        tk_root.geometry("140x100")        # 140 - 40 padding would be 100, below the floor
+        _mapped_offscreen(tk_root)
+        try:
+            blocks.wrap_to_width(label, container, padding=40)
+            assert label.cget("wraplength") == 120
+        finally:
+            tk_root.withdraw()
+
+
+@pytest.mark.parametrize("scale", SCALINGS)
+def test_wrap_to_width_defaults_padding_to_zero(tk_root, t, scale):
+    with _widget_scaling(tk_root, scale):
+        container = ctk.CTkFrame(tk_root, fg_color="transparent")
+        container.pack(fill="both", expand=True)
+        label = ctk.CTkLabel(container, text="x" * 50)
+        label.pack(fill="x")
+        tk_root.geometry("500x100")
+        _mapped_offscreen(tk_root)
+        try:
+            blocks.wrap_to_width(label, container)
+            assert label.cget("wraplength") == _unscaled(500, scale)
+        finally:
+            tk_root.withdraw()
 
 
 def test_wrap_to_width_never_replaces_an_existing_configure_handler(tk_root, t):
@@ -268,7 +344,7 @@ def test_wrap_to_width_never_replaces_an_existing_configure_handler(tk_root, t):
         tk_root.update_idletasks()
         tk_root.update()
         assert hits, "wrap_to_width replaced the pre-existing <Configure> handler instead of adding to it"
-        assert label.cget("wraplength") == 300
+        assert label.cget("wraplength") == _unscaled(300, label._get_widget_scaling())
     finally:
         tk_root.withdraw()
 

@@ -163,6 +163,18 @@ def wrap_to_width(label: ctk.CTkLabel, container, padding: int = 0) -> None:
     against a persistent widget -- stacks another <Configure> handler on top of the last one, and
     they accumulate forever. If a label is rebuilt on every apply, bind it to a frame that gets
     rebuilt WITH it, never to a long-lived container such as a page's scrollable body.
+
+    UNITS (final review, 2026-09-24 -- its one Critical finding). `container.winfo_width()` is
+    REAL pixels. `label.configure(wraplength=)` is not: like every size a CustomTkinter widget is
+    given (width, height, and the padx/pady a caller hands pack() or grid()), it is in CTk's
+    UNSCALED units, which CTk multiplies by the widget scaling itself (ctk_label.py:
+    `_apply_widget_scaling(self._wraplength)`). On Windows that scaling is the monitor's DPI
+    factor -- 1.25 at 125%, 1.5 at 150% -- and on a Mac it is always 1.0, which is why the old
+    `width - padding` passed every test, audit and render here while every wrapped line at work
+    was laid out 1.5x wider than its container, and cut. So the width is turned back into
+    unscaled units FIRST (`label._reverse_widget_scaling`) and floored to a whole unit, so that
+    scaling it up again can never exceed the container. `padding` and the 120 floor are unscaled
+    units too -- the same units as the padx the caller gave pack(), which CTk scales the same way.
     """
     def _update(_event=None) -> None:
         try:
@@ -170,7 +182,8 @@ def wrap_to_width(label: ctk.CTkLabel, container, padding: int = 0) -> None:
         except Exception:            # container destroyed before its <Configure> fired
             return
         try:
-            label.configure(wraplength=max(120, width - padding))
+            unscaled = int(label._reverse_widget_scaling(width))
+            label.configure(wraplength=max(120, unscaled - padding))
         except Exception:            # label destroyed first (teardown order)
             pass
 

@@ -517,27 +517,43 @@ def test_the_focus_zone_is_titled_drifting_now(make_app):
     assert "What the app is telling you" not in text
 
 
-def test_the_folders_and_summary_lines_wrap_to_their_container(make_app):
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_the_folders_and_summary_lines_wrap_to_their_container(make_app, scale):
     """global-constraints.md: no fixed pixel wraplength on page-width text -- blocks.wrap_to_width,
     not the old fixed _WRAP=950 constant. Same off-screen-mapped technique as
-    test_the_full_width_home_lines_fit_at_1280_by_720, below."""
-    app = make_app()
-    page = _home(app)
+    test_the_full_width_home_lines_fit_at_1280_by_720, below.
+
+    At 150% too (final review, 2026-09-24): this used to pin `wraplength == container width`,
+    which is only true at 100% -- wraplength is in CustomTkinter's unscaled units, the width is
+    real pixels, and on the Windows laptop the widget scaling is the monitor's DPI factor."""
+    import customtkinter as ctk
+    ctk.set_widget_scaling(scale)
     try:
-        app.attributes("-alpha", 0.0)
-    except Exception:
-        pass
-    app.geometry("1280x720+20000+20000")
-    app.deiconify()
-    app.update_idletasks()
-    app.update()
-    try:
-        container_width = page._folders_label.master.winfo_width()
-        assert page._folders_label.cget("wraplength") == container_width
-        assert page._summary.cget("wraplength") == container_width
-        assert page._folders_label.cget("wraplength") != 950
+        app = make_app()
+        page = _home(app)
+        folders = "  →  ".join(f"/invented/share/laser-{i}/Trim Data" for i in range(1, 9))
+        page._folders_label.configure(text=f"8 folders, in this order:  {folders}")
+        page._summary.configure(text=f"Summary line {folders}")
+        try:
+            app.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        app.geometry("1280x720+20000+20000")
+        app.deiconify()
+        app.update_idletasks()
+        app.update()
+        try:
+            container_width = page._folders_label.master.winfo_width()
+            for label in (page._folders_label, page._summary):
+                assert label.cget("wraplength") == int(container_width / scale)
+                assert label._label.winfo_reqwidth() <= container_width, (
+                    f"{label.cget('text')[:20]!r} laid out {label._label.winfo_reqwidth()} px "
+                    f"wide in a {container_width} px container at {scale:.0%}")
+            assert page._folders_label.cget("wraplength") != 950
+        finally:
+            app.withdraw()
     finally:
-        app.withdraw()
+        ctk.set_widget_scaling(1.0)
 
 
 def test_still_exactly_one_teal_button(make_app):
