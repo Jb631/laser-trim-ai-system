@@ -1,5 +1,37 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-25 midday — the rest of the findings catalogue (pull, then refresh once)
+
+Six more analyzers — each reviewed on its own, then all together (a whole-branch review, one fix
+round, a re-review). No schema change, nothing to retrain. If you have not pulled since yesterday,
+the two sections below come with this pull too.
+
+1. **`git pull`.**
+2. **Refresh the findings once:** Settings → Database → **Refresh process findings** (every model;
+   4–5 minutes on the Mac, so allow longer on the laptop). Until then each model's Findings tab says
+   "Not worked out yet by this version" where the new analyzers go; the older findings show as before.
+3. **What to expect after the refresh** (measured on the home copy of your database, 327 models):
+   **176 findings** — *Change a setting to raise yield* 12, *Laser time you could save* 57, *Check the
+   test* 56, *What changed* 51. New among them:
+   - **Laser comparison** (2): the same model on two lasers — same limit table, same months, inside
+     the model's own last two years.
+   - **Where the loss is made** (1, 6607 laser 1): incoming linearity predicts the laser verdict.
+   - **Station limits** (33): the laser and final test grade to different limits (8232-1 is D1's case).
+   - **Rework load** (3: 6607, 8340-1, 8232-1): laser FAILs that pass final test after hand trim,
+     counted in unit-days, and confirmed only when their error fell between the stations more than it
+     did for the same laser's untouched units nearest them.
+   - **Setting changes** (39 on 16 models, under *What changed*): one stable setup against the next,
+     naming every setting that changed; a transition longer than 60 days is kept as a fact, not shown.
+   - The ink-target finding now says when the station's configured incoming window disagrees with the
+     data. Nothing claims a yield gain; the Findings tab shows the numbers behind each.
+4. **Numbers that move on the Model page:** a trim track that failed processing is no longer counted
+   as a trim fail. At the default 90 days six models move, on trim linearity only — 8856 26.9% →
+   47.9%, 8775 18.8% → 42.9%, 8856-1 50.9% → 74.4%, 8888 93.2% → 100%, 8863 98.3% → 100%, 8097 22.5% →
+   24.2%. On "All", 13 models move on the trim-vs-final-test tab (e.g. 7458-1's overkills 5 → 0,
+   8530's escapes 38 → 40).
+5. A processing batch that saved only final tests now refreshes those models' findings too (rework
+   and station limits read final tests).
+
 ## ⚡ 2026-09-25 morning — the review's fixes, and scripts now name the database
 
 The 2026-09-24 night section below (the other six pages) comes with this same pull — read it too;

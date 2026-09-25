@@ -14,9 +14,10 @@ database guard (only the app opens its default database — every script now nam
 small fixes. Before it, `422da7a` (2026-09-24): facelift step 1 and every parse fix. At work:
 `git pull`, then the top section of `BRING_TO_WORK.md` (and the two 2026-09-24 sections if you have
 not pulled them yet). Nothing needs running except the optional TrimVolts back-fill. **Being built
-now:** the rest of the findings catalogue (B6 — every analyzer reviewed; its final review's fix
-round is running), then F5 ("Inactive" models, your call of 2026-09-25) and the ingest-speed design
-(A4/A3/A5). The facelift follow-ups (F4) went out in a second push the same morning.
+now:** F5 ("Inactive" models, your call of 2026-09-25) and the ingest-speed work (A4/A3/A5 — its
+design is done; the save probe you run at work comes first). Pushed on 2026-09-25: the facelift
+follow-ups (F4) in the morning, and the rest of the findings catalogue (B6) at midday — after pulling
+that one, refresh the findings once (Settings → Database → Refresh process findings).
 
 **The rebuild is done** (B2: 168,501 files in 21.8 hours, finished 2026-09-22) and every number
 that rested on a final-test verdict has been re-derived on it (B3).
@@ -24,7 +25,7 @@ that rested on a final-test verdict has been re-derived on it (B3).
 | Workstream | State | Next move |
 |---|---|---|
 | **A. Processing speed** | the share and the scanner are cleared (A1a); the save is the serial half (A0) | the A4/A3/A5 design (A4 first), after the findings catalogue — Claude |
-| **B. More useful information** | rebuild done; findings engine + 6 analyzers shipped; the rest of the catalogue (six more analyzers) built and reviewed, in the next pull (B6); laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
+| **B. More useful information** | rebuild done; the findings catalogue complete — 11 analyzers (B6, 2026-09-25); laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
 | **C. Review and refactor** | the review is done (C1); C2 step 1, the database guard and three parked fixes shipped | C2 step 2 (`database/migrations.py`) — Claude |
 | **D. Checks at the shop** | D1, D3, D4, D5, D6, D7 open | James |
 | **E. Backlog upload** | shipped (E1) | — |
@@ -301,7 +302,22 @@ screens parts.
       gain — and `ink_target` now holds the limit table (and the station's final-resistance window)
       constant, because pooling across a change of test had it manufacturing an "aim lower"
       recommendation out of thin air.
-- [ ] **B6 · The remaining eight findings**, one at a time, each with a test that it
+- [x] **B6 · The findings catalogue — COMPLETE 2026-09-25** (plan
+      `docs/superpowers/plans/2026-09-24-findings-catalogue-completion.md`; six analyzers, each reviewed,
+      then a whole-branch review, ONE fix round and a re-review). On the home copy of the work database
+      (327 models, refreshed): **176 findings** — yield 12, laser time 57, check 56, what changed 51 —
+      and 0 models with analyzer errors. What the new ones found: **machine_compare** 2 (same model,
+      same table, same months, two lasers, inside the model's own last two years); **loss_origin** 1
+      (6607 laser 1: incoming linearity predicts the laser verdict); **station_setup** 33 (the laser
+      and final test grade to different limits — D1's 8232-1 among them); **rework_load** 3 (6607,
+      8340-1, 8232-1: laser FAILs that pass final test after hand trim, counted in unit-days, confirmed
+      by a one-sided rank test against the same laser's untouched units nearest them — all three far
+      below its p < 0.01 line);
+      **ink_target** now says when the station's configured incoming window disagrees with the data;
+      **setup_change** 39 on 16 models (B1c). Nothing claims a rate. The Findings tab shows the numbers
+      behind each; facts cached by the older code read "Not worked out yet by this version" until the
+      next refresh. Its review left small residuals for F5's round (below).
+- [ ] ~~**B6 · The remaining eight findings**~~, one at a time, each with a test that it
       says nothing when there is nothing to say. The frame is built and proven; each is now a
       day's work. **#7 cut setting jumped the queue** (B6b below): it was the only one of the three
       not waiting on the rebuild — it needs trim data only — and it carries the largest measured
@@ -455,7 +471,14 @@ screens parts.
         computed where target-vs-achieved exists — which today is laser 2 only. Testing
         whether cut direction explains it needs the `TrimVolts` capture (B1a). That is
         the single most interesting thread open.
-- [ ] **B1c · 46 setup parameters per file are CAPTURED and analysed by nothing.**
+- [x] **B1c · DONE 2026-09-25 — `setup_change`**: every captured setting on one (model, laser,
+      track), segmented into stable setups (60 days / 100 tracks on each side, one limit table each),
+      one finding per change naming every setting that differed, the pass rate stable setup against
+      stable setup; per-unit readings (laser 2's `length_theoretical`, `starting_position`,
+      `error_split_*` …) excluded by a curated list; the cut recipe left to `recipe_change`; a
+      transition longer than 60 days kept as a fact. **The Response alias** (ruling below) is how it
+      reads laser 1's `Response` and laser 2's `Response (Linear or Function)`: one setting.
+- [ ] ~~**B1c · 46 setup parameters per file are CAPTURED and analysed by nothing.**~~
       `trim_setup.parameters` already holds laser power, duration (ns), pulse repetition
       rate, linearity velocity, inner/outer edge position, laser height, theoretical
       resistance, the error-split indexing setup and the resistance windows — since the
@@ -685,7 +708,11 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       the newest file in the database is labelled **Inactive · last trimmed Mon YYYY** wherever it appears
       (findings rows, the model page caption, the Triage list); nothing is hidden and every finding and
       number is kept; the short ranked previews (Home's top three) list active models first. 40 of the
-      240 findings on the rebuild are on such models today. Claude, after the findings catalogue merges.
+      240 findings on the rebuild are on such models today. Claude, next. **With it** (the findings
+      catalogue's re-review residuals): one "newest trim file" helper with the engine's future-date
+      guard (machine_compare's per-model window has none); the 60-day cap compares whole timedeltas
+      (60 d 20 h counts as within today — one finding); the failed-predictor line shows even without a
+      loss section; history moves under a point read "±0", not "-0".
 - [x] **F4 · Step 2 follow-ups — DONE 2026-09-25** (`dbf57d0..7ab3a67`, 9 commits, reviewed:
       approved; gate 123/123 files, 2,436 tests; audit 0 clipped at 100/125/150%, twice at 150%;
       sweep 299 checks, 1 FAIL = D3). Its review left robustness gaps for **F5's round**: the redraw
