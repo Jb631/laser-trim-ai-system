@@ -562,3 +562,37 @@ def test_a_row_with_room_keeps_its_statement_at_720(tk_root, t):
         assert statement.cget("wraplength") == 720
     finally:
         tk_root.withdraw()
+
+
+def test_wrap_beside_sets_the_wrap_at_once_on_a_column_already_laid_out(tk_root, t):
+    """F5 review (Minor 1): wrap_to_width sets its wrap once at once AND on every <Configure>;
+    _wrap_beside did only the second. On a column that already has a width it now sets the wrap
+    immediately, with nothing pumped."""
+    holder = ctk.CTkFrame(tk_root, fg_color="transparent")
+    holder.pack(fill="both", expand=True)
+    label = ctk.CTkLabel(holder, text=SENTENCE * 2, wraplength=720)
+    label.pack(side="left")
+    pill = blocks.tag(holder, t, "Inactive · last trimmed Jun 2019")
+    pill.pack(side="left")
+    tk_root.geometry("600x200")
+    _mapped_offscreen(tk_root)
+    try:
+        for _ in range(3):
+            tk_root.update_idletasks()
+            tk_root.update()
+        assert holder.winfo_width() > 1
+        unscale = label._reverse_widget_scaling
+        room = unscale(holder.winfo_width()) - (unscale(pill.winfo_reqwidth()) + t.SPACE_SM)
+        blocks._wrap_beside(label, holder, [pill], gap=t.SPACE_SM)        # no pump after this
+        assert label.cget("wraplength") == int(max(120, min(720, room))) < 720
+    finally:
+        tk_root.withdraw()
+
+
+def test_a_new_rows_statement_keeps_the_cap_until_its_column_has_a_width(tk_root, t):
+    """A row's middle column is 1 px wide until it is laid out: clamping every new tagged row to
+    the 120 floor there would re-lay out every row the moment its real width arrived."""
+    r = blocks.row(tk_root, t, "7000", SENTENCE * 2, "22", tags=("both tracks",))
+    mid = r.winfo_children()[1]
+    statement = next(w for w in mid.winfo_children() if isinstance(w, ctk.CTkLabel))
+    assert statement.cget("wraplength") == 720

@@ -76,17 +76,25 @@ def _wrap_beside(label, container, others, gap: int) -> None:
     model's tag squeezed to 166 of its 195 px beside a statement wrapped at a flat 720; the statement
     took its width first and the tags got what was left). Units as wrap_to_width: widths are real
     pixels, wraplength and `gap` (each tag's left padding) CustomTkinter's unscaled units. Bound on
-    `container`, which is built and destroyed with its row, so the handler never outlives it."""
+    `container`, which is built and destroyed with its row, so the handler never outlives it.
+
+    Set once at once as well, like wrap_to_width (F5 review) -- but only from a container that has
+    a width: a new row's middle column is 1 px until it is laid out, and clamping every new row to
+    the 120 floor there would re-lay out each one the moment its real width arrived. Until then the
+    label keeps the _STATEMENT_WRAP cap it was built with."""
     def _update(_event=None) -> None:
         try:
+            width = container.winfo_width()
+            if width <= 1:
+                return                   # not laid out yet: its <Configure> is still to come
             unscale = label._reverse_widget_scaling
-            room = unscale(container.winfo_width()) - sum(unscale(o.winfo_reqwidth()) + gap
-                                                           for o in others)
+            room = unscale(width) - sum(unscale(o.winfo_reqwidth()) + gap for o in others)
             label.configure(wraplength=int(max(120, min(_STATEMENT_WRAP, room))))
         except Exception:            # destroyed first (teardown order)
             pass
 
     container.bind("<Configure>", _update, add="+")
+    _update()
 
 
 def row(parent, theme, model: str, statement: str, value_text: str, *, tags: Iterable[str] = (),
