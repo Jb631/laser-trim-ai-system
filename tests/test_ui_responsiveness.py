@@ -152,6 +152,61 @@ def test_nested_scrollbar_draw_does_not_pump_the_idle_queue_again(tk_root, patch
     sb.destroy()
 
 
+# ---- The app's other private CustomTkinter overrides (F4 review, Minor 2) --
+# ctk_patches.py is not the only code that rests on the pin: widgets/tab_view.py overrides
+# CTkTabview._grid_forget_all_tabs, and pages/model_page.py replaces a CTkComboBox's
+# _open_dropdown_menu. Whoever bumps the pin must be pointed at both, and a changed meaning must
+# fail here, naming the file to re-read -- not surface as an empty tab area at work.
+
+def test_a_version_mismatch_names_every_private_override_it_puts_at_risk(monkeypatch):
+    from laser_trim_analyzer.gui.v6 import ctk_patches
+    monkeypatch.setattr(ctk_patches, "_applied", False)
+    monkeypatch.setattr(ctk, "__version__", "9.9.9")
+    with pytest.raises(RuntimeError) as raised:
+        ctk_patches.apply(strict=True)
+    message = str(raised.value)
+    assert "ctk_patches.py" in message
+    assert "widgets/tab_view.py" in message and "_grid_forget_all_tabs" in message
+    assert "pages/model_page.py" in message and "_open_dropdown_menu" in message
+    doc = ctk_patches.__doc__
+    assert "widgets/tab_view.py" in doc and "pages/model_page.py" in doc
+
+
+def test_ctktabview_still_defers_the_forget_that_tab_view_py_overrides(tk_root):
+    """ThemedTabView._grid_forget_all_tabs is right only while CTkTabview's method takes
+    `exclude_name` and set() calls it 100 ms LATE with the name it switched to (5.2.2)."""
+    import inspect
+    import time
+    read = ("widgets/tab_view.py overrides CTkTabview._grid_forget_all_tabs (ThemedTabView): "
+            "re-read that override against this customtkinter")
+    params = inspect.signature(ctk.CTkTabview._grid_forget_all_tabs).parameters
+    assert "exclude_name" in params and params["exclude_name"].default is None, read
+    view = ctk.CTkTabview(tk_root)
+    view.add("First")
+    view.add("Second")
+    calls = []
+    view._grid_forget_all_tabs = lambda exclude_name=None: calls.append(exclude_name)
+    view.set("Second")
+    assert calls == [], f"{read} -- set() no longer defers it"
+    end = time.monotonic() + 1.0
+    while time.monotonic() < end and not calls:
+        tk_root.update()
+        time.sleep(0.01)
+    assert calls == ["Second"], f"{read} -- set() called it with {calls!r}"
+    view.destroy()
+
+
+def test_ctkcombobox_still_opens_its_menu_through_the_hook_model_page_py_replaces(tk_root):
+    read = ("pages/model_page.py replaces CTkComboBox._open_dropdown_menu with its model picker: "
+            "re-read that override against this customtkinter")
+    box = ctk.CTkComboBox(tk_root, values=["one", "two"])
+    opened = []
+    box._open_dropdown_menu = lambda: opened.append(True)
+    box._clicked()
+    assert opened == [True], read
+    box.destroy()
+
+
 def test_scrollbar_redraw_guard_is_released_after_an_exception(tk_root, patched_ctk):
     """A raising redraw must not leave every later scrollbar un-pumped."""
     from laser_trim_analyzer.gui.v6.ctk_patches import _ScrollbarRedraw

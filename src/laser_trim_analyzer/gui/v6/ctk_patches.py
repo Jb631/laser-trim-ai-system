@@ -6,6 +6,19 @@ patch a version it has not been read against. It is still a patch on someone
 else's class, so each one below says what it changes and why a fork would be
 worse. Applied once, from `V6App.__init__`.
 
+---- The pin covers more than this file ------------------------------------
+
+Two more places override PRIVATE CustomTkinter code, in the app's own classes rather than here,
+and are right only while 5.2.2's internals mean what they were read to mean (F4 review, 2026-09-25).
+A pin bump must re-read them too -- the version-mismatch message below names both, and
+tests/test_ui_responsiveness.py fails, naming the file, if either internal changes:
+
+  * widgets/tab_view.py -- `ThemedTabView._grid_forget_all_tabs` overrides CTkTabview's: it relies on
+    that method taking `exclude_name`, and on `CTkTabview.set()` calling it 100 ms later with the
+    name it switched to (ctk_tabview.py set()).
+  * pages/model_page.py -- replaces the model selector's `CTkComboBox._open_dropdown_menu` (the
+    method `_clicked` calls) with the searchable model picker.
+
 ---- 1. CTkScrollbar's re-entrant redraw cascade ----------------------------
 
 `CTkScrollbar._draw()` ends with `self._canvas.update_idletasks()`
@@ -107,7 +120,11 @@ def apply(strict: bool = False) -> bool:
     if version != PINNED_CTK_VERSION:
         message = (f"customtkinter {version} is not the pinned "
                    f"{PINNED_CTK_VERSION}; UI patches NOT applied. Re-read "
-                   f"ctk_patches.py against the new version.")
+                   f"ctk_patches.py against the new version -- and the app's two other "
+                   f"private overrides: widgets/tab_view.py (ThemedTabView."
+                   f"_grid_forget_all_tabs, which relies on CTkTabview.set() deferring it "
+                   f"with exclude_name) and pages/model_page.py (the model selector's "
+                   f"CTkComboBox._open_dropdown_menu, replaced by the model picker).")
         if strict:
             raise RuntimeError(message)
         logger.warning(message)
