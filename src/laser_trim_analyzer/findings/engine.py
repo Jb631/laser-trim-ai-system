@@ -9,8 +9,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import text
 
-from .analyzers import (cut_setting, ink_target, limit_tables, machine_compare, pass_burden,
-                        recipe_change, trim_effort)
+from .analyzers import (cut_setting, ink_target, limit_tables, loss_origin, machine_compare,
+                        pass_burden, recipe_change, trim_effort)
 from .data import load_model_tracks, yardstick_fidelity
 from .model import Finding, rank
 
@@ -64,7 +64,7 @@ def compute_for_model(db, model: str,
     facts: Dict[str, Any] = {"model": model, "tracks": len(tracks), "annual_volume": 0, "latest": None,
                              "yardstick": None, "recipe_history": None, "trim_effort": None,
                              "limit_tables": None, "cut_setting": None, "pass_burden": None,
-                             "machine_compare": None, "errors": {}}
+                             "machine_compare": None, "loss_origin": None, "errors": {}}
     if not tracks:
         return facts, []
     if fleet_latest is None:
@@ -117,6 +117,12 @@ def compute_for_model(db, model: str,
         findings += compare_findings
     except Exception as exc:
         failed("machine_compare", exc)
+    try:
+        loss_facts, loss_findings = loss_origin.analyze(model, tracks, _laser_label)  # stored verdicts only
+        facts["loss_origin"] = loss_facts
+        findings += loss_findings
+    except Exception as exc:
+        failed("loss_origin", exc)
     if fidelity["faithful"]:
         try:
             effort_facts, effort_findings = trim_effort.analyze(model, tracks, _laser_label)
