@@ -183,10 +183,6 @@ def half_bands(upper_limits: Sequence, lower_limits: Sequence) -> List[float]:
     return out
 
 
-# Kept as the old private name so nothing in this module reads differently.
-_band_text = band_text
-
-
 # ---------------------------------------------------------------------------
 # DB layer — sampling the newest stored limit arrays on each side.
 # ---------------------------------------------------------------------------
@@ -261,52 +257,45 @@ _INSUFFICIENT_NO_ARRAYS = SpecComparison(
     note="no stored spec limits on both stations — nothing to compare")
 
 
-def compare_station_specs(db, model: str, *,
-                          sample_per_side: int = 5) -> SpecComparison:
-    """Are this model's trim and final-test limits the same requirement?
+def sample_and_compare(db, model: str, sample_per_side: int = 5) -> SpecComparison:
+    """Sample the newest trim/FT arrays and compare them — the same method
+    `compare_station_specs` uses, extracted so a caller that must NOT have a
+    read failure hidden from it can call it directly.
 
-    Samples the newest `sample_per_side` LINKED trim/FT pairs — the same
-    unit's two stations, the census's population — and compares their limits
-    position by position. When the model has no linked pairs at all (older
-    data, or FT files that never matched a trim run) it falls back to pairing
-    the newest tracks of each station in order: less trustworthy, because the
-    two sides may sweep different position tables, but better than refusing to
+    Prefers the newest `sample_per_side` LINKED pairs (the same unit's two
+    stations, the census's population); when the model has none (older data,
+    or FT files that never matched a trim run) it falls back to pairing the
+    newest tracks of each station in order — less trustworthy, because the two
+    sides may sweep different position tables, but better than refusing to
     answer for a model whose links were never built.
 
-    Never raises. A read that fails degrades to "insufficient" — an unanswered
-    question — because the callers are a warning banner and a list row, and
-    neither may take a page down over a hint.
+    Unlike `compare_station_specs`, THIS RAISES: no try/except here, and no
+    caching (caching is `compare_station_specs`'s own concern, for callers
+    that ask the same question repeatedly — the Model page load, the FOCUS
+    list). A caller whose own failure handling must see the real exception
+    — `findings/analyzers/station_setup.py`, whose read failures belong in the
+    findings engine's own `facts["errors"]`, never swallowed as a silent
+    "insufficient" — calls this instead of `compare_station_specs`.
     """
-    key = (model, sample_per_side)
-    hit = _CACHE.get(key)
-    if hit is not None:
-        return hit
-    try:
-        pairs = [(t, f) for t, f in _linked_pairs(db, model, sample_per_side)
-                 if t and f]
-        if not pairs:
-            trim = [t for t in _trim_arrays(db, model, sample_per_side) if t]
-            ft = [t for t in _ft_arrays(db, model, sample_per_side) if t]
-            pairs = list(zip(trim, ft))
-    except Exception:
-        # Not cached: a locked/old database is a transient condition, and
-        # caching "insufficient" would keep the banner silent for the session.
-        logger.exception("spec alignment: sampling failed for %s", model)
-        return _INSUFFICIENT_NO_ARRAYS
+    pairs = [(t, f) for t, f in _linked_pairs(db, model, sample_per_side) if t and f]
     if not pairs:
-        return _cache(key, _INSUFFICIENT_NO_ARRAYS)
+        trim = [t for t in _trim_arrays(db, model, sample_per_side) if t]
+        ft = [t for t in _ft_arrays(db, model, sample_per_side) if t]
+        pairs = list(zip(trim, ft))
+    if not pairs:
+        return _INSUFFICIENT_NO_ARRAYS
 
     matched, differing, trim_bands, ft_bands = compare_arrays(pairs)
     if matched < MIN_MATCHED:
-        return _cache(key, SpecComparison(
+        return SpecComparison(
             status="insufficient", pct_positions_differing=0.0,
             matched_positions=matched, trim_typ_band=None, ft_typ_band=None,
             note=(f"only {matched} positions are measured by both stations "
-                  "— too few to compare their limits")))
+                  "— too few to compare their limits"))
 
     pct = differing / matched
     trim_typ, ft_typ = median(trim_bands), median(ft_bands)
-    t_text, f_text = _band_text(trim_bands), _band_text(ft_bands)
+    t_text, f_text = band_text(trim_bands), band_text(ft_bands)
     if pct > DIFFER_SHARE:
         # Magnitude FIRST. "trim grades ±0.03 where final test allows ±0.10"
         # reads as a wholesale difference, which is a lie at 25% — and 25% is
@@ -320,9 +309,33 @@ def compare_station_specs(db, model: str, *,
         note = (f"trim and final test grade to the same limits at matched "
                 f"points (trim {t_text}, final test {f_text})")
         status = "aligned"
-    return _cache(key, SpecComparison(
+    return SpecComparison(
         status=status, pct_positions_differing=pct, matched_positions=matched,
-        trim_typ_band=trim_typ, ft_typ_band=ft_typ, note=note))
+        trim_typ_band=trim_typ, ft_typ_band=ft_typ, note=note)
+
+
+def compare_station_specs(db, model: str, *,
+                          sample_per_side: int = 5) -> SpecComparison:
+    """Are this model's trim and final-test limits the same requirement?
+
+    Never raises. A read that fails degrades to "insufficient" — an unanswered
+    question — because the callers are a warning banner and a list row, and
+    neither may take a page down over a hint. `sample_and_compare` (above)
+    does the actual sampling and comparison; this just adds the cache and the
+    guarantee that it never raises.
+    """
+    key = (model, sample_per_side)
+    hit = _CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        result = sample_and_compare(db, model, sample_per_side)
+    except Exception:
+        # Not cached: a locked/old database is a transient condition, and
+        # caching "insufficient" would keep the banner silent for the session.
+        logger.exception("spec alignment: sampling failed for %s", model)
+        return _INSUFFICIENT_NO_ARRAYS
+    return _cache(key, result)
 
 
 def _cache(key: Tuple[str, int], value: SpecComparison) -> SpecComparison:

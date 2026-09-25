@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from sqlalchemy import text
 
 from .analyzers import (cut_setting, ink_target, limit_tables, loss_origin, machine_compare,
-                        pass_burden, recipe_change, trim_effort)
+                        pass_burden, recipe_change, station_setup, trim_effort)
 from .data import load_model_tracks, yardstick_fidelity
 from .model import Finding, rank
 
@@ -64,7 +64,8 @@ def compute_for_model(db, model: str,
     facts: Dict[str, Any] = {"model": model, "tracks": len(tracks), "annual_volume": 0, "latest": None,
                              "yardstick": None, "recipe_history": None, "trim_effort": None,
                              "limit_tables": None, "cut_setting": None, "pass_burden": None,
-                             "machine_compare": None, "loss_origin": None, "errors": {}}
+                             "machine_compare": None, "loss_origin": None, "station_setup": None,
+                             "errors": {}}
     if not tracks:
         return facts, []
     if fleet_latest is None:
@@ -123,6 +124,16 @@ def compute_for_model(db, model: str,
         findings += loss_findings
     except Exception as exc:
         failed("loss_origin", exc)
+    try:
+        # The only analyzer that reads the database itself -- do the trim and final-test stations
+        # grade this model to the same limits? (core/spec_alignment, the census's method). Its own
+        # read failure must reach facts["errors"] like any other analyzer's -- see that module's
+        # sample_and_compare, which raises instead of degrading to "insufficient".
+        station_facts, station_findings = station_setup.analyze(model, db, tracks, _laser_label)
+        facts["station_setup"] = station_facts
+        findings += station_findings
+    except Exception as exc:
+        failed("station_setup", exc)
     if fidelity["faithful"]:
         try:
             effort_facts, effort_findings = trim_effort.analyze(model, tracks, _laser_label)

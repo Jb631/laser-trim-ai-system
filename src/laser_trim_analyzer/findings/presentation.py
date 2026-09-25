@@ -35,10 +35,11 @@ GROUPS: Tuple[GroupSpec, ...] = (
               "Nothing here yet. A finding appears when units arrive already inside their limits, "
               "or take more cuts than their recipe asks for."),
     GroupSpec("check", "Check the test",
-              "Graded against more than one limit table, so pass rates across the change don't compare",
+              "Graded against more than one limit table, or to different limits than final test, "
+              "so pass rates across the change don't compare",
               "tracks", "check",
               "Nothing to check. A finding appears when a model is graded against more than one "
-              "limit table."),
+              "limit table, or when the laser and final test grade it to different limits."),
     GroupSpec("history", "What changed", "Recipe changes, newest first", "pass-rate move", "act",
               "No recipe changes found."),
 )
@@ -56,6 +57,7 @@ ANALYZER_GROUP: Dict[str, str] = {
     "trim_effort": "laser_time",
     "pass_burden": "laser_time",
     "limit_tables": "check",
+    "station_setup": "check",
     "recipe_change": "history",
 }
 

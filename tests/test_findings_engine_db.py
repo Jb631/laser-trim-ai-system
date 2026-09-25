@@ -104,9 +104,11 @@ def test_a_crashed_analyzer_is_named_not_shown_as_silence(tmp_path, monkeypatch)
         raise RuntimeError("analyzer exploded")
     monkeypatch.setattr(engine.recipe_change, "analyze", boom)
     monkeypatch.setattr(engine.trim_effort, "analyze", boom)
-    # db=None with no fleet_latest would make compute_for_model query it from db itself --
-    # pass a fixed instant so this stays a test of load_model_tracks() being mocked, not the DB.
-    facts, findings = engine.compute_for_model(None, "HOT", fleet_latest=START)
+    # A fixed instant so this stays a test of load_model_tracks() being mocked, not the DB (no
+    # fleet_latest would make compute_for_model query it from db itself). A real, if empty, db is
+    # still needed -- station_setup queries it directly (spec_alignment.sample_and_compare), and
+    # an empty database just answers "insufficient" (no crash) for a model it has never heard of.
+    facts, findings = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
     assert set(facts["errors"]) == {"recipe_change", "trim_effort"}
     assert facts["errors"]["recipe_change"] == "RuntimeError: analyzer exploded"
     assert facts["recipe_history"] is None and facts["trim_effort"] is None   # not computed...
@@ -118,7 +120,7 @@ def test_a_healthy_run_has_no_errors_and_an_explicit_history(tmp_path, monkeypat
     from laser_trim_analyzer.findings import engine
     hot = _hot()
     monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
-    facts, _ = engine.compute_for_model(None, "HOT", fleet_latest=START)
+    facts, _ = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
     assert facts["errors"] == {}
     assert isinstance(facts["recipe_history"], list) and isinstance(facts["trim_effort"], dict)
 
@@ -130,7 +132,7 @@ def test_every_documented_key_exists_even_for_a_model_with_no_tracks(monkeypatch
     assert findings == [] and facts["tracks"] == 0
     assert set(facts) == {"model", "tracks", "annual_volume", "latest", "yardstick",
                           "recipe_history", "trim_effort", "limit_tables", "cut_setting", "pass_burden",
-                          "machine_compare", "loss_origin", "errors"}
+                          "machine_compare", "loss_origin", "station_setup", "errors"}
 
 
 def test_refresh_reports_what_did_not_get_done(tmp_path, monkeypatch):
@@ -225,9 +227,32 @@ def test_a_crash_in_the_limit_table_analyzer_is_named_like_any_other(tmp_path, m
     def boom(*a, **k):
         raise RuntimeError("bad table")
     monkeypatch.setattr(engine.limit_tables, "analyze", boom)
-    facts, findings = engine.compute_for_model(None, "HOT", fleet_latest=START)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
     assert facts["errors"] == {"limit_tables": "RuntimeError: bad table"} and facts["limit_tables"] is None
     assert [f.analyzer for f in findings] == ["ink_target"]
+
+
+# ---- Task 3: station_setup is the first analyzer that reads the database itself -- its read
+# failure must reach the engine's guard uncaught, unlike compare_station_specs (the banner's
+# function), which turns the same failure into "insufficient" on purpose.
+
+def test_a_raising_sampler_is_named_by_the_engine_like_any_other_crash(tmp_path, monkeypatch):
+    """station_setup calls spec_alignment.sample_and_compare directly -- made to raise instead of
+    degrading, precisely so a read failure is never hidden from the findings engine. Patching the
+    SAMPLER itself (not station_setup.analyze) proves the analyzer does not catch it before the
+    engine's own guard ever sees it."""
+    from laser_trim_analyzer.core import spec_alignment
+    from laser_trim_analyzer.findings import engine
+    hot = _hot()
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
+
+    def boom(*a, **k):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(spec_alignment, "sample_and_compare", boom)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
+    assert facts["errors"] == {"station_setup": "RuntimeError: database is locked"}
+    assert facts["station_setup"] is None
+    assert [f.analyzer for f in findings] == ["ink_target"]                   # the rest still ran
 
 
 # ---- Task 5: _fleet_latest -- what "now" means, and what cannot be trusted to say so ----
