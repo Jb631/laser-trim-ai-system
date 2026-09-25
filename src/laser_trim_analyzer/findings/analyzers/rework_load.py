@@ -4,127 +4,335 @@ James's own words for the goal this measures against (TRACKER, 2026-09-20): "the
 company is to not have to trim at all and if we do trim as little as possible ... not tie up
 capacity at the laser." A unit that fails linearity at the laser and then passes final test looks,
 naively, like the laser rejected it for nothing ("overkill"). It usually is not: the unit was HAND
-TRIMMED between the two stations, and the confound was resolved on 2026-09-17 by the same-unit
-error ratio against a pass/pass control group -- 6607's 512 and 8340-1's 544 "overkills" were
-retracted on exactly that evidence (memory `overkill-retrim-confound`). So this analyzer never
-reports the trim-FAIL -> FT-PASS count on its own faith; it reports it only once that control
-group shows the count could not be explained by final test simply being the looser of the two
-tests.
+TRIMMED between the two stations (memory `overkill-retrim-confound`, 2026-09-17). So this analyzer
+never reports the trim-FAIL -> FT-PASS count on its own faith; it reports it only once the units'
+own errors show they were worked on between the stations.
 
-**The readout is never re-derived.** `DatabaseManager.get_model_trim_ft_agreement` is the ONE
-definition of a unit's trim disposition -- the unit-DAY's, not the linked file's (per track, the
-day's LAST attempt; every track must pass; commit 90dc95e, 2026-08-30, "Overkill counted the wrong
-trim attempt"). Its `overkills` field is already exactly "failed trim, passed final test" by that
-rule, so `rework_unit_days` here is that number, untouched -- counting it any other way risks a
-second, silently different definition of "rework".
+**The count is unit-DAYS, from the one definition.** `DatabaseManager.get_model_trim_ft_agreement`
+decides a unit's trim disposition (per track the day's LAST attempt; every track must pass; a file
+that failed processing never decides it) and its `overkill_unit_days` counts the units behind the
+overkills. That number is the readout and the title, untouched. Its `overkills` counts final-test
+RECORDS -- 6607 tests each track in its own file, so 533 records were 261 unit-days (review of
+85222c4, 2026-09-25) -- and is not used here.
 
-**The ratio evidence is not something that method returns**, so confirming the signature needs a
-second read: final test's own `linearity_error` against the linked trim's tracks'
-`final_linearity_error_shifted` (the WORST track, since linearity is zero-tolerance per track --
-"max over tracks" in the brief). `get_model_trim_ft_agreement` was never built to expose either
-column. Rather than approximate rework/pass-pass membership from the linked file's own verdict
-alone (which IS the day's last attempt in the large majority of cases, per 90dc95e's own numbers,
-but not all of them), `_linked_pairs` below reproduces the same unit-day join once more, purely to
-reach the two extra columns. `scripts/app_qa_sweep.py` (search "the confound itself is gone")
-already reproduces the identical join independently as a standing cross-check against the ORM
-method -- this is the same reproduction, extended with the two error columns neither that sweep
-nor the ORM method reads.
+**The metric is what hand trim changes** (review of 85222c4). Per linked (unit, track) pair: the
+largest |corrected error| over the positions BOTH stations grade -- trim rows that carry limits,
+inside the final test's graded window, on one position axis -- each station's sweep corrected with
+its OWN stored offset (and slope where stored) through `export/unit_chart.corrected_errors`. The
+stored scalars (`final_linearity_error_shifted`, `linearity_error`) cannot do this: they are maxima
+over each station's whole sweep, and they sit where the other station never grades (6607: the
+laser's worst point was beyond final test's +/-14 on 1,090 of 1,091 pairs; 8340-1: on rows with no
+limits; 8232-1: final test's outside its graded window) -- which is why 85222c4's "no signal" was
+the wrong quantity, not the data. A pair with no common graded position is skipped and counted,
+never scored; a reading of JUNK_VOLTS or more is not a linearity error, and is ignored and counted.
 
-**Confirmation, never a screen.** The rework group's median ratio (final-test error / laser error)
-must fall to CONFIRM_RATIO or below the pass/pass control group's own median -- a unit that merely
-passed a looser final test would show a ratio near the control's, not below it (a unit that was
-genuinely hand-trimmed shows its error falling BETWEEN the two stations, which a looser test alone
-cannot produce). Below MIN_UNIT_DAYS rework unit-days, or MIN_CONTROL control pairs, a median is a
-guess, not a rate, and the analyzer says nothing rather than call a thin sample confirmed.
+**Each final test on ITS track.** A final-test record belongs to one track: its own track letter
+when it has one, else its serial -- digits only or an 'A' suffix is Track A, 'B'/'b' is Track B
+(6607's two files per unit, confirmed by matching curves on untouched units). It is compared with
+THAT track's last attempt of the day and judged by that track's own verdict: a final test of a
+track that passed at the laser is an untouched control reading even when the unit's other track
+failed. Then one reading per unit-day: per track the latest final test, and the unit's track with
+the largest laser error -- same-track pairs only, never one track's final test over another's laser.
+
+**Compare like with like.** Final test has an error floor, so its ratio to the laser's error falls
+as the laser's error rises even on units nobody touched: a plain ratio of medians confirms partly by
+construction. So the reworked units' median ratio is compared with the median of the pass/pass
+units in the TOP THIRD of laser error -- the untouched units most like the reworked ones -- and the
+signature is confirmed only at CONFIRM_RATIO or below, with MIN_UNIT_DAYS ratios and MIN_CONTROL
+units in that top third. Both medians are facts whenever both groups exist; the floors gate only the
+verdict. Confirmation, never a screen.
 
 No yield gain is claimed (`expected_gain_points=None`): this counts laser time hand trim is already
 spending on the laser's own failures, in the "Laser time you could save" group alongside pass_burden
 and trim_effort.
 """
-from datetime import timedelta
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from statistics import median
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from sqlalchemy import text
-
-from ...core.model_stats import _FAILED_PROCESSING
+from ...core.analyzer import max_abs_measured
+from ...core.ft_overlay import normalize_track_id, positions_on_trim_axis, ungraded_indices
+from ...core.model_stats import failed_processing_statuses
+from ...core.models import LASER_ORDER
+from ...export.unit_chart import corrected_errors
 from ..model import Finding
 
 LOOKBACK_DAYS = 365
-# get_model_trim_ft_agreement's own default -- kept identical on purpose so _linked_pairs draws
-# from the SAME confidently-linked population the readout (get_model_trim_ft_agreement) counts.
+# get_model_trim_ft_agreement's own default -- identical on purpose, so the sweeps compared here are
+# drawn from the same confidently-linked population the readout counts.
 MIN_CONFIDENCE = 0.70
-MIN_UNIT_DAYS = 30    # the rework group itself -- below this a median ratio is a guess, not a rate
-MIN_CONTROL = 30      # the pass/pass control group the ratio is confirmed against
-CONFIRM_RATIO = 0.6   # the rework median must fall to this share of the control median, or below
+MIN_UNIT_DAYS = 30    # reworked unit-days with a ratio -- below this a median is a guess, not a rate
+MIN_CONTROL = 30      # pass/pass unit-days in the TOP THIRD of laser error, the comparison group
+CONFIRM_RATIO = 0.8   # the rework median must be this share of the top third's median, or below
+JUNK_VOLTS = 1.0      # a worst |error| this large is not a linearity reading (a broken column)
 
-# Never a measurement (CLAUDE.md: a record that failed processing is not one) and never a trim
-# that happened (the blank-template path is UNTRIMMED) -- excluded here the same way
-# findings/data.py excludes them from every other analyzer's `tracks`.
-_STATUS_EXCLUDE_SQL = ", ".join(f"'{s}'" for s in (*_FAILED_PROCESSING, "UNTRIMMED"))
-
-# Reproduces get_model_trim_ft_agreement's own unit-day join (per track, the day's last attempt;
-# every track must pass -- see _linked_trim_ft_rows in database/manager.py) to reach the two error
-# columns that method does not return. trim_agg is pre-aggregated per analysis_id before the outer
-# join, so (unlike that ORM query, and its scripts/app_qa_sweep.py raw-SQL twin) no track-level fan
-# -out reaches the outer SELECT and no GROUP BY is needed there.
-_RATIO_SQL = f"""
-    WITH att AS (
-        SELECT a.unit_id AS uid, t.linearity_pass AS lp,
-               ROW_NUMBER() OVER (PARTITION BY a.unit_id, t.track_id
-                                   ORDER BY a.file_date DESC, a.id DESC) AS rn
-        FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id
-        WHERE t.status NOT IN ({_STATUS_EXCLUDE_SQL})
-          AND a.unit_id IS NOT NULL AND a.unit_id <> ''
-    ),
-    disp AS (
-        SELECT uid, MIN(CASE WHEN lp = 1 THEN 1 ELSE 0 END) AS tp
-        FROM att WHERE rn = 1 GROUP BY uid
-    ),
-    trim_agg AS (
-        SELECT t.analysis_id AS aid,
-               MIN(CASE WHEN t.linearity_pass = 1 THEN 1 ELSE 0 END) AS file_all_pass,
-               MAX(t.final_linearity_error_shifted) AS max_final_error
-        FROM track_results t
-        WHERE t.status NOT IN ({_STATUS_EXCLUDE_SQL})
-        GROUP BY t.analysis_id
-    )
-    SELECT f.linearity_error AS ft_error, trim_agg.max_final_error AS trim_error,
-           COALESCE(disp.tp, trim_agg.file_all_pass) AS trim_pass, a.system AS system
-    FROM final_test_results f
-    JOIN analysis_results a ON a.id = f.linked_trim_id
-    JOIN trim_agg ON trim_agg.aid = a.id
-    LEFT JOIN disp ON disp.uid = a.unit_id
-    WHERE f.model = :model AND f.linked_trim_id IS NOT NULL
-      AND f.match_confidence >= :conf AND f.linearity_pass = 1
-      AND f.file_date >= :cutoff
-"""
+_CHUNK = 500          # ids per IN (...) -- far below SQLite's variable limit
+_SERIAL_TRACK = re.compile(r"^\d+([AaBb])?$")
 
 
-def _linked_pairs(db, model: str, cutoff) -> List[Tuple[Optional[float], Optional[float], bool, str]]:
-    """(final-test error, laser final error, unit-day trim PASS, laser) for every confidently
-    linked, FT-PASS pair in the window -- one row per final-test record, the same grain
-    `get_model_trim_ft_agreement` counts by. Either error can be None (not every linked pair has
-    a usable reading on both sides, e.g. a track whose final_linearity_error_shifted was never
-    computed) -- callers must filter that, never treat a missing reading as zero.
-    """
-    with db.session() as s:
-        rows = s.execute(text(_RATIO_SQL), {
-            "model": model, "conf": MIN_CONFIDENCE,
-            # Bound as a formatted string, never a raw datetime -- text() does not get SQLAlchemy's
-            # own DATETIME bind_processor (global-constraints.md); file_date is stored in this
-            # exact format, so a plain string comparison sorts identically to a chronological one.
-            "cutoff": f"{cutoff:%Y-%m-%d %H:%M:%S.%f}"}).fetchall()
-    return [(row[0], row[1], bool(row[2]), str(row[3])) for row in rows]
-
-
-def _ratio(ft_error: Optional[float], trim_error: Optional[float]) -> Optional[float]:
-    """final-test error / laser error, or None when either reading is missing or unusable. A
-    non-positive laser error is not a plausible "worst point" magnitude -- skipped, never divided
-    by, the same plausibility discipline core/model_stats.py applies before averaging anything."""
-    if ft_error is None or trim_error is None or ft_error < 0 or trim_error <= 0:
+def ft_track_letter(serial) -> Optional[str]:
+    """The track a final-test record is about, from its serial: digits only or an 'A' suffix is
+    Track A, a 'B'/'b' suffix is Track B, anything else says nothing (None)."""
+    m = _SERIAL_TRACK.match(str(serial or "").strip())
+    if not m:
         return None
-    return ft_error / trim_error
+    return (m.group(1) or "A").upper()
+
+
+def _ft_letter(ft_track_id, serial) -> Optional[str]:
+    own = normalize_track_id(ft_track_id)
+    return own if own in ("A", "B") else ft_track_letter(serial)
+
+
+def pair_trim_track(letter: Optional[str],
+                    unit_tracks: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The trim track (its last attempt of the day) a final-test record belongs to, or None.
+
+    A unit-day with one track: that track -- unless the final test names another letter and the
+    track has a letter of its own (only Track B was trimmed that day and this is Track A's final
+    test: comparing them is the Track-A-final-test-against-Track-B-laser mistake). With two or
+    more tracks the final test must say which, and exactly one track must answer to it.
+    """
+    if len(unit_tracks) == 1:
+        (track_id, attempt), = unit_tracks.items()
+        own = normalize_track_id(track_id)
+        if letter is not None and own not in ("", "DEFAULT") and own != letter:
+            return None
+        return attempt
+    if letter is None:
+        return None
+    matches = [a for tid, a in unit_tracks.items() if normalize_track_id(tid) == letter]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _real(x) -> bool:
+    return (isinstance(x, (int, float)) and not isinstance(x, bool)
+            and x == x and x not in (float("inf"), float("-inf")))
+
+
+def _has_limits(side: Dict[str, Any], i: int) -> bool:
+    up, lo = side.get("upper") or [], side.get("lower") or []
+    return i < len(up) and i < len(lo) and _real(up[i]) and _real(lo[i])
+
+
+def graded_maxima(ft: Dict[str, Any], trim: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    """(final test's, the laser's) largest |corrected error| over the travel BOTH stations grade,
+    or None when they grade no common stretch of it (or either side measured nothing there).
+
+    `ft` / `trim`: positions, errors, upper, lower, offset, slope, theory -- and for final test its
+    graded_start / graded_end. A trim row is graded when it carries limits; a final-test row when
+    it also lies inside the station's graded window. Final test's positions are placed on the
+    laser's axis first (core/ft_overlay.positions_on_trim_axis). Each station is corrected with
+    its OWN offset and slope (export/unit_chart.corrected_errors); a blank reading is ungraded,
+    never 0.0 (core/analyzer.max_abs_measured).
+    """
+    t_pos = list(trim.get("positions") or [])
+    f_pos, _shifted = positions_on_trim_axis(ft.get("positions") or [], t_pos)
+    if f_pos is None:
+        return None
+    f_err, t_err = list(ft.get("errors") or []), list(trim.get("errors") or [])
+    f_corr = corrected_errors(f_err, ft.get("offset"), ft.get("slope"), ft.get("theory") or None)
+    t_corr = corrected_errors(t_err, trim.get("offset"), trim.get("slope"),
+                              trim.get("theory") or None)
+    outside = ungraded_indices(len(f_err), ft.get("graded_start"), ft.get("graded_end"))
+    f_pts = [(f_pos[i], f_corr[i]) for i in range(min(len(f_pos), len(f_corr)))
+             if i not in outside and _has_limits(ft, i) and _real(f_pos[i]) and _real(f_corr[i])]
+    t_pts = [(t_pos[i], t_corr[i]) for i in range(min(len(t_pos), len(t_corr)))
+             if _has_limits(trim, i) and _real(t_pos[i]) and _real(t_corr[i])]
+    if not f_pts or not t_pts:
+        return None
+    lo = max(min(p for p, _ in f_pts), min(p for p, _ in t_pts))
+    hi = min(max(p for p, _ in f_pts), max(p for p, _ in t_pts))
+    if not hi > lo:
+        return None
+    eps = 1e-9 * max(1.0, abs(lo), abs(hi))
+    f_max = max_abs_measured([c for p, c in f_pts if lo - eps <= p <= hi + eps])
+    t_max = max_abs_measured([c for p, c in t_pts if lo - eps <= p <= hi + eps])
+    if f_max is None or t_max is None:
+        return None
+    return f_max, t_max
+
+
+def _ratio(ft_error: Optional[float], laser_error: Optional[float]) -> Tuple[Optional[float], bool]:
+    """(final-test error / laser error, was it junk). A reading of JUNK_VOLTS or more on either
+    side is not a linearity error -- ignored, and the caller counts it. A laser reading of zero has
+    no ratio at all."""
+    if ft_error is None or laser_error is None:
+        return None, False
+    if ft_error >= JUNK_VOLTS or laser_error >= JUNK_VOLTS:
+        return None, True
+    if ft_error < 0 or laser_error <= 0:
+        return None, False
+    return ft_error / laser_error, False
+
+
+@dataclass(frozen=True)
+class _Reading:
+    """One scored (final test, trim track) pair."""
+    unit: Any                 # unit_id, or ("linked file", analysis id) -- the disposition's own key
+    track_row: int            # the trim track's last attempt (track_results.id)
+    rework: bool              # judged by THAT track's own verdict
+    when: Tuple               # the final test's own moment, for "latest"
+    laser: float
+    ft: float
+    ratio: float
+
+
+def _chunks(ids: Sequence[Any]) -> Iterable[List[Any]]:
+    ids = list(ids)
+    for i in range(0, len(ids), _CHUNK):
+        yield ids[i:i + _CHUNK]
+
+
+def _moment(dt: Optional[datetime]) -> Tuple[bool, datetime]:
+    return (dt is not None, dt or datetime.min)
+
+
+def _final_tests(db, model: str, cutoff: datetime) -> List[Dict[str, Any]]:
+    """Every confidently linked final test that PASSED, in the window -- one dict per FT track."""
+    from ...database.models import FinalTestResult as FT, FinalTestTrack as FTT
+    with db.session() as s:
+        rows = (s.query(FT.id, FT.serial, FT.test_date, FT.file_date, FT.linked_trim_id,
+                        FTT.track_id, FTT.position_data, FTT.electrical_angle_data, FTT.error_data,
+                        FTT.theory_data, FTT.upper_limits, FTT.lower_limits, FTT.optimal_offset,
+                        FTT.optimal_slope, FTT.graded_start, FTT.graded_end)
+                .outerjoin(FTT, FTT.final_test_id == FT.id)
+                .filter(FT.model == model, FT.linked_trim_id.isnot(None),
+                        FT.match_confidence >= MIN_CONFIDENCE,
+                        FT.linearity_pass == True,  # noqa: E712 -- SQL boolean
+                        FT.file_date >= cutoff)
+                .all())
+    return [{"id": r[0], "serial": r[1], "when": (_moment(r[2] or r[3]), r[0]), "linked": r[4],
+             "track_id": r[5],
+             "positions": list(r[6] or []) or list(r[7] or []), "errors": list(r[8] or []),
+             "theory": list(r[9] or []), "upper": list(r[10] or []), "lower": list(r[11] or []),
+             "offset": r[12], "slope": r[13], "graded_start": r[14], "graded_end": r[15]}
+            for r in rows]
+
+
+def _unit_tracks(db, linked_ids: Iterable[int]
+                 ) -> Tuple[Dict[int, Any], Dict[Any, Dict[str, Dict[str, Any]]]]:
+    """({linked analysis id: its unit key}, {unit key: {track_id: that track's last attempt}}).
+
+    The same unit-day rule the disposition uses: per track the LAST attempt of the day (file time,
+    then id), over every file of the unit-day, tracks with no disposition (untrimmed, or whose
+    processing failed) left out; a file with no unit_id stands alone. A linked file whose every
+    track is untrimmed or unreadable is left out of the first mapping -- it is not a comparison,
+    and the readout does not link it either.
+    """
+    from ...database.models import AnalysisResult as AR, StatusType, TrackResult as TR
+    no_disposition = [*failed_processing_statuses(), StatusType.UNTRIMMED]
+    linked_ids = sorted(set(linked_ids))
+    unit_of: Dict[int, Optional[str]] = {}
+    attempts: List[Tuple] = []
+    with db.session() as s:
+        for chunk in _chunks(linked_ids):
+            unit_of.update({aid: uid for aid, uid in
+                            s.query(AR.id, AR.unit_id).filter(AR.id.in_(chunk)).all()})
+        cols = (AR.id, AR.unit_id, AR.file_date, AR.system, TR.id, TR.track_id, TR.linearity_pass)
+        units = sorted({uid for uid in unit_of.values() if uid})
+        for chunk in _chunks(units):
+            attempts += (s.query(*cols).join(TR, TR.analysis_id == AR.id)
+                         .filter(AR.unit_id.in_(chunk), TR.status.notin_(no_disposition)).all())
+        alone = [aid for aid, uid in unit_of.items() if not uid]
+        for chunk in _chunks(alone):
+            attempts += (s.query(*cols).join(TR, TR.analysis_id == AR.id)
+                         .filter(AR.id.in_(chunk), TR.status.notin_(no_disposition)).all())
+    by_unit: Dict[Any, Dict[str, Dict[str, Any]]] = {}
+    measured = set()
+    for aid, uid, file_date, system, track_row, track_id, passed in attempts:
+        measured.add(aid)
+        key = uid if uid else ("linked file", aid)
+        rank = (_moment(file_date), aid, track_row)
+        tracks = by_unit.setdefault(key, {})
+        if track_id not in tracks or rank > tracks[track_id]["rank"]:
+            tracks[track_id] = {"rank": rank, "track_row": track_row, "passed": passed is True,
+                                "system": str(getattr(system, "value", system) or "")}
+    linked = {aid: (uid if uid else ("linked file", aid))
+              for aid, uid in unit_of.items() if aid in measured}
+    return linked, by_unit
+
+
+def _trim_arrays(db, track_rows: Iterable[int]) -> Dict[int, Dict[str, Any]]:
+    from ...database.models import TrackResult as TR
+    out: Dict[int, Dict[str, Any]] = {}
+    with db.session() as s:
+        for chunk in _chunks(sorted(set(track_rows))):
+            for r in (s.query(TR.id, TR.position_data, TR.error_data, TR.theory_data,
+                              TR.upper_limits, TR.lower_limits, TR.optimal_offset, TR.optimal_slope)
+                      .filter(TR.id.in_(chunk)).all()):
+                out[r[0]] = {"positions": list(r[1] or []), "errors": list(r[2] or []),
+                             "theory": list(r[3] or []), "upper": list(r[4] or []),
+                             "lower": list(r[5] or []), "offset": r[6], "slope": r[7]}
+    return out
+
+
+def _populations(db, model: str, cutoff: datetime) -> Dict[str, Any]:
+    """The reworked and the pass/pass unit-days, one reading each, with what was left out."""
+    fts = _final_tests(db, model, cutoff)
+    linked, by_unit = _unit_tracks(db, (f["linked"] for f in fts))
+    paired: List[Tuple[Dict[str, Any], Any, Dict[str, Any]]] = []
+    unpaired = 0
+    rework_systems = set()
+    for f in fts:
+        unit = linked.get(f["linked"])
+        if unit is None:                    # linked to a file with no measured track
+            continue
+        track = pair_trim_track(_ft_letter(f["track_id"], f["serial"]), by_unit.get(unit) or {})
+        if track is None:
+            unpaired += 1
+            continue
+        if not track["passed"]:
+            rework_systems.add(track["system"])
+        paired.append((f, unit, track))
+
+    arrays = _trim_arrays(db, (t["track_row"] for _, _, t in paired))
+    skipped = junk = 0
+    latest: Dict[Tuple, _Reading] = {}
+    for f, unit, track in paired:
+        got = graded_maxima(f, arrays.get(track["track_row"]) or {})
+        ratio, was_junk = (None, False) if got is None else _ratio(*got)
+        if was_junk:
+            junk += 1
+            continue
+        if ratio is None:
+            skipped += 1                    # no common graded position (or nothing to divide by)
+            continue
+        reading = _Reading(unit=unit, track_row=track["track_row"], rework=not track["passed"],
+                           when=f["when"], laser=got[1], ft=got[0], ratio=ratio)
+        key = (reading.rework, unit, reading.track_row)
+        if key not in latest or reading.when > latest[key].when:    # per track: the latest test
+            latest[key] = reading
+    per_unit: Dict[Tuple, _Reading] = {}
+    for r in latest.values():               # per unit-day: the track with the largest laser error
+        key = (r.rework, r.unit)
+        best = per_unit.get(key)
+        if best is None or (r.laser, r.ft, r.track_row) > (best.laser, best.ft, best.track_row):
+            per_unit[key] = r
+    return {"rework": [r for (rw, _), r in per_unit.items() if rw],
+            "control": [r for (rw, _), r in per_unit.items() if not rw],
+            "skipped": skipped, "junk": junk, "unpaired": unpaired,
+            "rework_systems": rework_systems}
+
+
+def _top_third(control: List[_Reading]) -> List[_Reading]:
+    """The pass/pass unit-days in the top third of laser error -- the untouched units most like
+    the reworked ones (which the laser failed, so theirs ran high)."""
+    ranked = sorted(control, key=lambda r: (r.laser, r.ratio, str(r.unit)))
+    return ranked[2 * len(ranked) // 3:]
+
+
+def _shop_order(systems: Iterable[str]) -> Tuple[str, ...]:
+    """Laser 1, 2, 3 -- the shop's order, never the code's letters (A is laser TWO)."""
+    def rank(s):
+        return (LASER_ORDER.index(s) if s in LASER_ORDER else len(LASER_ORDER), s)
+    return tuple(sorted({s for s in systems if s}, key=rank))
+
+
+def _and(names: Sequence[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def analyze(model: str, db, tracks, laser_label) -> Tuple[Dict[str, Any], List[Finding]]:
@@ -140,7 +348,7 @@ def analyze(model: str, db, tracks, laser_label) -> Tuple[Dict[str, Any], List[F
     # names it in facts["errors"]["rework_load"], the same as any other analyzer's crash.
     agreement = db.get_model_trim_ft_agreement(model, cutoff_date=cutoff, min_confidence=MIN_CONFIDENCE)
     linked = agreement.get("linked") or 0
-    n_rework = agreement.get("overkills") or 0
+    n_rework = agreement.get("overkill_unit_days") or 0
     facts["linked"] = linked
     facts["rework_unit_days"] = n_rework
     if not linked:
@@ -152,53 +360,69 @@ def analyze(model: str, db, tracks, laser_label) -> Tuple[Dict[str, Any], List[F
         facts["note"] = f"{n_rework} rework unit-days in the window, below the {MIN_UNIT_DAYS} floor"
         return facts, findings
 
-    pairs = _linked_pairs(db, model, cutoff)
-    rework_ratios = [r for r in (_ratio(fe, te) for fe, te, tp, sysname in pairs if not tp)
-                     if r is not None]
-    control_ratios = [r for r in (_ratio(fe, te) for fe, te, tp, sysname in pairs if tp)
-                      if r is not None]
-    # The laser(s) whose FAILURES are being hand-trimmed -- not the model's every laser, and not
-    # a re-derivation of the readout: purely which system each already-classified rework pair's
-    # own linked trim ran on.
-    rework_systems = tuple(sorted({sysname for _, _, tp, sysname in pairs if not tp}))
-    facts["rework_ratio_n"] = len(rework_ratios)
-    facts["control_n"] = len(control_ratios)
-    if len(rework_ratios) < MIN_UNIT_DAYS or len(control_ratios) < MIN_CONTROL:
+    pop = _populations(db, model, cutoff)
+    rework, control = pop["rework"], pop["control"]
+    top = _top_third(control)
+    facts.update({
+        "rework_ratio_n": len(rework), "control_n": len(control), "control_top_third_n": len(top),
+        "control_top_third_min_laser_error": round(top[0].laser, 4) if top else None,
+        "skipped_pairs": pop["skipped"], "junk_readings": pop["junk"],
+        "unpaired_final_tests": pop["unpaired"]})
+    # Both medians are facts whenever both groups exist -- a fact always, a finding only when
+    # strong (the rule loss_origin states): below the floors they are shown with their n and
+    # never confirm anything, so whoever overturns a floor has the numbers to do it with.
+    if rework and top:
+        facts["median_ratio_rework"] = round(median(r.ratio for r in rework), 3)
+        facts["median_ratio_control_top_third"] = round(median(r.ratio for r in top), 3)
+    if len(rework) < MIN_UNIT_DAYS or len(top) < MIN_CONTROL:
         facts["confirmed"] = False
-        facts["note"] = ("not enough linked pairs with usable linearity-error readings to "
-                         "confirm the signature")
+        facts["note"] = (f"{len(rework)} reworked unit-days and {len(top)} comparable pass/pass "
+                         f"units could be read over the travel both stations grade -- below the "
+                         f"{MIN_UNIT_DAYS} and {MIN_CONTROL} needed to compare them")
         return facts, findings
 
-    med_rework = median(rework_ratios)
-    med_control = median(control_ratios)
-    facts["median_ratio_rework"] = round(med_rework, 3)
-    facts["median_ratio_control"] = round(med_control, 3)
-    confirmed = med_rework <= CONFIRM_RATIO * med_control
+    med_rework = median(r.ratio for r in rework)
+    med_top = median(r.ratio for r in top)
+    confirmed = med_rework <= CONFIRM_RATIO * med_top
     facts["confirmed"] = confirmed
     if not confirmed:
-        facts["note"] = ("the rework group's final-test error did not fall enough against the "
-                         "pass/pass control group to confirm hand trim rather than a looser test")
+        facts["note"] = (f"the reworked units' final-test error did not fall to {CONFIRM_RATIO:g}x "
+                         "or less of what comparable untouched units show (the top third of "
+                         "pass/pass units by laser error), so hand trim cannot be told apart from "
+                         "the two stations' normal difference")
         return facts, findings
 
-    systems = rework_systems or tuple(sorted({t.system for t in dated}))
+    systems = _shop_order(pop["rework_systems"]) or _shop_order(t.system for t in dated)
+    floor = top[0].laser
+    comparison = (f"median final-test / laser worst-error ratio of the {len(rework):,} reworked "
+                  f"unit-days against the median of the {len(top):,} pass/pass unit-days in the top "
+                  f"third of laser error ({floor:.4f} V and up), over the travel both stations "
+                  f"grade; confirmed at {CONFIRM_RATIO:g}x or below")
     findings.append(Finding(
         model=model, analyzer="rework_load", category="Rework load",
         lever="laser_settings", systems=systems,
-        title=(f"{laser_label(systems[0])}: {n_rework:,} units a year fail here and pass final "
-               "test after rework"),
+        title=(f"{_and([laser_label(s) for s in systems])}: {n_rework:,} units a year fail here and "
+               "pass final test after rework"),
         summary=(
-            f"{n_rework:,} unit-days in the last year failed linearity at the laser and then "
-            "passed final test. That is hand trim, not an unnecessary rejection: on these units "
-            f"final test's own linearity error runs to a median of {med_rework:.0%} of what the "
-            f"laser measured, against {med_control:.0%} on units that passed both stations -- the "
-            "error genuinely fell between the two stations, which a final test that was simply "
-            "looser would not produce. No gain is claimed: this counts laser time hand trim is "
+            f"{n_rework:,} unit-days in the last year failed linearity at the laser and then passed "
+            "final test. That is hand trim, not an unnecessary rejection. Over the travel both "
+            "stations grade, each corrected with its own offset, final test's worst error on "
+            f"{len(rework):,} of these units is a median {med_rework:.0%} of the laser's on the same "
+            f"track, against {med_top:.0%} on the {len(top):,} untouched units (their track passed "
+            f"at both stations) with the largest laser errors (the top third, {floor:.4f} V and "
+            "up) -- the error fell "
+            "between the stations further than on comparable untouched units, which a looser final "
+            "test alone would not produce. No gain is claimed: this counts laser time hand trim is "
             "already spending on this model's own failures."),
         n_units=n_rework,
-        strength_name="median final-test / laser error ratio, reworked units",
-        strength_value=round(med_rework, 3),
+        strength_name=("reworked units' median final-test/laser error ratio, as a share of "
+                       "comparable untouched units'"),
+        strength_value=round(med_rework / med_top, 3) if med_top else None,
         expected_gain_points=None,           # hand-trim labour avoided, never a yield rate
-        evidence={"facts": {"rework_unit_days": n_rework, "control_n": len(control_ratios),
+        evidence={"facts": {"rework_unit_days": n_rework, "rework_ratio_n": len(rework),
+                            "control_n": len(control), "control_top_third_n": len(top),
                             "median_ratio_rework": round(med_rework, 3),
-                            "median_ratio_control": round(med_control, 3)}}))
+                            "median_ratio_control_top_third": round(med_top, 3),
+                            "skipped_pairs": pop["skipped"]},
+                  "comparison": comparison}))
     return facts, findings

@@ -48,7 +48,7 @@ from laser_trim_analyzer.core.models import (
     SystemType,
     RiskCategory,
 )
-from laser_trim_analyzer.core.model_stats import failed_processing
+from laser_trim_analyzer.core.model_stats import failed_processing, failed_processing_statuses
 from laser_trim_analyzer.config import get_config
 from laser_trim_analyzer.utils.hashing import calculate_file_hash, stat_once
 
@@ -2867,7 +2867,13 @@ class DatabaseManager:
         Shared by the company Gap and the per-model trim-vs-FT tab. Unlinked FT
         records are excluded — a comparison needs both stations. UNTRIMMED
         tracks are excluded because their NULL linearity_pass would force
-        trim_pass=0, fabricating overkills and masking escapes.
+        trim_pass=0, fabricating overkills and masking escapes — and so are
+        tracks whose PROCESSING failed (core/model_stats' one definition,
+        ERROR / PROCESSING_FAILED, 2026-09-25): a file the analyser could not
+        read carries no verdict, and counting its NULL as a rejection turned
+        units whose every real track passed into trim FAILs. A final test
+        linked to a file whose every track is untrimmed or unreadable is not a
+        comparison of two measurements, so it is not linked here either.
 
         The disposition is computed over the whole UNIT-DAY, not over the single
         linked file, because one unit-day is spread across several rows in two
@@ -2887,10 +2893,20 @@ class DatabaseManager:
         already day-bounded, which is what keeps reused shop numbers from
         pooling different physical units across lots. Rows with no unit_id (no
         shop number in the serial) fall back to the linked file's own tracks.
+
+        Each row also carries `unit_id` and `analysis_id` (the linked file), so
+        a caller can count UNITS rather than final-test records: a two-track
+        unit final-tested once per track, or re-tested, is several rows and
+        one unit-day (see get_model_trim_ft_agreement's overkill_unit_days).
         """
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
         )
+
+        # Tracks that carry no disposition: an untrimmed sweep, or a file whose
+        # processing failed. Names, as the stored Enum column compares them.
+        no_disposition = ([DBStatusType.UNTRIMMED.name]
+                          + [st.name for st in failed_processing_statuses()])
 
         # Last attempt per (unit-day, track), ordered by the clock time the
         # parser now keeps; id breaks exact ties deterministically.
@@ -2904,7 +2920,7 @@ class DatabaseManager:
                               DBAnalysisResult.id.desc()),
                 ).label("rn"))
             .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
-            .filter(DBTrackResult.status != DBStatusType.UNTRIMMED.name,
+            .filter(DBTrackResult.status.notin_(no_disposition),
                     DBAnalysisResult.unit_id.isnot(None),
                     DBAnalysisResult.unit_id != "")
             .subquery())
@@ -2924,22 +2940,27 @@ class DatabaseManager:
                 func.coalesce(
                     unit_disp.c.trim_pass,
                     func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0)),
-                ).label("trim_pass"))
+                ).label("trim_pass"),
+                DBAnalysisResult.unit_id.label("unit_id"),
+                DBAnalysisResult.id.label("analysis_id"))
              .join(DBAnalysisResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
              .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
              .outerjoin(unit_disp, unit_disp.c.uid == DBAnalysisResult.unit_id)
              .filter(DBFinalTestResult.linked_trim_id.isnot(None),
                      DBFinalTestResult.linearity_pass.isnot(None),
                      DBFinalTestResult.match_confidence >= min_confidence,
-                     DBTrackResult.status != DBStatusType.UNTRIMMED.name))
+                     DBTrackResult.status.notin_(no_disposition)))
         if model is not None:
             q = q.filter(DBFinalTestResult.model == model)
         if cutoff is not None:
             q = q.filter(DBFinalTestResult.file_date >= cutoff)
+        # unit_id / analysis_id follow from the FT row (one linked file each), so
+        # grouping by them too changes no group.
         return q.group_by(DBFinalTestResult.id, DBFinalTestResult.model,
                           DBFinalTestResult.serial,
                           DBFinalTestResult.linearity_pass,
-                          unit_disp.c.trim_pass).all()
+                          unit_disp.c.trim_pass,
+                          DBAnalysisResult.unit_id, DBAnalysisResult.id).all()
 
     def get_escape_overkill_analysis(self, days_back: int = 90, min_confidence: float = 0.70) -> Dict[str, Any]:
         """Company-wide escapes and overkills (the 'Gap' numbers).
@@ -3006,12 +3027,19 @@ class DatabaseManager:
         overkills (failed trim but passed FT — unnecessarily rejected), agreement, and the
         trim-pass-count distribution ('how many trim passes'). Escape/overkill serials listed
         for drill-down. Unlinked records are excluded from escape/overkill (need both stations).
+
+        `escapes`/`overkills` count FINAL-TEST RECORDS (the Model page and the sweep read them
+        so). `overkill_unit_days` counts the UNITS behind the overkills: distinct unit-days, or,
+        for a record with no unit_id, its linked file -- the same unit the disposition itself
+        falls back to. A two-track unit final-tested once per track is two records, one unit-day
+        (6607: 533 records, 261 unit-days, 2026-09-25).
         """
         from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
         out: Dict[str, Any] = {
             "model": model, "trim_total": 0, "trim_pass": 0, "trim_pass_rate": None,
             "ft_total": 0, "ft_pass": 0, "ft_pass_rate": None,
             "linked": 0, "escapes": 0, "overkills": 0, "agreements": 0, "agreement_rate": None,
+            "overkill_unit_days": 0,
             "escape_units": [], "overkill_units": [],
             "trim_pass_count_avg": None, "trim_pass_count_dist": {},
         }
@@ -3053,15 +3081,18 @@ class DatabaseManager:
                 session, min_confidence=min_confidence, model=model, cutoff=cutoff)
             out["linked"] = len(linked)
             agree = 0
+            overkill_units = set()
             for r in linked:
                 verdict = self.classify_trim_ft(r.trim_pass, r.ft_pass)
                 if verdict == self.ESCAPE:
                     out["escapes"] += 1; out["escape_units"].append(r.serial)
                 elif verdict == self.OVERKILL:
                     out["overkills"] += 1; out["overkill_units"].append(r.serial)
+                    overkill_units.add(r.unit_id or ("linked file", r.analysis_id))
                 else:
                     agree += 1
             out["agreements"] = agree
+            out["overkill_unit_days"] = len(overkill_units)
             if out["linked"]:
                 out["agreement_rate"] = agree / out["linked"] * 100.0
 

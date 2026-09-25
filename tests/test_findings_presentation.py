@@ -142,6 +142,19 @@ def test_value_text_for_counts():
     assert P.value_text("laser_time", 1008.0) == "1,008" and P.value_text("check", 22.0) == "22"
 
 
+def test_a_readout_counted_in_unit_days_says_so_on_its_row():
+    """The laser-time group's column counts TRACKS. Rework load counts unit-days (a two-track
+    unit final-tested once per track is ONE unit-day), so its row names its own unit rather than
+    sit under a column that says something else (review of 85222c4, 2026-09-25)."""
+    rework = {"analyzer": "rework_load", "category": "Rework load",
+              "evidence": {"facts": {"rework_unit_days": 261}}}
+    effort = {"analyzer": "trim_effort", "category": "Trim avoidance",
+              "evidence": {"facts": {"arrive_in_spec_n": 1008}}}
+    assert P.value_text("laser_time", 261.0, [rework]) == "261 unit-days"
+    assert P.value_text("laser_time", 1008.0, [effort]) == "1,008"
+    assert P.value_text("laser_time", None, [rework]) == "—"
+
+
 # ---- Every row has its own key (final review, 2026-09-24) ----------------------------------------
 # limit_tables writes one finding per (laser, track) and its title names neither; the row key was
 # (group, model, statement), so two tracks made two identical rows under ONE key -- clicking the

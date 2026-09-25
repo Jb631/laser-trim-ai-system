@@ -235,6 +235,82 @@ def test_positions_are_rescaled_and_flagged_when_the_scales_differ():
     assert out[-1] == pytest.approx(99.0)
 
 
+# ---- positions_on_trim_axis: comparing the two sweeps POSITION BY POSITION ----------------
+# align_positions is for a picture whose axis is labelled; a point-by-point comparison (rework_load's
+# "the travel both stations grade") needs the FT points where they physically are on the trim's
+# axis. Two real shapes count the same travel from a different zero -- align_positions leaves both
+# alone -- and one "position" column is not a position column at all.
+
+def test_the_same_span_from_a_different_zero_is_shifted_onto_the_trim_axis_8340_1_shape():
+    """8340-1: the FT file counts 0 to 0.61, the trim file -0.305 to 0.305 -- the same travel,
+    another origin. Compared raw, only half the travel would overlap, and the wrong half."""
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
+
+    ft = [round(0.01 * i, 2) for i in range(62)]                    # 0.00 .. 0.61
+    trim = [-0.305 + 0.61 * i / 62 for i in range(63)]              # -0.305 .. 0.305
+    out, shifted = positions_on_trim_axis(ft, trim)
+    assert shifted is True
+    assert len(out) == len(ft)                                      # index for index
+    assert out[0] == pytest.approx(-0.305) and out[-1] == pytest.approx(0.305)
+    assert out[31] == pytest.approx(0.005)                          # every point moves by the same amount
+
+
+def test_the_same_span_from_a_different_zero_is_shifted_onto_the_trim_axis_8397_2_shape():
+    """8397-2: some FT files count 0.05 to 240.05 against the trim's -120 to 120."""
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
+
+    ft = [0.05 + 4.0 * i for i in range(61)]                        # 0.05 .. 240.05
+    trim = [-120.0 + 4.0 * i for i in range(61)]                    # -120 .. 120
+    out, shifted = positions_on_trim_axis(ft, trim)
+    assert shifted is True
+    assert out == pytest.approx(trim)
+
+
+def test_a_genuinely_shorter_ft_sweep_is_left_where_it_was_measured_6607_shape():
+    """6607: FT sweeps +/-14 of the trim's +/-22 -- a shorter sweep centred on the same zero. Moving
+    or stretching it would put every FT error where it was never measured."""
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
+
+    ft = [-14.0 + 0.5 * i for i in range(57)]
+    trim = [-22.0 + i for i in range(45)]
+    out, shifted = positions_on_trim_axis(ft, trim)
+    assert shifted is False
+    assert out == pytest.approx(ft)
+
+
+def test_a_matching_sweep_is_left_alone():
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
+
+    ft = [-28.0 + i for i in range(57)]
+    trim = [-27.5 + 0.5 * i for i in range(111)]
+    out, shifted = positions_on_trim_axis(ft, trim)
+    assert shifted is False and out == pytest.approx(ft)
+
+
+def test_a_column_an_order_of_magnitude_off_the_trim_span_is_no_axis_at_all():
+    """25 real 8397-2 files hold one stray value and then zeros in their position column (span
+    0.046 against the trim's 240). A measurement is never rescaled onto a guessed axis: None."""
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
+
+    ft = [-0.046] + [0.0] * 24
+    trim = [-120.0 + 10.0 * i for i in range(25)]
+    assert positions_on_trim_axis(ft, trim) == (None, False)
+    assert positions_on_trim_axis([0.0, 1.0], [5.0]) == (None, False)    # fewer than 2 trim positions
+
+
+def test_a_missing_position_stays_missing_and_keeps_its_index():
+    """The FT arrays are index-aligned (errors, limits, graded window): dropping a None, as
+    align_positions does, would slide every later point onto its neighbour's error."""
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
+
+    ft = [0.0, None, 0.2, 0.3, 0.4, 0.5, 0.6]
+    trim = [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3]
+    out, shifted = positions_on_trim_axis(ft, trim)
+    assert shifted is True
+    assert out[1] is None and len(out) == 7
+    assert out[0] == pytest.approx(-0.3) and out[6] == pytest.approx(0.3)
+
+
 def test_export_document_draws_the_ft_overlay_with_its_own_band(tmp_path):
     """The print document gets the overlay too, styled apart from the trim
     trace and carrying the FT's own limits."""

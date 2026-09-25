@@ -109,6 +109,66 @@ def align_positions(ft_positions: Sequence[float],
     return [t_lo + (p - f_lo) * scale for p in ft], True
 
 
+# Two sweeps whose spans agree to within this share cover the same travel ...
+_SAME_SPAN = 0.25
+# ... and if their centres then sit further apart than this share of the trim's span, the
+# final-test column counts that travel from a different zero.
+_OTHER_ZERO = 0.10
+
+
+def _position(p) -> Optional[float]:
+    """A usable position, or None (missing, NaN, infinite, not a number)."""
+    if p is None or isinstance(p, bool):
+        return None
+    try:
+        v = float(p)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v and v not in (float("inf"), float("-inf")) else None
+
+
+def positions_on_trim_axis(ft_positions: Sequence[Any], trim_positions: Sequence[Any]
+                           ) -> Tuple[Optional[List[Optional[float]]], bool]:
+    """The FT sweep's positions placed on the TRIM sweep's axis, index for index, for comparing
+    the two stations POSITION BY POSITION -- and whether they had to be shifted.
+
+    `align_positions` is for a picture whose axis is labelled. A point-by-point comparison
+    (findings/analyzers/rework_load: "the travel both stations grade") needs every FT point where
+    it physically is, so this differs from it in three ways, each found on real data:
+
+    * the same span counted from a DIFFERENT ZERO is shifted so the two centres coincide.
+      8340-1's final test counts 0 to 0.61 against the trim's -0.305 to 0.305; some 8397-2
+      files count 0.05 to 240.05 against +/-120. Compared unshifted, only half the travel
+      overlaps -- and the wrong half is compared with the wrong half.
+    * spans an order of magnitude apart (`_SCALE_RATIO`) give None, never a rescaled axis:
+      a measurement is not moved onto a guessed axis. 25 real 8397-2 files hold one stray value
+      and then zeros in their position column (a span of 0.046 against the trim's 240).
+    * a missing position stays None IN PLACE. The FT arrays are index-aligned -- errors, limits,
+      the graded window -- and dropping a None would slide every later point onto its
+      neighbour's error.
+
+    Everything else is left exactly where it was measured, including a genuinely SHORTER FT
+    sweep centred on the same zero (6607: +/-14 of the trim's +/-22), for align_positions' own
+    reason. None also when either side has fewer than two positions or no span.
+    """
+    ft_all = [_position(p) for p in (ft_positions or [])]
+    ft = [p for p in ft_all if p is not None]
+    trim = [p for p in (_position(p) for p in (trim_positions or [])) if p is not None]
+    if len(ft) < 2 or len(trim) < 2:
+        return None, False
+    f_lo, f_hi = min(ft), max(ft)
+    t_lo, t_hi = min(trim), max(trim)
+    f_span, t_span = f_hi - f_lo, t_hi - t_lo
+    if f_span <= 0 or t_span <= 0:
+        return None, False
+    if max(f_span, t_span) / min(f_span, t_span) >= _SCALE_RATIO:
+        return None, False
+    shift = (t_lo + t_hi) / 2.0 - (f_lo + f_hi) / 2.0
+    if abs(f_span / t_span - 1.0) <= _SAME_SPAN and abs(shift) > _OTHER_ZERO * t_span:
+        return [None if p is None else p + shift for p in ft_all], True
+    return ft_all, False
+
+
 def is_sweep_axis(positions: Sequence[float], min_monotone: float = 0.95) -> bool:
     """Is this column actually a swept position, i.e. monotonic?
 

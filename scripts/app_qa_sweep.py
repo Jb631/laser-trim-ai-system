@@ -1093,11 +1093,19 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
 
     Any exception here is a FAIL, never a skip: a check that can pass on an
     ERROR result is the exact weak assertion CLAUDE.md forbids.
+
+    A track with no disposition never decides one (2026-09-25): UNTRIMMED, and
+    a file whose PROCESSING failed -- core/model_stats' one definition. The SQL
+    below leaves out the same statuses the app does, so it re-derives the
+    app's rule rather than the one it replaced (which read an unreadable
+    file's NULL verdict as a rejection).
     """
+    from laser_trim_analyzer.core.model_stats import _FAILED_PROCESSING
     from laser_trim_analyzer.database.manager import DatabaseManager
 
     CONF, DAYS = 0.70, 365
     cutoff = (datetime.now() - timedelta(days=DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    NO_DISP = ", ".join(f"'{st}'" for st in ("UNTRIMMED", *_FAILED_PROCESSING))
 
     # Re-derived independently of the ORM. The disposition is the UNIT-DAY's,
     # not the linked file's: per track take the LAST attempt of the day, then
@@ -1105,19 +1113,19 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
     # one file per track on a multi-track unit (4,659 unit-days), and one file
     # per re-trim attempt on a track (13,104) — and they need opposite
     # treatment. `unit_id` ("<model>/<shop>/<date>") is the unit-day key.
-    DISP = """
+    DISP = f"""
       att AS (
         SELECT a.unit_id uid, t.linearity_pass lp,
                ROW_NUMBER() OVER (PARTITION BY a.unit_id, t.track_id
                                   ORDER BY a.file_date DESC, a.id DESC) rn
         FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id
-        WHERE t.status <> 'UNTRIMMED' AND a.unit_id IS NOT NULL AND a.unit_id <> ''),
+        WHERE t.status NOT IN ({NO_DISP}) AND a.unit_id IS NOT NULL AND a.unit_id <> ''),
       disp AS (SELECT uid, MIN(CASE WHEN lp=1 THEN 1 ELSE 0 END) tp
                FROM att WHERE rn = 1 GROUP BY uid),
     """
-    LINKED = """
+    LINKED = f"""
       SELECT f.id fid, f.model, f.serial, a.id tid, date(a.file_date) tday,
-             a.file_date tstamp, f.linearity_pass ft_pass,
+             a.file_date tstamp, f.linearity_pass ft_pass, a.unit_id uid,
              COALESCE(d.tp, MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END))
                trim_pass
       FROM final_test_results f
@@ -1125,7 +1133,7 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
       JOIN track_results t ON t.analysis_id = a.id
       LEFT JOIN disp d ON d.uid = a.unit_id
       WHERE f.linked_trim_id IS NOT NULL AND f.linearity_pass IS NOT NULL
-        AND f.match_confidence >= ? AND t.status <> 'UNTRIMMED' """
+        AND f.match_confidence >= ? AND t.status NOT IN ({NO_DISP}) """
     WINDOW = " AND f.file_date >= ? "
     GROUP = " GROUP BY f.id, d.tp "
 
@@ -1182,11 +1190,11 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
           SELECT 1 FROM analysis_results a2
           JOIN track_results t2 ON t2.analysis_id = a2.id
           WHERE a2.unit_id = (SELECT unit_id FROM analysis_results WHERE id = L.tid)
-            AND t2.status <> 'UNTRIMMED'
+            AND t2.status NOT IN ({NO_DISP})
             AND a2.id = (SELECT a3.id FROM analysis_results a3
                          JOIN track_results t3 ON t3.analysis_id = a3.id
                          WHERE a3.unit_id = a2.unit_id AND t3.track_id = t2.track_id
-                           AND t3.status <> 'UNTRIMMED'
+                           AND t3.status NOT IN ({NO_DISP})
                          ORDER BY a3.file_date DESC, a3.id DESC LIMIT 1)
             AND (t2.linearity_pass IS NOT 1))
     """, (CONF, cutoff)).fetchone()[0]
@@ -1212,12 +1220,19 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
 
     # ---- 4. per-model surface agrees with the company surface --------------
     # Same rows, same classifier — the trim-vs-FT tab and the Gap cannot drift.
+    # `overkill_unit_days` (2026-09-25) counts the UNITS behind the overkills:
+    # distinct unit-days, a record with no unit_id standing for its linked file
+    # -- the grain rework_load reads. 6607 tests each track in its own final-test
+    # file, so its records run about twice its unit-days.
     for m in ("6607", "8340-1", "8232-1"):
-        mn, mesc, movk = raw.execute(f"""
+        mn, mesc, movk, mud = raw.execute(f"""
           WITH {DISP} L AS ({LINKED} AND f.model = ? {WINDOW}{GROUP})
           SELECT COUNT(*),
                  SUM(CASE WHEN trim_pass=1 AND ft_pass=0 THEN 1 ELSE 0 END),
-                 SUM(CASE WHEN trim_pass=0 AND ft_pass=1 THEN 1 ELSE 0 END) FROM L
+                 SUM(CASE WHEN trim_pass=0 AND ft_pass=1 THEN 1 ELSE 0 END),
+                 COUNT(DISTINCT CASE WHEN trim_pass=0 AND ft_pass=1
+                                     THEN COALESCE(NULLIF(uid, ''), 'file:' || tid) END)
+          FROM L
         """, (CONF, m, cutoff)).fetchone()
         tf = db.get_model_trim_ft_agreement(
             m, cutoff_date=datetime.now() - timedelta(days=DAYS), min_confidence=CONF)
@@ -1230,6 +1245,12 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
               and len(tf["overkill_units"]) == tf["overkills"],
               f"escape_units={len(tf['escape_units'])}/{tf['escapes']} "
               f"overkill_units={len(tf['overkill_units'])}/{tf['overkills']}")
+        # The population is asserted before the bound: 0 <= anything would read green.
+        check(f"trim-vs-FT overkill UNIT-DAYS match raw SQL, and never exceed the records ({m})",
+              tf.get("overkill_unit_days") == (mud or 0)
+              and 0 < tf["overkill_unit_days"] <= tf["overkills"],
+              f"api unit-days={tf.get('overkill_unit_days')} sql={mud} "
+              f"records={tf['overkills']}")
 
     # ---- 5. NOT overcorrected ----------------------------------------------
     # The tempting "wrong" fix is to take the best/last run for the serial over
@@ -1242,7 +1263,7 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
       RUN AS (SELECT a.id tid, a.model, a.serial, a.file_date,
                      MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END) ap
               FROM analysis_results a JOIN track_results t ON t.analysis_id=a.id
-              WHERE t.status <> 'UNTRIMMED' GROUP BY a.id)
+              WHERE t.status NOT IN ({NO_DISP}) GROUP BY a.id)
       SELECT COUNT(*) FROM L
       WHERE L.trim_pass = 0 AND L.ft_pass = 1
         AND EXISTS (SELECT 1 FROM RUN r
@@ -1283,13 +1304,13 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
           f"treats 'Track A' and 'TRK1' as separate tracks (conservative)")
     # And they must not silently drop OUT of the metric: every such unit-day
     # still has to yield a disposition.
-    undecided = raw.execute("""
+    undecided = raw.execute(f"""
       WITH att AS (
         SELECT a.unit_id uid, t.linearity_pass lp,
                ROW_NUMBER() OVER (PARTITION BY a.unit_id, t.track_id
                                   ORDER BY a.file_date DESC, a.id DESC) rn
         FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id
-        WHERE t.status <> 'UNTRIMMED' AND a.unit_id IS NOT NULL AND a.unit_id <> ''),
+        WHERE t.status NOT IN ({NO_DISP}) AND a.unit_id IS NOT NULL AND a.unit_id <> ''),
       u AS (SELECT a.unit_id uid, COUNT(DISTINCT a.id) rows_,
                    COUNT(DISTINCT t.track_id) tracks
             FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id

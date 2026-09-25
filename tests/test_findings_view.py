@@ -323,3 +323,20 @@ def test_a_like_for_like_move_is_still_green_or_coral(tk_root):
     row = next(iter(v.row_widgets.values()))
     readout = [w for w in row.winfo_children() if isinstance(w, ctk.CTkLabel) and w.cget("text") == "+22"][0]
     assert readout.cget("text_color") == t.PASS_FG and "different test" not in _texts(row)
+
+
+def test_a_rework_rows_readout_says_unit_days_beside_a_rows_in_tracks(tk_root):
+    """One group, two units: the laser-time column counts tracks, rework load counts unit-days --
+    the rework row's readout says so, the other row's stays a bare count."""
+    rework = {"analyzer": "rework_load", "model": "R1", "category": "Rework load",
+              "title": "Laser 1 (LTS): 261 units a year fail here and pass final test after rework",
+              "summary": "s", "systems": ["B"], "n_units": 261,
+              "evidence": {"facts": {"rework_unit_days": 261}}}
+    effort = {"analyzer": "trim_effort", "model": "E1", "category": "Trim avoidance",
+              "title": "t", "summary": "s", "systems": ["B"], "n_units": 1008,
+              "evidence": {"facts": {"arrive_in_spec_n": 1008}}}
+    v = FindingsView(tk_root, ThemeManager(), include_empty=False)
+    v.set_findings([rework, effort])
+    texts = _texts(v)
+    assert "261 unit-days" in texts and "1,008" in texts
+

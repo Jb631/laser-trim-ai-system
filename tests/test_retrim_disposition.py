@@ -457,3 +457,115 @@ def test_company_and_per_model_definitions_agree(tmp_path, models):
     assert per_model["overkills"] == company["overkills"] == 1
     assert per_model["escapes"] == company["escapes"] == 0
     assert per_model["linked"] == company["total_linked"] == 2
+
+
+# --------------------------------------------------------------------------
+# A record that failed processing never decides a disposition (2026-09-25)
+# --------------------------------------------------------------------------
+#
+# An ERROR / PROCESSING_FAILED track is a file the analyser could not read:
+# its NULL linearity_pass is not a rejection. Counted as one, it turned a
+# unit whose every REAL track passed into a trim FAIL -- an overkill (or a
+# hidden escape) that no measurement ever made. core/model_stats'
+# failed-processing rule is the one definition; the disposition uses it.
+
+def test_a_failed_processing_track_never_decides_the_disposition(tmp_path, models):
+    """Track B's only file of the day failed processing (ERROR, no verdict); Track A passed.
+    Every real track passed, so final test passing the unit is agreement -- never an overkill."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    DBAR, DBFT, DBTR, StatusType, SystemType = models
+
+    db = DatabaseManager(tmp_path / "failed_track.db")
+    day = datetime(2026, 3, 2)
+    with db.session() as s:
+        broken = _track(s, "M1", "102", day.replace(hour=13, minute=39), "Track B", False, 0,
+                        DBAR, DBTR, StatusType, SystemType)
+        s.query(DBTR).filter(DBTR.analysis_id == broken.id).update(
+            {DBTR.status: StatusType.ERROR, DBTR.linearity_pass: None})
+        _track(s, "M1", "102", day.replace(hour=13, minute=49), "Track A", True, 1,
+               DBAR, DBTR, StatusType, SystemType)
+        s.commit()
+        _ft(s, "M1", "102", day + timedelta(days=3), True, 0, DBFT, StatusType)
+        s.commit()
+    _repair(db)
+
+    out = _agreement(db, "M1")
+    assert out["linked"] == 1
+    assert out["overkills"] == 0, "a file the analyser could not read is not a rejection"
+    assert out["agreements"] == 1
+
+
+# --------------------------------------------------------------------------
+# The overkill count at the unit-day grain (2026-09-25)
+# --------------------------------------------------------------------------
+#
+# `overkills` counts FINAL-TEST RECORDS: a two-track unit tested once per
+# track (6607: "…sn16…" and "…sn16b…"), or a unit re-tested at final test,
+# is one unit with two records. `overkill_unit_days` counts the units --
+# distinct unit-days, or the linked file where a record has no unit_id (the
+# same fallback the disposition uses). The old keys keep their meaning: the
+# Model page and the sweep read them.
+
+def _ft_linked(s, model, serial, when, lin_pass, trim_id, DBFT, StatusType, tag=""):
+    """A final-test record linked straight to `trim_id` at full confidence."""
+    s.add(DBFT(filename=f"{model}-sn{serial}{tag}_{when.month}-{when.day}-{when.year}_7-38 PM.xls",
+               model=model, serial=serial, test_date=when, file_date=when, timestamp=when,
+               linearity_pass=lin_pass, linked_trim_id=trim_id, match_confidence=1.0,
+               overall_status=StatusType.PASS if lin_pass else StatusType.FAIL))
+
+
+def test_overkill_unit_days_counts_units_not_final_test_records(tmp_path, models):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    DBAR, DBFT, DBTR, StatusType, SystemType = models
+
+    db = DatabaseManager(tmp_path / "unit_days.db")
+    day = datetime(2026, 3, 2)
+    with db.session() as s:
+        # Unit 102: Track A failed, Track B passed -- one unit-day, final-tested once per track.
+        a = _track(s, "M1", "102", day.replace(hour=13, minute=39), "Track A", False, 0,
+                   DBAR, DBTR, StatusType, SystemType)
+        b = _track(s, "M1", "102", day.replace(hour=13, minute=49), "Track B", True, 1,
+                   DBAR, DBTR, StatusType, SystemType)
+        # Unit 103: one track, failed, final-tested twice (both passed).
+        c = _track(s, "M1", "103", day.replace(hour=14, minute=5), "Track A", False, 2,
+                   DBAR, DBTR, StatusType, SystemType)
+        s.flush()
+        tested = day + timedelta(days=3)
+        _ft_linked(s, "M1", "102", tested, True, b.id, DBFT, StatusType)
+        _ft_linked(s, "M1", "102B", tested, True, b.id, DBFT, StatusType)
+        _ft_linked(s, "M1", "103", tested, True, c.id, DBFT, StatusType)
+        _ft_linked(s, "M1", "103", tested + timedelta(hours=2), True, c.id, DBFT, StatusType, tag="x")
+        s.commit()
+        assert a.id != b.id
+
+    out = _agreement(db, "M1")
+    assert out["overkills"] == 4                      # final-test records, as before
+    assert out["overkill_unit_days"] == 2             # two units
+    assert len(out["overkill_units"]) == out["overkills"]
+
+
+def test_overkill_unit_days_without_a_unit_id_count_the_linked_file(tmp_path, models):
+    """No shop number, no unit_id: the disposition falls back to the linked file's own tracks,
+    so the unit count does too -- two records on one such file are one unit, on two files two."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    DBAR, DBFT, DBTR, StatusType, SystemType = models
+
+    db = DatabaseManager(tmp_path / "no_unit_id.db")
+    day = datetime(2026, 3, 2)
+    with db.session() as s:
+        ids = []
+        for i in range(2):
+            a = _trim(s, "M1", "TEST", day.replace(hour=9 + i), False, i, DBAR, DBTR,
+                      StatusType, SystemType, filename=f"M1_TEST_{i}.xls", legacy=False)
+            s.flush()
+            assert a.unit_id is None
+            ids.append(a.id)
+        tested = day + timedelta(days=2)
+        _ft_linked(s, "M1", "TEST", tested, True, ids[0], DBFT, StatusType)
+        _ft_linked(s, "M1", "TEST", tested + timedelta(hours=1), True, ids[0], DBFT, StatusType, tag="x")
+        _ft_linked(s, "M1", "TEST", tested + timedelta(hours=2), True, ids[1], DBFT, StatusType, tag="y")
+        s.commit()
+
+    out = _agreement(db, "M1")
+    assert out["overkills"] == 3
+    assert out["overkill_unit_days"] == 2

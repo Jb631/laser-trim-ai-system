@@ -143,9 +143,9 @@ def compute_for_model(db, model: str,
         failed("station_setup", exc)
     try:
         # Also reads the database itself -- get_model_trim_ft_agreement for the unit-day rework
-        # count, plus its own query for the ratio evidence that method does not return (see
-        # rework_load's own docstring). Either can raise; the engine's guard names it like any
-        # other analyzer's crash.
+        # count, plus both stations' stored sweeps for the evidence that method does not return
+        # (see rework_load's own docstring). Either can raise; the engine's guard names it like
+        # any other analyzer's crash.
         rework_facts, rework_findings = rework_load.analyze(model, db, tracks, _laser_label)
         facts["rework_load"] = rework_facts
         findings += rework_findings

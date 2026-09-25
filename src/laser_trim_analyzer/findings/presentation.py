@@ -69,6 +69,10 @@ _GRADE_TAG = {"same_days": "same days", "side_by_side": "side by side",
 _GRADE_ORDER = ("two_periods", "side_by_side", "same_days")        # weakest first
 _LASER_TIME_FIELD = {"Trim avoidance": "arrive_in_spec_n", "Pass effectiveness": "multi_cut_n",
                      "Multi-pass burden": "tracks_over_recipe", "Rework load": "rework_unit_days"}
+# A readout whose unit is not its group's column names that unit on its own row. The laser-time
+# column counts TRACKS; rework load counts unit-days -- a two-track unit final-tested once per
+# track is one unit-day (review of 85222c4, 2026-09-25).
+_READOUT_UNIT = {"rework_load": "unit-days"}
 _RECIPE = re.compile(r"^(?P<laser>[^:]+): recipe changed from (?P<a>.+) to (?P<b>.+)$")
 _CUTS = re.compile(r"^(?P<n>\d+) cuts?(?: \(cut length (?P<len>[^)]+)\))?$")
 
@@ -441,14 +445,19 @@ def errors_unknown_notice(reason: str) -> str:
             f"this list may be missing models.")
 
 
-def value_text(group: str, value: Optional[float]) -> str:
+def value_text(group: str, value: Optional[float],
+               findings: Sequence[Dict[str, Any]] = ()) -> str:
+    """`findings` = the row's own findings: a readout counted in something other than its group's
+    column (_READOUT_UNIT) says so -- "261 unit-days", never a bare 261 under "tracks"."""
     if value is None:
         return "—"
     if group == "yield":
         return f"~{value:,.0f}"
     if group == "history":
         return f"{value:+.0f}"
-    return f"{value:,.0f}"
+    units = {_READOUT_UNIT.get(f.get("analyzer")) for f in findings}
+    unit = next(iter(units)) if len(units) == 1 else None
+    return f"{value:,.0f} {unit}" if unit else f"{value:,.0f}"
 
 
 def value_tone(group: str, value: Optional[float],

@@ -277,43 +277,16 @@ def test_a_crash_in_rework_load_is_named_by_the_engine_like_any_other(tmp_path, 
 
 
 def test_rework_load_runs_inside_the_engine_and_its_facts_are_cached(tmp_path, monkeypatch):
-    """A real, confirmed rework signature, seeded straight into the database (not through
-    load_model_tracks, which is mocked here to supply only the window/systems population --
-    exactly as rework_load's own tests keep the two samples independent)."""
-    from laser_trim_analyzer.database.models import (
-        AnalysisResult, FinalTestResult, StatusType, SystemType, TrackResult)
+    """A real, confirmed rework signature, seeded straight into the database as stored sweeps on
+    both stations (not through load_model_tracks, which is mocked here to supply only the window
+    population -- exactly as rework_load's own tests keep the two samples independent)."""
     from laser_trim_analyzer.findings import engine
     from findings_helpers import days, make_track
+    from test_findings_rework_load import seed
 
     db = _db(tmp_path)
-    d = days(START, 80)
-    for k in range(40):                                        # rework: trim FAIL, FT PASS, ratio 1/3
-        with db.session() as s:
-            a = AnalysisResult(model="REWORK", serial=f"REWORK-R{k}", system=SystemType.B,
-                               file_date=d[k], filename=f"REWORK_R{k}.xls",
-                               overall_status=StatusType.FAIL)
-            s.add(a)
-            s.flush()
-            s.add(TrackResult(analysis_id=a.id, track_id="TRK1", status=StatusType.FAIL,
-                              linearity_pass=False, final_linearity_error_shifted=0.30))
-            s.add(FinalTestResult(model="REWORK", serial=f"REWORK-R{k}",
-                                  filename=f"REWORK_R{k}_ft.xls", file_date=d[k],
-                                  overall_status=StatusType.PASS, linearity_pass=True,
-                                  linearity_error=0.10, linked_trim_id=a.id, match_confidence=1.0))
-    for k in range(40):                                         # pass/pass control: ratio 1.0
-        with db.session() as s:
-            a = AnalysisResult(model="REWORK", serial=f"REWORK-C{k}", system=SystemType.B,
-                               file_date=d[40 + k], filename=f"REWORK_C{k}.xls",
-                               overall_status=StatusType.PASS)
-            s.add(a)
-            s.flush()
-            s.add(TrackResult(analysis_id=a.id, track_id="TRK1", status=StatusType.PASS,
-                              linearity_pass=True, final_linearity_error_shifted=0.30))
-            s.add(FinalTestResult(model="REWORK", serial=f"REWORK-C{k}",
-                                  filename=f"REWORK_C{k}_ft.xls", file_date=d[40 + k],
-                                  overall_status=StatusType.PASS, linearity_pass=True,
-                                  linearity_error=0.30, linked_trim_id=a.id, match_confidence=1.0))
-    tracks = [make_track(9000 + k, date=dt, system="B") for k, dt in enumerate(d[:5])]
+    seed(db, 40, 90, model="REWORK")        # 40 reworked unit-days at 1/3, 90 pass/pass at 1.0
+    tracks = [make_track(9000 + k, date=dt, system="B") for k, dt in enumerate(days(START, 5))]
     monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: tracks)
     assert engine.refresh_findings(db, ["REWORK"]) == 1
     (found,) = db.get_process_findings("REWORK")
@@ -321,6 +294,7 @@ def test_rework_load_runs_inside_the_engine_and_its_facts_are_cached(tmp_path, m
     assert found["n_units"] == 40 and found["tracks_per_year"] is None       # no gain claimed
     cached = db.get_process_facts("REWORK")["rework_load"]
     assert cached["rework_unit_days"] == 40 and cached["confirmed"] is True
+    assert cached["control_top_third_n"] == 30
     assert db.get_process_errors() == {}
 
 
