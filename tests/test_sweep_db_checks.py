@@ -449,3 +449,70 @@ def test_the_screens_check_names_what_it_counts(tmp_path):
     assert len(model) == 1 and model[0][0] == "PASS", results
     assert "draws" not in model[0][1] and "hands its view" in model[0][1], model
     assert "drawn=" not in model[0][2] and "handed=5" in model[0][2], model
+
+
+# ============================================== check_inactive_models_on_database (F5, 2026-09-25)
+# Every model the app calls inactive -- core/activity, and what the Findings page, Home and Triage
+# are handed -- must match the definition read by independent SQL: a laser file with a track that
+# did not fail, no file more than a day ahead, more than 730 days behind the fleet's newest.
+
+def _inactive_scratch(tmp_path, *, behind=(("LIVE", 0), ("OLD", 900), ("MID", 400))):
+    from datetime import timedelta
+    from test_model_activity import NEWEST, _file
+    db = _scratch_db(tmp_path)
+    for model, days in behind:
+        _file(db, model, NEWEST - timedelta(days=days))
+    return db
+
+
+def _run_inactive_check(db, tmp_path, patch=""):
+    db.close()
+    guard = tmp_path / "runner"
+    guard.mkdir(exist_ok=True)
+    code = (
+        "import sqlite3\n"
+        "from datetime import timedelta\n"
+        "import laser_trim_analyzer.database.manager as _m, laser_trim_analyzer.database as _d\n"
+        f"_db = _m.DatabaseManager(r'{db.database_path}'); _m._db_manager = _db; _d._db_manager = _db\n"
+        f"{patch}\n"
+        f"raw = sqlite3.connect('file:{db.database_path}?mode=ro', uri=True)\n"
+        "sweep.check_inactive_models_on_database(_db, raw)\n")
+    r, results = _run_code(code)
+    assert r.returncode == 0 and results is not None, r.stdout[-3000:] + r.stderr[-3000:]
+    return results
+
+
+def test_the_inactive_check_passes_when_the_app_matches_the_definition(tmp_path):
+    results = _run_inactive_check(_inactive_scratch(tmp_path), tmp_path)
+    assert results and all(v == "PASS" for v, _, _ in results), results
+    assert any("1 of 3 models" in d for _, _, d in results), results
+
+
+def test_the_inactive_check_fails_when_the_app_calls_the_wrong_models_inactive(tmp_path):
+    """Made to fail: the app's line moved to a year calls MID (400 days behind) inactive too."""
+    results = _run_inactive_check(
+        _inactive_scratch(tmp_path), tmp_path,
+        patch="import laser_trim_analyzer.core.activity as _a; _a.INACTIVE_AFTER = timedelta(days=365)")
+    failed = [n for v, n, _ in results if v == "FAIL"]
+    assert failed, results
+    assert any("MID" in d for v, _, d in results if v == "FAIL"), results
+
+
+def test_the_inactive_check_fails_when_the_app_believes_a_future_date(tmp_path):
+    """Made to fail: with no future-date guard a mistyped 2030 file becomes the fleet's newest,
+    and every model reads inactive."""
+    from datetime import datetime
+    from test_model_activity import _file
+    db = _inactive_scratch(tmp_path)
+    _file(db, "TYPO", datetime(2030, 1, 1))
+    results = _run_inactive_check(
+        db, tmp_path,
+        patch="import laser_trim_analyzer.core.activity as _a; _a.FUTURE_GRACE = timedelta(days=36500)")
+    assert any(v == "FAIL" for v, _, _ in results), results
+
+
+def test_the_inactive_check_never_passes_on_nothing_to_check(tmp_path):
+    results = _run_inactive_check(_inactive_scratch(tmp_path, behind=(("LIVE", 0), ("MID", 10))),
+                                  tmp_path)
+    assert not any(v == "PASS" and "match the definition" in n for v, n, _ in results), results
+    assert any(v == "WARN" for v, _, _ in results), results

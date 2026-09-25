@@ -941,6 +941,62 @@ def _newest_trim_file(db, model):
     return _date(v)
 
 
+def check_inactive_models_on_database(db, raw) -> None:
+    """Every model the app calls INACTIVE matches the definition, read by independent SQL (F5,
+    James 2026-09-25: labelled, never hidden). The app's answers: core/activity.load_activity,
+    and what the Findings page, Home and Triage each hand their lists from their OWN load. The
+    truth is its own formulation, not the app's query: every laser file JOINed to its tracks, a
+    track that did not fail processing, no file dated more than a day ahead, and the gap measured
+    by SQLite's julianday arithmetic (whole gap, hours included) -- more than 730 days behind the
+    newest such file. Made to FAIL first with the app's line at a year and with its future-date
+    guard removed (tests/test_sweep_db_checks.py, and on the copy). No inactive model, or no active
+    one, to compare is a WARN, never a PASS: a check that can pass on nothing proves nothing."""
+    from types import SimpleNamespace
+    from laser_trim_analyzer.core.activity import load_activity
+    from laser_trim_analyzer.core.model_stats import failed_processing_statuses
+    from laser_trim_analyzer.gui.v6.pages import triage_page
+    from laser_trim_analyzer.gui.v6.pages.findings_page import FindingsPage
+    from laser_trim_analyzer.gui.v6.pages.home_page import HomePage
+    failed = ", ".join(f"'{s.name}'" for s in failed_processing_statuses())
+    horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    rows = raw.execute(
+        "WITH newest AS ("
+        "  SELECT a.model AS model, MAX(a.file_date) AS last FROM analysis_results a"
+        "  JOIN track_results t ON t.analysis_id = a.id"
+        f"  WHERE a.system IN ('A','B','C') AND t.status NOT IN ({failed}) AND a.file_date <= ?"
+        "  GROUP BY a.model),"
+        " fleet AS (SELECT MAX(last) AS f FROM newest)"
+        " SELECT n.model, n.last, julianday(fleet.f) - julianday(n.last) > 730 FROM newest n, fleet",
+        (horizon,)).fetchall()
+    truth = {m: str(last)[:19] for m, last, gone in rows if gone}
+    if not truth or len(truth) == len(rows):
+        warn("inactive models: nothing to compare -- this database has no inactive model, or no "
+             "active one", f"{len(truth)} of {len(rows)} models more than 730 days behind")
+        return
+    answers = {"core/activity, the rule every screen uses": load_activity(db).inactive()}
+    fp = FindingsPage.__new__(FindingsPage)
+    fp.app = SimpleNamespace(db=db)
+    answers["the Findings page's own load"] = fp._query()["inactive"]
+    hp = HomePage.__new__(HomePage)
+    hp.app = SimpleNamespace(db=db)
+    answers["Home's own load"] = hp._query_findings()["inactive"]
+    tp = triage_page.TriagePage.__new__(triage_page.TriagePage)
+    tp.app = SimpleNamespace(db=db, config=SimpleNamespace(active_models=None))
+    saved = triage_page.load_focus
+    triage_page.load_focus = lambda _db, models=None: (None, None)   # FOCUS is checked in section 2
+    try:
+        answers["Triage's own load"] = tp._query()[5]
+    finally:
+        triage_page.load_focus = saved
+    for who, got in answers.items():
+        got = {m: f"{d:%Y-%m-%d %H:%M:%S}" for m, d in got.items()}
+        wrong = sorted(set(got) ^ set(truth)) + sorted(m for m in set(got) & set(truth)
+                                                       if got[m] != truth[m])
+        check(f"inactive models: {who} match the definition by independent SQL", not wrong,
+              f"{len(got)} of {len(rows)} models inactive, SQL says {len(truth)}"
+              + (f"; differ: {wrong[:8]}" if wrong else ""))
+
+
 def _month_minus(d, n):
     k = d.year * 12 + (d.month - 1) - n
     return f"{k // 12:04d}-{k % 12 + 1:02d}"
@@ -3814,6 +3870,8 @@ def main() -> int:
         check_findings_group_mapping(db)
     with _guard("findings: what the new analyzers store"):
         check_new_findings_on_database(db)
+    with _guard("inactive models"):
+        check_inactive_models_on_database(db, raw)
 
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with _guard("stale model: anchored 90d window"):
