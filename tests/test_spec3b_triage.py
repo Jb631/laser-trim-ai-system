@@ -528,3 +528,37 @@ def test_an_older_triage_load_never_overwrites_a_newer_one(make_app, monkeypatch
     assert triage._load_banner.winfo_manager() == "pack", "an older load overwrote a newer one"
     assert "invented focus crash" in triage._load_banner.cget("text")
     assert _count_pills(triage._focus_header) == []          # still no count over a crash
+
+
+# ---- facelift F4 (2026-09-25): the failure banner wraps to the page ---------------------------
+
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_the_failure_banner_wraps_to_the_page(make_app, monkeypatch, scale):
+    """Re-review Minor 2: Triage's banner was req=1015 alloc=756 px at 960x640 (100%) and
+    req=1519 alloc=1134 at 150% -- cut. The audit's own detector: nothing on the page cut at
+    1280x720, and the banner not cut at 960x640 (the rest of that size is TRACKER D7's)."""
+    import customtkinter as ctk
+    import laser_trim_analyzer.gui.v6.focus_data as fd
+    import laser_trim_analyzer.gui.v6.pages.triage_page as tp
+    from test_blocks import failure_texts_cut
+
+    long = ("invented crash with a long explanation that goes on for a while " * 2).strip()
+
+    def boom(*_a, **_k):
+        raise RuntimeError(long)
+    ctk.set_widget_scaling(scale)
+    ctk.set_window_scaling(scale)
+    try:
+        monkeypatch.setattr(fd, "compute_focus_list", boom)
+        monkeypatch.setattr(tp, "list_known_models", boom)
+        app = make_app()
+        triage = app.page_container.get_page("triage")
+        app.show_page("triage")
+        triage.reload_now()
+        assert triage._load_banner.winfo_manager() == "pack"
+        cut = failure_texts_cut(app, triage, [triage._load_banner])
+        assert cut["1280x720"] == ([], []), cut["1280x720"]
+        assert not cut["960x640"][0], cut["960x640"][0]
+    finally:
+        ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)

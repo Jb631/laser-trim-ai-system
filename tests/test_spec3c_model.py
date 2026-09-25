@@ -2199,3 +2199,45 @@ def test_a_failed_findings_load_says_so_on_the_findings_tab_too(make_app, monkey
     texts = [w.cget("text") for w in _all_labels(page._findings_tab)]
     assert not any("could not be loaded" in t for t in texts)
     assert "What was measured" in texts
+
+
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+@pytest.mark.parametrize("state", ("an analyzer crashed", "never worked out"))
+def test_the_failure_texts_wrap_to_the_page(make_app, monkeypatch, state, scale):
+    """Re-review Minor 2: the page's banners and the "Worth changing" section's banner wrapped at a
+    fixed 1000 units, the NOT COMPUTED line at a fixed wraplength=1000 -- all cut at the app's
+    minimum 960x640 (the NOT COMPUTED line req=849 alloc=730 at 100%). The audit's own detector:
+    none of them cut at 1280x720 or at 960x640 (the rest of 960x640 is TRACKER D7's question)."""
+    import customtkinter as ctk
+    from types import SimpleNamespace
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+    from laser_trim_analyzer.gui.v6.widgets.findings_tab import NOT_COMPUTED_TEXT
+    from test_blocks import failure_texts_cut
+
+    long = ("invented crash with a long explanation that goes on for a while " * 2).strip()
+
+    def boom(self, model):
+        raise RuntimeError(long)
+    ctk.set_widget_scaling(scale)
+    ctk.set_window_scaling(scale)
+    try:
+        monkeypatch.setattr(mp, "compare_station_specs", lambda db, model: SimpleNamespace(
+            status="differs", note=f"Invented: the two stations grade different limits, {long}"))
+        monkeypatch.setattr(mp.ModelPage, "_load_units", boom)
+        if state == "an analyzer crashed":
+            app, page = _facts_app(make_app, {"tracks": 1, "errors": {
+                "cut_setting": f"ValueError: {long}", "ink_target": f"KeyError: {long}"}})
+        else:
+            app, page = _worth_app(make_app, finding=False)
+        section = [w for w in _all_labels(page._worth_section) if isinstance(w, ctk.CTkLabel)
+                   and (w.cget("text") == NOT_COMPUTED_TEXT
+                        or w.cget("fg_color") == page.theme.CHECK_TINT)]
+        assert len(section) == 1, [w.cget("text") for w in section]
+        texts = [page._load_banner, page._spec_banner] + section
+        assert page._load_banner.winfo_manager() == page._spec_banner.winfo_manager() == "pack"
+        cut = failure_texts_cut(app, page, texts)
+        assert not cut["1280x720"][0], cut["1280x720"][0]
+        assert not cut["960x640"][0], cut["960x640"][0]
+    finally:
+        ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)

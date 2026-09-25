@@ -77,26 +77,31 @@ class FindingsPage(PageBase):
         self._rows = rows
         for child in self._notices.winfo_children():
             child.destroy()
+
+        def notice(text, tone="check", pady=(0, t.SPACE_SM)):
+            # Rebuilt on every apply, so each banner wraps to a frame destroyed WITH it -- never to
+            # _notices itself, which lives as long as the page: its <Configure> would collect one
+            # more handler every refresh (blocks.wrap_to_width's rule; facelift F4).
+            holder = ctk.CTkFrame(self._notices, fg_color="transparent")
+            holder.pack(fill="x")
+            blocks.banner(holder, t, text, tone=tone, wrap_to=holder).pack(fill="x", pady=pady)
+
         if data.get("failed"):
             self.set_caption("")
             self._view.set_findings([])
             self._view.pack_forget()
-            blocks.banner(self._notices, t,
-                          f"Findings could not be loaded ({data['failed']}). This is an error, not an "
-                          f"empty list — the log has the details.").pack(fill="x", pady=t.SPACE_SM)
+            notice(f"Findings could not be loaded ({data['failed']}). This is an error, not an "
+                   f"empty list — the log has the details.", pady=t.SPACE_SM)
             return
         if data.get("errors_failed"):
-            blocks.banner(self._notices, t, P.errors_unknown_notice(data["errors_failed"])
-                          ).pack(fill="x", pady=(0, t.SPACE_SM))
+            notice(P.errors_unknown_notice(data["errors_failed"]))
         if errors:
-            blocks.banner(self._notices, t, P.errors_notice(errors)
-                          ).pack(fill="x", pady=(0, t.SPACE_SM))
+            notice(P.errors_notice(errors))
         if not rows:
             self.set_caption("")
-            blocks.banner(self._notices, t,
-                          "No findings yet. They are worked out after each ingest that saves trim files; "
-                          "a model with nothing worth acting on does not appear here.", tone="quiet"
-                          ).pack(fill="x", pady=t.SPACE_SM)
+            notice("No findings yet. They are worked out after each ingest that saves trim files; "
+                   "a model with nothing worth acting on does not appear here.", tone="quiet",
+                   pady=t.SPACE_SM)
             self._view.set_findings([])
             self._view.pack_forget()
             return

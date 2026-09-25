@@ -174,14 +174,14 @@ class HomePage(PageBase):
         # final-test number on the screens below is computed from those rows.
         # blocks.banner(tone="quiet"): same quiet-notice treatment as the unreadable-files
         # line below it, not the old ad-hoc TIER_WARNING label (facelift step 2, Task 4).
-        self._legacy_ft_label = blocks.banner(parent, t, "", tone="quiet")
+        self._legacy_ft_label = blocks.banner(parent, t, "", tone="quiet", wrap_to=parent)
         self._legacy_ft_count = 0
 
         # The same shape, for the files the button is NOT processing: ones
         # that failed to read on an earlier run and are skipped while they are
         # unchanged on disk (2026-09-17). Silent at zero; while it says
         # anything it also says the way back.
-        self._unreadable_label = blocks.banner(parent, t, "", tone="quiet")
+        self._unreadable_label = blocks.banner(parent, t, "", tone="quiet", wrap_to=parent)
         self._unreadable_count = 0
 
         # ---- "Worth changing" (design doc §2, ruling 2 item 3): the top of the Findings
@@ -196,7 +196,7 @@ class HomePage(PageBase):
         # Packed only when there is something to say: the findings load failed, or some models'
         # last refresh had an analyzer fail (or which ones could not be read) -- never both at
         # once (a failed load reads nothing else), so one banner holds whichever it is.
-        self._worth_banner = blocks.banner(parent, t, "")
+        self._worth_banner = blocks.banner(parent, t, "", wrap_to=parent)
         self._worth_section = ctk.CTkFrame(parent, fg_color="transparent")
         self._worth_section.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
 
@@ -213,7 +213,7 @@ class HomePage(PageBase):
                                                "self-clearing")
         # Packed (just under "Drifting now") only when the FOCUS computation failed: a crash is
         # named, never drawn as "0 drifting now" (final review, 2026-09-24).
-        self._focus_banner = blocks.banner(parent, t, "")
+        self._focus_banner = blocks.banner(parent, t, "", wrap_to=parent)
         # show_heading=False, like Triage: the zone header above already says "Drifting now";
         # the list's own "FOCUS — drifting now, biggest first (N)" under it said it twice.
         self._focus = FocusListZone(parent, theme=t,

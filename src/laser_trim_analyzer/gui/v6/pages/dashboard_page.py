@@ -73,7 +73,7 @@ class DashboardPage(PageBase):
         # unpacked until _set_load_banner finds something to say. Declared
         # before the first real content so `before=self._priorities` (its
         # pack anchor, set in _set_load_banner) is always a live sibling.
-        self._load_banner = blocks.banner(body, t, "")
+        self._load_banner = blocks.banner(body, t, "", wrap_to=body)
         # This week's priorities — money leaking at final test — front and centre.
         self._priorities = PrioritiesPanel(body, theme=t, on_row_click=self._on_model_click)
         self._priorities.pack(side="top", fill="x", pady=(0, t.SPACE_MD))

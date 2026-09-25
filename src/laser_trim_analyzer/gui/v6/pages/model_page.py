@@ -218,8 +218,8 @@ class ModelPage(PageBase):
         # anchor to pack themselves against (see _set_spec_banner / _set_load_banner).
         self._worth_section = ctk.CTkFrame(self._body, fg_color="transparent")
         self._worth_section.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
-        self._spec_banner = blocks.banner(self._body, t, "")
-        self._load_banner = blocks.banner(self._body, t, "")
+        self._spec_banner = blocks.banner(self._body, t, "", wrap_to=self._body)
+        self._load_banner = blocks.banner(self._body, t, "", wrap_to=self._body)
         # ---- "How it's running" (design doc item 4): the per-metric pills (the evidence
         # behind the caption's verdict sentence), a one-line σ key, and the stats table.
         self._zone_header(self._body, "How it's running",
@@ -689,6 +689,12 @@ class ModelPage(PageBase):
           * EMPTY -- computed, nothing in these three groups: "Nothing worth changing
             stands out", under a 0. Decided on the COUNT, not on `findings`: a model with
             only history findings (off this section) was a "0" over a blank body.
+
+        Everything is built into `body`, a frame rebuilt with it on every apply, and the texts
+        that wrap wrap to IT (facelift F4: the NOT COMPUTED line and the analyzer banner wrapped
+        at a fixed 1000 units, cut at 960x640). Wrapping them to _worth_section itself would bind
+        one more <Configure> handler to a frame that lives as long as the page on every refresh
+        (blocks.wrap_to_width's rule).
         """
         t = self.theme
         for child in self._worth_section.winfo_children():
@@ -696,40 +702,42 @@ class ModelPage(PageBase):
         self._worth_view = None
         if "process findings" in (failed or []):
             return
+        body = ctk.CTkFrame(self._worth_section, fg_color="transparent")
+        body.pack(fill="x")
         title = "Worth changing on this model"
         facts = (findings_data or {}).get("facts")
         if not facts:
-            blocks.group_header(self._worth_section, t, title, None
-                                ).pack(fill="x", pady=(0, t.SPACE_XS))
-            ctk.CTkLabel(self._worth_section, text=NOT_COMPUTED_TEXT, font=t.font(t.SIZE_BODY),
-                         text_color=t.TEXT_SECONDARY, anchor="w", justify="left", wraplength=1000
-                         ).pack(fill="x", padx=t.SPACE_SM, pady=(0, t.SPACE_SM))
+            blocks.group_header(body, t, title, None).pack(fill="x", pady=(0, t.SPACE_XS))
+            line = ctk.CTkLabel(body, text=NOT_COMPUTED_TEXT, font=t.font(t.SIZE_BODY),
+                                text_color=t.TEXT_SECONDARY, anchor="w", justify="left")
+            line.pack(fill="x", padx=t.SPACE_SM, pady=(0, t.SPACE_SM))
+            blocks.wrap_to_width(line, body, padding=2 * t.SPACE_SM)
             return
         findings = (findings_data or {}).get("findings") or []
         count = _worth_changing_count(findings)
         errors = facts.get("errors") or {}
-        blocks.group_header(self._worth_section, t, title,
+        blocks.group_header(body, t, title,
                             None if (errors and not count) else count,
                             tone="act").pack(fill="x", pady=(0, t.SPACE_XS))
         if errors:
             named = "; ".join(f"{analyzer_name(k)} ({errors[k]})" for k in sorted(errors))
-            blocks.banner(self._worth_section, t,
+            blocks.banner(body, t,
                           f"Could not be worked out on the last refresh: {named}. Anything "
                           f"{'it' if len(errors) == 1 else 'they'} would have found is missing "
-                          f"here — this is an error, not a result. The log has the details."
-                          ).pack(fill="x", pady=(0, t.SPACE_SM))
+                          f"here — this is an error, not a result. The log has the details.",
+                          wrap_to=body).pack(fill="x", pady=(0, t.SPACE_SM))
         if not count:
             if not errors:
-                ctk.CTkLabel(self._worth_section,
+                ctk.CTkLabel(body,
                              text="Nothing worth changing stands out for this model.",
                              font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY,
                              anchor="w").pack(fill="x", padx=t.SPACE_SM, pady=(0, t.SPACE_SM))
             return
-        view = FindingsView(self._worth_section, t, on_open=None, include_empty=False,
+        view = FindingsView(body, t, on_open=None, include_empty=False,
                             rows_per_group=3, groups=_WORTH_CHANGING_GROUPS)
         view.pack(fill="x")
         view.set_findings(findings)
-        blocks.link_button(self._worth_section, t, "See all in the Findings tab",
+        blocks.link_button(body, t, "See all in the Findings tab",
                            lambda: self._select_tab(_FINDINGS_TAB_NAME)
                            ).pack(anchor="w", padx=t.SPACE_XS, pady=(t.SPACE_XS, 0))
         self._worth_view = view

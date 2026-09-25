@@ -804,3 +804,44 @@ def test_an_older_findings_load_never_overwrites_a_newer_one(make_app, monkeypat
     _pump_ui(app)
     assert page._worth_banner.winfo_manager() == "", "an older failure came back over a newer load"
     assert "Nothing here yet" in " ".join(_labels(page._worth_section))
+
+
+# ---- facelift F4 (2026-09-25): the failure banners wrap to the page ---------------------------
+
+_LONG = ("invented crash with a long explanation that goes on for a while " * 3).strip()
+
+
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_the_failure_banners_and_notices_wrap_to_the_page(make_app, monkeypatch, scale):
+    """Re-review Minor 2: each banner wrapped at a fixed 1000 units, and at the app's minimum
+    960x640 every failure text on Home was cut, at 100% and at 150%. Checked with the audit's own
+    detector: nothing on the page cut at 1280x720, and none of the four texts cut at 960x640 (the
+    rest of that size is TRACKER D7's question)."""
+    import customtkinter as ctk
+    import laser_trim_analyzer.gui.v6.focus_data as fd
+    import laser_trim_analyzer.gui.v6.pages.home_page as home_mod
+    from test_blocks import failure_texts_cut
+
+    def boom(_db):
+        raise RuntimeError(_LONG)
+    ctk.set_widget_scaling(scale)
+    ctk.set_window_scaling(scale)
+    try:
+        monkeypatch.setattr(fd, "compute_focus_list", boom)
+        monkeypatch.setattr(home_mod, "legacy_ft_count", lambda db: 1234)
+        monkeypatch.setattr(home_mod, "unreadable_count", lambda db: 56)
+        app = make_app()
+        _seed_one_file(app.db, "BIG")
+        page = _home(app)
+        monkeypatch.setattr(page, "_query_findings", lambda: {
+            "rows": [], "failed": f"RuntimeError: {_LONG}", "errors": {}, "errors_failed": None})
+        page.reload_now()
+        texts = [page._focus_banner, page._worth_banner, page._legacy_ft_label,
+                 page._unreadable_label]
+        assert all(w.winfo_manager() == "pack" and w.cget("text") for w in texts)
+        cut = failure_texts_cut(app, page, texts)
+        assert cut["1280x720"] == ([], []), cut["1280x720"]
+        assert not cut["960x640"][0], cut["960x640"][0]
+    finally:
+        ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)

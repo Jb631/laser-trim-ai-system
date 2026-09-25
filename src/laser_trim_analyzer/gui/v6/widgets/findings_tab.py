@@ -75,7 +75,12 @@ class FindingsTab(ctk.CTkFrame):
         for child in self._body.winfo_children():
             child.destroy()
         if failed:
-            blocks.banner(self._body, t, failed_text(failed)).pack(fill="x", pady=(0, t.SPACE_SM))
+            # Wraps to a frame rebuilt with it, never to _body, which lives as long as the tab
+            # (blocks.wrap_to_width's rule).
+            holder = ctk.CTkFrame(self._body, fg_color="transparent")
+            holder.pack(fill="x")
+            blocks.banner(holder, t, failed_text(failed), wrap_to=holder
+                          ).pack(fill="x", pady=(0, t.SPACE_SM))
             return
         facts = (data or {}).get("facts")
         findings: List[Dict[str, Any]] = (data or {}).get("findings") or []

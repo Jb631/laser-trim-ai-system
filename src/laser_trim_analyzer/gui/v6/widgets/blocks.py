@@ -197,10 +197,28 @@ def wrap_to_width(label: ctk.CTkLabel, container, padding: int = 0) -> None:
     _update()
 
 
-def banner(parent, theme, text: str, tone: str = "check") -> ctk.CTkLabel:
-    """A notice. 'check' is coral (something failed or needs a look); 'quiet' is plain."""
+# A banner's text sits inside two insets on each side: 12 px of tk padding (CTkLabel hands `padx` to
+# its inner tk.Label UNSCALED, so it is 12 real px at every scaling) and the rounded-corner inset
+# CTkLabel grids its text by (min(corner radius, half its height), which CustomTkinter scales). In
+# CustomTkinter's units the two never exceed _BANNER_PADX + RADIUS_MD a side at a scaling of 1 or
+# more, so that is what a banner's wrap leaves out of its container's width.
+_BANNER_PADX = 12
+
+
+def banner(parent, theme, text: str, tone: str = "check", *, wrap_to) -> ctk.CTkLabel:
+    """A notice. 'check' is coral (something failed or needs a look); 'quiet' is plain.
+
+    `wrap_to` (required) is the container the text wraps to (wrap_to_width) -- almost always the
+    frame the banner is packed into. A banner is page-width text, and it used to wrap at a fixed
+    1000 units: cut wherever its container was narrower, which at the app's minimum 960x640 was
+    every failure banner, at 100% and at 150% (facelift F4). Pass a container built together with
+    the banner, once (a page's build_content), or one rebuilt WITH it on every render -- never a
+    long-lived container from a path that builds a new banner on each refresh: wrap_to_width's
+    binding is never removed, so those would stack."""
     t = theme
     fg, bg = (t.CHECK, t.CHECK_TINT) if tone == "check" else (t.TEXT_SECONDARY, t.CARD)
-    return ctk.CTkLabel(parent, text=text, font=t.font(t.SIZE_BODY), text_color=fg, fg_color=bg,
-                        corner_radius=t.RADIUS_MD, anchor="w", justify="left", wraplength=1000,
-                        padx=12, pady=8)
+    label = ctk.CTkLabel(parent, text=text, font=t.font(t.SIZE_BODY), text_color=fg, fg_color=bg,
+                         corner_radius=t.RADIUS_MD, anchor="w", justify="left",
+                         padx=_BANNER_PADX, pady=8)
+    wrap_to_width(label, wrap_to, padding=2 * (_BANNER_PADX + t.RADIUS_MD))
+    return label

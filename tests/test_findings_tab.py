@@ -266,8 +266,12 @@ def test_a_failed_load_says_it_failed_never_not_computed(tk_root):
     assert NOT_COMPUTED_TEXT not in text
     assert "could not be loaded" in text and "RuntimeError: invented database crash" in text
     assert "Nothing to act on" not in text and "Incoming resistance" not in text   # no stale rows
-    banners = [w for w in tab._body.winfo_children()
-               if isinstance(w, ctk.CTkLabel) and w.cget("fg_color") == tab.theme.CHECK_TINT]
+    def labels(w):
+        for c in w.winfo_children():
+            if isinstance(c, ctk.CTkLabel):
+                yield c
+            yield from labels(c)
+    banners = [w for w in labels(tab._body) if w.cget("fg_color") == tab.theme.CHECK_TINT]
     assert banners, "a failure is a check-tone banner, never a quiet line"
 
 

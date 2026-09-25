@@ -165,7 +165,7 @@ def test_the_primary_button_carries_dark_text_on_teal(tk_root, t):
 
 
 def test_a_check_banner_is_coral(tk_root, t):
-    b = blocks.banner(tk_root, t, "Findings could not be loaded")
+    b = blocks.banner(tk_root, t, "Findings could not be loaded", wrap_to=tk_root)
     assert b.cget("text_color") == t.CHECK and b.cget("fg_color") == t.CHECK_TINT
 
 
@@ -447,3 +447,69 @@ def test_the_shouting_scan_reads_f_strings_and_skips_what_nobody_sees():
     assert "LIN-PASSING (accepted)" in starts
     assert not any(t.startswith("A DOCSTRING") for t in starts)         # a docstring
     assert not any(t.startswith("FAI/LAT") for t in starts)             # mid-sentence continuation
+
+
+# ---- banner: wraps to the container it is given (facelift F4, 2026-09-25) ---------------------
+# blocks.banner wrapped at a fixed 1000 units, so wherever its container was narrower the text ran
+# past the edge and was cut: every failure banner at the app's minimum 960x640, at 100% and 150%
+# (re-review Minor 2). A banner now names the container it wraps to.
+
+@pytest.mark.parametrize("scale", SCALINGS)
+def test_a_banner_is_laid_out_inside_the_container_it_wraps_to_at_every_scaling(tk_root, t, scale):
+    """The WHOLE banner -- its text plus its own inset: 12 px of tk padding each side, which
+    CustomTkinter passes through unscaled, and the rounded corner, which it scales -- fits."""
+    with _widget_scaling(tk_root, scale):
+        container = ctk.CTkFrame(tk_root, fg_color="transparent")
+        container.pack(fill="both", expand=True)
+        banner = blocks.banner(container, t, SENTENCE * 3, wrap_to=container)
+        banner.pack(fill="x")
+        tk_root.geometry("600x300")
+        _mapped_offscreen(tk_root)
+        try:
+            for _ in range(3):
+                tk_root.update_idletasks()
+                tk_root.update()
+            assert container.winfo_width() == 600
+            assert banner.winfo_reqwidth() <= container.winfo_width(), (
+                f"the banner asks for {banner.winfo_reqwidth()} px in a {container.winfo_width()} "
+                f"px container at {scale:.0%}")
+            assert banner._label.winfo_reqheight() > 2 * t.SIZE_BODY       # it really wrapped
+            tk_root.geometry("420x300")                                     # and follows a resize
+            for _ in range(3):
+                tk_root.update_idletasks()
+                tk_root.update()
+            assert banner.winfo_reqwidth() <= container.winfo_width() == 420
+        finally:
+            tk_root.withdraw()
+
+
+def failure_texts_cut(app, page, widgets, sizes=((1280, 720), (960, 640))):
+    """{"WxH": (audit lines on `widgets`, every audit line on `page`)} -- `app` mapped borderless
+    off-screen at each size in CustomTkinter's units (so at 150% a 960x640 window is 1440x960 real
+    px, as on the laptop), read with render_pages' own detector. A line is ON a widget when the
+    widget's own label is the one reported, or is grouped into the line by its text."""
+    import pathlib
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    from render_pages import find_clipped_text_widgets
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.overrideredirect(True)
+    out = {}
+    try:
+        for width, height in sizes:
+            app.geometry(f"{width}x{height}+20000+20000")
+            app.deiconify()
+            for _ in range(4):
+                app.update_idletasks()
+                app.update()
+            lines = find_clipped_text_widgets(page, window_size=f"{width}x{height}")
+            mine = [h.line() for h in lines
+                    if any(h.path.startswith(str(w)) or repr(str(w.cget("text"))[:30])[1:-1] in h.why
+                           for w in widgets)]
+            out[f"{width}x{height}"] = (mine, [h.line() for h in lines])
+    finally:
+        app.withdraw()
+    return out

@@ -81,7 +81,7 @@ class TriagePage(PageBase):
         # crashed FOCUS computation read "Needs a look · 0" and "All models within tolerance",
         # a failed model list "All models · 0"). Packed above the focus header only while a
         # load has failed (_set_load_banner).
-        self._load_banner = blocks.banner(parent, t, "")
+        self._load_banner = blocks.banner(parent, t, "", wrap_to=parent)
         # The focus zone's own heading is suppressed (show_heading=False) -- Triage draws its
         # OWN "Needs a look" blocks.group_header in _apply(), once the count is known, rather
         # than the zone's generic default text (see focus_list_zone.py). The zone is wrapped in
