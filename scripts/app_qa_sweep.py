@@ -2721,6 +2721,369 @@ def check_track2_setup_on_database(raw) -> None:
           not bad, f"{bad[:5]}")
 
 
+# ---- the screens count what they draw; a failed load is never a zero (final review M9) --------
+# Driven headless against the database under test (always a copy): the pages' own load/apply
+# code runs on stand-in widgets, so what is checked is the real arithmetic between the cache,
+# the caption/header a person reads, and the rows the section is asked to draw.
+
+class _Recorder:
+    """A stand-in widget: remembers its text and whether it is packed, has no children and no
+    height, and accepts every other call."""
+    def __init__(self, *a, **k):
+        self.text, self.packed = "", False
+
+    def configure(self, **k):
+        if "text" in k:
+            self.text = k["text"]
+
+    def pack(self, *a, **k):
+        self.packed = True
+
+    def pack_forget(self):
+        self.packed = False
+
+    def winfo_manager(self):
+        return "pack" if self.packed else ""
+
+    def winfo_children(self):
+        return []
+
+    def winfo_height(self):
+        return 0
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+class _ViewRecorder:
+    """Stands in for FindingsView: records the rows and options a page hands it, so a check can
+    arrange() exactly what the real view would draw from them."""
+    made: list = []
+
+    def __init__(self, master, theme, **kw):
+        self.kw, self.rows = kw, []
+        _ViewRecorder.made.append(self)
+
+    def pack(self, *a, **k):
+        pass
+
+    def set_findings(self, rows):
+        self.rows = list(rows or [])
+
+
+def _rows_drawn(view) -> int:
+    from laser_trim_analyzer.findings import presentation as P
+    keys = view.kw.get("groups")
+    keys = None if keys is None else set(keys)
+    return sum(len(g.rows) for g in P.arrange(view.rows, include_empty=view.kw.get("include_empty", True))
+               if keys is None or g.spec.key in keys)
+
+
+def _headless_home(db):
+    """(HomePage on stand-in widgets over `db`, the list its captions are written to)."""
+    from types import SimpleNamespace
+    from laser_trim_analyzer.gui.v6.pages.home_page import HomePage
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    page = HomePage.__new__(HomePage)
+    page.app = SimpleNamespace(db=db)
+    page.theme = ThemeManager()
+    for name in ("_worth_section", "_worth_banner", "_focus_banner", "_focus"):
+        setattr(page, name, _Recorder())
+    page._worth_view, page._worth_count, page._focus_count = None, None, 0
+    page._last_processed = datetime(2026, 1, 5)      # invented: the caption needs a stamp to exist
+    captions: list = []
+    page.set_caption = captions.append
+    return page, captions
+
+
+class _FailingDb:
+    """`db`, except that `method` raises -- a loader forced to fail."""
+    def __init__(self, db, method):
+        self._db, self._method = db, method
+
+    def __getattr__(self, name):
+        if name == self._method:
+            def boom(*a, **k):
+                raise RuntimeError("sweep: forced failure")
+            return boom
+        return getattr(self._db, name)
+
+
+def check_screens_count_what_they_draw(db) -> None:
+    """Home's "N worth changing" and the Model page's "Worth changing on this model" count, each
+    against the presentation layer's own arrange() of the cached findings -- with the groups the
+    design doc rules for each (Home: yield; Model page: yield, laser time, check), written here,
+    not read from the pages -- and against the rows each section actually hands its view.
+
+    Falsify before trusting (2026-09-24): make home_page._yield_findings_count sum every group, or
+    add "history" to model_page._WORTH_CHANGING_GROUPS -- each FAILs its line below."""
+    import re
+    from collections import defaultdict
+    from laser_trim_analyzer.findings import presentation as P
+    from laser_trim_analyzer.gui.v6.pages import home_page, model_page
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets import blocks
+
+    rows = db.get_process_findings()
+    check("screens: the database has cached findings to count", len(rows) > 0, f"{len(rows)} findings")
+    if not rows:
+        return
+    ref_home = sum(len(g.rows) for g in P.arrange(rows, include_empty=False) if g.spec.key == "yield")
+    if not ref_home:
+        warn("screens: no yield-group finding in the cache", "Home's count is checked at zero")
+    saved_view, saved_header = home_page.FindingsView, blocks.group_header
+    try:
+        home_page.FindingsView = _ViewRecorder
+        _ViewRecorder.made = []
+        page, captions = _headless_home(db)
+        page._apply_findings(page._query_findings())
+        caption = captions[-1] if captions else ""
+        m = re.search(r"([\d,]+) worth changing", caption)
+        n = int(m.group(1).replace(",", "")) if m else None
+        drawn = _rows_drawn(_ViewRecorder.made[-1]) if _ViewRecorder.made else 0
+        check("home: 'N worth changing' is the yield rows arrange() builds from the cache, and the "
+              "rows its section draws", n is not None and n == ref_home == drawn,
+              f"caption={caption!r} arrange={ref_home} drawn={drawn}")
+    except Exception as e:
+        check("home: 'N worth changing' is the yield rows arrange() builds from the cache",
+              False, f"{type(e).__name__}: {e}")
+    finally:
+        home_page.FindingsView = saved_view
+
+    # One model, resolved by query: the most findings among models with NO analyzer error and at
+    # least one finding OUTSIDE the section's three groups (so the section's own filtering counts).
+    section = {"yield", "laser_time", "check"}
+    by_model = defaultdict(list)
+    for f in rows:
+        by_model[f.get("model")].append(f)
+    errors = db.get_process_errors()
+    candidates = sorted((m_ for m_ in by_model if m_ and m_ not in errors),
+                        key=lambda m_: (not any(P.group_key(f) not in section for f in by_model[m_]),
+                                        -len(by_model[m_]), m_))
+    if not candidates:
+        warn("screens: no error-free model with cached findings", "model-page count not checked")
+        return
+    model = candidates[0]
+    findings = db.get_process_findings(model)
+    ref_model = sum(len(g.rows) for g in P.arrange(findings, include_empty=False)
+                    if g.spec.key in section)
+    headers: list = []
+    try:
+        def spy(parent, theme, title, count, **kw):
+            headers.append((title, count))
+            return _Recorder()
+        blocks.group_header = spy
+        model_page.FindingsView = _ViewRecorder
+        _ViewRecorder.made = []
+        mp = model_page.ModelPage.__new__(model_page.ModelPage)
+        mp.theme, mp._worth_section, mp._worth_view = ThemeManager(), _Recorder(), None
+        mp._set_findings_section({"facts": db.get_process_facts(model), "findings": findings}, [])
+        shown = [c for t_, c in headers if t_ == "Worth changing on this model"]
+        drawn = _rows_drawn(_ViewRecorder.made[-1]) if _ViewRecorder.made else 0
+        check(f"model page: the 'Worth changing' count on {model} is the rows arrange() builds for "
+              f"its three groups, and the rows it draws", shown == [ref_model] and drawn == ref_model,
+              f"header={shown} arrange={ref_model} drawn={drawn} "
+              f"(groups here: {sorted({P.group_key(f) for f in findings})})")
+    except Exception as e:
+        check(f"model page: the 'Worth changing' count on {model}", False, f"{type(e).__name__}: {e}")
+    finally:
+        blocks.group_header = saved_header
+        model_page.FindingsView = saved_view
+
+
+def check_failed_loads_are_never_zero(db) -> None:
+    """Drive a loader to raise and read what the page would say: a failure is NAMED, never drawn
+    as "0 worth changing", "0 drifting now" or "Needs a look · 0" (final review, 2026-09-24).
+
+    Falsify before trusting (2026-09-24): in home_page set `self._worth_count = 0` on the failed
+    branch, or `self._focus_count = len(result.focus)` whatever the result; in triage_page pass
+    `len(result.focus)` to the "Needs a look" header whatever the result -- each FAILs below."""
+    from laser_trim_analyzer.gui.v6 import focus_data
+    from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets import blocks
+
+    try:
+        page, captions = _headless_home(_FailingDb(db, "get_process_findings"))
+        page._apply_findings(page._query_findings())
+        caption = captions[-1] if captions else ""
+        check("home: a failed findings load is named in a banner, never '0 worth changing'",
+              "worth changing" not in caption and page._worth_banner.packed
+              and "sweep: forced failure" in page._worth_banner.text,
+              f"caption={caption!r} banner={page._worth_banner.text[:80]!r}")
+    except Exception as e:
+        check("home: a failed findings load is named in a banner", False, f"{type(e).__name__}: {e}")
+
+    saved_compute, saved_header = focus_data.compute_focus_list, blocks.group_header
+    headers: list = []
+    try:
+        def boom(_db):
+            raise RuntimeError("sweep: forced FOCUS failure")
+        focus_data.compute_focus_list = boom
+        result, last = focus_data.load_focus(db)
+        page, captions = _headless_home(db)
+        page._apply_focus(result, last)
+        caption = captions[-1] if captions else ""
+        check("home: a failed FOCUS load is named in a banner, never '0 drifting now'",
+              "drifting now" not in caption and page._focus_banner.packed
+              and "forced FOCUS failure" in page._focus_banner.text,
+              f"caption={caption!r} banner={page._focus_banner.text[:80]!r}")
+
+        def spy(parent, theme, title, count, **kw):
+            headers.append((title, count))
+            return _Recorder()
+        blocks.group_header = spy
+        tp = TriagePage.__new__(TriagePage)
+        tp.theme = ThemeManager()
+        for name in ("_content_parent", "_focus_wrap", "_focus", "_browse", "_load_banner"):
+            setattr(tp, name, _Recorder())
+        tp._focus_header, tp._show_all, tp._browse_failed = None, False, None
+        tp._apply(result, [], set(), last)
+        shown = [c for t_, c in headers if t_ == "Needs a look"]
+        check("triage: a failed FOCUS load is named, with no 'Needs a look' count",
+              shown == [None] and tp._load_banner.packed
+              and "forced FOCUS failure" in tp._load_banner.text,
+              f"header counts={shown} banner={tp._load_banner.text[:80]!r}")
+    except Exception as e:
+        check("home/triage: a failed FOCUS load is named", False, f"{type(e).__name__}: {e}")
+    finally:
+        focus_data.compute_focus_list = saved_compute
+        blocks.group_header = saved_header
+
+
+# ---- usability glosses (moved out of main() so `--only glosses` runs them alone) -----------------
+
+def _string_literals(source: str) -> list:
+    """Every string in `source` a person could be SHOWN: each str constant in its syntax tree --
+    the parser has already joined implicit concatenations ("a" "b" is one constant) and split an
+    f-string into its literal parts -- but never a comment (comments are not in the tree) and never
+    a string that is a whole statement (a docstring; never on screen)."""
+    import ast
+    tree = ast.parse(source)
+    statements = {id(node.value) for node in ast.walk(tree)
+                  if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)}
+    return [node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and id(node) not in statements]
+
+
+def _gloss_present(source: str, needle: str, kind: str) -> bool:
+    """kind "exact": a string literal IS the needle (a heading, a column name); "text": a string
+    literal CONTAINS it (a sentence); "code": the needle is code, a plain substring of the file.
+
+    Text is matched against real string literals, not the raw file (final review, 2026-09-24,
+    M6): the Model page's `# ---- "How it's running" ...` and Triage's `# OWN "Needs a look" ...`
+    comments carry the very words -- quotes and all -- so a bare substring check, or even the
+    quoted form, kept passing with the heading itself renamed. Made to fail first: rename either
+    heading and leave the comment -- the old check PASSES, this one FAILS."""
+    if kind == "code":
+        return needle in source
+    literals = _string_literals(source)
+    if kind == "exact":
+        return needle in literals
+    return any(needle in lit for lit in literals)
+
+
+def check_usability_glosses() -> None:
+    """Every symbol/number the live walk (2026-07-08) found unexplained keeps its on-screen
+    decoder line. Each entry is (file, needle, what it guarantees); a needle listed in
+    _GLOSS_KINDS is matched as a whole heading literal or as code, every other one as text inside
+    a string literal -- see _gloss_present. Standalone: `--only glosses`."""
+    _GLOSSES = [
+        # 2026-08-29: the σ card wall became the FOCUS list. Same obligation,
+        # new zone — say WHY a model is on the list and when it leaves.
+        ("src/laser_trim_analyzer/gui/v6/widgets/focus_list_zone.py",
+         "outside its own control limits", "FOCUS list states its membership rule"),
+        # 2026-09-24 (facelift step 2, T2): the three-sentence σ key moved to the Drift metrics
+        # tab, beside the numbers it explains; the model page keeps a ONE-line key. Both pinned.
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "history of lots", "model page explains σ in lot language (one line)"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
+         "historical lot medians", "drift tab explains σ in lot language (in full)"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
+         "Gap = Trim − FT", "lowest-yield list explains Gap"),
+        # 2026-09-24 (facelift step 2, T7): the colour dot became a status WORD on each row
+        # (a colour-blind reader had nothing to read); the legend explains it in words. Final
+        # review (same date): "worst first" dropped -- the list is alphabetical, the lookup list
+        # -- so the needle pins all three glosses in one string, with no order claim between.
+        ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
+         "Status = drift tier. Date = last processed. 'Active' scope =",
+         "browse list explains status/date/Active"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
+         '"Sigma gradient"', "units table headers are full words"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
+         '"Linearity error"', "units table headers are full words (2)"),
+        # 2026-09-24 (T3b): the legend box became a one-line key of drawn elements; the red
+        # dots must still be named in it (the round-2 key dropped them -- this check caught it).
+        ("src/laser_trim_analyzer/gui/v6/widgets/focus_chart.py",
+         "beyond ±3σ (red)", "focus chart names its red markers"),
+        ("src/laser_trim_analyzer/gui/v6/pages/dashboard_page.py",
+         "matched to trims", "FT panel count says what 'matched' means"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "lifetime linearity yield", "model verdict line (holding/drifting/difficulty)"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
+         "Baseline period", "drift tab discloses baseline provenance"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "This action is recorded", "requalify dialog states auditability"),
+        # 2026-07-13 design pass: interpretation vs data zones. Text updated 2026-09-24: the
+        # facelift's sentence-case sweep (T2) converted these from shouting headings to
+        # sentence case app-wide -- the zone-marking obligation this check exists to pin is
+        # unchanged, only the literal casing is, so the string here tracks the page, not the
+        # other way round.
+        # 2026-09-24 (T2): the model page's app's-read zone is now "How it's running" (the
+        # verdict moved into the caption; findings got their own "Worth changing" group).
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "How it's running", "model page marks the app's-read zone"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "What you're looking at", "model page marks the data zone"),
+        # 2026-09-24 (T7): Triage's app's-read zone is the "Needs a look" group (the focus list);
+        # the data zone is "All models" (the browse list).
+        ("src/laser_trim_analyzer/gui/v6/pages/triage_page.py",
+         "Needs a look", "triage marks the app's-read zone"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/metric_pill_row.py",
+         "Outcomes — trim linearity · final test", "pills grouped process vs outcomes"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
+         "format_metric_value", "drift tab renders fail rates as percent"),
+        ("src/laser_trim_analyzer/gui/v6/sections/alert_thresholds.py",
+         "most expensive station", "settings glosses the FT watch metrics"),
+        # 2026-07-14 live findings.
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "already met linearity BEFORE trim", "verdict surfaces trim necessity"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/ft_units_tab.py",
+         "on_unit_click", "FT unit rows are clickable"),
+        ("src/laser_trim_analyzer/gui/widgets/chart.py",
+         "Include the PRE-TRIM trace", "unit chart y-window fits the pre-trim line"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "_open_dropdown_menu = self._open_model_picker",
+         "model dropdown opens the wheel-scrollable picker"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/unit_chart_modal.py",
+         "Why offset can't fix this", "failing units explain the offset constraint"),
+    ]
+    for path, needle, what in _GLOSSES:
+        kind, literal = _GLOSS_KINDS.get(needle, ("text", None))
+        try:
+            source = open(REPO / path, encoding="utf-8").read()
+            ok = _gloss_present(source, literal or needle, kind)
+        except (OSError, SyntaxError):
+            ok = False
+        check(f"usability gloss: {what}", ok)
+
+
+# Needles that are not a sentence: an exact heading/column literal (the key's own quotes are
+# dropped -- the tree has no quotes), or code, where a plain substring is the right test.
+_GLOSS_KINDS = {
+    '"Sigma gradient"': ("exact", "Sigma gradient"),
+    '"Linearity error"': ("exact", "Linearity error"),
+    "How it's running": ("exact", None),
+    "What you're looking at": ("exact", None),
+    "Needs a look": ("exact", None),
+    "format_metric_value": ("code", None),
+    "on_unit_click": ("code", None),
+    "Include the PRE-TRIM trace": ("code", None),
+    "_open_dropdown_menu = self._open_model_picker": ("code", None),
+}
+
+
 def main() -> int:
     # REQUIRED DB-path argv (2026-08-31; was optional with a production
     # default). The sweep opens its target read-write, and the old default —
@@ -2994,6 +3357,9 @@ def main() -> int:
     except Exception as exc:
         check("home/triage: one FOCUS loader behind both screens", False,
               f"{type(exc).__name__}: {exc}")
+    # ---- the screens count what they draw; a failed load is never a zero (final review M9)
+    check_screens_count_what_they_draw(db)
+    check_failed_loads_are_never_zero(db)
 
     # ---- every sidebar row points at a page that exists --------------------
     # A nav row whose key was never registered is a dead click with no error;
@@ -3852,84 +4218,7 @@ def main() -> int:
           uy["first_pass_yield"] is not None and 0 <= uy["first_pass_yield"] <= 100
           and 0 <= uy["final_yield"] <= 100 and uy["attempts_per_section"] >= 1.0)
 
-    # ---- usability glosses: every symbol/number the live walk (2026-07-08)
-    # found unexplained must keep its on-screen decoder line -----------------
-    _GLOSSES = [
-        # 2026-08-29: the σ card wall became the FOCUS list. Same obligation,
-        # new zone — say WHY a model is on the list and when it leaves.
-        ("src/laser_trim_analyzer/gui/v6/widgets/focus_list_zone.py",
-         "outside its own control limits", "FOCUS list states its membership rule"),
-        # 2026-09-24 (facelift step 2, T2): the three-sentence σ key moved to the Drift metrics
-        # tab, beside the numbers it explains; the model page keeps a ONE-line key. Both pinned.
-        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "history of lots", "model page explains σ in lot language (one line)"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
-         "historical lot medians", "drift tab explains σ in lot language (in full)"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
-         "Gap = Trim − FT", "lowest-yield list explains Gap"),
-        # 2026-09-24 (facelift step 2, T7): the colour dot became a status WORD on each row
-        # (a colour-blind reader had nothing to read); the legend explains it in words. Final
-        # review (same date): "worst first" dropped -- the list is alphabetical, the lookup list
-        # -- so the needle pins all three glosses in one string, with no order claim between.
-        ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
-         "Status = drift tier. Date = last processed. 'Active' scope =",
-         "browse list explains status/date/Active"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
-         '"Sigma gradient"', "units table headers are full words"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
-         '"Linearity error"', "units table headers are full words (2)"),
-        # 2026-09-24 (T3b): the legend box became a one-line key of drawn elements; the red
-        # dots must still be named in it (the round-2 key dropped them -- this check caught it).
-        ("src/laser_trim_analyzer/gui/v6/widgets/focus_chart.py",
-         "beyond ±3σ (red)", "focus chart names its red markers"),
-        ("src/laser_trim_analyzer/gui/v6/pages/dashboard_page.py",
-         "matched to trims", "FT panel count says what 'matched' means"),
-        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "lifetime linearity yield", "model verdict line (holding/drifting/difficulty)"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
-         "Baseline period", "drift tab discloses baseline provenance"),
-        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "This action is recorded", "requalify dialog states auditability"),
-        # 2026-07-13 design pass: interpretation vs data zones. Text updated 2026-09-24: the
-        # facelift's sentence-case sweep (T2) converted these from shouting headings to
-        # sentence case app-wide -- the zone-marking obligation this check exists to pin is
-        # unchanged, only the literal casing is, so the string here tracks the page, not the
-        # other way round.
-        # 2026-09-24 (T2): the model page's app's-read zone is now "How it's running" (the
-        # verdict moved into the caption; findings got their own "Worth changing" group).
-        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "How it's running", "model page marks the app's-read zone"),
-        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "What you're looking at", "model page marks the data zone"),
-        # 2026-09-24 (T7): Triage's app's-read zone is the "Needs a look" group (the focus list);
-        # the data zone is "All models" (the browse list).
-        ("src/laser_trim_analyzer/gui/v6/pages/triage_page.py",
-         "Needs a look", "triage marks the app's-read zone"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/metric_pill_row.py",
-         "Outcomes — trim linearity · final test", "pills grouped process vs outcomes"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
-         "format_metric_value", "drift tab renders fail rates as percent"),
-        ("src/laser_trim_analyzer/gui/v6/sections/alert_thresholds.py",
-         "most expensive station", "settings glosses the FT watch metrics"),
-        # 2026-07-14 live findings.
-        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "already met linearity BEFORE trim", "verdict surfaces trim necessity"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/ft_units_tab.py",
-         "on_unit_click", "FT unit rows are clickable"),
-        ("src/laser_trim_analyzer/gui/widgets/chart.py",
-         "Include the PRE-TRIM trace", "unit chart y-window fits the pre-trim line"),
-        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "_open_dropdown_menu = self._open_model_picker",
-         "model dropdown opens the wheel-scrollable picker"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/unit_chart_modal.py",
-         "Why offset can't fix this", "failing units explain the offset constraint"),
-    ]
-    for path, needle, what in _GLOSSES:
-        try:
-            ok = needle in open(REPO / path, encoding="utf-8").read()
-        except OSError:
-            ok = False
-        check(f"usability gloss: {what}", ok)
+    check_usability_glosses()
 
     # ---- data quality surface: future-dated records (mislabeled files) ------
     horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -4201,7 +4490,8 @@ def _tally() -> int:
 # Sections that stand alone (own temp DB, no work database needed), so they
 # can be run on a machine that has no copy of the real data:
 #     python scripts/app_qa_sweep.py --only ft-fastpath
-STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
+STANDALONE = {"glosses": check_usability_glosses,
+              "ft-fastpath": check_ft_incremental_fastpath,
               "ft-silence": check_ft_parser_console_silence,
               "ft-window": check_ft_graded_window,
               "ingest": check_ingest_group,
