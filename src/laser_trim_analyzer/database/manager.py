@@ -63,6 +63,19 @@ logger = logging.getLogger(__name__)
 _UNSET = object()
 
 
+def _size_and_mtime(stat) -> Optional[Tuple[int, float]]:
+    """A carried stat as (size, mtime), or None: the file could not be statted.
+
+    The save path is HANDED the (size, mtime) of the bytes that were parsed instead of statting
+    the file itself (ruling 10). Exactly two values: an `os.stat_result` (ten) fails to unpack
+    here, loudly, instead of being read as (st_mode, st_ino).
+    """
+    if stat is None:
+        return None
+    size, mtime = stat
+    return size, mtime
+
+
 def _error_reason(analysis) -> Optional[str]:
     """What an ERROR result says went wrong, in one short line.
 
@@ -1851,65 +1864,116 @@ class DatabaseManager:
             logger.debug(f"Skipping save_analysis for Smoothness: {analysis.metadata.filename}")
             return getattr(analysis, 'smoothness_id', -1) or -1
 
+        # This caller was not handed the parse's own (size, mtime) and hash, so it takes them
+        # itself -- BEFORE the session, never inside it (ruling 10): with one SQLite connection
+        # shared by every thread (StaticPool), a stat inside the transaction held that
+        # connection across a ~113 ms share round trip per file. Same values as before, since
+        # the same two calls ran a few statements later.
+        stat, file_hash = self._file_identity(analysis.metadata.file_path)
+
         # session() acquires _write_lock internally (RLock-reentrant), so
         # wrapping with another `with self._write_lock` here is redundant and
         # only adds confusion to the lock graph. The session context is
         # sufficient for SQLite serialization.
         with self.session() as session:
-            # Check for existing record by the DB's UNIQUE-constraint key
-            # (filename, file_date, model, serial).  Pre-fix this filtered on
-            # (filename, file_path), but the UNIQUE constraint is keyed on
-            # the metadata tuple -- the same file on a different path string
-            # (UNC vs mapped drive, folder reorg, network share migration)
-            # missed this lookup and then raised IntegrityError at INSERT
-            # time.  Aligning the lookup with the constraint turns these
-            # re-presentations into idempotent UPDATEs.
-            # See save_final_test for the parallel lesson.
-            existing = session.query(DBAnalysisResult).filter(
-                DBAnalysisResult.filename == analysis.metadata.filename,
-                DBAnalysisResult.file_date == analysis.metadata.file_date,
-                DBAnalysisResult.model == analysis.metadata.model,
-                DBAnalysisResult.serial == analysis.metadata.serial,
-            ).first()
+            return self._save_analysis_in(session, analysis, stat, file_hash)
 
-            if existing:
-                logger.debug(f"Updating existing analysis: {analysis.metadata.filename}")
-                return self._update_existing_analysis(session, analysis)
+    def _file_identity(self, file_path: Union[str, Path]
+                       ) -> Tuple[Optional[Tuple[int, float]], Optional[str]]:
+        """(size, mtime) and SHA-256 of a file as it is on disk NOW.
 
-            # No existing record, create new one
-            db_analysis = self._map_analysis_to_db(analysis)
-            session.add(db_analysis)
-            session.flush()  # Get ID before commit
+        For the callers that did not parse it themselves -- `save_analysis`, `save_batch` -- and
+        so hold no stat or hash of the bytes that were parsed. Called OUTSIDE any transaction.
+        (None, None) when the file cannot be statted: the save then records no processed-files
+        marker, exactly as `_record_processed_file` always did for a file gone by save time. A
+        file that stats but cannot be read raises, as it did inside the save before.
+        """
+        file_path = Path(file_path)
+        try:
+            file_stat = stat_once(file_path)     # outside a parse: a REAL stat
+        except OSError:
+            return None, None
+        return ((file_stat.st_size, file_stat.st_mtime),
+                calculate_file_hash(file_path, known_stat=file_stat))
 
-            # Per-pass sweep/recipe rows and the file's laser-setup row.
-            # db_analysis.tracks preserves the append order _map_analysis_to_db
-            # built it in, so zipping with analysis.tracks pairs each parser
-            # track's trim_passes with the matching freshly-flushed DBTrackResult
-            # (which now carries a real id).
-            for track, db_track in zip(analysis.tracks, db_analysis.tracks):
-                self._write_trim_passes(session, db_track, track)
-            self._write_trim_setup(session, db_analysis.id, getattr(analysis, 'trim_setup', None))
+    def _save_analysis_in(self, session: Session, analysis: AnalysisResult,
+                          stat: Optional[Tuple[int, float]], file_hash: Optional[str]) -> int:
+        """Write one trim result into the session it is GIVEN; return its analysis id.
 
-            # Record as processed file
-            # ERROR results are marked success=False so they get retried
-            is_success = analysis.overall_status != AnalysisStatus.ERROR
-            self._record_processed_file(
-                session,
-                analysis.metadata.file_path,
-                db_analysis.id,
-                success=is_success,
-                # The row's own error_message: analysis_results.error_reason
-                # when the processor set one (track-level ERRORs included),
-                # else the same file-level text the marker below uses.
-                reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
-                # The marker's reason stays the file-level text ONLY -- see
-                # _record_processed_file's docstring for why this must not
-                # change which files get retried.
-                marker_reason=_error_reason(analysis),
-            )
+        What `save_analysis` always did -- the analysis row, its tracks, their trim passes, the
+        setup row and the processed-files marker -- minus the session: the caller owns it, and
+        with it the commit (`save_analysis`: one file per session; a batch writer: many files per
+        transaction, a savepoint each). The file's rows and its marker are written in the
+        caller's one unit of work, so "processed" is exactly "committed" (ruling 7).
 
-            logger.debug(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
-            return db_analysis.id
+        `stat` is the (size, mtime) and `file_hash` the SHA-256 of the bytes that were parsed:
+        recorded as given, never re-read -- this does no file I/O at all (ruling 10). `stat`
+        None means the file could not be statted: the rows are written, no marker is.
+
+        Never opens a session of its own: inside a batch that would commit the batch (spec F5).
+        """
+        if getattr(analysis, 'file_type', 'trim') != 'trim':
+            # save_analysis returns early for these; a final test or smoothness file written
+            # here would become an analysis row.
+            raise ValueError(f"{analysis.metadata.filename} is a {analysis.file_type} result, "
+                             "not a trim result -- its rows are not written here")
+
+        # Check for existing record by the DB's UNIQUE-constraint key
+        # (filename, file_date, model, serial).  Pre-fix this filtered on
+        # (filename, file_path), but the UNIQUE constraint is keyed on
+        # the metadata tuple -- the same file on a different path string
+        # (UNC vs mapped drive, folder reorg, network share migration)
+        # missed this lookup and then raised IntegrityError at INSERT
+        # time.  Aligning the lookup with the constraint turns these
+        # re-presentations into idempotent UPDATEs.
+        # See save_final_test for the parallel lesson.
+        existing = session.query(DBAnalysisResult).filter(
+            DBAnalysisResult.filename == analysis.metadata.filename,
+            DBAnalysisResult.file_date == analysis.metadata.file_date,
+            DBAnalysisResult.model == analysis.metadata.model,
+            DBAnalysisResult.serial == analysis.metadata.serial,
+        ).first()
+
+        if existing:
+            logger.debug(f"Updating existing analysis: {analysis.metadata.filename}")
+            return self._update_existing_analysis(session, analysis, stat, file_hash)
+
+        # No existing record, create new one
+        db_analysis = self._map_analysis_to_db(analysis)
+        session.add(db_analysis)
+        session.flush()  # Get ID before commit
+
+        # Per-pass sweep/recipe rows and the file's laser-setup row.
+        # db_analysis.tracks preserves the append order _map_analysis_to_db
+        # built it in, so zipping with analysis.tracks pairs each parser
+        # track's trim_passes with the matching freshly-flushed DBTrackResult
+        # (which now carries a real id).
+        for track, db_track in zip(analysis.tracks, db_analysis.tracks):
+            self._write_trim_passes(session, db_track, track)
+        self._write_trim_setup(session, db_analysis.id, getattr(analysis, 'trim_setup', None))
+
+        # Record as processed file
+        # ERROR results are marked success=False so they get retried
+        is_success = analysis.overall_status != AnalysisStatus.ERROR
+        self._record_processed_file(
+            session,
+            analysis.metadata.file_path,
+            db_analysis.id,
+            success=is_success,
+            # The row's own error_message: analysis_results.error_reason
+            # when the processor set one (track-level ERRORs included),
+            # else the same file-level text the marker below uses.
+            reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
+            # The marker's reason stays the file-level text ONLY -- see
+            # _record_processed_file's docstring for why this must not
+            # change which files get retried.
+            marker_reason=_error_reason(analysis),
+            stat=stat,
+            file_hash=file_hash,
+        )
+
+        logger.debug(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
+        return db_analysis.id
 
     def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
         """
@@ -1926,12 +1990,13 @@ class DatabaseManager:
         with self._write_lock:
             for analysis in analyses:
                 try:
+                    # Skip Final Test files - they're already saved in processor
+                    if getattr(analysis, 'file_type', 'trim') == 'final_test':
+                        saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
+                        continue
+                    # Taken before the session, as save_analysis does (ruling 10).
+                    stat, file_hash = self._file_identity(analysis.metadata.file_path)
                     with self.session() as session:
-                        # Skip Final Test files - they're already saved in processor
-                        if getattr(analysis, 'file_type', 'trim') == 'final_test':
-                            saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
-                            continue
-
                         # Check for existing record by the DB UNIQUE key
                         # (filename, file_date, model, serial).  Must match
                         # save_analysis; see comment there for rationale.
@@ -1944,7 +2009,8 @@ class DatabaseManager:
 
                         if existing:
                             # Update existing record
-                            updated_id = self._update_existing_analysis(session, analysis)
+                            updated_id = self._update_existing_analysis(
+                                session, analysis, stat, file_hash)
                             saved_ids.append(updated_id)
                         else:
                             # Create new record
@@ -1961,6 +2027,8 @@ class DatabaseManager:
                                 # See save_analysis for why reason/marker_reason differ.
                                 reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
                                 marker_reason=_error_reason(analysis),
+                                stat=stat,
+                                file_hash=file_hash,
                             )
 
                             saved_ids.append(db_analysis.id)
@@ -2130,13 +2198,26 @@ class DatabaseManager:
         success: bool = True,
         reason: Optional[str] = None,
         marker_reason=_UNSET,
+        *,
+        stat: Optional[Tuple[int, float]],
+        file_hash: Optional[str],
     ) -> None:
         """Record a file as processed.
+
+        Does NO file I/O (ruling 10, 2026-09-25): the row records the `stat` and `file_hash` it
+        is handed -- the (size, mtime) and SHA-256 of the bytes that were parsed -- instead of
+        statting and hashing the file inside the caller's transaction. That took a share round
+        trip per file while holding the app's one connection, and a file rewritten between parse
+        and save was recorded with the NEW stat on the OLD content, so the next scan's stat fast
+        path skipped the new content.
 
         Args:
             session: Active database session
             file_path: Path to the processed file
             analysis_id: ID of the saved AnalysisResult
+            stat: (size, mtime) of the parsed bytes; None = the file could not be statted, and
+                then nothing is recorded (what a failed stat here always meant)
+            file_hash: SHA-256 of the parsed bytes; required with a stat
             success: False for ERROR results — allows retry on next run
             reason: the ERROR's own words, written to THIS row's error_message
                 (analysis_results.error_reason when the caller has one, else
@@ -2157,14 +2238,13 @@ class DatabaseManager:
             marker_reason = reason
         file_path = Path(file_path)
 
-        # One stat for existence, size and mtime: on the work share each
-        # separate stat is a ~113 ms network conversation (2026-09-20).
-        try:
-            file_stat = stat_once(file_path)     # outside a parse: a REAL stat
-        except OSError:
-            return
-
-        file_hash = calculate_file_hash(file_path, known_stat=file_stat)
+        size_mtime = _size_and_mtime(stat)
+        if size_mtime is None:
+            return          # could not be statted: record nothing, as a failed stat always did
+        if not file_hash:
+            raise ValueError(f"{file_path.name}: a stat without a content hash -- the processed "
+                             "marker needs both (the hash is the file's identity)")
+        file_size, file_mtime = size_mtime
 
         # Check if already recorded before inserting (avoids IntegrityError
         # which would rollback the entire transaction including parent analysis)
@@ -2176,8 +2256,8 @@ class DatabaseManager:
                 filename=file_path.name,
                 file_path=str(file_path),
                 file_hash=file_hash,
-                file_size=file_stat.st_size,
-                file_modified_date=datetime.fromtimestamp(file_stat.st_mtime),
+                file_size=file_size,
+                file_modified_date=datetime.fromtimestamp(file_mtime),
                 analysis_id=analysis_id,
                 success=success,
                 error_message=(None if success else reason),
@@ -2216,10 +2296,11 @@ class DatabaseManager:
         if success:
             self._clear_failure_marker(session, file_path)
         else:
-            self._write_failure_marker(session, file_path, marker_reason)
+            self._write_failure_marker(session, file_path, marker_reason, stat=size_mtime)
 
     def _write_failure_marker(self, session: Session, file_path: Path,
-                              reason: Optional[str]) -> bool:
+                              reason: Optional[str], *,
+                              stat: Optional[Tuple[int, float]]) -> bool:
         """Remember that this PATH could not be read. Returns whether it was.
 
         Refuses TRANSIENT reasons — a locked workbook, a dropped share, a
@@ -2227,6 +2308,10 @@ class DatabaseManager:
         takes the reason text for exactly this caller. Those files must stay
         retryable; a half-written one also re-offers itself as soon as its
         size or mtime changes.
+
+        `stat` is the (size, mtime) the caller carries -- the parsed bytes' own, the same one
+        the processed-files row records -- never a second stat of the file (ruling 10). None
+        (could not be statted) writes no marker, as a failed stat here always did.
         """
         # Deferred import: core imports database, never the reverse. By the
         # time an ERROR result exists, the processor module is already loaded.
@@ -2241,11 +2326,10 @@ class DatabaseManager:
 
         marker_hash = self.skip_marker_hash(str(file_path))
         text = (UNREADABLE_PREFIX + reason)[:2000]
-        try:
-            stat = file_path.stat()
-            size, modified = stat.st_size, datetime.fromtimestamp(stat.st_mtime)
-        except OSError:
+        size_mtime = _size_and_mtime(stat)
+        if size_mtime is None:
             return False
+        size, modified = size_mtime[0], datetime.fromtimestamp(size_mtime[1])
 
         existing = session.execute(
             select(DBProcessedFile).where(
@@ -3993,9 +4077,15 @@ class DatabaseManager:
     def _update_existing_analysis(
         self,
         session: Session,
-        analysis: AnalysisResult
+        analysis: AnalysisResult,
+        stat: Optional[Tuple[int, float]],
+        file_hash: Optional[str],
     ) -> int:
-        """Update an existing analysis record."""
+        """Update an existing analysis record.
+
+        `stat` and `file_hash` are the parsed bytes' own (size, mtime) and SHA-256, recorded on
+        the processed-files row as given -- see `_save_analysis_in` (no file I/O here).
+        """
         # Find existing record by the DB UNIQUE-constraint key
         # (filename, file_date, model, serial).  Must match save_analysis /
         # save_batch -- if we re-query by (filename, file_path) here and the
@@ -4101,6 +4191,8 @@ class DatabaseManager:
                 # See save_analysis for why reason/marker_reason differ.
                 reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
                 marker_reason=_error_reason(analysis),
+                stat=stat,
+                file_hash=file_hash,
             )
 
             logger.debug(f"Updated analysis ID {existing.id}: status={analysis.overall_status.value}")
@@ -4125,6 +4217,8 @@ class DatabaseManager:
             success=is_success,
             reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
             marker_reason=_error_reason(analysis),
+            stat=stat,
+            file_hash=file_hash,
         )
         return db_analysis.id
 

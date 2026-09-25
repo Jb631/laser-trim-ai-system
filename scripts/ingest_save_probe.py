@@ -265,36 +265,18 @@ def _save_batch_probe(db, analyses):
 
     The explicit BEGIN is the whole point (spec F4): pysqlite emits no BEGIN before a SAVEPOINT,
     SQLite then starts the transaction AT the savepoint, and RELEASE of that outermost savepoint is
-    a COMMIT -- one commit per file, which is what batching exists to avoid."""
-    from laser_trim_analyzer.core.models import AnalysisStatus
-    from laser_trim_analyzer.database.manager import _error_reason
-    from laser_trim_analyzer.database.models import AnalysisResult as DBAnalysisResult
+    a COMMIT -- one commit per file, which is what batching exists to avoid.
+
+    The body per file IS save_analysis's own since Task 5 (`_save_analysis_in`), handed each
+    file's (size, mtime) and hash taken before the transaction, as the app's writer will be."""
+    carried = [db._file_identity(a.metadata.file_path) for a in analyses]
     out = []
     with db.session() as session:
         session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-        for a in analyses:
+        for a, (stat, file_hash) in zip(analyses, carried):
             sp = session.begin_nested()
             try:
-                existing = session.query(DBAnalysisResult).filter(
-                    DBAnalysisResult.filename == a.metadata.filename,
-                    DBAnalysisResult.file_date == a.metadata.file_date,
-                    DBAnalysisResult.model == a.metadata.model,
-                    DBAnalysisResult.serial == a.metadata.serial).first()
-                if existing:
-                    rid = db._update_existing_analysis(session, a)
-                else:
-                    row = db._map_analysis_to_db(a)
-                    session.add(row)
-                    session.flush()
-                    for track, db_track in zip(a.tracks, row.tracks):
-                        db._write_trim_passes(session, db_track, track)
-                    db._write_trim_setup(session, row.id, getattr(a, "trim_setup", None))
-                    db._record_processed_file(
-                        session, a.metadata.file_path, row.id,
-                        success=a.overall_status != AnalysisStatus.ERROR,
-                        reason=getattr(a, "error_reason", None) or _error_reason(a),
-                        marker_reason=_error_reason(a))
-                    rid = row.id
+                rid = db._save_analysis_in(session, a, stat, file_hash)
                 sp.commit()
                 out.append(("saved", rid))
             except Exception as e:

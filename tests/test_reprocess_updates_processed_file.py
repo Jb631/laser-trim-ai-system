@@ -191,8 +191,9 @@ def test_update_existing_analysis_fallback_with_no_existing_row_still_records_pr
     db = DatabaseManager(tmp_path / "t.db")
     result = _clean_result(f, serial="SN4")
 
+    stat, file_hash = db._file_identity(f)      # the carried (size, mtime) and hash (Task 5)
     with db.session() as s:
-        new_id = db._update_existing_analysis(s, result)
+        new_id = db._update_existing_analysis(s, result, stat, file_hash)
 
     after = _processed_file_row(db, f)
     assert after["success"] is True
