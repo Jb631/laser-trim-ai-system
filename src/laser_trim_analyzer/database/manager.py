@@ -954,6 +954,10 @@ class DatabaseManager:
                 session.commit()
                 logger.info(f"Index migration: ensured {created} indexes exist")
             except Exception as e:
+                session.rollback()  # Clear error state from the failed statement (e.g. a
+                                     # read-only database, James's first launch on a pre-
+                                     # Task-3 file before these two are no-ops) -- matches
+                                     # every sibling migration's idiom in this method.
                 logger.warning(f"Index migration warning: {e}")
 
             # Migration: Add failure margin columns to track_results

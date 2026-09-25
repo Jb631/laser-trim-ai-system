@@ -11,7 +11,10 @@ The migration lives beside the app's other `CREATE INDEX IF NOT EXISTS` statemen
 `DatabaseManager._run_migrations` (main:~876), which already runs, idempotently, on
 every launch.
 """
+import logging
+import os
 import sqlite3
+import stat
 from datetime import datetime
 
 import pytest
@@ -117,3 +120,55 @@ def test_final_test_and_smoothness_saved_rows_are_unchanged_by_the_index(tmp_pat
             assert row.file_hash == sh and row.model == "6607" and row.serial == "s1"
     finally:
         db.close()
+
+
+def test_the_index_migration_on_a_readonly_pre_task3_database_is_skipped_and_logged(tmp_path, caplog):
+    """James's real first launch: a database that predates this branch -- no idx_ft_file_hash or
+    idx_smoothness_file_hash yet -- opened from a file he cannot write (CLAUDE.md: production
+    data/analysis.db is chmod'd read-only on purpose; the containing folder stays writable, which
+    is what lets SQLite still create WAL-mode's -shm/-wal lock-coordination files).
+
+    The migration's CREATE INDEX statements fail ("attempt to write a readonly database"). The
+    except block must roll the session back -- the same idiom as every sibling migration in
+    _run_migrations -- log a WARNING (not swallow it, not crash), and leave the manager fully
+    usable: later migrations in the same run still get their turn, and the app opens.
+    """
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import FinalTestResult
+
+    path = tmp_path / "readonly.db"
+    db = DatabaseManager(path)  # first launch: creates the schema, both new indexes included
+    db.close()
+
+    # Simulate a database that predates Task 3: drop the two new indexes, matching what a real
+    # pre-pull database looks like.
+    raw = sqlite3.connect(str(path))
+    raw.execute("DROP INDEX IF EXISTS idx_ft_file_hash")
+    raw.execute("DROP INDEX IF EXISTS idx_smoothness_file_hash")
+    raw.commit()
+    raw.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # no pending WAL frames before going read-only
+    raw.close()
+
+    os.chmod(path, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # file read-only, folder untouched
+    try:
+        with caplog.at_level(logging.WARNING, logger="laser_trim_analyzer.database.manager"):
+            db2 = DatabaseManager(path)  # must not raise
+        index_warnings = [r.message for r in caplog.records if "Index migration warning" in r.message]
+        assert index_warnings, (
+            f"the read-only failure must be logged, not swallowed: {[r.message for r in caplog.records]}")
+        assert "readonly database" in index_warnings[0]
+
+        # The session is not left unusable -- a later migration in the same run still logs its
+        # own attempt rather than silently never running (the "LTS3 retag" migration, further down
+        # _run_migrations, also writes unconditionally on every launch).
+        assert any("LTS3 retag migration warning" in r.message for r in caplog.records), (
+            "a later migration going silent would mean the session was left poisoned by the "
+            "unrolled-back index migration failure")
+
+        # And the manager itself is fully usable afterward -- this is the actual promise:
+        # a read-only database does not stop the app from opening and reading.
+        with db2.session() as session:
+            assert session.query(FinalTestResult).count() == 0
+        db2.close()
+    finally:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)

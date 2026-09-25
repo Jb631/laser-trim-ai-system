@@ -516,20 +516,26 @@ def test_a_batch_with_no_cpu_measurement_prints_no_cpu_clause(monkeypatch):
     assert "save cpu" not in line
 
 
-def test_a_sleeping_save_and_a_spinning_save_are_told_apart_by_cpu_time(tmp_path, monkeypatch):
-    """The brief's own test: a save stub that sleeps (real wall time, ~no CPU --
-    like a save mostly waiting on the GIL/write lock) and one that spins (wall
-    time IS cpu time -- like a save actually doing work) must be tell-apart-able
-    from the batch line's numbers. Wall time alone cannot do this -- both stubs
-    cost the same wall clock -- so this is red unless `save_cpu` really measures
-    time.thread_time(), not a copy of the wall figure.
+def test_the_saves_cpu_is_its_own_threads_not_the_whole_processs(tmp_path, monkeypatch):
+    """Review finding (task-2-4-review.md, Important #1): a single-threaded test cannot tell
+    time.thread_time() apart from time.process_time() -- with nothing else running, "this
+    thread's CPU" and "the whole process's CPU" are the same number, so a regression to the
+    wrong clock would pass silently. In production, with four parser threads running
+    concurrently, time.process_time() would count THEIR CPU as part of the save's figure too
+    (that is ruling 2's own reasoning -- F7 measured the save's wall time as ~85% GIL wait,
+    the OTHER threads' work). This test reproduces that shape directly: the save stub only
+    SLEEPS (near-zero CPU of its own) while a REAL background thread spins CPU concurrently
+    on a different thread for the whole run. time.thread_time() must stay near zero regardless
+    of the spinner; time.process_time() would inflate save_cpu with the spinner's work, because
+    it counts every thread in the process.
     """
+    import threading
     import time as _time
     from types import SimpleNamespace
     from laser_trim_analyzer.core.models import AnalysisStatus
 
     (tmp_path / "a.xls").write_bytes(b"junk")
-    SAVE_S = 0.03
+    SAVE_S = 0.05
     N = 5
 
     def _result(i):
@@ -550,36 +556,42 @@ def test_a_sleeping_save_and_a_spinning_save_are_told_apart_by_cpu_time(tmp_path
             return SimpleNamespace(processed=N)
 
     class _SleepDb:
-        """Wall clock passes; this thread does almost no work while it waits."""
+        """This thread does almost no work of its own -- like a save mostly waiting on the
+        GIL or the write lock, not actually computing anything."""
         def save_analysis(self, result):
             _time.sleep(SAVE_S)
-
-    class _SpinDb:
-        """Wall clock passes BECAUSE this thread is burning CPU the whole time."""
-        def save_analysis(self, result):
-            end = _time.perf_counter() + SAVE_S
-            while _time.perf_counter() < end:
-                pass
 
     monkeypatch.setattr(ingest_run, "Processor", _Proc)
     monkeypatch.setattr(ingest_run, "_post_batch", lambda *a, **k: None)
 
-    sleepy = run_folder(str(tmp_path), db=_SleepDb(), config=None)
-    spinny = run_folder(str(tmp_path), db=_SpinDb(), config=None)
+    stop = threading.Event()
 
-    assert "save_cpu" in sleepy.phases, "the ingest did not measure save CPU at all"
-    assert "save_cpu" in spinny.phases
-    # both cost roughly the same WALL time...
-    assert sleepy.phases["save"] >= SAVE_S * N * 0.7
-    assert spinny.phases["save"] >= SAVE_S * N * 0.7
-    # ...but only the spinning save actually burned CPU. A broken measurement
-    # that just copies wall time (or always reports 0) fails one side of this.
-    assert sleepy.phases["save_cpu"] < sleepy.phases["save"] * 0.5, (
-        f"a sleeping save should burn little CPU: cpu={sleepy.phases['save_cpu']:.4f} "
-        f"wall={sleepy.phases['save']:.4f}")
-    assert spinny.phases["save_cpu"] > spinny.phases["save"] * 0.5, (
-        f"a spinning save should burn CPU close to its wall time: "
-        f"cpu={spinny.phases['save_cpu']:.4f} wall={spinny.phases['save']:.4f}")
+    def _burn_cpu_on_a_different_thread():
+        # A tight, allocation-free loop: the whole point is to hold this OTHER thread's CPU
+        # as close to 100% as this machine allows, for as long as the save loop runs.
+        while not stop.is_set():
+            pass
+
+    spinner = threading.Thread(target=_burn_cpu_on_a_different_thread)
+    spinner.start()
+    try:
+        result = run_folder(str(tmp_path), db=_SleepDb(), config=None)
+    finally:
+        stop.set()
+        spinner.join(timeout=5)
+        assert not spinner.is_alive()
+
+    assert "save_cpu" in result.phases, "the ingest did not measure save CPU at all"
+    # the wall clock really did pass -- N sleeps of SAVE_S each
+    assert result.phases["save"] >= SAVE_S * N * 0.7
+    # ...but this thread did almost none of that as CPU, NO MATTER how hard the OTHER thread
+    # spun. time.process_time() would have summed the spinner's CPU into this number too --
+    # the mutation table below proves it does, by turning this assertion red.
+    assert result.phases["save_cpu"] < result.phases["save"] * 0.3, (
+        f"a sleeping save's own CPU should stay near zero even while another thread spins "
+        f"concurrently: save_cpu={result.phases['save_cpu']:.4f} save wall="
+        f"{result.phases['save']:.4f} -- this fails if the measurement is time.process_time() "
+        f"(process-wide) instead of time.thread_time() (this thread only)")
 
 
 def test_ingest_so_far_line_also_carries_the_cpu_figure(tmp_path, monkeypatch):
