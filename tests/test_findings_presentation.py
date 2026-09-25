@@ -307,3 +307,51 @@ def test_an_unmerged_stale_row_still_names_its_track():
     assert len(rows) == 1 and not rows[0].merged
     assert rows[0].statement == ("Laser 1 (LTS): 6800 did better than 6900, Track A "
                                   "last ran on that limit table Jan 2026")
+
+
+# ---- M8 (final review, 2026-09-25): twin history rows name the laser, then the track, then when --
+
+def sc(track, *, before_last="2026-06-05", after_first="2026-06-08",
+       title="Laser 1 (LTS): Laser PRR 2000 → 3000", pb=74.7, pa=64.8):
+    """A setup_change finding (one per track): what presentation reads of it."""
+    return f("setup_change", "6607", category="Setting change", title=title,
+             evidence={"track": track, "before": {"last": before_last, "trim_pass_pct": pb},
+                       "after": {"first": after_first, "trim_pass_pct": pa}})
+
+
+def test_twin_history_rows_name_the_track_after_the_laser():
+    rows = rows_of(P.arrange([sc("Track A"), sc("Track B")]), "history")
+    assert sorted(r.statement for r in rows) == [
+        "Laser 1 (LTS) · Track A · Jun 2026: Laser PRR 2000 → 3000",
+        "Laser 1 (LTS) · Track B · Jun 2026: Laser PRR 2000 → 3000"]
+    assert len({r.key for r in rows}) == 2
+
+
+def test_history_rows_that_differ_only_in_when_are_twins_too():
+    """6607's power change: Track A's setups meet on 8 Oct, Track B's are 12 Sep - 8 Oct apart.
+    Two rows reading "Laser Power 52 → 60" must each say which track they are."""
+    a = sc("Track A", before_last="2025-10-08", after_first="2025-10-08",
+           title="Laser 1 (LTS): Laser Power 52 → 60")
+    b = sc("Track B", before_last="2025-09-12", after_first="2025-10-08",
+           title="Laser 1 (LTS): Laser Power 52 → 60")
+    rows = rows_of(P.arrange([a, b]), "history")
+    assert sorted(r.statement for r in rows) == [
+        "Laser 1 (LTS) · Track A · Oct 2025: Laser Power 52 → 60",
+        "Laser 1 (LTS) · Track B · Sep 2025 – Oct 2025: Laser Power 52 → 60"]
+
+
+def test_a_history_row_with_no_twin_keeps_its_date_first():
+    (row,) = rows_of(P.arrange([sc("Track A")]), "history")
+    assert row.statement == "Jun 2026 · Laser 1 (LTS): Laser PRR 2000 → 3000"
+
+
+# ---- M6 (final review, 2026-09-25): each group's own words cover what the new analyzers find ----
+
+def test_each_groups_words_cover_its_analyzers():
+    groups = {g.key: g for g in P.GROUPS}
+    yield_meaning = groups["yield"].meaning.lower()
+    assert "laser" in yield_meaning                       # machine_compare: another laser did better
+    assert "before the laser" in yield_meaning            # loss_origin: the loss starts upstream
+    assert "hand" in groups["laser_time"].empty.lower()   # rework_load: hand trim after a laser fail
+    assert groups["history"].empty != "No recipe changes found."
+    assert "setting" in groups["history"].empty.lower()   # setup_change sits in this group too

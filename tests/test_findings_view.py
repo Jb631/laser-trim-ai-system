@@ -169,7 +169,7 @@ def test_an_empty_group_says_what_would_fill_it(tk_root):
     v = FindingsView(tk_root, ThemeManager(), include_empty=True)
     v.set_findings([cut("6607", 182.0)])
     texts = _texts(v)
-    assert any(x.startswith("No recipe changes found") for x in texts)
+    assert any(x.startswith("No recipe or setting changes found") for x in texts)
 
 
 def test_the_tab_view_hides_empty_groups(tk_root):

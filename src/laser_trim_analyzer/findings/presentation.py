@@ -27,14 +27,17 @@ class GroupSpec:
 
 GROUPS: Tuple[GroupSpec, ...] = (
     GroupSpec("yield", "Change a setting to raise yield",
-              "A different setting did better on the same test", "tracks a year", "act",
-              "Nothing here yet. A finding appears when a model ran two cut settings, or two "
-              "incoming-resistance windows, on the same test and one did clearly better."),
+              "A different setting or laser did better on the same test, or the loss starts "
+              "before the laser", "tracks a year", "act",
+              "Nothing here yet. A finding appears when a model ran two cut settings, two "
+              "incoming-resistance windows or two lasers on the same test and one did clearly "
+              "better, or when a unit's incoming linearity already predicts the laser's verdict."),
     GroupSpec("laser_time", "Laser time you could save",
               "Units cut that didn't need it, given more cuts than planned, or hand-trimmed "
               "after failing at the laser", "tracks", "act",
               "Nothing here yet. A finding appears when units arrive already inside their limits, "
-              "or take more cuts than their recipe asks for."),
+              "take more cuts than their recipe asks for, or fail at the laser and pass final "
+              "test after hand trim."),
     GroupSpec("check", "Check the test",
               "Graded against more than one limit table, or to different limits than final test, "
               "so pass rates across the change don't compare",
@@ -42,7 +45,9 @@ GROUPS: Tuple[GroupSpec, ...] = (
               "Nothing to check. A finding appears when a model is graded against more than one "
               "limit table, or when the laser and final test grade it to different limits."),
     GroupSpec("history", "What changed", "Recipe and setting changes, newest first",
-              "pass-rate move", "act", "No recipe changes found."),
+              "pass-rate move", "act",
+              "No recipe or setting changes found. A row appears when a model's cut recipe or "
+              "laser setup changed between two stable runs, with the pass rate either side."),
 )
 OTHER = GroupSpec("other", "Other findings",
                   "From an analyzer this page does not know how to group yet", "", "check", "")
@@ -215,19 +220,30 @@ def statement(finding: Dict[str, Any]) -> str:
             return f"{_laser(finding)}: {best:g} did better than {current:g}, last run {_month(ev.get('last_ran'))}"
         return f"{_laser(finding)}: cut {current:g} → try {best:g}"
     if group_key(finding) == "history":
-        when = _month((ev.get("after") or {}).get("first"))
-        if finding.get("analyzer") == "setup_change":
-            # A setup change happened somewhere between the last file of the stable setup before
-            # and the first of the one after (setup_change's docstring: nothing limits that gap,
-            # and two setups can sit years apart). Both months, when they differ -- never a
-            # decade-wide comparison under its last month alone.
-            since = _month((ev.get("before") or {}).get("last"))
-            if since and when and since != when:
-                when = f"{since} – {when}"
-        m = _RECIPE.match(title)
-        body = f"{m['laser']}: {_recipe_move(m['a'], m['b'])}" if m else title
+        when, body = _history_when(finding), _history_body(finding)
         return f"{when} · {body}" if when else body
     return title
+
+
+def _history_when(finding) -> str:
+    """When a history row's change happened: the month the new run began -- and for a setup
+    change, the month the stable setup before it ended too, when that differs (setup_change's
+    docstring: nothing limits that gap, and two setups can sit years apart, so a decade-wide
+    comparison must never read as a change of its last month alone)."""
+    ev = finding.get("evidence") or {}
+    when = _month((ev.get("after") or {}).get("first"))
+    if finding.get("analyzer") == "setup_change":
+        since = _month((ev.get("before") or {}).get("last"))
+        if since and when and since != when:
+            when = f"{since} – {when}"
+    return when
+
+
+def _history_body(finding) -> str:
+    """What a history row says changed, after its date: "Laser 1 (LTS): cut 6800 → 6900"."""
+    title = str(finding.get("title") or "")
+    m = _RECIPE.match(title)
+    return f"{m['laser']}: {_recipe_move(m['a'], m['b'])}" if m else title
 
 
 def _merged_statement(members: Sequence[Dict[str, Any]]) -> str:
@@ -313,14 +329,20 @@ def _scope(r: "Row") -> str:
     return " · ".join(parts)
 
 
-def _name_what_differs(rows: List["Row"]) -> None:
+def _name_what_differs(rows: List["Row"], history: bool = False) -> None:
     """Rows of one group and model that would read IDENTICALLY -- limit_tables writes one
     finding per track and its title names neither -- say what tells them apart, right after the
     laser: "Laser 1 (LTS) · Track A: the limit table changed". A row that reads uniquely is left
-    exactly as worded."""
+    exactly as worded.
+
+    A history row leads with its date, so its twins are the rows that say the same thing AFTER
+    the date (setup_change writes one finding per track, and two tracks' stable setups can meet
+    in different months), and the track goes after the laser and before the date (final review,
+    2026-09-25, M8): "Laser 1 (LTS) · Track A · Jun 2026: Laser PRR 2000 → 3000"."""
     same: Dict[Tuple[str, str], List[Row]] = {}
     for r in rows:
-        same.setdefault((r.model, r.statement), []).append(r)
+        said = _history_body(r.findings[0]) if history else r.statement
+        same.setdefault((r.model, said), []).append(r)
     for twins in same.values():
         if len(twins) < 2:
             continue
@@ -329,6 +351,12 @@ def _name_what_differs(rows: List["Row"]) -> None:
             if not scope:
                 continue
             laser = _laser(r.findings[0])
+            if history:
+                when, body = _history_when(r.findings[0]), _history_body(r.findings[0])
+                if laser and body.startswith(laser + ":"):
+                    at = f" · {when}" if when else ""
+                    r.statement = f"{laser} · {scope}{at}:{body[len(laser) + 1:]}"
+                    continue
             if laser and r.statement.startswith(laser + ":"):
                 r.statement = f"{laser} · {scope}:{r.statement[len(laser) + 1:]}"
             else:
@@ -402,7 +430,7 @@ def arrange(findings: Sequence[Dict[str, Any]], *, include_empty: bool = True) -
                 # were set from whichever finding created the row, which must not stand once a
                 # second one has merged into it.
                 r.statement = r.base = _merged_statement(r.findings)
-        _name_what_differs(rows)
+        _name_what_differs(rows, history=spec.key == "history")
         _unique_keys(rows)
         _sort(spec.key, rows)
         if rows or (include_empty and spec is not OTHER):

@@ -164,4 +164,4 @@ def test_all_four_groups_show_even_when_only_one_has_rows(make_app):
     assert "Laser time you could save" in texts
     assert "Check the test" in texts
     assert "What changed" in texts
-    assert any(x.startswith("No recipe changes found") for x in texts)   # the empty "What changed" group
+    assert any(x.startswith("No recipe or setting changes found") for x in texts)   # the empty "What changed" group
