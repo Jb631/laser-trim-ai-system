@@ -11,9 +11,16 @@ own errors show they were worked on between the stations.
 **The count is unit-DAYS, from the one definition.** `DatabaseManager.get_model_trim_ft_agreement`
 decides a unit's trim disposition (per track the day's LAST attempt; every track must pass; a file
 that failed processing never decides it) and its `overkill_unit_days` counts the units behind the
-overkills. That number is the readout and the title, untouched. Its `overkills` counts final-test
-RECORDS -- 6607 tests each track in its own file, so 533 records were 261 unit-days (review of
-85222c4, 2026-09-25) -- and is not used here.
+overkills -- `overkill_unit_days_by_system` the same per laser (the linked file's). A finding names
+ONE laser, and that laser's count is its readout and its title, untouched. Its `overkills` counts
+final-test RECORDS -- 6607 tests each track in its own file, so 533 records were 261 unit-days
+(review of 85222c4, 2026-09-25) -- and is not used here.
+
+**Per laser** (final review, 2026-09-25, M3). Each laser's reworked units are compared with ITS
+OWN untouched units: two stations downstream of two machines need not share an error floor, and
+a control drawn across lasers would let one laser's untouched units vouch for the other's rework.
+One verdict, and at most one finding, per laser; the numbers each rests on sit under
+`facts["by_laser"]`.
 
 **The metric is what hand trim changes** (review of 85222c4). Per linked (unit, track) pair: the
 largest |corrected error| over the positions BOTH stations grade -- trim rows that carry limits,
@@ -188,6 +195,7 @@ class _Reading:
     laser: float
     ft: float
     ratio: float
+    system: str = ""          # the trim track's laser, as its code letter
 
 
 def _chunks(ids: Sequence[Any]) -> Iterable[List[Any]]:
@@ -312,15 +320,16 @@ def _scored_pairs(db, model: str, cutoff: datetime) -> Dict[str, Any]:
             skipped += 1                    # no common graded position (or nothing to divide by)
             continue
         readings.append(_Reading(unit=unit, track_row=track["track_row"], rework=not track["passed"],
-                                 when=f["when"], laser=got[1], ft=got[0], ratio=ratio))
+                                 when=f["when"], laser=got[1], ft=got[0], ratio=ratio,
+                                 system=track["system"]))
     return {"readings": readings, "skipped": skipped, "junk": junk, "unpaired": unpaired,
             "rework_systems": rework_systems}
 
 
 def _one_per_unit_day(readings: Iterable[_Reading]) -> Tuple[List[_Reading], List[_Reading]]:
-    """(reworked, pass/pass): ONE reading per unit-day and group, by REDUCTION -- per track the
-    latest final test, then the unit-day's track with the largest laser error (same-track pairs
-    only, never one track's final test over another track's laser)."""
+    """(reworked, pass/pass): ONE reading per unit-day, laser and group, by REDUCTION -- per track
+    the latest final test, then the unit-day's track with the largest laser error (same-track
+    pairs only, never one track's final test over another track's laser)."""
     latest: Dict[Tuple, _Reading] = {}
     for r in readings:
         key = (r.rework, r.unit, r.track_row)
@@ -328,12 +337,12 @@ def _one_per_unit_day(readings: Iterable[_Reading]) -> Tuple[List[_Reading], Lis
             latest[key] = r
     per_unit: Dict[Tuple, _Reading] = {}
     for r in latest.values():               # per unit-day: the track with the largest laser error
-        key = (r.rework, r.unit)
+        key = (r.rework, r.unit, r.system)
         best = per_unit.get(key)
         if best is None or (r.laser, r.ft, r.track_row) > (best.laser, best.ft, best.track_row):
             per_unit[key] = r
-    return ([r for (rw, _), r in per_unit.items() if rw],
-            [r for (rw, _), r in per_unit.items() if not rw])
+    return ([r for (rw, _, _), r in per_unit.items() if rw],
+            [r for (rw, _, _), r in per_unit.items() if not rw])
 
 
 def _populations(db, model: str, cutoff: datetime) -> Dict[str, Any]:
@@ -413,6 +422,27 @@ def _and(names: Sequence[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
+def _laser_facts(n_rework: int, rework: List[_Reading], control: List[_Reading]
+                 ) -> Tuple[Dict[str, Any], Dict[str, Optional[float]], List[_Reading]]:
+    """(one laser's facts, its test, its top third): every number its verdict rests on, whether
+    or not the floors are met -- a fact always, a finding only when strong (loss_origin's rule),
+    so whoever overturns a threshold has the numbers to do it with."""
+    top = _top_third(control)
+    test = rank_comparison(rework, top)
+    facts = {"rework_unit_days": n_rework, "rework_ratio_n": len(rework), "control_n": len(control),
+             "control_top_third_n": len(top),
+             "control_top_third_min_laser_error": round(top[0].laser, 4) if top else None,
+             "mann_whitney_u": _round(test["u"], 1), "p_value": _sig(test["p"]),
+             "median_ratio_rework": _round(test["median_rework"]),
+             "median_ratio_control_top_third": _round(test["median_top"]),
+             "effect_ratio": _round(test["effect"])}
+    confirmed, why_not = verdict(len(rework), len(top), test)
+    facts["confirmed"] = confirmed
+    if not confirmed:
+        facts["note"] = why_not
+    return facts, test, top
+
+
 def analyze(model: str, db, tracks, laser_label) -> Tuple[Dict[str, Any], List[Finding]]:
     facts: Dict[str, Any] = {}
     findings: List[Finding] = []
@@ -426,72 +456,64 @@ def analyze(model: str, db, tracks, laser_label) -> Tuple[Dict[str, Any], List[F
     # names it in facts["errors"]["rework_load"], the same as any other analyzer's crash.
     agreement = db.get_model_trim_ft_agreement(model, cutoff_date=cutoff, min_confidence=MIN_CONFIDENCE)
     linked = agreement.get("linked") or 0
-    n_rework = agreement.get("overkill_unit_days") or 0
+    by_system = agreement.get("overkill_unit_days_by_system") or {}
     facts["linked"] = linked
-    facts["rework_unit_days"] = n_rework
+    facts["rework_unit_days"] = agreement.get("overkill_unit_days") or 0
+    facts["by_laser"] = {}
     if not linked:
         facts["confirmed"] = False
         facts["note"] = "no final tests are linked to a trim analysis for this model in the window"
         return facts, findings
 
     pop = _populations(db, model, cutoff)
-    rework, control = pop["rework"], pop["control"]
-    top = _top_third(control)
-    test = rank_comparison(rework, top)
-    # Every number the verdict rests on is a fact, whether or not the floors are met -- a fact
-    # always, a finding only when strong (the rule loss_origin states), so whoever overturns a
-    # threshold has the numbers to do it with.
-    facts.update({
-        "rework_ratio_n": len(rework), "control_n": len(control), "control_top_third_n": len(top),
-        "control_top_third_min_laser_error": round(top[0].laser, 4) if top else None,
-        "skipped_pairs": pop["skipped"], "junk_readings": pop["junk"],
-        "unpaired_final_tests": pop["unpaired"],
-        "mann_whitney_u": _round(test["u"], 1), "p_value": _sig(test["p"]),
-        "median_ratio_rework": _round(test["median_rework"]),
-        "median_ratio_control_top_third": _round(test["median_top"]),
-        "effect_ratio": _round(test["effect"]), "reduction": REDUCTION})
-    confirmed, why_not = verdict(len(rework), len(top), test)
-    facts["confirmed"] = confirmed
-    if not confirmed:
-        facts["note"] = why_not
-        return facts, findings
+    facts.update({"skipped_pairs": pop["skipped"], "junk_readings": pop["junk"],
+                  "unpaired_final_tests": pop["unpaired"], "reduction": REDUCTION})
+    lasers = _shop_order(set(by_system) | {r.system for r in pop["rework"] + pop["control"]})
+    for system in lasers:
+        rework = [r for r in pop["rework"] if r.system == system]
+        control = [r for r in pop["control"] if r.system == system]
+        n_rework = by_system.get(system, 0)
+        laser_facts, test, top = _laser_facts(n_rework, rework, control)
+        facts["by_laser"][laser_label(system)] = laser_facts
+        if laser_facts["confirmed"] and n_rework:
+            findings.append(_finding(model, system, n_rework, rework, control, top, test,
+                                     laser_facts, pop, laser_label))
+    facts["confirmed"] = any(f["confirmed"] for f in facts["by_laser"].values())
+    return facts, findings
 
+
+def _finding(model: str, system: str, n_rework: int, rework, control, top, test,
+             laser_facts: Dict[str, Any], pop: Dict[str, Any], laser_label) -> Finding:
+    laser = laser_label(system)
     med_rework, med_top, p, effect = test["median_rework"], test["median_top"], test["p"], test["effect"]
-    systems = _shop_order(pop["rework_systems"]) or _shop_order(t.system for t in dated)
     floor = top[0].laser
     comparison = (f"one-sided rank test (Mann-Whitney U, normal approximation with tie correction): "
                   f"the final-test / laser worst-error ratios of the {len(rework):,} reworked "
-                  f"unit-days against those of the {len(top):,} pass/pass unit-days in the top third "
-                  f"of laser error ({floor:.4f} V and up), over the travel both stations grade; "
-                  f"confirmed at p < {CONFIRM_P:g} with the rework median at {MAX_EFFECT_RATIO:g}x "
-                  "theirs or less")
-    findings.append(Finding(
+                  f"unit-days on {laser} against those of the {len(top):,} pass/pass unit-days in "
+                  f"the top third of that laser's error ({floor:.4f} V and up), over the travel both "
+                  f"stations grade; confirmed at p < {CONFIRM_P:g} with the rework median at "
+                  f"{MAX_EFFECT_RATIO:g}x theirs or less")
+    return Finding(
         model=model, analyzer="rework_load", category="Rework load",
-        lever="laser_settings", systems=systems,
-        title=(f"{_and([laser_label(s) for s in systems])}: {n_rework:,} units a year fail here and "
-               "pass final test after rework"),
+        lever="laser_settings", systems=(system,),
+        title=(f"{laser}: {n_rework:,} unit-days in the last year fail here and pass final test "
+               "after rework"),
         summary=(
-            f"{n_rework:,} unit-days in the last year failed linearity at the laser and then passed "
+            f"{n_rework:,} unit-days in the last year failed linearity at {laser} and then passed "
             "final test. That is hand trim, not an unnecessary rejection: their error fell more "
             "between the stations than it did for the untouched units that started nearest them. "
             "Over the travel both stations grade, each corrected with its own offset, final test's "
             f"worst error on {len(rework):,} of these units is a median {med_rework:.0%} of the "
             f"laser's on the same track, against {med_top:.0%} on the {len(top):,} untouched units "
-            "(their track passed at both stations) with the largest laser errors (the top third, "
-            f"{floor:.4f} V and up); a one-sided rank test puts the difference at p = {p:.2g}. No "
-            "gain is claimed: this counts laser time hand trim is already spending on this model's "
-            "own failures."),
+            f"of the same laser (their track passed at both stations) with the largest laser errors "
+            f"(the top third, {floor:.4f} V and up); a one-sided rank test puts the difference at "
+            f"p = {p:.2g}. No gain is claimed: this counts laser time hand trim is already spending "
+            "on this model's own failures."),
         n_units=n_rework,
         strength_name=("reworked units' median final-test/laser error ratio, as a share of the "
                        "untouched units' that started nearest them"),
         strength_value=_round(effect),
         expected_gain_points=None,           # hand-trim labour avoided, never a yield rate
-        evidence={"facts": {"rework_unit_days": n_rework, "rework_ratio_n": len(rework),
-                            "control_n": len(control), "control_top_third_n": len(top),
-                            "median_ratio_rework": _round(med_rework),
-                            "median_ratio_control_top_third": _round(med_top),
-                            "effect_ratio": _round(effect), "mann_whitney_u": _round(test["u"], 1),
-                            "p_value": _sig(p), "skipped_pairs": pop["skipped"],
+        evidence={"facts": {**laser_facts, "skipped_pairs": pop["skipped"],
                             "reduction": REDUCTION},
-                  "comparison": comparison}))
-    return facts, findings
+                  "comparison": comparison})

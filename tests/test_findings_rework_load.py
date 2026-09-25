@@ -150,6 +150,12 @@ def run(db, n=5):
     return rework_load.analyze(MODEL, db, tracks_for(n), label)
 
 
+def lf(facts, laser="Laser 1 (LTS)"):
+    """One laser's own verdict and every number it rests on -- the control is drawn per laser
+    (final review, 2026-09-25, M3), so the test, both sizes and the note live under by_laser."""
+    return facts["by_laser"][laser]
+
+
 def only(findings):
     assert len(findings) == 1, [f.title for f in findings]
     return findings[0]
@@ -177,20 +183,21 @@ def test_a_confirmed_signature_is_one_finding_with_the_unit_day_readout(db):
     assert f.lever == "laser_settings"
     assert f.expected_gain_points is None and f.gain_definition == ""
     assert f.n_units == 40
-    assert f.title == "Laser 1 (LTS): 40 units a year fail here and pass final test after rework"
+    assert f.title == ("Laser 1 (LTS): 40 unit-days in the last year fail here and pass "
+                       "final test after rework")
     assert "hand trim" in f.summary and "33%" in f.summary and "100%" in f.summary
     assert COMPARISON_IN_WORDS in f.summary
     assert f.systems == ("B",)
     assert facts["rework_unit_days"] == 40 and facts["linked"] == 130
-    assert facts["rework_ratio_n"] == 40 and facts["control_n"] == 90
-    assert facts["control_top_third_n"] == 30                 # 90 - 2*90//3
+    assert lf(facts)["rework_ratio_n"] == 40 and lf(facts)["control_n"] == 90
+    assert lf(facts)["control_top_third_n"] == 30                 # 90 - 2*90//3
     assert facts["skipped_pairs"] == 0 and facts["junk_readings"] == 0
     assert facts["confirmed"] is True
-    assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
-    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
-    assert facts["effect_ratio"] == pytest.approx(1 / 3, abs=1e-3)
-    assert facts["mann_whitney_u"] == 0.0       # every reworked unit below every untouched one
-    assert facts["p_value"] < 1e-6
+    assert lf(facts)["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert lf(facts)["effect_ratio"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["mann_whitney_u"] == 0.0       # every reworked unit below every untouched one
+    assert lf(facts)["p_value"] < 1e-6
     assert facts["reduction"] == rework_load.REDUCTION
 
 
@@ -199,9 +206,12 @@ def test_evidence_carries_the_test_both_medians_both_sizes_and_the_comparison_ma
     f = only(run(db)[1])
     assert set(f.evidence) == {"facts", "comparison"}
     ev = f.evidence["facts"]
+    # The laser's own facts block (M3), whole, plus how the pairs were read.
     assert set(ev) == {"rework_unit_days", "rework_ratio_n", "control_n", "control_top_third_n",
-                       "median_ratio_rework", "median_ratio_control_top_third", "effect_ratio",
-                       "mann_whitney_u", "p_value", "skipped_pairs", "reduction"}
+                       "control_top_third_min_laser_error", "median_ratio_rework",
+                       "median_ratio_control_top_third", "effect_ratio", "mann_whitney_u",
+                       "p_value", "confirmed", "skipped_pairs", "reduction"}
+    assert ev["confirmed"] is True
     assert (ev["rework_unit_days"], ev["rework_ratio_n"], ev["control_n"],
             ev["control_top_third_n"], ev["skipped_pairs"]) == (40, 40, 90, 30, 0)
     assert ev["effect_ratio"] == pytest.approx(1 / 3, abs=1e-3) and ev["p_value"] < 1e-6
@@ -274,10 +284,10 @@ def test_the_comparison_is_against_the_top_third_of_control_not_all_of_it(db):
     facts, findings = run(db)
     assert findings == []
     assert facts["confirmed"] is False
-    assert facts["control_n"] == 90 and facts["control_top_third_n"] == 30
-    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
-    assert facts["effect_ratio"] == pytest.approx(0.95, abs=1e-3)
-    assert facts["p_value"] < 1e-6
+    assert lf(facts)["control_n"] == 90 and lf(facts)["control_top_third_n"] == 30
+    assert lf(facts)["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert lf(facts)["effect_ratio"] == pytest.approx(0.95, abs=1e-3)
+    assert lf(facts)["p_value"] < 1e-6
 
 
 # ---- CONFIRM_P at its boundary: p just under confirms, just over does not -----------------------
@@ -298,18 +308,18 @@ def test_p_just_under_the_confirm_p_is_confirmed(db):
     seed_ratios(db, _straddle(22), TOP_30)
     facts, findings = run(db)
     assert only(findings).n_units == 30
-    assert facts["mann_whitney_u"] == 292.0
-    assert facts["p_value"] == pytest.approx(0.009747, abs=5e-6)
-    assert facts["effect_ratio"] == pytest.approx(0.507, abs=1e-3)
+    assert lf(facts)["mann_whitney_u"] == 292.0
+    assert lf(facts)["p_value"] == pytest.approx(0.009747, abs=5e-6)
+    assert lf(facts)["effect_ratio"] == pytest.approx(0.507, abs=1e-3)
 
 
 def test_p_just_over_the_confirm_p_is_not(db):
     seed_ratios(db, _straddle(23), TOP_30)
     facts, findings = run(db)
     assert findings == []                    # a fixed 0.8 ratio cut WOULD confirm this (0.51)
-    assert facts["mann_whitney_u"] == 293.0
-    assert facts["p_value"] == pytest.approx(0.010139, abs=5e-6)
-    assert facts["confirmed"] is False and "p =" in facts["note"]
+    assert lf(facts)["mann_whitney_u"] == 293.0
+    assert lf(facts)["p_value"] == pytest.approx(0.010139, abs=5e-6)
+    assert facts["confirmed"] is False and "p =" in lf(facts)["note"]
 
 
 # ---- MAX_EFFECT_RATIO at its boundary: 0.89 confirms, 0.91 does not -----------------------------
@@ -318,16 +328,16 @@ def test_an_effect_of_0_89_is_confirmed(db):
     seed_ratios(db, [0.89] * 30, [1.0] * 30)     # round 1's 0.8 cut would NOT confirm this
     facts, findings = run(db)
     assert only(findings).n_units == 30
-    assert facts["effect_ratio"] == pytest.approx(0.89, abs=1e-3) and facts["p_value"] < 1e-6
+    assert lf(facts)["effect_ratio"] == pytest.approx(0.89, abs=1e-3) and lf(facts)["p_value"] < 1e-6
 
 
 def test_an_effect_of_0_91_is_not(db):
     seed_ratios(db, [0.91] * 30, [1.0] * 30)
     facts, findings = run(db)
     assert findings == []
-    assert facts["effect_ratio"] == pytest.approx(0.91, abs=1e-3)
-    assert facts["p_value"] < 1e-6          # significant -- but too small a shift to call hand trim
-    assert facts["confirmed"] is False and facts["note"]
+    assert lf(facts)["effect_ratio"] == pytest.approx(0.91, abs=1e-3)
+    assert lf(facts)["p_value"] < 1e-6          # significant -- but too small a shift to call hand trim
+    assert facts["confirmed"] is False and lf(facts)["note"]
 
 
 # ---- MIN_CONTROL at its boundary: 19 vs 20 control units in the TOP THIRD -----------------------
@@ -336,16 +346,16 @@ def test_19_control_units_in_the_top_third_is_nothing(db):
     seed(db, 40, 57)                                        # top third = 57 - 38 = 19
     facts, findings = run(db)
     assert findings == []
-    assert facts["control_n"] == 57 and facts["control_top_third_n"] == 19
+    assert lf(facts)["control_n"] == 57 and lf(facts)["control_top_third_n"] == 19
     assert facts["confirmed"] is False
-    assert facts["p_value"] < 1e-6           # the test WOULD confirm: still a fact, never a verdict
+    assert lf(facts)["p_value"] < 1e-6           # the test WOULD confirm: still a fact, never a verdict
 
 
 def test_20_control_units_in_the_top_third_is_a_finding(db):
     seed(db, 40, 60)                         # top third = 60 - 40 = 20 (round 1 needed 30)
     facts, findings = run(db)
     assert only(findings).n_units == 40
-    assert facts["control_top_third_n"] == 20
+    assert lf(facts)["control_top_third_n"] == 20
 
 
 # ---- MIN_UNIT_DAYS at its boundary -- counted in unit-days, never final-test records -------------
@@ -354,17 +364,17 @@ def test_29_rework_unit_days_is_nothing_even_with_58_final_test_records(db):
     seed(db, 29, 60, ft_records=2)          # each unit final-tested twice: 58 records, 29 units
     facts, findings = run(db)
     assert findings == []
-    assert facts["rework_unit_days"] == 29 and facts["rework_ratio_n"] == 29
+    assert facts["rework_unit_days"] == 29 and lf(facts)["rework_ratio_n"] == 29
     assert facts["confirmed"] is False
     # The floors gate only the verdict: the test is still run, and shown.
-    assert facts["mann_whitney_u"] == 0.0 and facts["p_value"] < 1e-6
+    assert lf(facts)["mann_whitney_u"] == 0.0 and lf(facts)["p_value"] < 1e-6
 
 
 def test_30_rework_unit_days_is_a_finding_and_one_ratio_per_unit_day(db):
     seed(db, 30, 60, ft_records=2)          # 60 records, 30 unit-days; top third 20
     facts, findings = run(db)
     assert only(findings).n_units == 30
-    assert facts["rework_unit_days"] == 30 and facts["rework_ratio_n"] == 30
+    assert facts["rework_unit_days"] == 30 and lf(facts)["rework_ratio_n"] == 30
 
 
 def test_30_rework_unit_days_with_only_29_scorable_is_nothing(db):
@@ -378,11 +388,11 @@ def test_30_rework_unit_days_with_only_29_scorable_is_nothing(db):
         final_test(s, nxt, START + timedelta(days=2), aid, spike(0.10, at=2), window=(0, 4))
     facts, findings = run(db)
     assert findings == []
-    assert facts["rework_unit_days"] == 30 and facts["rework_ratio_n"] == 29
+    assert facts["rework_unit_days"] == 30 and lf(facts)["rework_ratio_n"] == 29
     assert facts["skipped_pairs"] == 1
     assert facts["confirmed"] is False
-    assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
-    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert lf(facts)["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
 
 
 # ---- the test is a fact always; the floors gate only the verdict --------------------------------
@@ -391,9 +401,9 @@ def test_the_test_is_a_fact_even_far_below_the_floors(db):
     seed(db, 5, 9)                          # 5 reworked, 9 pass/pass: a top third of 3
     facts, findings = run(db)
     assert findings == []
-    assert facts["rework_ratio_n"] == 5 and facts["control_top_third_n"] == 3
-    assert facts["mann_whitney_u"] == 0.0 and facts["p_value"] is not None
-    assert facts["effect_ratio"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["rework_ratio_n"] == 5 and lf(facts)["control_top_third_n"] == 3
+    assert lf(facts)["mann_whitney_u"] == 0.0 and lf(facts)["p_value"] is not None
+    assert lf(facts)["effect_ratio"] == pytest.approx(1 / 3, abs=1e-3)
     assert facts["reduction"] == rework_load.REDUCTION and facts["confirmed"] is False
 
 
@@ -401,12 +411,12 @@ def test_with_no_reworked_unit_the_test_is_none_and_the_sizes_are_still_said(db)
     seed(db, 0, 30)
     facts, findings = run(db)
     assert findings == [] and facts["rework_unit_days"] == 0
-    assert facts["rework_ratio_n"] == 0 and facts["control_n"] == 30
-    assert facts["control_top_third_n"] == 10
-    assert facts["mann_whitney_u"] is None and facts["p_value"] is None
-    assert facts["effect_ratio"] is None and facts["median_ratio_rework"] is None
-    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
-    assert facts["confirmed"] is False and facts["note"]
+    assert lf(facts)["rework_ratio_n"] == 0 and lf(facts)["control_n"] == 30
+    assert lf(facts)["control_top_third_n"] == 10
+    assert lf(facts)["mann_whitney_u"] is None and lf(facts)["p_value"] is None
+    assert lf(facts)["effect_ratio"] is None and lf(facts)["median_ratio_rework"] is None
+    assert lf(facts)["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert facts["confirmed"] is False and lf(facts)["note"]
 
 
 # ---- two-track units: each final test on ITS track, one ratio per unit-day ----------------------
@@ -439,10 +449,10 @@ def test_a_two_track_unit_day_pairs_each_final_test_with_its_own_track(db):
     facts, findings = run(db)
     f = only(findings)
     assert f.n_units == 30
-    assert facts["rework_unit_days"] == 30 and facts["rework_ratio_n"] == 30
-    assert facts["median_ratio_rework"] == pytest.approx(0.4, abs=1e-3)
-    assert facts["control_n"] == 90                         # one per unit-day, not one per track
-    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert facts["rework_unit_days"] == 30 and lf(facts)["rework_ratio_n"] == 30
+    assert lf(facts)["median_ratio_rework"] == pytest.approx(0.4, abs=1e-3)
+    assert lf(facts)["control_n"] == 90                         # one per unit-day, not one per track
+    assert lf(facts)["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
 
 
 def test_a_final_test_on_the_passing_track_of_a_failing_unit_is_judged_by_that_track(db):
@@ -458,9 +468,9 @@ def test_a_final_test_on_the_passing_track_of_a_failing_unit_is_judged_by_that_t
     facts, findings = run(db)
     assert only(findings).n_units == 50                     # the shared unit-day readout
     assert facts["rework_unit_days"] == 50
-    assert facts["rework_ratio_n"] == 40                    # ...only 40 are rework by their own track
-    assert facts["control_n"] == 100
-    assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["rework_ratio_n"] == 40                    # ...only 40 are rework by their own track
+    assert lf(facts)["control_n"] == 100
+    assert lf(facts)["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
 
 
 def test_a_lettered_final_test_of_a_track_not_trimmed_that_day_is_left_unpaired(db):
@@ -473,8 +483,8 @@ def test_a_lettered_final_test_of_a_track_not_trimmed_that_day_is_left_unpaired(
             final_test(s, nxt + k, START + timedelta(days=2), aid, spike(0.01))
     facts, findings = run(db)
     assert facts["unpaired_final_tests"] == 3
-    assert facts["rework_ratio_n"] == 40
-    assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["rework_ratio_n"] == 40
+    assert lf(facts)["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
 
 
 # ---- the metric: over the travel BOTH stations grade, on ONE position axis ----------------------
@@ -490,8 +500,8 @@ def test_a_final_test_counted_from_another_zero_is_compared_where_it_was_measure
     facts, findings = run(db)
     assert only(findings).n_units == 40
     assert facts["skipped_pairs"] == 0
-    assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
-    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert lf(facts)["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
 
 
 def test_a_pair_with_no_common_graded_position_is_skipped_and_counted(db):
@@ -507,7 +517,7 @@ def test_a_pair_with_no_common_graded_position_is_skipped_and_counted(db):
     facts, findings = run(db)
     assert only(findings).n_units == 45
     assert facts["skipped_pairs"] == 5
-    assert facts["rework_unit_days"] == 45 and facts["rework_ratio_n"] == 40
+    assert facts["rework_unit_days"] == 45 and lf(facts)["rework_ratio_n"] == 40
 
 
 def test_each_station_is_read_where_it_grades_with_its_own_offset():
@@ -559,8 +569,8 @@ def test_junk_readings_are_ignored_and_counted(db):
     facts, findings = run(db)
     assert only(findings).n_units == 43
     assert facts["junk_readings"] == 5
-    assert facts["rework_ratio_n"] == 40 and facts["control_n"] == 90
-    assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["rework_ratio_n"] == 40 and lf(facts)["control_n"] == 90
+    assert lf(facts)["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
 
 
 # ---- a record that failed processing is not a measurement ---------------------------------------
@@ -584,9 +594,9 @@ def test_a_file_that_failed_processing_is_never_the_last_attempt_nor_the_verdict
     facts, findings = run(db)
     assert only(findings).n_units == 40
     assert facts["rework_unit_days"] == 40 and facts["linked"] == 130
-    assert facts["rework_ratio_n"] == 40 and facts["control_n"] == 90
-    assert facts["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
-    assert facts["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
+    assert lf(facts)["rework_ratio_n"] == 40 and lf(facts)["control_n"] == 90
+    assert lf(facts)["median_ratio_rework"] == pytest.approx(1 / 3, abs=1e-3)
+    assert lf(facts)["median_ratio_control_top_third"] == pytest.approx(1.0, abs=1e-3)
 
 
 # ---- no linked final tests: nothing, and facts say so -------------------------------------------
@@ -634,13 +644,40 @@ def test_a_final_test_serial_names_its_track(serial, letter):
 
 # ---- systems: every laser the rework ran on, named in shop order --------------------------------
 
-def test_the_title_names_every_laser_the_rework_ran_on_in_shop_order(db):
-    nxt = seed(db, 20, 90)                                            # laser 1 (B)
-    seed(db, 20, 0, system=SystemType.A, first_shop=nxt)              # laser 2 (A)
-    f = only(run(db)[1])
-    assert f.systems == ("B", "A")                                    # laser 1 first, not "A" first
-    assert f.title == ("Laser 1 (LTS) and Laser 2 (DLTS): 40 units a year fail here and pass "
-                       "final test after rework")
+def test_each_laser_is_tested_against_its_own_untouched_units(db):
+    """M3: laser 2's final test lands at a third of its laser error on EVERY unit (another
+    station floor), reworked or not -- so its rework shows no signature against its own units.
+    Pooled with laser 1's untouched units (ratio 1.0) it read as hand trim."""
+    nxt = seed(db, 40, 90)                                            # laser 1: rework 1/3, control 1
+    seed(db, 40, 90, system=SystemType.A, first_shop=nxt,
+         rework=(0.30, 0.10), control=(0.30, 0.10))                  # laser 2: 1/3 for everyone
+    facts, findings = run(db)
+    f = only(findings)
+    assert f.systems == ("B",) and f.n_units == 40
+    assert lf(facts)["confirmed"] is True
+    assert lf(facts, "Laser 2 (DLTS)")["confirmed"] is False and lf(facts, "Laser 2 (DLTS)")["note"]
+    assert lf(facts, "Laser 2 (DLTS)")["median_ratio_control_top_third"] == pytest.approx(1 / 3, abs=1e-3)
+    assert facts["rework_unit_days"] == 80 and facts["confirmed"] is True     # the model's, and any
+
+
+def test_a_laser_with_no_untouched_units_of_its_own_is_never_confirmed_by_anothers(db):
+    nxt = seed(db, 40, 90)                                            # laser 1 (B)
+    seed(db, 40, 0, system=SystemType.A, first_shop=nxt)              # laser 2 (A): no control at all
+    facts, findings = run(db)
+    assert [f.systems for f in findings] == [("B",)]
+    assert lf(facts, "Laser 2 (DLTS)")["control_n"] == 0
+    assert lf(facts, "Laser 2 (DLTS)")["rework_unit_days"] == 40
+
+
+def test_two_confirmed_lasers_are_two_findings_in_shop_order_each_with_its_own_count(db):
+    nxt = seed(db, 30, 90)                                            # laser 1 (B)
+    seed(db, 45, 90, system=SystemType.A, first_shop=nxt)             # laser 2 (A)
+    facts, findings = run(db)
+    assert [(f.systems, f.n_units) for f in findings] == [(("B",), 30), (("A",), 45)]
+    assert [f.title for f in findings] == [
+        "Laser 1 (LTS): 30 unit-days in the last year fail here and pass final test after rework",
+        "Laser 2 (DLTS): 45 unit-days in the last year fail here and pass final test after rework"]
+    assert findings[1].evidence["facts"]["rework_unit_days"] == 45           # the readout is its own
 
 
 # ---- presentation: laser_time group, readout in unit-days --------------------------------------
@@ -654,3 +691,24 @@ def test_group_and_readout_through_presentation(db):
     assert P.statement(d) == f.title
     # The group's column counts TRACKS; this readout counts unit-days, and says so on its row.
     assert P.value_text("laser_time", 40.0, [d]) == "40 unit-days"
+
+
+def test_a_unit_day_trimmed_on_two_lasers_gives_each_laser_its_own_reading(db):
+    """One reading per unit-day AND laser: a unit whose Track A was cut on laser 1 and Track B on
+    laser 2 that day is a reworked unit-day on each -- the reduction must not hand both to the
+    laser whose track happened to start worse."""
+    shop = 1
+    with db.session() as s:
+        for k in range(30):
+            day = START + timedelta(days=k)
+            a = trim_file(s, shop, day.replace(hour=9), "Track A", False, spike(0.30),
+                          system=SystemType.B)
+            b = trim_file(s, shop, day.replace(hour=10), "Track B", False, spike(0.40),
+                          system=SystemType.A)
+            final_test(s, shop, day + timedelta(days=2), a, spike(0.10))
+            final_test(s, f"{shop}B", day + timedelta(days=2), b, spike(0.10))
+            shop += 1
+    facts, _ = run(db)
+    assert lf(facts)["rework_ratio_n"] == 30 and lf(facts, "Laser 2 (DLTS)")["rework_ratio_n"] == 30
+    assert lf(facts)["rework_unit_days"] == 30 and lf(facts, "Laser 2 (DLTS)")["rework_unit_days"] == 30
+    assert facts["rework_unit_days"] == 30                          # one unit-day for the model

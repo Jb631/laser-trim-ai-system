@@ -294,7 +294,7 @@ def test_rework_load_runs_inside_the_engine_and_its_facts_are_cached(tmp_path, m
     assert found["n_units"] == 40 and found["tracks_per_year"] is None       # no gain claimed
     cached = db.get_process_facts("REWORK")["rework_load"]
     assert cached["rework_unit_days"] == 40 and cached["confirmed"] is True
-    assert cached["control_top_third_n"] == 30
+    assert cached["by_laser"]["Laser 1 (LTS)"]["control_top_third_n"] == 30
     assert db.get_process_errors() == {}
 
 

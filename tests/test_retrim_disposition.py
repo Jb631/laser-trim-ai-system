@@ -571,6 +571,36 @@ def test_overkill_unit_days_without_a_unit_id_count_the_linked_file(tmp_path, mo
     assert out["overkill_unit_days"] == 2
 
 
+def test_overkill_unit_days_are_also_counted_per_laser(tmp_path, models):
+    """rework_load names ONE laser per finding (final review, 2026-09-25, M3), so its readout is
+    that laser's unit-days -- from this one definition, never a second count. The laser is the
+    linked file's; the per-laser counts sum to the model's."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    DBAR, DBFT, DBTR, StatusType, SystemType = models
+
+    db = DatabaseManager(tmp_path / "per_laser.db")
+    day = datetime(2026, 3, 2)
+    with db.session() as s:
+        b1 = _track(s, "M1", "102", day.replace(hour=9), "Track A", False, 0,        # laser 1 (B)
+                    DBAR, DBTR, StatusType, SystemType)
+        b2 = _track(s, "M1", "103", day.replace(hour=10), "Track A", False, 1,
+                    DBAR, DBTR, StatusType, SystemType)
+        a1 = _trim(s, "M1", "TEST", day.replace(hour=11), False, 2, DBAR, DBTR,     # laser 2 (A)
+                   StatusType, SystemType, filename="M1_TEST_2.xls", legacy=False)
+        s.flush()
+        tested = day + timedelta(days=3)
+        _ft_linked(s, "M1", "102", tested, True, b1.id, DBFT, StatusType)
+        _ft_linked(s, "M1", "102B", tested, True, b1.id, DBFT, StatusType)   # one unit-day, 2 records
+        _ft_linked(s, "M1", "103", tested, True, b2.id, DBFT, StatusType)
+        _ft_linked(s, "M1", "TEST", tested, True, a1.id, DBFT, StatusType)
+        s.commit()
+
+    out = _agreement(db, "M1")
+    assert out["overkill_unit_days"] == 3
+    assert out["overkill_unit_days_by_system"] == {"B": 2, "A": 1}
+    assert _agreement(db, "no-such-model")["overkill_unit_days_by_system"] == {}
+
+
 def test_the_trim_pass_rate_leaves_out_tracks_that_failed_processing(tmp_path, models):
     """The Model page's trim linearity rate (fix round 2, 2026-09-25). An analysis passes when
     every track with a verdict passed -- a track the analyser could not read has none, and

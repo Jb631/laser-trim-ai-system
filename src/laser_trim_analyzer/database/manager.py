@@ -2906,7 +2906,8 @@ class DatabaseManager:
         Each row also carries `unit_id` and `analysis_id` (the linked file), so
         a caller can count UNITS rather than final-test records: a two-track
         unit final-tested once per track, or re-tested, is several rows and
-        one unit-day (see get_model_trim_ft_agreement's overkill_unit_days).
+        one unit-day (see get_model_trim_ft_agreement's overkill_unit_days) --
+        and `system`, the linked file's laser, so it can count them per laser.
         """
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
@@ -2950,7 +2951,8 @@ class DatabaseManager:
                     func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0)),
                 ).label("trim_pass"),
                 DBAnalysisResult.unit_id.label("unit_id"),
-                DBAnalysisResult.id.label("analysis_id"))
+                DBAnalysisResult.id.label("analysis_id"),
+                DBAnalysisResult.system.label("system"))
              .join(DBAnalysisResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
              .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
              .outerjoin(unit_disp, unit_disp.c.uid == DBAnalysisResult.unit_id)
@@ -2962,13 +2964,14 @@ class DatabaseManager:
             q = q.filter(DBFinalTestResult.model == model)
         if cutoff is not None:
             q = q.filter(DBFinalTestResult.file_date >= cutoff)
-        # unit_id / analysis_id follow from the FT row (one linked file each), so
-        # grouping by them too changes no group.
+        # unit_id / analysis_id / system follow from the FT row (one linked file
+        # each), so grouping by them too changes no group.
         return q.group_by(DBFinalTestResult.id, DBFinalTestResult.model,
                           DBFinalTestResult.serial,
                           DBFinalTestResult.linearity_pass,
                           unit_disp.c.trim_pass,
-                          DBAnalysisResult.unit_id, DBAnalysisResult.id).all()
+                          DBAnalysisResult.unit_id, DBAnalysisResult.id,
+                          DBAnalysisResult.system).all()
 
     def get_escape_overkill_analysis(self, days_back: int = 90, min_confidence: float = 0.70) -> Dict[str, Any]:
         """Company-wide escapes and overkills (the 'Gap' numbers).
@@ -3040,14 +3043,16 @@ class DatabaseManager:
         so). `overkill_unit_days` counts the UNITS behind the overkills: distinct unit-days, or,
         for a record with no unit_id, its linked file -- the same unit the disposition itself
         falls back to. A two-track unit final-tested once per track is two records, one unit-day
-        (6607: 533 records, 261 unit-days, 2026-09-25).
+        (6607: 533 records, 261 unit-days, 2026-09-25). `overkill_unit_days_by_system`
+        is the same count per laser -- the linked file's, as its code letter -- for a caller
+        that names one laser (rework_load, final review of 2026-09-25).
         """
         from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
         out: Dict[str, Any] = {
             "model": model, "trim_total": 0, "trim_pass": 0, "trim_pass_rate": None,
             "ft_total": 0, "ft_pass": 0, "ft_pass_rate": None,
             "linked": 0, "escapes": 0, "overkills": 0, "agreements": 0, "agreement_rate": None,
-            "overkill_unit_days": 0,
+            "overkill_unit_days": 0, "overkill_unit_days_by_system": {},
             "escape_units": [], "overkill_units": [],
             "trim_pass_count_avg": None, "trim_pass_count_dist": {},
         }
@@ -3093,17 +3098,21 @@ class DatabaseManager:
             out["linked"] = len(linked)
             agree = 0
             overkill_units = set()
+            by_system: Dict[str, set] = {}
             for r in linked:
                 verdict = self.classify_trim_ft(r.trim_pass, r.ft_pass)
                 if verdict == self.ESCAPE:
                     out["escapes"] += 1; out["escape_units"].append(r.serial)
                 elif verdict == self.OVERKILL:
                     out["overkills"] += 1; out["overkill_units"].append(r.serial)
-                    overkill_units.add(r.unit_id or ("linked file", r.analysis_id))
+                    unit = r.unit_id or ("linked file", r.analysis_id)
+                    overkill_units.add(unit)
+                    by_system.setdefault(str(getattr(r.system, "value", r.system)), set()).add(unit)
                 else:
                     agree += 1
             out["agreements"] = agree
             out["overkill_unit_days"] = len(overkill_units)
+            out["overkill_unit_days_by_system"] = {k: len(v) for k, v in sorted(by_system.items())}
             if out["linked"]:
                 out["agreement_rate"] = agree / out["linked"] * 100.0
 
