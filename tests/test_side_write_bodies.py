@@ -185,9 +185,11 @@ def test_a_failed_regrade_costs_only_itself_on_both_paths(db, tmp_path, monkeypa
                for r in t["processed_files"]), "the other path's marker stays"
 
 
-def test_a_failed_duplicate_path_marker_costs_only_the_marker(db, tmp_path, monkeypatch):
+def test_a_failed_duplicate_path_marker_costs_only_the_marker(db, tmp_path, monkeypatch, caplog):
     """The other path's marker is never fatal either: one that fails after writing leaves no
-    marker row, and the save goes on to re-grade and return the stored row -- on both paths."""
+    marker row, and the save goes on to re-grade and return the stored row -- on both paths. And
+    it SAYS so, at WARNING, naming the file and the cause (review m-1): unmarked, the path is read
+    again on every run."""
     from laser_trim_analyzer.database.manager import DatabaseManager
     steps = side_writes.build_side_scenario(tmp_path, db)
     real = DatabaseManager._mark_file_skipped_in
@@ -198,8 +200,13 @@ def test_a_failed_duplicate_path_marker_costs_only_the_marker(db, tmp_path, monk
             raise RuntimeError("invented failure after the marker wrote")   # ...then it fails
 
     monkeypatch.setattr(DatabaseManager, "_mark_file_skipped_in", writes_then_fails)
-    public = side_writes.public_snapshot(steps, tmp_path)
-    outcomes = db.write_batch(_items(db, steps))
+    with caplog.at_level("WARNING"):
+        public = side_writes.public_snapshot(steps, tmp_path)
+        outcomes = db.write_batch(_items(db, steps))
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+              and "could not mark this path as holding content already on record" in r.getMessage()]
+    assert len(warned) == 2 and all("invented failure after the marker wrote" in m
+                                    and ".xls" in m for m in warned), warned    # both paths
     said = [value for _, value in public["ids"]]
     assert said[10] == 2 and outcomes[10].status == "saved" and outcomes[10].row_id == 2
     snap = _snap(db, tmp_path, [(label, v) for (label, _, _), v in zip(steps, said)])
@@ -241,7 +248,7 @@ def test_a_public_save_inside_a_batch_is_refused(db, tmp_path, monkeypatch, publ
     assert [o.status for o in outcomes] == ["failed"]
 
 
-def test_a_failed_identity_refresh_costs_only_the_refresh(db, tmp_path):
+def test_a_failed_identity_refresh_costs_only_the_refresh(db, tmp_path, caplog):
     """The identity refresh of a file re-exported in place is never fatal: when its UPDATE fails
     at the flush, the save still returns the stored row, leaves that row's identity as it was, and
     everything else commits -- on both paths. (Without its savepoint the failed flush would poison
@@ -257,10 +264,16 @@ def test_a_failed_identity_refresh_costs_only_the_refresh(db, tmp_path):
 
     event.listen(FinalTestResult, "before_update", refuse_the_refresh)
     try:
-        public = side_writes.public_snapshot(steps, tmp_path)
-        outcomes = db.write_batch(_items(db, steps))
+        with caplog.at_level("WARNING"):
+            public = side_writes.public_snapshot(steps, tmp_path)
+            outcomes = db.write_batch(_items(db, steps))
     finally:
         event.remove(FinalTestResult, "before_update", refuse_the_refresh)
+    # ...and it is SAID, at WARNING, naming the file and the cause, on both paths (review m-1).
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+              and "could not refresh its identity" in r.getMessage()]
+    assert len(warned) == 2 and all("invented failure writing the refreshed identity" in m
+                                    and ".xls" in m for m in warned), warned
     said = [value for _, value in public["ids"]]
     assert said[11] == 3 and outcomes[11].status == "saved" and outcomes[11].row_id == 3
     snap = _snap(db, tmp_path, [(label, v) for (label, _, _), v in zip(steps, said)])

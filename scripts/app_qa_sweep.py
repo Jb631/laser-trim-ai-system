@@ -3306,36 +3306,56 @@ def check_spec_snapshot_on_database(db, raw) -> None:
     SpecSnapshot taken at folder start -- and a spec changes the stored numbers (spec F8), so a
     snapshot that answered one question differently from the database would store different
     numbers without a word. On real data:
-      1. it carries every model_specs row, and the ML thresholds of the COPY (the shared ML
-         manager is a five-minute process cache, so an earlier check's database must not leak in);
+      1. it carries every model_specs row, the ML thresholds of the COPY (the shared ML manager
+         is a five-minute process cache, so an earlier check's database must not leak in) and
+         every trained predictor that manager holds;
       2. every model question -- each spec's model, each model the copy's trims and final tests
          carry, each alias -- gets the database's answer, from the snapshot and from a pickled copy
          (the spawn transport, Task 11);
       3. every final-test question the same -- one real serial per (final-test model, trailing
          character), which is where a section letter picks 8508-B over 8508;
-      4. a Processor carrying it stores exactly what the database-backed Processor stores, on
-         corpus trim files whose numbers depend on their spec (a spec-less run differs), and asks
-         the database nothing.
+      4. a Processor carrying it -- pickled, ML on -- stores exactly what the database-backed
+         Processor stores, ML on, on corpus trim files whose numbers depend on their spec AND on
+         the ML state (a spec-less run and an ML-less run each differ), and asks the database
+         nothing.
     The copy may carry no aliases; tests/test_spec_snapshot.py covers them with invented specs,
     and the detail says how many were exercised here.
 
     Falsify before trusting (2026-09-25): make SpecSnapshot.resolve_spec_for_ft skip the section
     letter -- check 3 goes FAIL; make the Processor ignore its snapshot -- check 4 goes FAIL (no
     file moved by its spec); take the snapshot without dropping the cached ML manager while
-    another database's is cached (the ingest checks leave one) -- check 1 goes FAIL, 0 thresholds.
+    another database's is cached (the ingest checks leave one) -- check 1 goes FAIL, 0 thresholds;
+    make a snapshot-carrying Processor drop its ML state (review I-1's ML1) -- check 4 goes FAIL.
     """
     import pickle
     from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
     from laser_trim_analyzer.database import manager as _mgr
     import laser_trim_analyzer.database as _dbpkg
     from laser_trim_analyzer.database.specs import SpecSnapshot, parse_aliases
-    from laser_trim_analyzer.ml import invalidate_shared_ml_manager
+    from laser_trim_analyzer.ml import get_shared_ml_manager, invalidate_shared_ml_manager
 
-    invalidate_shared_ml_manager()        # the COPY's ML state, not an earlier check's database
+    # The corpus files for check 4, chosen from the copy's spec rows (read-only, no ML).
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
+    spec_models = {m for (m,) in raw.execute("SELECT model FROM model_specs")}
+    picks = []
+    for system, n in (("DLTS", 10), ("LTS", 6)):
+        folders = sorted(p for p in (base / system).iterdir() if p.is_dir()) \
+            if (base / system).is_dir() else []
+        firsts = [min((f for f in d.iterdir() if f.suffix.lower() in (".xls", ".xlsx")),
+                      default=None) for d in folders if d.name in spec_models]
+        picks += [f for f in firsts if f is not None][:n]
+
+    # Everything that reads the shared ML manager runs INSIDE this bracket: it is a five-minute
+    # process cache, so without it an earlier check's database would be the ML state here, and
+    # the copy's would leak into the checks after this one.
+    invalidate_shared_ml_manager()
     try:
         snap = take_spec_snapshot(use_ml=True, db=db)
+        manager = get_shared_ml_manager(db)          # the manager the snapshot was taken from
+        trained = sorted(m for m, p in manager.predictors.items() if p.is_trained)
+        database_backed = Processor(use_ml=True) if picks else None   # ML from the same manager
     finally:
-        invalidate_shared_ml_manager()    # ...and no later check inherits the copy's
+        invalidate_shared_ml_manager()
     back = pickle.loads(pickle.dumps(snap))   # the sweep's own object, made above
 
     ids = [r for (r,) in raw.execute("SELECT id FROM model_specs ORDER BY id")]
@@ -3348,14 +3368,18 @@ def check_spec_snapshot_on_database(db, raw) -> None:
               if m not in back.ml_predictors or not _same_values(
                   p.predict_failure_probability(features),
                   back.ml_predictors[m].predict_failure_probability(features))]
-    check("spec snapshot: carries every model_specs row and the copy's own ML state; a pickled "
-          "copy predicts as the original does",
+    # Predictors against the ML MANAGER's trained ones (review I-1c), not only against the
+    # snapshot's own pickled copy: a snapshot that dropped predictors agrees with itself.
+    check("spec snapshot: carries every model_specs row and the copy's own ML state -- every "
+          "trained predictor the ML manager holds; a pickled copy predicts as the original does",
           [r["id"] for r in snap.specs] == ids != [] and snap.ml_thresholds == thresholds
           and back.ml_thresholds == thresholds and back.specs == snap.specs
-          and sorted(back.ml_predictors) == sorted(snap.ml_predictors) and not unlike,
+          and sorted(snap.ml_predictors) == trained and sorted(back.ml_predictors) == trained
+          and not unlike,
           f"{len(snap.specs)} of {len(ids)} specs; {len(snap.ml_thresholds)} thresholds vs "
-          f"{len(thresholds)} trained in model_ml_state; {len(snap.ml_predictors)} predictors "
-          f"(from data/ml_models under {Path.cwd()}), unlike after pickling={unlike[:3]}")
+          f"{len(thresholds)} trained in model_ml_state; {len(snap.ml_predictors)} predictors vs "
+          f"{len(trained)} trained in the ML manager (from data/ml_models under {Path.cwd()}), "
+          f"unlike after pickling={unlike[:3]}")
 
     models = {r["model"] for r in snap.specs}
     models |= {m for (m,) in raw.execute("SELECT DISTINCT model FROM analysis_results")}
@@ -3390,14 +3414,6 @@ def check_spec_snapshot_on_database(db, raw) -> None:
           f"{len(pairs)} (model, serial) questions, {sectioned} answered by a section's spec; "
           f"wrong={wrong_ft[:5]}")
 
-    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
-    picks = []
-    for system, n in (("DLTS", 10), ("LTS", 6)):
-        folders = sorted(p for p in (base / system).iterdir() if p.is_dir()) \
-            if (base / system).is_dir() else []
-        firsts = [min((f for f in d.iterdir() if f.suffix.lower() in (".xls", ".xlsx")),
-                      default=None) for d in folders if snap.get_model_spec(d.name)]
-        picks += [f for f in firsts if f is not None][:n]
     if not picks:
         warn("spec snapshot: stored numbers", f"no corpus trim files under {base} -- not run")
         return
@@ -3405,7 +3421,8 @@ def check_spec_snapshot_on_database(db, raw) -> None:
     def run(proc):
         return [proc.process_file(f).model_dump(exclude={"processing_time"}) for f in picks]
 
-    by_database = run(Processor(use_ml=False))
+    # ML ON on both sides (review I-1b): the snapshot's ML half is compared, not left out.
+    by_database = run(database_backed)
     asked, real_get, real_session = [], _mgr.get_database, db.session
 
     def refused():
@@ -3419,20 +3436,24 @@ def check_spec_snapshot_on_database(db, raw) -> None:
     _mgr.get_database = _dbpkg.get_database = refused
     db.session = watched
     try:
-        by_snapshot = run(Processor(use_ml=False, snapshot=SpecSnapshot(specs=snap.specs)))
+        by_snapshot = run(Processor(use_ml=True, snapshot=back))     # the PICKLED snapshot
     finally:
         _mgr.get_database = _dbpkg.get_database = real_get
         del db.session
-    spec_less = run(Processor(use_ml=False, snapshot=SpecSnapshot()))
+    spec_less = run(Processor(use_ml=True, snapshot=SpecSnapshot(
+        ml_thresholds=snap.ml_thresholds, ml_predictors=snap.ml_predictors)))
+    ml_less = run(Processor(use_ml=False, snapshot=SpecSnapshot(specs=snap.specs)))
     differ = [f.name for f, a, b in zip(picks, by_database, by_snapshot) if not _same_values(a, b)]
     moved = sum(1 for a, c in zip(by_database, spec_less) if not _same_values(a, c))
+    moved_ml = sum(1 for a, c in zip(by_database, ml_less) if not _same_values(a, c))
     errors = [f.name for f, a in zip(picks, by_database)
               if getattr(a["overall_status"], "name", a["overall_status"]) == "ERROR"]
-    check("spec snapshot: a Processor carrying it stores exactly what the database-backed one "
-          "stores, and asks the database nothing",
-          not differ and not asked and not errors and moved > 0,
-          f"{len(picks)} corpus trim files, {moved} moved by their spec (a spec-less run "
-          f"differs); differ={differ[:3]}; asked={sorted(set(asked))}; ERROR={errors[:3]}")
+    check("spec snapshot: a Processor carrying it (pickled, ML on) stores exactly what the "
+          "database-backed one stores, and asks the database nothing",
+          not differ and not asked and not errors and moved > 0 and moved_ml > 0,
+          f"{len(picks)} corpus trim files, {moved} moved by their spec and {moved_ml} by the ML "
+          f"state (a spec-less and an ML-less run differ); differ={differ[:3]}; "
+          f"asked={sorted(set(asked))}; ERROR={errors[:3]}")
 
 
 def check_track2_setup_on_database(raw) -> None:

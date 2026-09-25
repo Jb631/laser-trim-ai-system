@@ -367,14 +367,22 @@ _BATCH_GUARD = "lta_batch_guard"
 class WriteOutcome:
     """What `write_batch` did with one item, once the batch COMMITTED.
 
-    `saved` carries the row id. `failed` carries why. `duplicate` is a UNIQUE constraint that the
-    file's OWN rows broke -- in practice a malformed result, such as two tracks with one track_id.
-    It never means "this unit is already stored": the body finds a stored unit by its UNIQUE key
-    and updates it, and relinks a processed row by content hash, and under BEGIN IMMEDIATE nothing
-    can be stored between that lookup and the write (review m-3). It is kept apart because it is
-    the bucket the ingest has always called "skipped"; whether it stays one is Task 10's to decide.
-    A duplicate or a failed item left nothing behind: its savepoint was rolled back, rows and
-    marker together.
+    `saved` carries the row id.
+
+    `failed` carries why. The item's savepoint was rolled back, its rows and its marker together:
+    nothing of it is stored.
+
+    `duplicate` is one of two things, and `reason` says which (review m-2):
+    * A UNIQUE constraint that the file's OWN rows broke: a MALFORMED file inside the batch, such
+      as two tracks with one track_id. Its savepoint was rolled back, so nothing of it is stored,
+      exactly as for `failed`. It never means "this unit is already stored": the body finds a
+      stored unit by its UNIQUE key and updates it, and relinks a processed row by content hash,
+      and under BEGIN IMMEDIATE nothing can be stored between that lookup and the write
+      (review m-3).
+    * For a SMOOTHNESS file only: another content hash already holds this file's identity
+      (filename, file_date, model, serial). The body's own savepoint rolled its insert back, and
+      the item's savepoint was then released with nothing in it: nothing of this file is stored,
+      and the row that holds the identity -- with other content -- is left as it was.
     """
     status: str
     row_id: Optional[int] = None
@@ -6104,9 +6112,12 @@ class DatabaseManager:
                     file_modified_date=file_modified_date,
                     error_message=reason,
                 )
-        except Exception:
-            logger.debug("Could not mark FT duplicate path as skipped",
-                         exc_info=True)
+        except Exception as e:
+            # Said at WARNING (review m-1): at DEBUG the app's INFO log never showed it, and a path
+            # that cannot be marked is quietly read and parsed again on every run.
+            logger.warning(f"{metadata.get('filename') or Path(dup_path).name}: could not mark "
+                           f"this path as holding content already on record ({type(e).__name__}: "
+                           f"{e}) -- it will be read again next run")
 
     def _regrade_final_test_in(self, session: Session, final_test_id: int,
                                tracks: List[Dict[str, Any]],
@@ -6158,8 +6169,12 @@ class DatabaseManager:
                 f"changed since it was recorded — identity refreshed on "
                 f"final_test_results id {result_id}; the stored result is "
                 f"unchanged (re-read the file to re-grade it)")
-        except Exception:
-            logger.debug("Could not refresh FT identity", exc_info=True)
+        except Exception as e:
+            # Said at WARNING (review m-1), as the duplicate-path marker above: unrefreshed, the
+            # file is quietly re-read on every run.
+            logger.warning(f"Final test {filename or result_id}: could not refresh its identity "
+                           f"on final_test_results id {result_id} ({type(e).__name__}: {e}) -- "
+                           "the file will be read again next run")
 
     def count_legacy_ft_verdicts(self) -> int:
         """How many final-test rows were graded BEFORE the ignore-window fix.

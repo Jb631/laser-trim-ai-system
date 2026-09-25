@@ -64,6 +64,30 @@ def db(tmp_path, monkeypatch):
     d.close()
 
 
+def _invented_ml():
+    """One invented sigma threshold and one trained predictor, both for 8232-1 (invented data)."""
+    import random
+    import pandas as pd
+    from laser_trim_analyzer.ml.predictor import FEATURE_COLUMNS, ModelPredictor
+    random.seed(7)
+    trained = ModelPredictor("8232-1")
+    X = pd.DataFrame([{c: random.random() + (0.4 if i % 3 == 0 else 0.0) for c in FEATURE_COLUMNS}
+                      for i in range(60)])
+    trained.train(X, pd.Series([1 if i % 3 == 0 else 0 for i in range(60)]))
+    assert trained.is_trained
+    return {"8232-1": 0.0042}, {"8232-1": trained}
+
+
+@pytest.fixture
+def fresh_ml_cache():
+    """The shared ML manager is a five-minute PROCESS cache: drop it before and after, so no other
+    test's database leaks into this one's ML state, and none of this one's into the next."""
+    from laser_trim_analyzer.ml import invalidate_shared_ml_manager
+    invalidate_shared_ml_manager()
+    yield
+    invalidate_shared_ml_manager()
+
+
 def _snapshot(db, use_ml=False):
     from laser_trim_analyzer.core.processor import take_spec_snapshot
     return take_spec_snapshot(use_ml=use_ml)
@@ -108,18 +132,12 @@ def test_one_resolver_answers_for_the_database_and_the_snapshot(db, monkeypatch)
 def test_the_snapshot_is_plain_picklable_data(db, monkeypatch):
     """Task 11 sends it to spawned processes: it pickles, and comes back answering the same --
     ML thresholds and a trained predictor included (invented training data)."""
-    import random
-    import pandas as pd
     from laser_trim_analyzer.core import processor
-    from laser_trim_analyzer.ml.predictor import FEATURE_COLUMNS, ModelPredictor
-    random.seed(7)
-    trained = ModelPredictor("8232-1")
-    X = pd.DataFrame([{c: random.random() + (0.4 if i % 3 == 0 else 0.0) for c in FEATURE_COLUMNS}
-                      for i in range(60)])
-    trained.train(X, pd.Series([1 if i % 3 == 0 else 0 for i in range(60)]))
-    assert trained.is_trained
+    from laser_trim_analyzer.ml.predictor import FEATURE_COLUMNS
+    thresholds, predictors = _invented_ml()
+    trained = predictors["8232-1"]
     monkeypatch.setattr(processor, "load_ml_state",
-                        lambda db_: ({"8232-1": 0.0042}, {"8232-1": trained}))
+                        lambda db_: (dict(thresholds), dict(predictors)))
     snap = _snapshot(db, use_ml=True)
     back = pickle.loads(pickle.dumps(snap))     # our own object, made above: the spawn transport
     for model in MODELS:
@@ -160,6 +178,107 @@ def test_a_processor_with_a_snapshot_never_asks_the_database(db, monkeypatch):
     assert not diffs, diffs
     assert asked == [], "the analysis asked the database for something the snapshot carries"
     assert want[2]["tracks"][0]["linearity_fail_points"] == 1, "the 8232-1 spec was in force"
+
+
+def test_with_ml_on_the_snapshot_stores_exactly_what_the_database_backed_processor_stores(
+        db, monkeypatch):
+    """Review I-1: the snapshot's ML HALF. With invented ML state -- one sigma threshold and one
+    trained predictor, for 8232-1 -- a Processor carrying a PICKLED snapshot (the spawn transport,
+    Task 11) stores exactly what the database-backed Processor stores, the ML columns included
+    (sigma_threshold, sigma_pass, failure_probability, risk_category), and asks the database
+    nothing. And the ML state is in force: with ML off, stored values move -- so a snapshot, or a
+    Processor, that dropped it could not pass."""
+    from laser_trim_analyzer.core import processor
+    from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
+    from laser_trim_analyzer.database import manager as mgr
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    import laser_trim_analyzer.database as dbpkg
+    thresholds, predictors = _invented_ml()
+    monkeypatch.setattr(processor, "load_ml_state",
+                        lambda db_: (dict(thresholds), dict(predictors)))
+    fixtures = sorted((REPO / "tests" / "fixtures" / "trim").glob("*.xls"))
+
+    def run(proc):
+        proc.ml_storage_path = REPO / "no_ml_models_here"
+        return [proc.process_file(f).model_dump(exclude={"processing_time"}) for f in fixtures]
+
+    by_database = run(Processor(use_ml=True))
+    snap = pickle.loads(pickle.dumps(take_spec_snapshot(use_ml=True)))  # our own object, made here
+    asked = []
+
+    def refused():
+        asked.append("get_database")
+        raise AssertionError("the analysis asked the database")
+
+    monkeypatch.setattr(mgr, "get_database", refused)
+    monkeypatch.setattr(dbpkg, "get_database", refused)
+    carried = run(Processor(use_ml=True, snapshot=snap))
+    ml_off = run(Processor(use_ml=False, snapshot=SpecSnapshot(specs=snap.specs)))
+    diffs = save_rows.differences(carried, by_database, exact=True)
+    assert not diffs, diffs
+    assert asked == [], "the analysis asked the database for something the snapshot carries"
+    moved = [f.name for f, a, b in zip(fixtures, by_database, ml_off)
+             if save_rows.differences([a], [b], exact=True)]
+    assert moved, "the invented ML state moved no stored value -- this test could not see it lost"
+    tracks = [t for r in by_database if r["metadata"]["model"] == "8232-1" for t in r["tracks"]]
+    assert tracks and all(t["sigma_threshold"] == 0.0042 for t in tracks), "the ML threshold ruled"
+    assert any(t["failure_probability"] is not None for t in tracks), "the predictor ran"
+
+
+def test_a_failed_ml_load_warns_once_per_folder_and_the_folder_still_runs(
+        tmp_path, monkeypatch, caplog, fresh_ml_cache):
+    """Ruling of 2026-09-25 (review m-3): a failed ML load WARNS, once per folder, naming what
+    failed and that the thresholds fall back to the defaults -- and does NOT refuse the folder.
+    (Predictors never load on the Mac by design; sigma is a drift signal, never a rejection.)"""
+    import laser_trim_analyzer.ml as ml_pkg
+    from laser_trim_analyzer.core.ingest_run import run_folders
+    from laser_trim_analyzer.database.manager import DatabaseManager
+
+    def cannot(db_, *a, **k):
+        raise RuntimeError("invented: the ML state cannot be read")
+
+    monkeypatch.setattr(ml_pkg, "get_shared_ml_manager", cannot)
+    db = DatabaseManager(tmp_path / "run.db")
+    save_rows.inject(db, monkeypatch)
+    src = REPO / "tests" / "fixtures" / "trim" / "dlts_8232-1_242.xls"
+    folders = [tmp_path / "laser 1", tmp_path / "laser 2"]
+    for folder, serials in zip(folders, ((901, 902), (903,))):   # 3 files: per FILE would say 3
+        folder.mkdir()
+        for s in serials:
+            shutil.copyfile(src, folder / f"dlts_8232-1_{s}.xls")
+    with caplog.at_level("WARNING"):
+        report = run_folders([str(f) for f in folders], db=db, config=None, incremental=True)
+    assert [r.ok for r in report.results] == [True, True], [r.error for r in report.results]
+    said = [r.getMessage() for r in caplog.records
+            if r.levelname == "WARNING" and "ML state could not be loaded" in r.getMessage()]
+    assert len(said) == 2, said                        # once per FOLDER: not per file, not never
+    assert all("invented: the ML state cannot be read" in m and "fall back to the formula "
+               "defaults" in m for m in said), said
+    con = sqlite3.connect(f"file:{db.database_path}?mode=ro", uri=True)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM analysis_results").fetchone()[0] == 3
+    finally:
+        con.close()
+
+
+def test_a_manager_that_could_not_read_its_state_is_named_too(tmp_path, caplog, fresh_ml_cache):
+    """The ML manager swallows its own failure to read model_ml_state (and the shared cache then
+    serves the empty manager for five minutes); load_ml_state is where it is said."""
+    from laser_trim_analyzer.core.processor import load_ml_state
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    db = DatabaseManager(tmp_path / "ml.db")
+    try:
+        con = sqlite3.connect(str(tmp_path / "ml.db"))
+        con.execute("DROP TABLE model_ml_state")        # invented breakage
+        con.commit()
+        con.close()
+        with caplog.at_level("WARNING"):
+            assert load_ml_state(db) == ({}, {})
+    finally:
+        db.close()
+    said = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("ML state could not be loaded" in m and "model_ml_state could not be read" in m
+               for m in said), said
 
 
 def test_a_spec_edited_mid_run_takes_effect_at_the_next_folder(tmp_path, monkeypatch):

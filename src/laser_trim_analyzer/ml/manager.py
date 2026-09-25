@@ -124,6 +124,10 @@ class MLManager:
 
         # State
         self.is_loaded: bool = False
+        # Why loading failed, if it did -- read by the ingest's load_ml_state, which says so at
+        # WARNING once per folder (review m-3). The failures below are swallowed here, and a
+        # half-loaded manager is then served from the shared cache for five minutes.
+        self.load_error: Optional[str] = None
         self.last_training_date: Optional[datetime] = None
         self.trained_models: List[str] = []
         self.models_needing_data: Dict[str, int] = {}  # model -> samples needed
@@ -1102,6 +1106,7 @@ class MLManager:
 
         except Exception as e:
             logger.error(f"Error loading ML state: {e}")
+            self.load_error = self.load_error or f"{type(e).__name__}: {e}"
             return False
 
     def _save_state_to_db(self, existing_session=None) -> None:
@@ -1321,6 +1326,7 @@ class MLManager:
 
         except Exception as e:
             logger.error(f"Error loading ML state from database: {e}")
+            self.load_error = f"model_ml_state could not be read: {type(e).__name__}: {e}"
 
     def get_training_status(self) -> Dict[str, Any]:
         """Get summary of training status for all models."""

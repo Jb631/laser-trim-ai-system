@@ -124,18 +124,32 @@ def error_reason_of(tracks, overall_status) -> Optional[str]:
     return ("; ".join(parts)[:500]) or "ERROR with no recorded reason"
 
 
+ML_FALLBACK_WARNING = (
+    "ML state could not be loaded ({why}): sigma thresholds fall back to the formula defaults, "
+    "and no failure-probability predictor runs, for every model it did not load -- the ingest "
+    "goes on (sigma is a drift signal, never a rejection)")
+
+
 def load_ml_state(db) -> Tuple[Dict[str, float], Dict[str, object]]:
     """(sigma thresholds, trained predictors) per model -- the ML state the analysis uses.
 
     The one extraction rule, for a Processor built without a snapshot (`_load_ml_thresholds`) and
     for `take_spec_snapshot` alike. Never fatal, as it never was: any failure means no ML state,
-    and the analyzer falls back to its formula thresholds.
+    and the analyzer falls back to its formula thresholds. But never SILENT (review m-3, ruling
+    of 2026-09-25): a failed load WARNS, naming what failed -- once per call, which the ingest
+    makes once per folder (its snapshot). It does not refuse the folder: predictors never load on
+    the Mac by design, and sigma never rejects a unit.
     """
     thresholds: Dict[str, float] = {}
     predictors: Dict[str, object] = {}
     try:
         from laser_trim_analyzer.ml import get_shared_ml_manager
         ml_manager = get_shared_ml_manager(db)
+        # The manager swallows its own load failures (and the shared cache serves the half-loaded
+        # manager for five minutes): it records why, and this is where that is said.
+        failed = getattr(ml_manager, "load_error", None)
+        if failed:
+            logger.warning(ML_FALLBACK_WARNING.format(why=failed))
 
         # Extract thresholds from trained models
         for model_name in ml_manager.trained_models:
@@ -157,7 +171,7 @@ def load_ml_state(db) -> Tuple[Dict[str, float], Dict[str, object]]:
             logger.info(f"Loaded ML predictors for {len(predictors)} models")
 
     except Exception as e:
-        logger.debug(f"Could not load ML thresholds: {e}")
+        logger.warning(ML_FALLBACK_WARNING.format(why=f"{type(e).__name__}: {e}"))
         return {}, {}
     return thresholds, predictors
 
