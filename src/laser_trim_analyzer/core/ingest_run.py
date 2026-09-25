@@ -797,7 +797,7 @@ def _say(on_phase: Optional[Callable[[str], None]], text: str) -> None:
 
 
 def _post_batch(db, models_in_batch: Set[str], new_trims: int, phases: dict,
-                on_phase) -> None:
+                on_phase, new_final_tests: int = 0) -> None:
     """Re-link final tests, retrain what the links changed, advance drift.
 
     Order matters. FT files that arrived before their trim files matched
@@ -848,11 +848,14 @@ def _post_batch(db, models_in_batch: Set[str], new_trims: int, phases: dict,
         logger.exception("Drift advance after batch failed")
     phases["advance"] = time.monotonic() - t
 
-    # Process findings read trim verdicts and captured passes only, so a batch
-    # that saved no trims changes nothing they depend on -- the same gate the
-    # rematch above uses. Guarded like every other phase here: findings are an
+    # Process findings read the trim data AND final tests (rework_load pairs a
+    # model's final tests with its trims; station_setup samples both stations'
+    # limits), so a batch that saved either changes what they would say -- a
+    # final-test-only batch left both stale until the model's next trim batch
+    # (final review, 2026-09-25, M4). A batch that saved neither changes
+    # nothing they read. Guarded like every other phase here: findings are an
     # aid, and an aid must never be able to fail an ingest.
-    if new_trims:
+    if new_trims or new_final_tests:
         t = time.monotonic()
         try:
             from laser_trim_analyzer.findings import engine as _findings
@@ -975,6 +978,7 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     summary = None
     models_in_batch: Set[str] = set()
     new_trims = 0                # trim analyses actually saved by THIS batch
+    new_final_tests = 0          # final tests THIS batch saved (the processor saves them)
     save_seconds = 0.0           # the serial half: every save, one after another
     t = time.monotonic()
     try:
@@ -1014,6 +1018,9 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                     else:
                         note_bucket("errors",
                                     f"{result.metadata.filename}: save failed: {exc}")
+            elif (getattr(result, "file_type", None) == "final_test"
+                  and getattr(result, "final_test_id", None) is not None):
+                new_final_tests += 1     # saved inside the processor: it carries its row id
             model = getattr(result.metadata, "model", None)
             if model and model != "Unknown":
                 models_in_batch.add(model)
@@ -1037,7 +1044,8 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                             seconds=time.monotonic() - started)
 
     if models_in_batch:
-        _post_batch(db, models_in_batch, new_trims, phases, on_phase)
+        _post_batch(db, models_in_batch, new_trims, phases, on_phase,
+                    new_final_tests=new_final_tests)
     log_phases(phases, total, processor, summary)
     stopped = bool(cancel is not None and cancel.is_set())
     return FolderResult(folder=folder, ok=True, cancelled=stopped,

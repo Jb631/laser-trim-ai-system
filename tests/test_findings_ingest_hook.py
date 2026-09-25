@@ -25,15 +25,67 @@ def test_findings_refresh_runs_after_a_batch_that_saved_trims(tmp_path, monkeypa
     assert "findings" in phases
 
 
-def test_a_final_test_only_batch_does_not_recompute_findings(tmp_path, monkeypatch):
+def test_a_batch_that_saved_only_final_tests_recomputes_those_models_findings(tmp_path, monkeypatch):
+    """M4 (final review, 2026-09-25): rework_load and station_setup read final tests, so a batch
+    of final-test files changes what they would say -- it used to leave both stale until that
+    model's next trim batch."""
     from laser_trim_analyzer.core import ingest_run
     from laser_trim_analyzer.findings import engine
     seen = []
     monkeypatch.setattr(engine, "refresh_findings",
                         lambda _db, models, report=None: seen.append(list(models)) or 0)
     phases = {}
-    ingest_run._post_batch(_db(tmp_path), {"M1"}, 0, phases, None)
+    ingest_run._post_batch(_db(tmp_path), {"M2", "M1"}, 0, phases, None, new_final_tests=2)
+    assert seen == [["M1", "M2"]] and "findings" in phases
+
+
+def test_a_batch_that_saved_nothing_does_not_recompute_findings(tmp_path, monkeypatch):
+    from laser_trim_analyzer.core import ingest_run
+    from laser_trim_analyzer.findings import engine
+    seen = []
+    monkeypatch.setattr(engine, "refresh_findings",
+                        lambda _db, models, report=None: seen.append(list(models)) or 0)
+    phases = {}
+    ingest_run._post_batch(_db(tmp_path), {"M1"}, 0, phases, None, new_final_tests=0)
     assert seen == [] and "findings" not in phases
+
+
+def test_the_batch_counts_the_final_tests_it_saved_for_the_findings_gate(tmp_path, monkeypatch):
+    """Only a final test that was SAVED counts (it carries its final_test_id); one the processor
+    could not read comes back as an error result without one."""
+    from types import SimpleNamespace
+    from laser_trim_analyzer.core import ingest_run
+    from laser_trim_analyzer.core.models import AnalysisStatus
+
+    (tmp_path / "a.xls").write_bytes(b"junk")
+
+    def ft(i, saved):
+        r = SimpleNamespace(file_type="final_test",
+                            metadata=SimpleNamespace(model="FT1", filename=f"ft{i}.xls"),
+                            overall_status=AnalysisStatus.PASS if saved else AnalysisStatus.ERROR)
+        if saved:
+            r.final_test_id = 100 + i
+        return r
+
+    class _Proc:
+        last_scan_stats = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        def process_batch(self, *a, **k):
+            yield ft(0, True)
+            yield ft(1, True)
+            yield ft(2, False)
+            return SimpleNamespace(processed=3)
+
+    calls = []
+    monkeypatch.setattr(ingest_run, "Processor", _Proc)
+    monkeypatch.setattr(ingest_run, "_post_batch",
+                        lambda db, models, new_trims, phases, on_phase, **k:
+                        calls.append((sorted(models), new_trims, k.get("new_final_tests"))))
+    res = ingest_run.run_folder(str(tmp_path), db=SimpleNamespace(), config=None)
+    assert res.ok and calls == [(["FT1"], 0, 2)]
 
 
 def test_a_failing_refresh_never_breaks_the_ingest(tmp_path, monkeypatch):
