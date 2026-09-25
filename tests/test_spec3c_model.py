@@ -347,6 +347,31 @@ def test_rolling_median_draws_exactly_one_vertex_per_day(tk_root):
     assert busy_count == 1, f"expected exactly one vertex for the 20-unit day, got {busy_count}"
 
 
+def test_rolling_median_needs_five_units_in_its_window(tk_root):
+    """The line is a median of UNITS, and a median of four says little: fewer than
+    five units in the trailing window draw no line at all. The once-a-day and the
+    >30-day-gap rules each have a test that goes red without them; this rule had
+    none (Task 3b review, 2026-09-24: set to 1, nothing failed)."""
+    from datetime import datetime, timedelta
+
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+
+    today = datetime.now()
+
+    def strong_line_vertices(n_units):
+        dates = [today - timedelta(days=n_units - i) for i in range(n_units)]
+        values = [0.0100 + 0.0001 * (i % 5) for i in range(n_units)]
+        chart = FocusChart(tk_root, theme=ThemeManager())
+        chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                         baseline_mean=0.0105, baseline_std=0.0006)
+        lines = [ln for ln in chart._ax.get_lines() if ln.get_linewidth() > 1.5]
+        return sum(len(ln.get_xdata()) for ln in lines)
+
+    assert strong_line_vertices(4) == 0, "four units drew a median line"
+    assert strong_line_vertices(6) >= 2, "six units in six days drew no median line"
+
+
 def test_x_tick_labels_never_collide_at_12_months_or_15_years(tk_root):
     """"2026-022026-03" ran together at a 12-month window -- the implicit
     default formatter/locator packed ticks too densely for the available
@@ -1236,6 +1261,9 @@ def test_model_page_units_toggle_draws_the_unit_view(make_app, monkeypatch):
     assert page._chart_view == "units"
     assert [kind for kind, _ in calls] == ["units"]
     assert calls[0][1]["metric"] == "linearity_fail_fraction"
+    # The Units view opens on the last 12 months (James: the all-history wall "looks
+    # horrible"); dropping the kwarg at this call site would bring the wall back.
+    assert calls[0][1].get("default_window_days") == 366
     calls.clear()
     page._on_chart_view_change("Lots · SPC")           # and back
     assert page._chart_view == "lots"
