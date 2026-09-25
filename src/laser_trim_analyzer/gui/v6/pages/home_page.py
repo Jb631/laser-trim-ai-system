@@ -1,9 +1,10 @@
-"""Spec 3f — HomePage: the landing view. Ingest at the top, FOCUS below it.
+"""Spec 3f — HomePage: the landing view. Ingest at the top, then what needs attention.
 
-Spec: docs/superpowers/specs/2026-08-29-app-shape-investigate-design.md §1.
-The app's first screen answers the two questions James actually opens it with,
-in the order he asks them: "pull in whatever is new" and then "is anything
-drifting?"
+Spec: docs/superpowers/specs/2026-08-29-app-shape-investigate-design.md §1;
+relayout per docs/superpowers/specs/2026-09-24-facelift-step2-pages-design.md §2 (Task 4).
+The app's first screen answers the questions James actually opens it with, in the order he
+asks them: "pull in whatever is new", then "what needs attention" -- both "what's worth
+changing" and "what's drifting" -- newest data first, verdicts after.
 
   * ONE button runs the remembered folder list through the existing batch
     pipeline (`core/ingest_run.run_folders`) — the same worker the Process
@@ -12,10 +13,16 @@ drifting?"
     end: "3 folders · 214 new files · 2 min 40 s".
   * The Process page's picker stays one click away ("process a specific
     folder…") for the one-off folder that isn't on the list.
-  * Below it, the FOCUS list — the same widget and the same loader Triage
-    uses (`widgets/focus_list_zone.py`, `focus_data.load_focus`), because the
-    two screens disagreeing about what is drifting would be worse than either
-    of them being wrong.
+  * "Worth changing" — the top of the Findings page's "yield" group, across every model:
+    the same `FindingsView` and the same `findings/presentation.arrange()` the Findings
+    page itself draws from, read via one `get_process_findings()` call so this section and
+    the Findings page can never disagree.
+  * "Drifting now" — the FOCUS list, the same widget and the same loader Triage uses
+    (`widgets/focus_list_zone.py`, `focus_data.load_focus`), because the two screens
+    disagreeing about what is drifting would be worse than either of them being wrong.
+  * The page caption ties all three loads together in one line: "Last processed {date} ·
+    {N} worth changing · {M} drifting now" (`_update_caption`) — date and M come from
+    `load_focus`'s own return, N from the findings read; nothing here is a second query.
 
 Thread discipline (CLAUDE.md rule 5): every Tk read happens on the Tk thread
 and is passed INTO the worker; the worker only posts back through
@@ -34,19 +41,29 @@ from laser_trim_analyzer.core.ft_regrade import legacy_ft_count, legacy_ft_notic
 from laser_trim_analyzer.core.ingest_run import (
     EtaEstimator, ProgressCoalescer, ProgressTicker, format_ingest_summary,
     format_progress_line, unreadable_count, unreadable_notice)
+from laser_trim_analyzer.findings import presentation as P
 from laser_trim_analyzer.gui.v6.focus_data import load_focus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
+from laser_trim_analyzer.gui.v6.widgets import blocks
+from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
 from laser_trim_analyzer.gui.v6.widgets.focus_list_zone import FocusListZone
 from laser_trim_analyzer.gui.v6.widgets.process_progress_section import (
     ProcessProgressSection)
 
+# "Worth changing" (design doc 2026-09-24-facelift-step2-pages-design.md §2, ruling 2 item 3):
+# the top of the Findings page's FIRST group, across every model -- P.GROUPS[0] is "yield"
+# ("Change a setting to raise yield"). Looked up by key, not index, so a reorder of GROUPS in
+# presentation.py can never silently point this at the wrong group.
+_WORTH_CHANGING_GROUP = "yield"
+_YIELD_SPEC = next(s for s in P.GROUPS if s.key == _WORTH_CHANGING_GROUP)
 
-# Every full-width Home line wraps here. 1100 was wider than the room these lines get at the
-# 1280x720 the audit checks (the run card is ~1,064 px there, ~1,040 inside its padding), so a
-# real folder list would have been cut off at its right edge -- invisible while no folders were
-# listed (final review, 2026-09-24). 950 is the value Task 9 gave the Model page's full-width
-# lines for the same width, with the same margin.
-_WRAP = 950
+
+def _yield_findings_count(findings) -> int:
+    """Rows the "Worth changing" section shows -- the SAME arrange() FindingsView itself calls
+    (groups=(_WORTH_CHANGING_GROUP,)), so the caption's N and the rows under it can never
+    disagree (same technique as model_page.py's _worth_changing_count)."""
+    groups = P.arrange(findings or [], include_empty=False)
+    return sum(len(g.rows) for g in groups if g.spec.key == _WORTH_CHANGING_GROUP)
 
 
 class HomePage(PageBase):
@@ -55,12 +72,30 @@ class HomePage(PageBase):
     def __init__(self, master, *, theme, app, page_title="Home"):
         self._running = False
         self._cancel = None            # threading.Event while a run is in flight
+        self._last_processed = None    # datetime | None -- the caption's date (from load_focus)
+        self._focus_count = 0          # M -- len(FocusResult.focus) (from load_focus)
+        self._worth_count = None       # N -- yield-group rows; None while unknown (not yet
+                                        # loaded, or the findings read failed)
+        self._worth_view = None        # the "Worth changing" FindingsView, when there is one
         super().__init__(master, theme=theme, app=app, page_title=page_title)
         self.refresh_folders()
 
     # ---- construction ------------------------------------------------------
     def build_content(self, parent):
         t = self.theme
+        # SCROLLABLE body (facelift step 2, Task 4): three sections now compete for the same
+        # fixed height "Bring in what's new" and the FOCUS list used to split between them.
+        # render_pages.py --audit caught it immediately at 1280x720 -- "Worth changing"'s own
+        # real content (a populated yield group plus its buttons) left the FOCUS list, and even
+        # "Drifting now"'s own heading, squeezed to a sliver -- the same "page too tall for the
+        # window" failure mode model_page.py already solved (James, 2026-07-13: "cant scroll
+        # down on some of the pages"), now here too. `self._body` replaces `parent` as every
+        # section's master; FocusListZone keeps fill="both", expand=True inside it, same as
+        # ModelPage's own scrollable-tab content, so it still claims any leftover room instead
+        # of being capped to its bare minimum.
+        self._body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        self._body.pack(side="top", fill="both", expand=True)
+        parent = self._body
         self._zone_header(parent, "Bring in what's new",
                           "your remembered folders, in order, through the same "
                           "batch the Process page runs")
@@ -102,9 +137,16 @@ class HomePage(PageBase):
         # which order. "Process everything new" is otherwise a promise with no
         # visible terms.
         self._folders_label = ctk.CTkLabel(
-            inner, text="", anchor="w", justify="left", wraplength=_WRAP,
+            inner, text="", anchor="w", justify="left",
             font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
         self._folders_label.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
+        # Built once, never destroyed/rebuilt for the page's whole lifetime (only
+        # .configure(text=...) is called on it later) -- safe to bind wrap_to_width here,
+        # once (global-constraints.md: no fixed pixel wraplength on page-width text; the old
+        # fixed 950 was wider than the room this line gets at 1280x720 until the 2026-09-24
+        # fix that introduced it, which is exactly the bug this helper exists to prevent from
+        # coming back at some OTHER width).
+        blocks.wrap_to_width(self._folders_label, inner)
 
         self._progress = ProcessProgressSection(inner, theme=t)
         self._progress.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
@@ -113,9 +155,9 @@ class HomePage(PageBase):
         # "did that do anything?" is a question the app should not need to be
         # asked twice.
         self._summary = ctk.CTkLabel(inner, text="", anchor="w", justify="left",
-                                     wraplength=_WRAP, font=t.font(t.SIZE_BODY),
-                                     text_color=t.TEXT_PRIMARY)
+                                     font=t.font(t.SIZE_BODY), text_color=t.TEXT_PRIMARY)
         self._summary.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
+        blocks.wrap_to_width(self._summary, inner)
 
         # One line, only when there is something to say: final-test records
         # graded before the ignore-window fix (2026-09-13) carry a verdict
@@ -123,28 +165,40 @@ class HomePage(PageBase):
         # error state and it does not block anything, so it is a caption, not
         # a banner — but it stays up until Settings clears it, because every
         # final-test number on the screens below is computed from those rows.
-        self._legacy_ft_label = ctk.CTkLabel(
-            parent, text="", anchor="w", justify="left", wraplength=_WRAP,
-            font=t.font(t.SIZE_CAPTION), text_color=t.TIER_WARNING)
+        # blocks.banner(tone="quiet"): same quiet-notice treatment as the unreadable-files
+        # line below it, not the old ad-hoc TIER_WARNING label (facelift step 2, Task 4).
+        self._legacy_ft_label = blocks.banner(parent, t, "", tone="quiet")
         self._legacy_ft_count = 0
 
         # The same shape, for the files the button is NOT processing: ones
         # that failed to read on an earlier run and are skipped while they are
         # unchanged on disk (2026-09-17). Silent at zero; while it says
         # anything it also says the way back.
-        self._unreadable_label = ctk.CTkLabel(
-            parent, text="", anchor="w", justify="left", wraplength=_WRAP,
-            font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
+        self._unreadable_label = blocks.banner(parent, t, "", tone="quiet")
         self._unreadable_count = 0
+
+        # ---- "Worth changing" (design doc §2, ruling 2 item 3): the top of the Findings
+        # page's "yield" group, across every model -- the same FindingsView and the same
+        # arrange() the Findings page itself draws, so this can never disagree with it.
+        # Findings-loading FAILURE below is a check-tone banner, never "nothing worth
+        # changing" (CLAUDE.md: a failure must never look like a result).
+        self._zone_header(parent, "Worth changing",
+                          "the top of the Findings page's yield group — a setting that did "
+                          "better on the same test, across every model")
+        self._worth_banner = blocks.banner(parent, t, "")     # packed only on a failed load
+        self._worth_section = ctk.CTkFrame(parent, fg_color="transparent")
+        self._worth_section.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
 
         # The two notices above are packed later, only when they have something to say -- and
         # always ABOVE this header (_show_notice), never after the focus list below it: that
         # list expands to fill the page, so on a 720-px-tall window a notice packed after it
         # got no height at all and vanished (the audit found "70 files are being skipped..."
-        # squeezed out, 2026-09-24).
-        self._focus_header = self._zone_header(parent, "What the app is telling you",
-                                               "drifting now, biggest first — one verdict per "
-                                               "lot, self-clearing")
+        # squeezed out, 2026-09-24). Renamed from "What the app is telling you" (Task 4): with
+        # "Worth changing" now also on this page, two zones sharing that generic title would
+        # say nothing -- this one names what it specifically is.
+        self._focus_header = self._zone_header(parent, "Drifting now",
+                                               "biggest first — one verdict per lot, "
+                                               "self-clearing")
         self._focus = FocusListZone(parent, theme=t,
                                     on_row_click=self._on_focus_click)
         self._focus.pack(side="top", fill="both", expand=True)
@@ -178,6 +232,7 @@ class HomePage(PageBase):
     def on_show(self):
         self.refresh_folders()
         self._reload_focus()
+        self._reload_findings()
 
     # ---- the run -----------------------------------------------------------
     def _start(self) -> None:
@@ -328,6 +383,7 @@ class HomePage(PageBase):
         # just ingested — reloading it is the point of having pressed the
         # button.
         self._reload_focus()
+        self._reload_findings()
 
     # ---- FOCUS -------------------------------------------------------------
     def reload_now(self) -> None:
@@ -335,6 +391,7 @@ class HomePage(PageBase):
         self._apply_focus(*load_focus(self.app.db))
         self._apply_legacy_ft(legacy_ft_count(self.app.db))
         self._apply_unreadable(unreadable_count(self.app.db))
+        self._apply_findings(self._query_findings())
 
     def _reload_focus(self) -> None:
         def work():
@@ -377,11 +434,98 @@ class HomePage(PageBase):
         # Handed to the zone untouched: one computation owns membership,
         # ranking and wording (see widgets/focus_list_zone.py).
         self._focus.set_result(result, last_processed=last_processed)
+        # Same two values the caption reads (design doc §2 ruling 2 item 1) -- load_focus
+        # already computed both, so this is not a second query, just a second consumer.
+        self._last_processed = last_processed
+        self._focus_count = len(result.focus)
+        self._update_caption()
+
+    # ---- "Worth changing" ---------------------------------------------------
+    def _query_findings(self) -> dict:
+        """The same read the Findings page uses for its own list (get_process_findings) --
+        every model's cached findings, one query. A failed read is named in a check-tone
+        banner, never drawn as "nothing worth changing" (CLAUDE.md: a failure must never
+        look like a result)."""
+        try:
+            return {"rows": self.app.db.get_process_findings(), "failed": None}
+        except Exception as exc:
+            logger.exception("Home: findings load failed")
+            return {"rows": [], "failed": f"{type(exc).__name__}: {exc}"}
+
+    def _reload_findings(self) -> None:
+        def work():
+            data = self._query_findings()
+            self.safe_after(lambda: self._apply_findings(data))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_findings(self, data: dict) -> None:
+        """Rebuilt whole on every apply -- same as FindingsView._render() and the Model
+        page's own "Worth changing on this model" section -- so the section's rows and the
+        caption's N can never disagree. Tk thread."""
+        t = self.theme
+        for child in self._worth_section.winfo_children():
+            child.destroy()
+        self._worth_view = None
+        if data.get("failed"):
+            self._worth_count = None       # unknown, not zero -- never shown as a result
+            self._worth_banner.configure(
+                text=f"Findings could not be loaded ({data['failed']}). This is an error, "
+                     f"not an empty list — the log has the details.")
+            self._worth_banner.pack(side="top", fill="x", pady=(0, t.SPACE_SM),
+                                    before=self._worth_section)
+            self._update_caption()
+            return
+        self._worth_banner.pack_forget()
+        rows = data.get("rows") or []
+        self._worth_count = _yield_findings_count(rows)
+        if not self._worth_count:
+            # include_empty=False (below) means FindingsView draws nothing at all for an
+            # empty group -- say it here instead, in the group's own words, so the section
+            # is a quiet line, never a blank gap.
+            ctk.CTkLabel(self._worth_section, text=_YIELD_SPEC.empty, font=t.font(t.SIZE_BODY),
+                        text_color=t.TEXT_SECONDARY, anchor="w", justify="left", wraplength=1000
+                        ).pack(fill="x", padx=t.SPACE_SM)
+        else:
+            view = FindingsView(self._worth_section, t, on_open=self._open_finding,
+                                include_empty=False, rows_per_group=3,
+                                groups=(_WORTH_CHANGING_GROUP,))
+            view.pack(fill="x")
+            view.set_findings(rows)
+            self._worth_view = view
+        blocks.link_button(self._worth_section, t, "Open Findings", self._open_findings
+                           ).pack(anchor="w", padx=t.SPACE_XS, pady=(t.SPACE_XS, 0))
+        self._update_caption()
+
+    def _update_caption(self) -> None:
+        """"Last processed {date} · {N} worth changing · {M} drifting now" (design doc §2,
+        ruling 2 item 1). No last-processed date at all -- nothing has ever been ingested --
+        means no caption, the same posture the Findings page takes on its own empty/failed
+        states: zeros are not a real reading of an app that has never run. N drops out of the
+        sentence (never shown as a misleading "0") while the findings read is unknown; M
+        never does, because load_focus() itself never raises."""
+        if self._last_processed is None:
+            self.set_caption("")
+            return
+        dt = self._last_processed
+        parts = [f"Last processed {dt.day} {dt:%b}"]      # NOT %-d: it raises on Windows
+        if self._worth_count is not None:
+            parts.append(f"{self._worth_count:,} worth changing")
+        parts.append(f"{self._focus_count:,} drifting now")
+        self.set_caption(" · ".join(parts))
 
     # ---- routing -----------------------------------------------------------
     def _on_focus_click(self, model, focus_metric):
         self.app.set_model_route(model, focus_metric)
         self.app.show_page("model")
+
+    def _open_finding(self, model: str) -> None:
+        """Same route the Findings page itself uses (findings_page.py::_open) -- straight
+        onto the model's Findings tab, never the FOCUS list's (model, metric) form."""
+        self.app.set_model_route(model, tab="findings")
+        self.app.show_page("model")
+
+    def _open_findings(self) -> None:
+        self.app.show_page("findings")
 
     def _open_process(self):
         self.app.show_page("process")

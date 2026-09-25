@@ -379,3 +379,173 @@ def test_the_home_notices_sit_above_the_focus_list_never_below_it(make_app):
     assert order.index(page._legacy_ft_label) < order.index(page._focus_header)
     assert order.index(page._unreadable_label) < order.index(page._focus_header)
     assert order.index(page._focus_header) < order.index(page._focus)
+
+
+# ---- Task 4 (facelift step 2): "Worth changing" (design doc section 2, ruling 2) ------------
+#
+# Caption = "Last processed {date} · {N} worth changing · {M} drifting now"; N is the yield
+# group's row count (the same group FindingsView draws when it is given groups=("yield",));
+# M is len(FocusResult.focus) -- both already known to Home via load_focus, no second query.
+
+def _finding(model, title, tracks_per_year, size=100, analyzer="ink_target", category="Ink target"):
+    # Same shape test_findings_page.py's own helper uses -- "lever" is a required column on
+    # ProcessFinding (database/manager.replace_process_findings reads it as d["lever"], not
+    # .get). analyzer="ink_target" (the default here) lands in the "yield" group.
+    return {"model": model, "analyzer": analyzer, "category": category, "lever": "ink",
+            "title": title, "summary": f"summary for {model}", "systems": ["B"], "n_units": size,
+            "tracks_per_year": tracks_per_year, "evidence": {}}
+
+
+def _seed_one_file(db, model="8340-1", day=None):
+    """One processed file -- exactly what list_known_models (load_focus's own "last processed"
+    lookup) reads. Required columns per test_focus_list_zone.py's own DB-seeding helper."""
+    from laser_trim_analyzer.database.models import AnalysisResult, StatusType, SystemType
+    day = day or datetime(2026, 9, 20, 14, 30)
+    with db.session() as s:
+        s.add(AnalysisResult(model=model, serial=f"{model}-seed-1", system=SystemType.A,
+                             filename=f"{model}_seed.xls", file_date=day,
+                             overall_status=StatusType.PASS))
+    return day
+
+
+def test_home_caption_reports_worth_changing_and_drifting_now(make_app):
+    """N = 2: BIG and SMALL are both analyzer="ink_target" (group "yield") and different
+    models, so they never merge into one row. M = 0: a single seeded file has no lot history
+    to drift against. Date via f"{dt.day} {dt:%b}" -- never %-d (raises on Windows)."""
+    app = make_app()
+    day = _seed_one_file(app.db, "BIG")
+    app.db.replace_process_findings("BIG", {"tracks": 1}, [_finding("BIG", "big one", 500.0)])
+    app.db.replace_process_findings(
+        "SMALL", {"tracks": 1}, [_finding("SMALL", "no rate here", None, size=9000)])
+    page = _home(app)
+    page.reload_now()
+    assert page._caption.cget("text") == (
+        f"Last processed {day.day} {day:%b} · 2 worth changing · 0 drifting now")
+
+
+def test_worth_changing_section_shows_yield_rows_and_an_open_findings_link(make_app):
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    app.db.replace_process_findings("BIG", {"tracks": 1}, [_finding("BIG", "big one", 500.0)])
+    page = _home(app)
+    page.reload_now()
+    assert page._worth_view is not None
+    assert len(page._worth_view.row_widgets) == 1
+    assert "BIG" in " ".join(_labels(page._worth_section))
+    assert "Open Findings" in [b.cget("text") for b in _buttons(page._worth_section)]
+
+
+def test_worth_changing_row_open_routes_exactly_like_the_findings_page(make_app, monkeypatch):
+    """Context: route exactly as findings_page.py::_open does -- set_model_route(model,
+    tab="findings") then show_page("model") -- never the FOCUS list's (model, metric) form."""
+    app = make_app()
+    page = _home(app)
+    shown = []
+    monkeypatch.setattr(app, "show_page", lambda name: shown.append(name))
+    page._open_finding("BIG")
+    assert shown == ["model"]
+    assert app.consume_model_route() == "BIG"
+    assert app.consume_model_tab() == "findings"
+
+
+def test_worth_changing_is_a_quiet_line_not_a_blank_gap_when_the_yield_group_is_empty(make_app):
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    # A real finding, but not in the "yield" group -- the section must still say something,
+    # never leave a blank gap under the "Worth changing" heading.
+    app.db.replace_process_findings(
+        "BIG", {"tracks": 1},
+        [_finding("BIG", "Laser 1 (LTS): recipe changed from 4000 to 4100", None,
+                  analyzer="recipe_change", category="Recipe")])
+    page = _home(app)
+    page.reload_now()
+    assert page._worth_view is None
+    assert page._worth_section.winfo_children(), "a blank gap, not a quiet line"
+    assert "Nothing here yet" in " ".join(_labels(page._worth_section))
+
+
+def test_worth_changing_is_a_quiet_line_with_no_findings_cached_at_all(make_app):
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    page = _home(app)
+    page.reload_now()
+    assert page._worth_view is None
+    assert "Nothing here yet" in " ".join(_labels(page._worth_section))
+
+
+def test_a_failed_findings_load_is_a_banner_never_a_quiet_nothing_line(make_app, monkeypatch):
+    """CLAUDE.md: a failure must never look like a result -- not "nothing worth changing",
+    and not a caption that states an N it could not actually compute."""
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+
+    def boom():
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(app.db, "get_process_findings", boom)
+    page = _home(app)
+    page.reload_now()
+    assert page._worth_view is None
+    text = " ".join(_labels(page._worth_section))
+    assert "Nothing here yet" not in text
+    banner_text = page._worth_banner.cget("text")
+    assert "findings" in banner_text.lower() and "RuntimeError: database is locked" in banner_text
+    assert page._worth_banner.winfo_manager() == "pack"
+    assert "worth changing" not in page._caption.cget("text")
+
+
+def test_the_two_notices_render_as_quiet_banners(make_app):
+    """Step 1: "the two notices (legacy final tests, unreadable files) are quiet banners" --
+    blocks.banner(tone="quiet"), not the old bare CTkLabel with ad-hoc TIER_WARNING colour."""
+    app = make_app()
+    page = _home(app)
+    t = page.theme
+    page._apply_legacy_ft(12)
+    page._apply_unreadable(70)
+    assert page._legacy_ft_label.cget("fg_color") == t.CARD
+    assert page._legacy_ft_label.cget("text_color") == t.TEXT_SECONDARY
+    assert page._unreadable_label.cget("fg_color") == t.CARD
+    assert page._unreadable_label.cget("text_color") == t.TEXT_SECONDARY
+
+
+def test_the_focus_zone_is_titled_drifting_now(make_app):
+    """Design doc: "two 'what the app is telling you' headings on one page would say
+    nothing" -- the new findings section takes the generic wording; this one gets specific."""
+    app = make_app()
+    page = _home(app)
+    text = " ".join(_labels(page))
+    assert "Drifting now" in text
+    assert "What the app is telling you" not in text
+
+
+def test_the_folders_and_summary_lines_wrap_to_their_container(make_app):
+    """global-constraints.md: no fixed pixel wraplength on page-width text -- blocks.wrap_to_width,
+    not the old fixed _WRAP=950 constant. Same off-screen-mapped technique as
+    test_the_full_width_home_lines_fit_at_1280_by_720, below."""
+    app = make_app()
+    page = _home(app)
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.geometry("1280x720+20000+20000")
+    app.deiconify()
+    app.update_idletasks()
+    app.update()
+    try:
+        container_width = page._folders_label.master.winfo_width()
+        assert page._folders_label.cget("wraplength") == container_width
+        assert page._summary.cget("wraplength") == container_width
+        assert page._folders_label.cget("wraplength") != 950
+    finally:
+        app.withdraw()
+
+
+def test_still_exactly_one_teal_button(make_app):
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    app.db.replace_process_findings("BIG", {"tracks": 1}, [_finding("BIG", "big one", 500.0)])
+    page = _home(app)
+    page.reload_now()
+    t = page.theme
+    teal = [b for b in _buttons(page) if b.cget("fg_color") == t.ACCENT]
+    assert len(teal) == 1 and teal[0].cget("text") == "Process everything new"

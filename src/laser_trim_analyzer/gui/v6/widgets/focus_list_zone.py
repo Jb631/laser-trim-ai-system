@@ -31,6 +31,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import spc_draw_params
 from laser_trim_analyzer.ml.spc import RECENT_K, FocusEntry, FocusResult
 
@@ -179,9 +180,18 @@ class FocusListZone(ctk.CTkFrame):
         # The membership rule, stated where the list is read. "Why is this model
         # here / why did it leave?" was the top question about the old wall.
         self._caption = ctk.CTkLabel(self, text="", anchor="w", justify="left",
-                                     wraplength=1200, font=t.font(t.SIZE_CAPTION),
-                                     text_color=t.TEXT_SECONDARY)
+                                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
         self._caption.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        # Built once, never destroyed/rebuilt for this widget's whole lifetime (only
+        # .configure(text=...) is called on it later, from set_result) -- safe to bind
+        # wrap_to_width here, once. Was a fixed wraplength=1200 (global-constraints.md: no
+        # fixed pixel wraplength on page-width text); latent until facelift step 2's Task 4
+        # wrapped the Home page's body in a CTkScrollableFrame, whose scrollbar gutter took
+        # ~10px this label used to have -- render_pages.py --audit caught the clip at
+        # 1280x720. self (this zone) is never destroyed/rebuilt for its own lifetime either,
+        # so this binds exactly once (blocks.wrap_to_width: call it once per (label,
+        # container) lifetime, never from inside a re-render/apply path).
+        blocks.wrap_to_width(self._caption, self)
         self._body = ctk.CTkScrollableFrame(self, fg_color="transparent",
                                             height=BODY_HEIGHT)
         self._body.pack(side="top", fill="x")
