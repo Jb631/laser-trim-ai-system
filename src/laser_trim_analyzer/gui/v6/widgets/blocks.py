@@ -67,6 +67,28 @@ def group_header(parent, theme, title: str, count: Optional[int], *, column: str
     return wrap
 
 
+_STATEMENT_WRAP = 720    # a row's statement wraps here at the most: a longer line is hard to read
+
+
+def _wrap_beside(label, container, others, gap: int) -> None:
+    """Wrap `label` to the room the widgets packed after it in `container` leave it -- never past
+    _STATEMENT_WRAP, never under 120 (F5, 2026-09-25: the render audit at 1280x720 found an inactive
+    model's tag squeezed to 166 of its 195 px beside a statement wrapped at a flat 720; the statement
+    took its width first and the tags got what was left). Units as wrap_to_width: widths are real
+    pixels, wraplength and `gap` (each tag's left padding) CustomTkinter's unscaled units. Bound on
+    `container`, which is built and destroyed with its row, so the handler never outlives it."""
+    def _update(_event=None) -> None:
+        try:
+            unscale = label._reverse_widget_scaling
+            room = unscale(container.winfo_width()) - sum(unscale(o.winfo_reqwidth()) + gap
+                                                           for o in others)
+            label.configure(wraplength=int(max(120, min(_STATEMENT_WRAP, room))))
+        except Exception:            # destroyed first (teardown order)
+            pass
+
+    container.bind("<Configure>", _update, add="+")
+
+
 def row(parent, theme, model: str, statement: str, value_text: str, *, tags: Iterable[str] = (),
         on_click: Optional[Callable[[], None]] = None, value_color: Optional[str] = None) -> ctk.CTkFrame:
     """One line: model (mono) . statement and tags . readout (mono, right). Click anywhere on it."""
@@ -78,10 +100,16 @@ def row(parent, theme, model: str, statement: str, value_text: str, *, tags: Ite
                                             pady=t.SPACE_SM)
     mid = ctk.CTkFrame(frame, fg_color="transparent")
     mid.grid(row=0, column=1, sticky="ew")
-    ctk.CTkLabel(mid, text=statement, font=t.font(t.SIZE_BODY), text_color=t.TEXT_PRIMARY,
-                 anchor="w", justify="left", wraplength=720).pack(side="left")
+    said = ctk.CTkLabel(mid, text=statement, font=t.font(t.SIZE_BODY), text_color=t.TEXT_PRIMARY,
+                        anchor="w", justify="left", wraplength=_STATEMENT_WRAP)
+    said.pack(side="left")
+    beside = []
     for text in tags:
-        tag(mid, t, text).pack(side="left", padx=(t.SPACE_SM, 0))
+        pill = tag(mid, t, text)
+        pill.pack(side="left", padx=(t.SPACE_SM, 0))
+        beside.append(pill)
+    if beside:
+        _wrap_beside(said, mid, beside, gap=t.SPACE_SM)
     ctk.CTkLabel(frame, text=value_text, font=t.mono(t.SIZE_READOUT, "bold"),
                  text_color=value_color or t.TEXT_PRIMARY, anchor="e"
                  ).grid(row=0, column=2, sticky="e", padx=(t.SPACE_MD, t.SPACE_SM))

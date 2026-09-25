@@ -513,3 +513,52 @@ def failure_texts_cut(app, page, widgets, sizes=((1280, 720), (960, 640))):
     finally:
         app.withdraw()
     return out
+
+
+# ---- F5 (2026-09-25): a row's tags keep their room beside a long statement ---------------------
+# The render audit at 1280x720 found an inactive model's quiet tag squeezed beside a statement that
+# wraps at 720 ('Inactive · last trimmed Jun 2019', 166 of 195 px): the statement took its full
+# width and the tags packed after it got what was left.
+
+@pytest.mark.parametrize("scale", SCALINGS)
+def test_a_rows_tags_keep_their_room_beside_a_long_statement(tk_root, t, scale):
+    with _widget_scaling(tk_root, scale):
+        holder = ctk.CTkFrame(tk_root, fg_color="transparent")
+        holder.pack(fill="both", expand=True)
+        r = blocks.row(holder, t, "7000", SENTENCE * 2, "22",
+                       tags=("both tracks", "Inactive · last trimmed Jun 2019"))
+        r.pack(fill="x")
+        tk_root.geometry(f"{round(900 * scale)}x240")
+        _mapped_offscreen(tk_root)
+        try:
+            for _ in range(4):
+                tk_root.update_idletasks()
+                tk_root.update()
+            mid = r.winfo_children()[1]
+            labels = [w for w in mid.winfo_children() if isinstance(w, ctk.CTkLabel)]
+            statement, tags = labels[0], labels[1:]
+            assert [x.cget("text") for x in tags] == ["both tracks", "Inactive · last trimmed Jun 2019"]
+            for w in labels:
+                assert w.winfo_width() >= w.winfo_reqwidth() - 1, (
+                    f"{w.cget('text')[:30]!r}: {w.winfo_width()} of {w.winfo_reqwidth()} px at {scale:.0%}")
+            assert statement.cget("wraplength") < 720                # it made room for the tags
+        finally:
+            tk_root.withdraw()
+
+
+def test_a_row_with_room_keeps_its_statement_at_720(tk_root, t):
+    holder = ctk.CTkFrame(tk_root, fg_color="transparent")
+    holder.pack(fill="both", expand=True)
+    r = blocks.row(holder, t, "7000", SENTENCE * 2, "22", tags=("both tracks",))
+    r.pack(fill="x")
+    tk_root.geometry("1800x240")
+    _mapped_offscreen(tk_root)
+    try:
+        for _ in range(4):
+            tk_root.update_idletasks()
+            tk_root.update()
+        mid = r.winfo_children()[1]
+        statement = next(w for w in mid.winfo_children() if isinstance(w, ctk.CTkLabel))
+        assert statement.cget("wraplength") == 720
+    finally:
+        tk_root.withdraw()
