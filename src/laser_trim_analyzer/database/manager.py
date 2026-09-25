@@ -915,6 +915,15 @@ class DatabaseManager:
                     # The Spec 1 column migration immediately after (untrimmed_sigma_gradient
                     # block) creates both the column and this index on first upgrade.
                     "CREATE INDEX IF NOT EXISTS idx_track_untrimmed_sigma_gradient ON track_results(untrimmed_sigma_gradient)",
+                    # file_hash lookups (ingest-speed spec 3.7, ruling 11): every
+                    # final-test and smoothness save checks "is this content already
+                    # on record?" by file_hash before deciding insert vs. duplicate/
+                    # upsert (save_final_test, save_smoothness_result), and so do
+                    # is_file_processed and the stat-heal pass. Unindexed, F9 measured
+                    # that SCANning the whole final_test_results table (151,793 rows)
+                    # was 20 of the FT save's 22 ms; indexed, 3.4-3.7 batched.
+                    "CREATE INDEX IF NOT EXISTS idx_ft_file_hash ON final_test_results(file_hash)",
+                    "CREATE INDEX IF NOT EXISTS idx_smoothness_file_hash ON smoothness_results(file_hash)",
                 ]
                 created = 0
                 for stmt in index_statements:

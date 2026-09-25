@@ -4805,6 +4805,26 @@ def main() -> int:
         check("linearity magnitude: coverage guard", False,
               f"{type(e).__name__}: {e}")
 
+    # ---- db schema: the file_hash indexes (ingest-speed spec 3.7, ruling 11) ---
+    # Every final-test and smoothness save looks up its own content hash before
+    # deciding insert vs. duplicate/upsert; unindexed, F9 measured that as a SCAN
+    # of the whole table (151,793 rows), 20 of the save's 22 ms. The migration is
+    # idempotent (CREATE INDEX IF NOT EXISTS), so this checks the app's own
+    # database really got it, not just that a fresh test database would.
+    with _guard("db schema: final-test and smoothness file_hash indexes"):
+        idx = {r[0] for r in raw.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name IN ('idx_ft_file_hash', 'idx_smoothness_file_hash')")}
+        check("final_test_results.file_hash is indexed (idx_ft_file_hash)",
+              "idx_ft_file_hash" in idx, f"found={sorted(idx)}")
+        check("smoothness_results.file_hash is indexed (idx_smoothness_file_hash)",
+              "idx_smoothness_file_hash" in idx, f"found={sorted(idx)}")
+        plan = " | ".join(r[3] for r in raw.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM final_test_results WHERE file_hash = ? LIMIT 1",
+            ("0" * 64,)))
+        check("final_test_results file_hash lookup is a SEARCH, not a SCAN",
+              "SCAN" not in plan.upper() and "IDX_FT_FILE_HASH" in plan.upper(), plan)
+
     raw.close()
     return _tally()
 
