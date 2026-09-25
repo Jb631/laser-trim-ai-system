@@ -744,6 +744,16 @@ def check_findings_fixtures() -> None:
         check("findings: the ATP spec can never be named as a lever", True, f"levers={sorted(LEVERS)}")
 
 
+# Every key findings/engine.compute_for_model documents, written from its first line (None = not
+# computed, {} / [] = computed and empty). The five the catalogue completion added -- machine_compare,
+# loss_origin, station_setup, rework_load, setup_change -- went unchecked until the final review of
+# 2026-09-25 (I5): the check listed six keys and passed with all five missing.
+FINDINGS_FACTS_KEYS = frozenset({
+    "model", "tracks", "annual_volume", "latest", "yardstick", "errors",
+    "recipe_history", "trim_effort", "limit_tables", "cut_setting", "pass_burden",
+    "machine_compare", "loss_origin", "station_setup", "rework_load", "setup_change"})
+
+
 def check_findings_on_database(db) -> None:
     """The engine against REAL models in the database under test (always a copy): it must run
     every analyzer without one of them raising -- on a pre-rebuild database as much as on a rebuilt
@@ -773,10 +783,10 @@ def check_findings_on_database(db) -> None:
           f"analyzer_errors={report.get('analyzer_errors')}")
     for m in models:
         facts = db.get_process_facts(m)
+        missing = sorted(FINDINGS_FACTS_KEYS - set(facts or {}))
         check(f"findings: facts cached for {m}, with every documented key",
-              isinstance(facts, dict) and {"tracks", "yardstick", "recipe_history", "trim_effort",
-                                           "limit_tables", "errors"} <= set(facts)
-              and facts.get("tracks", 0) > 0, f"{None if facts is None else sorted(facts)}")
+              isinstance(facts, dict) and not missing and facts.get("tracks", 0) > 0,
+              f"missing={missing}; cached={None if facts is None else sorted(facts)}")
         y = yardstick_fidelity(load_model_tracks(db, m))
         # Low fidelity is NOT a defect: it is the designed branch where the engine goes silent
         # about intermediate sweeps. Disclose it; do not fail the sweep for the data's sake.
@@ -892,6 +902,127 @@ def check_error_rows_have_a_reason(raw) -> None:
         warn("every ERROR row has a reason: rows whose reason lives ONLY on a "
              "processed_files row (predate error_reason -- reprocess candidates)",
              f"{n_marker_only} of {n_error} ERROR rows")
+
+
+def _newest_trim_file(db, model):
+    """The model's newest trim file as the findings loader sees it -- a laser file whose track did
+    not fail processing -- read here with its own SQL, never through an analyzer."""
+    from laser_trim_analyzer.core.model_stats import failed_processing_statuses
+    from laser_trim_analyzer.findings.data import _date
+    failed = ", ".join(f"'{getattr(x, 'name', x)}'" for x in failed_processing_statuses())
+    with db.session() as s:
+        v = s.execute(sqlalchemy_text(
+            "SELECT MAX(a.file_date) FROM analysis_results a JOIN track_results t "
+            "ON t.analysis_id = a.id WHERE a.model = :m AND a.system IN ('A','B','C') "
+            f"AND t.status NOT IN ({failed})"), {"m": model}).scalar()
+    return _date(v)
+
+
+def _month_minus(d, n):
+    k = d.year * 12 + (d.month - 1) - n
+    return f"{k // 12:04d}-{k % 12 + 1:02d}"
+
+
+def check_new_findings_on_database(db, models=None) -> None:
+    """What the catalogue completion's analyzers STORED, against the database they read (final
+    review of 2026-09-25, I5). Each invariant re-derives its truth on its own -- the shared
+    agreement method, the tracks behind each side's recorded ids, compare_station_specs, the
+    model's newest file by SQL -- so it can fail on a wrong analyzer, not only on a crash. Each was
+    made to FAIL first with a mutated analyzer, on a copy (final-fix-report.md). Nothing to check
+    is a WARN, never a PASS: a check that can pass on nothing proves nothing. `models` narrows it
+    (the mutation checks); the sweep checks everything cached."""
+    from collections import Counter
+    from laser_trim_analyzer.core.spec_alignment import compare_station_specs
+    from laser_trim_analyzer.findings import presentation as P
+    from laser_trim_analyzer.findings.analyzers import machine_compare, rework_load
+    from laser_trim_analyzer.findings.data import load_model_tracks
+
+    cached = [d for d in db.get_process_findings()
+              if isinstance(d, dict) and (models is None or d.get("model") in models)]
+    by = {}
+    for d in cached:
+        by.setdefault(d.get("analyzer"), []).append(d)
+    tracks_of = {}
+
+    def tracks(model):
+        if model not in tracks_of:
+            tracks_of[model] = load_model_tracks(db, model)
+        return tracks_of[model]
+
+    def verdict(name, found, bad, detail):
+        if not found:
+            warn(f"{name} -- nothing cached to check", detail)
+        else:
+            check(name, not bad, f"{len(found)} checked; bad={bad[:6]}" + (f"; {detail}" if detail else ""))
+
+    # (1) rework_load's readout is its laser's unit-days from THE definition, over its own year.
+    bad = []
+    for f in by.get("rework_load", []):
+        m, (system,) = f["model"], tuple(f.get("systems") or ("?",))
+        latest = max(t.file_date for t in tracks(m) if t.file_date is not None)
+        agreement = db.get_model_trim_ft_agreement(
+            m, cutoff_date=latest - timedelta(days=rework_load.LOOKBACK_DAYS),
+            min_confidence=rework_load.MIN_CONFIDENCE)
+        want = (agreement.get("overkill_unit_days_by_system") or {}).get(system, 0)
+        facts = (db.get_process_facts(m) or {}).get("rework_load") or {}
+        if P.readout(f) != want or facts.get("rework_unit_days") != agreement.get("overkill_unit_days"):
+            bad.append((m, system, P.readout(f), want, facts.get("rework_unit_days"),
+                        agreement.get("overkill_unit_days")))
+    verdict("findings: every rework_load readout is its laser's overkill unit-days from "
+            "get_model_trim_ft_agreement over the model's year", by.get("rework_load"), bad, "")
+
+    # (2) one change, one row: no two "What changed" rows of a model share (laser, track, day).
+    rows = [r for g in P.arrange(cached) if g.spec.key == "history" for r in g.rows]
+    seen = Counter()
+    for r in rows:
+        ev = r.findings[0].get("evidence") or {}
+        seen[(r.model, tuple(r.findings[0].get("systems") or ()), ev.get("track"),
+              (ev.get("after") or {}).get("first"))] += 1
+    verdict("findings: no two 'What changed' rows of one model share (laser, track, day)",
+            rows, [k for k, n in seen.items() if n > 1], f"{len(rows)} rows")
+
+    # (3) every setup_change side is graded against ONE limit table, the same one both sides --
+    # read off the tracks between the ids the finding recorded, never off its own claim.
+    bad = []
+    for f in by.get("setup_change", []):
+        ev, (system,) = f.get("evidence") or {}, tuple(f.get("systems") or ("?",))
+        seq = sorted((t for t in tracks(f["model"]) if t.system == system
+                      and t.track_name == ev.get("track") and t.passes and t.setup
+                      and not t.setup_inherited), key=lambda t: (t.file_date, t.track_id))
+        index = {t.track_id: i for i, t in enumerate(seq)}
+        keys = []
+        for side in ("before", "after"):
+            first, last = (ev.get(side) or {}).get("track_ids") or (None, None)
+            if first not in index or last not in index:
+                keys.append(("missing ids", first, last))
+                continue
+            keys.append(frozenset(t.limit_table.key for t in seq[index[first]:index[last] + 1]
+                                  if t.limit_table is not None))
+        if not (all(isinstance(k, frozenset) and len(k) == 1 for k in keys) and keys[0] == keys[1]):
+            bad.append((f["model"], system, ev.get("track"), (ev.get("after") or {}).get("first"),
+                        [len(k) if isinstance(k, frozenset) else k for k in keys]))
+    verdict("findings: every setup_change side sits on one limit table, the same on both sides",
+            by.get("setup_change"), bad, "")
+
+    # (4) station_setup finds only where the banner's own comparison says the stations differ.
+    statuses = {f["model"]: compare_station_specs(db, f["model"]).status
+                for f in by.get("station_setup", [])}
+    bad = sorted((m, st) for m, st in statuses.items() if st != "differs")
+    verdict("findings: station_setup's status equals compare_station_specs' for every model with a "
+            "finding", by.get("station_setup"), bad, "")
+
+    # (5) every machine_compare month falls inside the 24 months ending with the MODEL's own
+    # newest trim file (owner decision, 2026-09-25: a stopped model is labelled, not hidden).
+    bad = []
+    for f in by.get("machine_compare", []):
+        newest = _newest_trim_file(db, f["model"])
+        lo = _month_minus(newest, machine_compare.WINDOW_MONTHS - 1)
+        hi = _month_minus(newest, 0)
+        months = (f.get("evidence") or {}).get("months") or []
+        if not months or not all(lo <= m_ <= hi for m_ in months):
+            bad.append((f["model"], months, (lo, hi)))
+    verdict("findings: every machine_compare month falls inside the model's own last "
+            f"{machine_compare.WINDOW_MONTHS} months", by.get("machine_compare"), bad, "")
 
 
 def check_ft_disposition_excludes_ungraded(db, raw) -> None:
@@ -3657,6 +3788,8 @@ def main() -> int:
         check_findings_on_database(db)
     with _guard("findings: group mapping"):
         check_findings_group_mapping(db)
+    with _guard("findings: what the new analyzers store"):
+        check_new_findings_on_database(db)
 
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with _guard("stale model: anchored 90d window"):
