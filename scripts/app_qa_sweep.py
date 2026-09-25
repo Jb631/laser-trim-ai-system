@@ -928,11 +928,13 @@ def check_error_rows_have_a_reason(raw) -> None:
 
 
 def _newest_trim_file(db, model):
-    """The model's newest trim file as the findings loader sees it -- a laser file whose track did
-    not fail processing -- read here with its own SQL, never through an analyzer."""
+    """The model's newest trim file as machine_compare anchors on it -- a laser file whose track was
+    CUT: neither failed processing nor a no-cut UNTRIMMED sweep (F5, 2026-09-25: a sweep with no cut
+    is not a trim) -- read here with its own SQL, never through an analyzer."""
     from laser_trim_analyzer.core.model_stats import failed_processing_statuses
     from laser_trim_analyzer.findings.data import _date
-    failed = ", ".join(f"'{getattr(x, 'name', x)}'" for x in failed_processing_statuses())
+    failed = ", ".join([f"'{getattr(x, 'name', x)}'" for x in failed_processing_statuses()]
+                       + ["'UNTRIMMED'"])
     with db.session() as s:
         v = s.execute(sqlalchemy_text(
             "SELECT MAX(a.file_date) FROM analysis_results a JOIN track_results t "
