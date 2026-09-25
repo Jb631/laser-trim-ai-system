@@ -10,9 +10,17 @@ the predictor's stored AUC is quoted with it. A model with no findings reads as
 touches matplotlib or the chart QA harness.
 
 The section texts are built by the module's `*_lines` functions -- pure, so every
-rule they follow is tested without a window -- and read a cache written before a
-facts shape changed (machine_compare's window, rework_load's per-laser split) too:
-only the models an ingest touches are refreshed.
+rule they follow is tested without a window.
+
+Facts cached by an older version (controller ruling, 2026-09-25). At work every
+model's facts were written by the code before this pull, and only the models an
+ingest touches are refreshed, so this tab WILL meet the keys it reads absent (the
+work database's 319 cached rows hold none of the five new ones) or in an older shape
+(57fdcdb's: machine_compare keyed by table with no window, rework_load flat with its
+lasers pooled, loss_origin pooling limit tables, station_setup without the sampled
+laser). Such a key never crashes the tab and never shows a number: it reads "Not
+worked out yet by this version", naming what -- `not_worked_out`. The other keys the
+tab reads kept their shape through the pull.
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -93,6 +101,47 @@ def failed_text(error: str) -> str:
             f"error, not a result — the log has the details.")
 
 
+def _current_station(v) -> bool:
+    return isinstance(v, dict) and (not v or "sampled_lasers" in v)
+
+
+def _current_machine(v) -> bool:
+    return isinstance(v, dict) and (not v or ("comparisons" in v and "window" in v))
+
+
+def _current_rework(v) -> bool:
+    return isinstance(v, dict) and (not v or "by_laser" in v)
+
+
+def _current_loss(v) -> bool:
+    return isinstance(v, dict) and all(isinstance(x, dict) and "limit_table" in x
+                                       for x in v.values())
+
+
+# The facts keys this tab reads whose shape changed in this version, each with the test of its
+# CURRENT shape ({} -- computed, nothing to show -- reads the same in every version).
+_SHAPES = {"station_setup": _current_station, "machine_compare": _current_machine,
+           "rework_load": _current_rework, "loss_origin": _current_loss}
+
+
+def not_worked_out(facts: Dict[str, Any]) -> List[str]:
+    """The keys this tab reads that this version has not worked out for the model: absent (the
+    cache predates the analyzer), None, or in an older shape. A key whose analyzer crashed is
+    named with its error instead; a model with no trim tracks has nothing to work out."""
+    if not facts.get("tracks"):
+        return []
+    errors = facts.get("errors") or {}
+    return [key for key, current in _SHAPES.items()
+            if key not in errors and not (facts.get(key) is not None and current(facts[key]))]
+
+
+def not_worked_out_line(keys: List[str]) -> str:
+    names = [analyzer_name(k) for k in keys]
+    listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return (f"Not worked out yet by this version — {listed}. Refresh findings (Settings) to see "
+            f"{'it' if len(names) == 1 else 'them'}.")
+
+
 def station_lines(ss: Dict[str, Any]) -> List[str]:
     """station_setup: its own note, and whose limits it compared."""
     lasers = ", ".join(ss.get("sampled_lasers") or []) or "The laser"
@@ -105,12 +154,8 @@ def machine_lines(mc: Dict[str, Any]) -> List[str]:
     """machine_compare: each comparable (limit table, shared months) period, its per-laser rates --
     a period before the window dated as such, never a recommendation."""
     window = mc.get("window") or {}
-    comps = mc.get("comparisons")
-    if comps is None:                   # a cache from before the window: {table: {months, by_laser}}
-        comps = [{"months": v.get("months"), "by_laser": v.get("by_laser"), "in_window": None,
-                  "graded_points": None} for _, v in sorted(mc.items()) if isinstance(v, dict)]
     lines = []
-    for c in comps:
+    for c in mc.get("comparisons") or []:
         parts = [_span(c.get("months"))]
         if c.get("graded_points") is not None:
             parts.append(f"{_num(c.get('graded_points'))}-point limit table")
@@ -134,9 +179,7 @@ def rework_lines(rw: Dict[str, Any]) -> List[str]:
         if rw.get("note"):
             lines.append(f"Nothing to test: {rw['note']}.")
         return lines
-    per = rw.get("by_laser")
-    if per is None:                     # a cache from before the per-laser split
-        per = {"This model": rw}
+    per = rw.get("by_laser") or {}
     for laser in sorted(per):
         f = per[laser] or {}
         verdict = ("confirmed as hand trim" if f.get("confirmed")
@@ -279,15 +322,19 @@ class FindingsTab(ctk.CTkFrame):
                            f"{_txt(run.get('last'))} · {_txt(run.get('recipe'))} · {_num(run.get('n'))} tracks · "
                            f"{_pct(run.get('trim_pass_pct'))} left the laser inside limits · "
                            f"median incoming {_num(run.get('median_incoming_r'))} Ω", muted=True)
-        # A None here is an analyzer that did not run (its crash is named at the top) or a cache
-        # written before it existed; {} is "computed, nothing comparable" -- neither draws a
-        # section, the way the sections above behave.
-        self._section("Laser and final test limits", station_lines,
-                      facts.get("station_setup"))
-        self._section("Two lasers on the same test", machine_lines, facts.get("machine_compare"))
-        self._section("Hand trim after a laser fail (last year)", rework_lines,
-                      facts.get("rework_load"))
-        loss = facts.get("loss_origin") or {}
+        # A key this version has not worked out (absent, None, or an older shape -- named at the
+        # top by not_worked_out) or whose analyzer crashed (named with its error) draws no
+        # section; {} is "computed, nothing comparable" -- no section either, the way the
+        # sections above behave.
+        stale = set(not_worked_out(facts)) | set(facts.get("errors") or {})
+
+        def fresh(key):
+            return None if key in stale else facts.get(key)
+
+        self._section("Laser and final test limits", station_lines, fresh("station_setup"))
+        self._section("Two lasers on the same test", machine_lines, fresh("machine_compare"))
+        self._section("Hand trim after a laser fail (last year)", rework_lines, fresh("rework_load"))
+        loss = fresh("loss_origin") or {}
         if loss:
             # Last: directly above the Model page's Predictor panel (spec ruling 2).
             lines = loss_origin_lines(loss)
@@ -345,6 +392,9 @@ class FindingsTab(ctk.CTkFrame):
         for name in sorted(errors):
             self._line(f"Could not be worked out this time — {analyzer_name(name)} "
                        f"({_txt(errors[name])}). The rest of this tab is unaffected; the log has the details.")
+        stale = not_worked_out(facts)
+        if stale:
+            self._line(not_worked_out_line(stale), muted=True)
         if not facts.get("tracks"):
             self._line("No laser trim tracks are stored for this model, so there is nothing to measure.",
                        muted=True)

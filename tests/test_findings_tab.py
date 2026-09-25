@@ -1,3 +1,4 @@
+import pytest
 import customtkinter as ctk
 
 FACTS = {"tracks": 2351, "yardstick": {"n": 2351, "agreement": 1.0, "faithful": True},
@@ -400,22 +401,153 @@ def test_machine_compare_shows_its_per_table_rates_and_dates_the_old_ones(tk_roo
             "(DLTS) 99% of 314 · before the 24 months to Sep 2026, so not a finding") in text
 
 
-def test_a_cache_written_before_these_shapes_still_renders(tk_root):
-    """Only the models an ingest touches are refreshed: an older cache keeps machine_compare's
-    table-keyed facts and rework_load's flat ones until the next full refresh."""
-    old_machine = {"t1": {"months": ["2025-01", "2025-02"],
-                          "by_laser": {"Laser 1 (LTS)": {"n": 130, "pass_pct": 82.3}}}}
-    old_rework = {"linked": 10, "rework_unit_days": 4, "rework_ratio_n": 4, "control_n": 6,
-                  "control_top_third_n": 2, "p_value": None, "effect_ratio": None,
-                  "confirmed": False, "note": "too few"}
-    old_loss = {"Laser 1 (LTS)": {"n": 300, "fails": 60, "auc_error": 0.6, "auc_resistance": None}}
+# ---- facts cached by an older version (controller ruling, 2026-09-25) ---------------------------
+# At work every model's facts were written by the code before this pull, and only the models an
+# ingest touches are refreshed -- so the tab WILL meet facts keys that are absent (the work
+# database's 319 rows hold none of the five new ones) or in an older shape (57fdcdb's, the close-out
+# copy). Such a key must never crash, and never show a number: it reads as not worked out.
+# Captured read-only on 2026-09-25: tests/fixtures/findings_cache/before_this_version.json.
+
+import json as _json
+from pathlib import Path as _Path
+
+CACHE = _json.loads((_Path(__file__).resolve().parent / "fixtures" / "findings_cache"
+                     / "before_this_version.json").read_text())
+NOT_WORKED_OUT = "Not worked out yet by this version"
+
+
+def _cached(version, model):
+    return {"facts": CACHE[version]["facts"][model], "findings": CACHE[version]["findings"][model]}
+
+
+def test_the_captured_blobs_are_the_shapes_they_claim():
+    pre = CACHE["pre_pull"]["facts"]["6607"]
+    assert not {"machine_compare", "loss_origin", "station_setup", "rework_load",
+                "setup_change"} & set(pre)
+    old = CACHE["fix_57fdcdb"]["facts"]
+    assert "by_laser" not in old["6607"]["rework_load"]                      # flat, pooled lasers
+    assert "limit_table" not in old["6607"]["loss_origin"]["Laser 1 (LTS)"]    # tables pooled
+    assert "sampled_lasers" not in old["6607"]["station_setup"]
+    assert "comparisons" not in old["6126"]["machine_compare"]                 # keyed by table
+    assert "before" in old["6607"]["setup_change"][0]                          # per-key runs
+
+
+def test_facts_from_before_the_pull_read_as_not_worked_out_and_the_rest_still_renders(tk_root):
     tab = _tab(tk_root)
-    tab.set_data({"facts": dict(FACTS, machine_compare=old_machine, rework_load=old_rework,
-                                loss_origin=old_loss, errors={}), "findings": []})
+    tab.set_data(_cached("pre_pull", "6607"))
     text = " | ".join(_texts(tab))
-    assert "Jan 2025 – Feb 2025 · Laser 1 (LTS) 82% of 130" in text
-    assert "not confirmed: too few" in text
-    assert "AUC 0.60 from incoming linearity" in text
+    assert (f"{NOT_WORKED_OUT} — the station limits comparison, the laser comparison, the rework "
+            "count and where the loss is made. Refresh findings (Settings) to see them.") in text
+    for heading in ("Laser and final test limits", "Two lasers on the same test",
+                    "Hand trim after a laser fail", "Where the loss is made"):
+        assert heading not in text
+    assert "Recipe history" in text                     # what this version reads the same way
+
+
+def test_facts_from_the_pre_fix_code_never_show_their_numbers(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data(_cached("fix_57fdcdb", "6607"))
+    text = " | ".join(_texts(tab))
+    assert (f"{NOT_WORKED_OUT} — the station limits comparison, the rework count and where the "
+            "loss is made. Refresh findings (Settings) to see them.") in text
+    old = CACHE["fix_57fdcdb"]["facts"]["6607"]
+    assert f"{old['rework_load']['rework_ratio_n']} reworked" not in text
+    # The facts LINE (the cached loss_origin FINDING's own title may still say "AUC 0.74" in
+    # "What to do about it": it is a finding row, and the same call stands in this version).
+    assert "from incoming linearity" not in text and "from incoming resistance" not in text
+    assert old["station_setup"]["note"] not in text
+    assert "Two lasers on the same test" not in text    # {} is "nothing comparable" in both shapes
+
+
+def test_a_table_keyed_machine_comparison_never_shows_its_rates(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data(_cached("fix_57fdcdb", "6126"))
+    text = " | ".join(_texts(tab))
+    assert "the laser comparison" in text and NOT_WORKED_OUT in text
+    (table,) = CACHE["fix_57fdcdb"]["facts"]["6126"]["machine_compare"].values()
+    for laser, rate in table["by_laser"].items():
+        assert f"{laser} {rate['pass_pct']:.0f}% of {rate['n']:,}" not in text
+
+
+def test_current_facts_say_nothing_about_an_older_version(tk_root):
+    tab = _tab(tk_root)
+    tab.set_data({"facts": NEW, "findings": []})
+    assert NOT_WORKED_OUT not in " | ".join(_texts(tab))
+
+
+def test_a_model_with_no_trim_tracks_is_not_told_its_facts_are_old(tk_root):
+    """compute_for_model returns before any analyzer for a model with no tracks: its new keys are
+    None because there was nothing to work out, not because an older version wrote them."""
+    tab = _tab(tk_root)
+    tab.set_data({"facts": {"tracks": 0, "errors": {}, "machine_compare": None, "loss_origin": None,
+                            "station_setup": None, "rework_load": None, "setup_change": None},
+                  "findings": []})
+    text = " | ".join(_texts(tab))
+    assert "No laser trim tracks are stored" in text and NOT_WORKED_OUT not in text
+
+
+def test_the_model_pages_worth_changing_section_reads_older_caches(make_app):
+    """Its other reader of the facts: it reads only whether facts exist and their errors."""
+    from test_spec3c_model import _seed
+    app = make_app()
+    _seed(app.db, "HOT", fails_last=12)
+    page = app.page_container.get_page("model")
+    for version, model in (("pre_pull", "6607"), ("fix_57fdcdb", "6607"), ("fix_57fdcdb", "6126")):
+        page._set_findings_section(_cached(version, model), [])
+        texts = _texts(page._worth_section)
+        assert "Worth changing on this model" in texts
+        assert not any("Could not be worked out" in x for x in texts)
+
+
+def test_the_errors_every_screen_reads_come_through_from_older_caches(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    db = DatabaseManager(tmp_path / "old_cache.db")
+    for version in ("pre_pull", "fix_57fdcdb"):
+        for model, facts in CACHE[version]["facts"].items():
+            db.replace_process_findings(f"{version}-{model}", dict(facts, errors={}), [])
+    db.replace_process_findings("BROKE", dict(CACHE["pre_pull"]["facts"]["6607"],
+                                              errors={"cut_setting": "RuntimeError: x"}), [])
+    assert db.get_process_errors() == {"BROKE": {"cut_setting": "RuntimeError: x"}}
+
+
+def _sum_rates(findings):
+    rates = [f["tracks_per_year"] for f in findings if f.get("tracks_per_year") is not None]
+    return sum(rates) if rates else None
+
+
+def test_the_presentation_layer_and_both_counts_read_findings_cached_by_older_versions():
+    """Findings rows cached by the code before this pull (the six analyzers it had) and by 57fdcdb
+    (the new analyzers' pre-fix evidence): arranged without a crash, and every row's number is the
+    one its own evidence holds -- never a 0 or a blank made up for a field it lacks."""
+    from laser_trim_analyzer.findings import presentation as P
+    from laser_trim_analyzer.gui.v6.pages.home_page import _yield_findings_count
+    from laser_trim_analyzer.gui.v6.pages.model_page import _worth_changing_count
+    for version in ("pre_pull", "fix_57fdcdb"):
+        for model, findings in CACHE[version]["findings"].items():
+            groups = P.arrange(findings, include_empty=False)
+            rows = [r for g in groups for r in g.rows]
+            assert sum(len(r.findings) for r in rows) == len(findings)
+            for g in groups:
+                for r in g.rows:
+                    assert r.statement, (version, model)
+                    f, ev = r.findings[0], r.findings[0].get("evidence") or {}
+                    key = g.spec.key
+                    if key == "yield":            # a rate only where the finding claims one: "—" else
+                        assert r.value == _sum_rates(r.findings)
+                    elif key == "laser_time":     # the readout's own field, never the n_units fallback
+                        field = P._LASER_TIME_FIELD[f["category"]]
+                        assert r.value == sum(x["evidence"]["facts"][field] for x in r.findings)
+                    elif key == "history":        # the move between the two sides it recorded
+                        assert r.value == pytest.approx(ev["after"]["trim_pass_pct"]
+                                                        - ev["before"]["trim_pass_pct"])
+                    else:
+                        assert r.value == sum(x["n_units"] for x in r.findings)
+                    shown = P.value_text(key, r.value, r.findings)
+                    assert shown == "—" if r.value is None else shown not in ("", "—")
+            assert _yield_findings_count(findings) == sum(
+                len(g.rows) for g in groups if g.spec.key == "yield")
+            assert _worth_changing_count(findings) == sum(
+                len(g.rows) for g in groups if g.spec.key in ("yield", "laser_time", "check"))
 
 
 def test_a_crashed_new_analyzer_is_named_and_its_section_is_not_drawn(tk_root):

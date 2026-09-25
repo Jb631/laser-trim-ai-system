@@ -1,0 +1,3815 @@
+{
+ "_about": "What the findings cache held before this version, captured READ-ONLY on 2026-09-25: 'pre_pull' from the work database (written by the code before the findings-catalogue pull -- the five new facts keys absent), 'fix_57fdcdb' from the controller's close-out copy refreshed with 57fdcdb (the five keys in their pre-fix shapes). Real measurements of two models, no customer data. Readers must never crash on these, nor show a number from a key this version no longer reads that way.",
+ "fix_57fdcdb": {
+  "facts": {
+   "6126": {
+    "annual_volume": 845,
+    "cut_setting": {
+     "Laser 1 (LTS) \u00b7 Track A": {
+      "current_setting": 3700.0,
+      "days_with_more_than_one_setting_pct": 0.9259259259259259,
+      "n": 992,
+      "settings": [
+       {
+        "median_incoming_resistance": 3401.0,
+        "n": 646,
+        "pass_pct": 67.80185758513932,
+        "setting": 3500.0,
+        "window": "2023-12-21 .. 2024-09-19"
+       },
+       {
+        "median_incoming_resistance": 3397.5,
+        "n": 156,
+        "pass_pct": 83.97435897435898,
+        "setting": 3700.0,
+        "window": "2024-09-25 .. 2025-02-07"
+       },
+       {
+        "median_incoming_resistance": 2901.5,
+        "n": 190,
+        "pass_pct": 83.15789473684211,
+        "setting": 3740.0,
+        "window": "2023-09-18 .. 2023-12-21"
+       }
+      ],
+      "window": "2023-09-18 .. 2025-02-07"
+     }
+    },
+    "errors": {},
+    "latest": "2026-09-14",
+    "limit_tables": [
+     {
+      "first": "2016-11-23",
+      "graded": 57,
+      "last": "2017-12-18",
+      "n": 107,
+      "rows": 57,
+      "system": "A",
+      "track": "TRK1",
+      "trim_pass_pct": 98.13084112149532
+     },
+     {
+      "first": "2018-02-01",
+      "graded": 281,
+      "last": "2026-08-05",
+      "n": 1769,
+      "rows": 281,
+      "system": "A",
+      "track": "TRK1",
+      "trim_pass_pct": 92.70774448841154
+     },
+     {
+      "first": "2023-07-29",
+      "graded": 281,
+      "last": "2025-02-07",
+      "n": 1141,
+      "rows": 281,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 75.4601226993865
+     },
+     {
+      "first": "2025-10-28",
+      "graded": 281,
+      "last": "2026-08-31",
+      "n": 59,
+      "rows": 281,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 76.27118644067797
+     },
+     {
+      "first": "2025-10-29",
+      "graded": 141,
+      "last": "2026-08-31",
+      "n": 617,
+      "rows": 141,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 88.97893030794165
+     },
+     {
+      "first": "2026-04-21",
+      "graded": 57,
+      "last": "2026-09-14",
+      "n": 166,
+      "rows": 57,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 87.95180722891567
+     }
+    ],
+    "loss_origin": {
+     "Laser 1 (LTS)": {
+      "auc_error": 0.5801006889242183,
+      "auc_resistance": 0.5223900370959195,
+      "fails": 102,
+      "n": 842
+     },
+     "Laser 2 (DLTS)": {
+      "auc_error": 1.0,
+      "auc_resistance": 0.5,
+      "fails": 1,
+      "n": 3
+     }
+    },
+    "machine_compare": {
+     "880befdcf4": {
+      "by_laser": {
+       "Laser 1 (LTS)": {
+        "n": 610,
+        "pass_pct": 76.39344262295081
+       },
+       "Laser 2 (DLTS)": {
+        "n": 488,
+        "pass_pct": 98.56557377049181
+       }
+      },
+      "months": [
+       "2023-07",
+       "2023-09",
+       "2023-10",
+       "2023-11",
+       "2024-03",
+       "2024-04",
+       "2024-06",
+       "2024-08",
+       "2024-09",
+       "2024-10",
+       "2024-11",
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ]
+     }
+    },
+    "model": "6126",
+    "pass_burden": {
+     "Laser 1 (LTS) \u00b7 Track A \u00b7 cut 3350": {
+      "cut_counts": {
+       "1": 758,
+       "2": 39,
+       "3": 6,
+       "5": 1
+      },
+      "cut_setting": 3350.0,
+      "n": 804,
+      "normal_cuts": 1,
+      "share_over_recipe": 5.7,
+      "tracks_over_recipe": 46,
+      "unplanned_passes": 55,
+      "unplanned_passes_per_100_tracks": 6.8
+     }
+    },
+    "recipe_history": [
+     {
+      "first": "2017-10-13",
+      "graded_n": 327,
+      "last": "2018-10-30",
+      "limit_table": {
+       "graded": 281,
+       "key": "880befdcf4",
+       "rows": 281,
+       "share": 0.768
+      },
+      "limit_tables_material": [
+       "880befdcf4",
+       "f27da4961f"
+      ],
+      "median_incoming_r": 3256.0,
+      "n": 327,
+      "quarters": [
+       "2017 Q4",
+       "2018 Q2",
+       "2018 Q3",
+       "2018 Q4"
+      ],
+      "recipe": "1 cut (cut length 0.95)",
+      "system": "A",
+      "trim_pass_pct": 87.46177370030581
+     },
+     {
+      "first": "2022-10-06",
+      "graded_n": 1027,
+      "last": "2025-02-24",
+      "limit_table": {
+       "graded": 281,
+       "key": "880befdcf4",
+       "rows": 281,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "880befdcf4"
+      ],
+      "median_incoming_r": 2840.0,
+      "n": 1027,
+      "quarters": [
+       "2022 Q4",
+       "2023 Q1",
+       "2023 Q2",
+       "2023 Q3",
+       "2023 Q4",
+       "2024 Q1",
+       "2024 Q2",
+       "2024 Q3",
+       "2024 Q4",
+       "2025 Q1"
+      ],
+      "recipe": "1 cut (cut length 0.85)",
+      "system": "A",
+      "trim_pass_pct": 98.14995131450827
+     },
+     {
+      "first": "2023-07-29",
+      "graded_n": 325,
+      "last": "2023-12-21",
+      "limit_table": {
+       "graded": 281,
+       "key": "880befdcf4",
+       "rows": 281,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "880befdcf4"
+      ],
+      "median_incoming_r": 2849.0,
+      "n": 325,
+      "quarters": [
+       "2023 Q3",
+       "2023 Q4"
+      ],
+      "recipe": "1 cut (cut length 3740)",
+      "system": "B",
+      "trim_pass_pct": 88.3076923076923
+     },
+     {
+      "first": "2024-01-15",
+      "graded_n": 433,
+      "last": "2024-06-04",
+      "limit_table": {
+       "graded": 281,
+       "key": "880befdcf4",
+       "rows": 281,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "880befdcf4"
+      ],
+      "median_incoming_r": 3434.0,
+      "n": 433,
+      "quarters": [
+       "2024 Q1",
+       "2024 Q2"
+      ],
+      "recipe": "1 cut (cut length 3500)",
+      "system": "B",
+      "trim_pass_pct": 74.82678983833718
+     },
+     {
+      "first": "2024-10-02",
+      "graded_n": 122,
+      "last": "2025-02-07",
+      "limit_table": {
+       "graded": 281,
+       "key": "880befdcf4",
+       "rows": 281,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "880befdcf4"
+      ],
+      "median_incoming_r": 3384.0,
+      "n": 122,
+      "quarters": [
+       "2024 Q4",
+       "2025 Q1"
+      ],
+      "recipe": "1 cut (cut length 3700)",
+      "system": "B",
+      "trim_pass_pct": 85.24590163934427
+     },
+     {
+      "first": "2025-10-29",
+      "graded_n": 758,
+      "last": "2026-09-14",
+      "limit_table": {
+       "graded": 141,
+       "key": "cff5ae15db",
+       "rows": 141,
+       "share": 0.73
+      },
+      "limit_tables_material": [
+       "cff5ae15db",
+       "f27da4961f"
+      ],
+      "median_incoming_r": 2911.5,
+      "n": 758,
+      "quarters": [
+       "2025 Q4",
+       "2026 Q1",
+       "2026 Q2",
+       "2026 Q3"
+      ],
+      "recipe": "1 cut (cut length 3350)",
+      "system": "B",
+      "trim_pass_pct": 94.1952506596306
+     }
+    ],
+    "rework_load": {
+     "confirmed": false,
+     "linked": 0,
+     "note": "no final tests are linked to a trim analysis for this model in the window",
+     "rework_unit_days": 0
+    },
+    "setup_change": [
+     {
+      "after": {
+       "first": "2023-10-27",
+       "graded_n": 112,
+       "last": "2024-03-22",
+       "median_incoming_r": 2962.0,
+       "n": 112,
+       "trim_pass_pct": 97.32142857142857,
+       "value": -90.851
+      },
+      "before": {
+       "first": "2023-01-09",
+       "graded_n": 412,
+       "last": "2023-10-08",
+       "median_incoming_r": 2691.5,
+       "n": 412,
+       "trim_pass_pct": 97.0873786407767,
+       "value": -93.533
+      },
+      "setting": "laser_height",
+      "system": "A",
+      "track": "TRK1"
+     },
+     {
+      "after": {
+       "first": "2024-04-27",
+       "graded_n": 163,
+       "last": "2024-12-19",
+       "median_incoming_r": 3363.0,
+       "n": 163,
+       "trim_pass_pct": 100.0,
+       "value": -89.553
+      },
+      "before": {
+       "first": "2023-10-27",
+       "graded_n": 112,
+       "last": "2024-03-22",
+       "median_incoming_r": 2962.0,
+       "n": 112,
+       "trim_pass_pct": 97.32142857142857,
+       "value": -90.851
+      },
+      "setting": "laser_height",
+      "system": "A",
+      "track": "TRK1"
+     },
+     {
+      "after": {
+       "first": "2022-10-20",
+       "graded_n": 515,
+       "last": "2023-07-10",
+       "median_incoming_r": 2733.0,
+       "n": 515,
+       "trim_pass_pct": 95.72815533980582,
+       "value": 42.0
+      },
+      "before": {
+       "first": "2019-05-22",
+       "graded_n": 490,
+       "last": "2022-10-20",
+       "median_incoming_r": 3335.0,
+       "n": 490,
+       "trim_pass_pct": 89.38775510204081,
+       "value": 52.0
+      },
+      "setting": "laser_power",
+      "system": "A",
+      "track": "TRK1"
+     },
+     {
+      "after": {
+       "first": "2024-03-01",
+       "graded_n": 108,
+       "last": "2024-08-23",
+       "median_incoming_r": 3135.0,
+       "n": 108,
+       "trim_pass_pct": 99.07407407407408,
+       "value": 36.0
+      },
+      "before": {
+       "first": "2023-07-11",
+       "graded_n": 151,
+       "last": "2024-03-01",
+       "median_incoming_r": 2821.0,
+       "n": 151,
+       "trim_pass_pct": 98.67549668874172,
+       "value": 26.0
+      },
+      "setting": "laser_power",
+      "system": "A",
+      "track": "TRK1"
+     },
+     {
+      "after": {
+       "first": "2024-08-23",
+       "graded_n": 199,
+       "last": "2025-02-24",
+       "median_incoming_r": 3149.0,
+       "n": 199,
+       "trim_pass_pct": 97.98994974874371,
+       "value": 30.0
+      },
+      "before": {
+       "first": "2024-03-01",
+       "graded_n": 108,
+       "last": "2024-08-23",
+       "median_incoming_r": 3135.0,
+       "n": 108,
+       "trim_pass_pct": 99.07407407407408,
+       "value": 36.0
+      },
+      "setting": "laser_power",
+      "system": "A",
+      "track": "TRK1"
+     },
+     {
+      "after": {
+       "first": "2024-10-03",
+       "graded_n": 117,
+       "last": "2025-02-07",
+       "median_incoming_r": 3387.0,
+       "n": 117,
+       "trim_pass_pct": 82.05128205128206,
+       "value": 2.0
+      },
+      "before": {
+       "first": "2024-02-09",
+       "graded_n": 565,
+       "last": "2024-10-03",
+       "median_incoming_r": 3370.0,
+       "n": 565,
+       "trim_pass_pct": 70.4424778761062,
+       "value": 1.0
+      },
+      "setting": "initial_points_ignored",
+      "system": "B",
+      "track": "Track A"
+     },
+     {
+      "after": {
+       "first": "2024-10-03",
+       "graded_n": 117,
+       "last": "2025-02-07",
+       "median_incoming_r": 3387.0,
+       "n": 117,
+       "trim_pass_pct": 82.05128205128206,
+       "value": 2.0
+      },
+      "before": {
+       "first": "2024-02-09",
+       "graded_n": 565,
+       "last": "2024-10-03",
+       "median_incoming_r": 3370.0,
+       "n": 565,
+       "trim_pass_pct": 70.4424778761062,
+       "value": 1.0
+      },
+      "setting": "points_from_start",
+      "system": "B",
+      "track": "Track A"
+     }
+    ],
+    "station_setup": {
+     "ft_typ_band": 0.05,
+     "matched_positions": 901,
+     "note": "96% of the positions both stations measure are graded to different limits (trim \u00b10.015\u20130.150 V, final test \u00b10.050\u20130.150 V)",
+     "pct_positions_differing": 0.9600443951165372,
+     "status": "differs",
+     "trim_typ_band": 0.015
+    },
+    "tracks": 4359,
+    "trim_effort": null,
+    "yardstick": {
+     "agreement": 0.9624254988338948,
+     "faithful": false,
+     "min_agreement": 0.99,
+     "min_n": 30,
+     "n": 3859
+    }
+   },
+   "6607": {
+    "annual_volume": 1367,
+    "cut_setting": {
+     "Laser 1 (LTS) \u00b7 Track A": {
+      "current_setting": 6900.0,
+      "days_with_more_than_one_setting_pct": 1.1235955056179776,
+      "n": 2110,
+      "settings": [
+       {
+        "median_incoming_resistance": 4285.0,
+        "n": 813,
+        "pass_pct": 87.08487084870849,
+        "setting": 6800.0,
+        "window": "2023-09-27 .. 2024-09-03"
+       },
+       {
+        "median_incoming_resistance": 4241.0,
+        "n": 1283,
+        "pass_pct": 60.40530007794232,
+        "setting": 6900.0,
+        "window": "2024-09-03 .. 2026-09-22"
+       }
+      ],
+      "window": "2023-09-27 .. 2026-09-22"
+     },
+     "Laser 1 (LTS) \u00b7 Track B": {
+      "current_setting": 6900.0,
+      "days_with_more_than_one_setting_pct": 1.1299435028248588,
+      "n": 1986,
+      "settings": [
+       {
+        "median_incoming_resistance": 4360.0,
+        "n": 766,
+        "pass_pct": 89.42558746736293,
+        "setting": 6800.0,
+        "window": "2023-09-27 .. 2024-09-03"
+       },
+       {
+        "median_incoming_resistance": 4259.0,
+        "n": 1207,
+        "pass_pct": 70.17398508699254,
+        "setting": 6900.0,
+        "window": "2024-09-03 .. 2026-09-22"
+       }
+      ],
+      "window": "2023-09-27 .. 2026-09-22"
+     }
+    },
+    "errors": {},
+    "latest": "2026-09-22",
+    "limit_tables": [
+     {
+      "first": "2018-04-18",
+      "graded": 45,
+      "last": "2019-07-30",
+      "n": 554,
+      "rows": 45,
+      "system": "A",
+      "track": "TRK1",
+      "trim_pass_pct": 62.81588447653429
+     },
+     {
+      "first": "2012-12-17",
+      "graded": 41,
+      "last": "2016-04-20",
+      "n": 1672,
+      "rows": 41,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 47.66746411483253
+     },
+     {
+      "first": "2014-01-07",
+      "graded": 43,
+      "last": "2015-04-22",
+      "n": 40,
+      "rows": 43,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 20.0
+     },
+     {
+      "first": "2014-04-14",
+      "graded": 45,
+      "last": "2026-09-22",
+      "n": 2653,
+      "rows": 45,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 72.63475310968715
+     },
+     {
+      "first": "2012-12-17",
+      "graded": 41,
+      "last": "2016-04-20",
+      "n": 1505,
+      "rows": 41,
+      "system": "B",
+      "track": "Track B",
+      "trim_pass_pct": 42.05980066445183
+     },
+     {
+      "first": "2023-03-30",
+      "graded": 45,
+      "last": "2026-09-22",
+      "n": 2486,
+      "rows": 45,
+      "system": "B",
+      "track": "Track B",
+      "trim_pass_pct": 79.72646822204344
+     },
+     {
+      "first": "2011-03-03",
+      "graded": 41,
+      "last": "2011-04-04",
+      "n": 76,
+      "rows": 41,
+      "system": "B",
+      "track": "default",
+      "trim_pass_pct": 6.578947368421052
+     },
+     {
+      "first": "2011-04-04",
+      "graded": 41,
+      "last": "2011-10-11",
+      "n": 545,
+      "rows": 41,
+      "system": "B",
+      "track": "default",
+      "trim_pass_pct": 69.72477064220183
+     },
+     {
+      "first": "2011-12-15",
+      "graded": 41,
+      "last": "2012-01-23",
+      "n": 206,
+      "rows": 41,
+      "system": "B",
+      "track": "default",
+      "trim_pass_pct": 38.83495145631068
+     }
+    ],
+    "loss_origin": {
+     "Laser 1 (LTS)": {
+      "auc_error": 0.7359504724666015,
+      "auc_resistance": 0.40244379276637343,
+      "fails": 465,
+      "n": 1290
+     }
+    },
+    "machine_compare": {},
+    "model": "6607",
+    "pass_burden": {
+     "Laser 1 (LTS) \u00b7 Track A \u00b7 cut 6900": {
+      "cut_counts": {
+       "1": 662,
+       "2": 15,
+       "4": 3
+      },
+      "cut_setting": 6900.0,
+      "n": 680,
+      "normal_cuts": 1,
+      "share_over_recipe": 2.6,
+      "tracks_over_recipe": 18,
+      "unplanned_passes": 24,
+      "unplanned_passes_per_100_tracks": 3.5
+     },
+     "Laser 1 (LTS) \u00b7 Track B \u00b7 cut 6900": {
+      "cut_counts": {
+       "1": 578,
+       "2": 20,
+       "3": 6,
+       "4": 4,
+       "5": 2
+      },
+      "cut_setting": 6900.0,
+      "n": 610,
+      "normal_cuts": 1,
+      "share_over_recipe": 5.2,
+      "tracks_over_recipe": 32,
+      "unplanned_passes": 52,
+      "unplanned_passes_per_100_tracks": 8.5
+     }
+    },
+    "recipe_history": [
+     {
+      "first": "2018-11-19",
+      "graded_n": 373,
+      "last": "2019-06-30",
+      "limit_table": {
+       "graded": 45,
+       "key": "2b196feaef",
+       "rows": 45,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "2b196feaef"
+      ],
+      "median_incoming_r": 4513.0,
+      "n": 373,
+      "quarters": [
+       "2018 Q4",
+       "2019 Q2"
+      ],
+      "recipe": "1 cut (cut length 1.8)",
+      "system": "A",
+      "trim_pass_pct": 58.71313672922252
+     },
+     {
+      "first": "2013-08-09",
+      "graded_n": 1560,
+      "last": "2015-03-30",
+      "limit_table": {
+       "graded": 41,
+       "key": "6e4cb449c2",
+       "rows": 41,
+       "share": 0.994
+      },
+      "limit_tables_material": [
+       "6e4cb449c2"
+      ],
+      "median_incoming_r": 4069.0,
+      "n": 1560,
+      "quarters": [
+       "2013 Q3",
+       "2013 Q4",
+       "2014 Q2",
+       "2014 Q3",
+       "2014 Q4",
+       "2015 Q1"
+      ],
+      "recipe": "1 cut",
+      "system": "B",
+      "trim_pass_pct": 50.51282051282051
+     },
+     {
+      "first": "2015-04-21",
+      "graded_n": 1120,
+      "last": "2016-04-20",
+      "limit_table": {
+       "graded": 41,
+       "key": "6e4cb449c2",
+       "rows": 41,
+       "share": 0.996
+      },
+      "limit_tables_material": [
+       "6e4cb449c2"
+      ],
+      "median_incoming_r": 4050.5,
+      "n": 1120,
+      "quarters": [
+       "2015 Q2",
+       "2015 Q3",
+       "2015 Q4",
+       "2016 Q1",
+       "2016 Q2"
+      ],
+      "recipe": "1 cut (cut length 8500)",
+      "system": "B",
+      "trim_pass_pct": 43.57142857142857
+     },
+     {
+      "first": "2023-03-30",
+      "graded_n": 1007,
+      "last": "2023-09-27",
+      "limit_table": {
+       "graded": 45,
+       "key": "2b196feaef",
+       "rows": 45,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "2b196feaef"
+      ],
+      "median_incoming_r": 4355.0,
+      "n": 1007,
+      "quarters": [
+       "2023 Q1",
+       "2023 Q2",
+       "2023 Q3"
+      ],
+      "recipe": "1 cut (cut length 6200)",
+      "system": "B",
+      "trim_pass_pct": 85.60079443892751
+     },
+     {
+      "first": "2023-10-03",
+      "graded_n": 1312,
+      "last": "2024-06-21",
+      "limit_table": {
+       "graded": 45,
+       "key": "2b196feaef",
+       "rows": 45,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "2b196feaef"
+      ],
+      "median_incoming_r": 4331.5,
+      "n": 1312,
+      "quarters": [
+       "2023 Q4",
+       "2024 Q1",
+       "2024 Q2"
+      ],
+      "recipe": "1 cut (cut length 6800)",
+      "system": "B",
+      "trim_pass_pct": 88.03353658536585
+     },
+     {
+      "first": "2024-10-04",
+      "graded_n": 2294,
+      "last": "2026-09-22",
+      "limit_table": {
+       "graded": 45,
+       "key": "2b196feaef",
+       "rows": 45,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "2b196feaef"
+      ],
+      "median_incoming_r": 4245.5,
+      "n": 2294,
+      "quarters": [
+       "2024 Q4",
+       "2025 Q1",
+       "2025 Q2",
+       "2025 Q3",
+       "2025 Q4",
+       "2026 Q1",
+       "2026 Q2",
+       "2026 Q3"
+      ],
+      "recipe": "1 cut (cut length 6900)",
+      "system": "B",
+      "trim_pass_pct": 65.86748038360942
+     }
+    ],
+    "rework_load": {
+     "confirmed": true,
+     "control_n": 415,
+     "control_top_third_min_laser_error": 0.0332,
+     "control_top_third_n": 139,
+     "effect_ratio": 0.805,
+     "junk_readings": 1,
+     "linked": 1098,
+     "mann_whitney_u": 12367.0,
+     "median_ratio_control_top_third": 1.002,
+     "median_ratio_rework": 0.806,
+     "p_value": 5.244e-06,
+     "reduction": "per track the latest final test against that track's last laser attempt; per unit-day the track with the largest laser error",
+     "rework_ratio_n": 244,
+     "rework_unit_days": 261,
+     "skipped_pairs": 0,
+     "unpaired_final_tests": 16
+    },
+    "setup_change": [
+     {
+      "after": {
+       "first": "2025-10-08",
+       "graded_n": 207,
+       "last": "2026-01-05",
+       "median_incoming_r": 4252.0,
+       "n": 207,
+       "trim_pass_pct": 66.18357487922705,
+       "value": 60.0
+      },
+      "before": {
+       "first": "2023-05-02",
+       "graded_n": 1884,
+       "last": "2025-10-08",
+       "median_incoming_r": 4261.0,
+       "n": 1884,
+       "trim_pass_pct": 74.52229299363057,
+       "value": 52.0
+      },
+      "setting": "laser_power",
+      "system": "B",
+      "track": "Track A"
+     },
+     {
+      "after": {
+       "first": "2026-01-06",
+       "graded_n": 472,
+       "last": "2026-09-22",
+       "median_incoming_r": 4273.0,
+       "n": 472,
+       "trim_pass_pct": 68.64406779661017,
+       "value": 55.0
+      },
+      "before": {
+       "first": "2025-10-08",
+       "graded_n": 207,
+       "last": "2026-01-05",
+       "median_incoming_r": 4252.0,
+       "n": 207,
+       "trim_pass_pct": 66.18357487922705,
+       "value": 60.0
+      },
+      "setting": "laser_power",
+      "system": "B",
+      "track": "Track A"
+     },
+     {
+      "after": {
+       "first": "2026-06-08",
+       "graded_n": 165,
+       "last": "2026-09-22",
+       "median_incoming_r": 4387.0,
+       "n": 165,
+       "trim_pass_pct": 64.84848484848484,
+       "value": 3000.0
+      },
+      "before": {
+       "first": "2023-03-30",
+       "graded_n": 2477,
+       "last": "2026-06-05",
+       "median_incoming_r": 4264.0,
+       "n": 2477,
+       "trim_pass_pct": 73.47597900686314,
+       "value": 2000.0
+      },
+      "setting": "laser_prr",
+      "system": "B",
+      "track": "Track A"
+     },
+     {
+      "after": {
+       "first": "2025-06-19",
+       "graded_n": 430,
+       "last": "2026-01-12",
+       "median_incoming_r": 4255.5,
+       "n": 430,
+       "trim_pass_pct": 64.4186046511628,
+       "value": 100.0
+      },
+      "before": {
+       "first": "2023-03-30",
+       "graded_n": 1759,
+       "last": "2025-06-19",
+       "median_incoming_r": 4274.0,
+       "n": 1759,
+       "trim_pass_pct": 75.49744172825469,
+       "value": 50.0
+      },
+      "setting": "pulse_duration",
+      "system": "B",
+      "track": "Track A"
+     },
+     {
+      "after": {
+       "first": "2026-01-12",
+       "graded_n": 453,
+       "last": "2026-09-22",
+       "median_incoming_r": 4276.0,
+       "n": 453,
+       "trim_pass_pct": 71.08167770419426,
+       "value": 200.0
+      },
+      "before": {
+       "first": "2025-06-19",
+       "graded_n": 430,
+       "last": "2026-01-12",
+       "median_incoming_r": 4255.5,
+       "n": 430,
+       "trim_pass_pct": 64.4186046511628,
+       "value": 100.0
+      },
+      "setting": "pulse_duration",
+      "system": "B",
+      "track": "Track A"
+     },
+     {
+      "after": {
+       "first": "2025-10-08",
+       "graded_n": 202,
+       "last": "2026-01-05",
+       "median_incoming_r": 4206.5,
+       "n": 202,
+       "trim_pass_pct": 62.87128712871287,
+       "value": 60.0
+      },
+      "before": {
+       "first": "2023-05-02",
+       "graded_n": 1809,
+       "last": "2025-09-12",
+       "median_incoming_r": 4335.0,
+       "n": 1809,
+       "trim_pass_pct": 86.56716417910448,
+       "value": 52.0
+      },
+      "setting": "laser_power",
+      "system": "B",
+      "track": "Track B"
+     },
+     {
+      "after": {
+       "first": "2026-01-06",
+       "graded_n": 408,
+       "last": "2026-09-22",
+       "median_incoming_r": 4297.0,
+       "n": 408,
+       "trim_pass_pct": 57.84313725490196,
+       "value": 55.0
+      },
+      "before": {
+       "first": "2025-10-08",
+       "graded_n": 202,
+       "last": "2026-01-05",
+       "median_incoming_r": 4206.5,
+       "n": 202,
+       "trim_pass_pct": 62.87128712871287,
+       "value": 60.0
+      },
+      "setting": "laser_power",
+      "system": "B",
+      "track": "Track B"
+     },
+     {
+      "after": {
+       "first": "2026-06-08",
+       "graded_n": 135,
+       "last": "2026-09-22",
+       "median_incoming_r": 4310.0,
+       "n": 135,
+       "trim_pass_pct": 41.48148148148148,
+       "value": 3000.0
+      },
+      "before": {
+       "first": "2023-03-30",
+       "graded_n": 2351,
+       "last": "2026-06-05",
+       "median_incoming_r": 4318.0,
+       "n": 2351,
+       "trim_pass_pct": 81.92258613356019,
+       "value": 2000.0
+      },
+      "setting": "laser_prr",
+      "system": "B",
+      "track": "Track B"
+     },
+     {
+      "after": {
+       "first": "2025-06-19",
+       "graded_n": 421,
+       "last": "2026-01-12",
+       "median_incoming_r": 4228.0,
+       "n": 421,
+       "trim_pass_pct": 60.80760095011876,
+       "value": 100.0
+      },
+      "before": {
+       "first": "2023-03-30",
+       "graded_n": 1675,
+       "last": "2025-06-19",
+       "median_incoming_r": 4348.0,
+       "n": 1675,
+       "trim_pass_pct": 89.01492537313433,
+       "value": 50.0
+      },
+      "setting": "pulse_duration",
+      "system": "B",
+      "track": "Track B"
+     },
+     {
+      "after": {
+       "first": "2026-01-12",
+       "graded_n": 390,
+       "last": "2026-09-22",
+       "median_incoming_r": 4310.0,
+       "n": 390,
+       "trim_pass_pct": 60.256410256410255,
+       "value": 200.0
+      },
+      "before": {
+       "first": "2025-06-19",
+       "graded_n": 421,
+       "last": "2026-01-12",
+       "median_incoming_r": 4228.0,
+       "n": 421,
+       "trim_pass_pct": 60.80760095011876,
+       "value": 100.0
+      },
+      "setting": "pulse_duration",
+      "system": "B",
+      "track": "Track B"
+     },
+     {
+      "after": {
+       "first": "2014-03-10",
+       "graded_n": 234,
+       "last": "2014-09-05",
+       "median_incoming_r": 4100.5,
+       "n": 234,
+       "trim_pass_pct": 35.8974358974359,
+       "value": 30.0
+      },
+      "before": {
+       "first": "2012-12-17",
+       "graded_n": 356,
+       "last": "2014-03-10",
+       "median_incoming_r": 4135.0,
+       "n": 356,
+       "trim_pass_pct": 48.59550561797753,
+       "value": 20.0
+      },
+      "setting": "speed_crossover",
+      "system": "B",
+      "track": "Track B"
+     },
+     {
+      "after": {
+       "first": "2014-09-05",
+       "graded_n": 345,
+       "last": "2015-03-30",
+       "median_incoming_r": 4005.0,
+       "n": 345,
+       "trim_pass_pct": 43.768115942028984,
+       "value": 40.0
+      },
+      "before": {
+       "first": "2014-03-10",
+       "graded_n": 234,
+       "last": "2014-09-05",
+       "median_incoming_r": 4100.5,
+       "n": 234,
+       "trim_pass_pct": 35.8974358974359,
+       "value": 30.0
+      },
+      "setting": "speed_crossover",
+      "system": "B",
+      "track": "Track B"
+     }
+    ],
+    "station_setup": {
+     "ft_typ_band": 0.05,
+     "matched_positions": 58,
+     "note": "21% of the positions both stations measure are graded to different limits (trim \u00b10.010\u20130.200 V, final test \u00b10.010\u20130.357 V)",
+     "pct_positions_differing": 0.20689655172413793,
+     "status": "differs",
+     "trim_typ_band": 0.05
+    },
+    "tracks": 10036,
+    "trim_effort": {
+     "A": {
+      "after_cut1_n": 555,
+      "arrive_in_spec_below_r_floor_n": 31,
+      "arrive_in_spec_n": 46,
+      "arrive_in_spec_pct": 8.288288288288289,
+      "cuts": {
+       "1": 501,
+       "2": 50,
+       "3+": 4
+      },
+      "graded_untrimmed_n": 555,
+      "in_limits_after_cut1_pct": 60.72072072072072,
+      "multi_cut_n": 54,
+      "multi_in_limits_after_first_pct": 50.0,
+      "multi_in_limits_after_last_pct": 70.37037037037037,
+      "tracks_cut": 555
+     },
+     "B": {
+      "after_cut1_n": 8264,
+      "arrive_in_spec_below_r_floor_n": 477,
+      "arrive_in_spec_n": 684,
+      "arrive_in_spec_pct": 8.276863504356244,
+      "cuts": {
+       "1": 8156,
+       "2": 65,
+       "3+": 43
+      },
+      "graded_untrimmed_n": 8264,
+      "in_limits_after_cut1_pct": 64.4240077444337,
+      "multi_cut_n": 108,
+      "multi_in_limits_after_first_pct": 16.666666666666668,
+      "multi_in_limits_after_last_pct": 12.037037037037036,
+      "tracks_cut": 8264
+     }
+    },
+    "yardstick": {
+     "agreement": 0.9995919200163232,
+     "faithful": true,
+     "min_agreement": 0.99,
+     "min_n": 30,
+     "n": 9802
+    }
+   }
+  },
+  "findings": {
+   "6126": [
+    {
+     "analyzer": "recipe_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2022-10-06",
+       "graded_n": 1027,
+       "last": "2025-02-24",
+       "limit_table": {
+        "graded": 281,
+        "key": "880befdcf4",
+        "rows": 281,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "880befdcf4"
+       ],
+       "median_incoming_r": 2840.0,
+       "n": 1027,
+       "quarters": [
+        "2022 Q4",
+        "2023 Q1",
+        "2023 Q2",
+        "2023 Q3",
+        "2023 Q4",
+        "2024 Q1",
+        "2024 Q2",
+        "2024 Q3",
+        "2024 Q4",
+        "2025 Q1"
+       ],
+       "recipe": "1 cut (cut length 0.85)",
+       "trim_pass_pct": 98.14995131450827
+      },
+      "before": {
+       "first": "2017-10-13",
+       "graded_n": 327,
+       "last": "2018-10-30",
+       "limit_table": {
+        "graded": 281,
+        "key": "880befdcf4",
+        "rows": 281,
+        "share": 0.768
+       },
+       "limit_tables_material": [
+        "880befdcf4",
+        "f27da4961f"
+       ],
+       "median_incoming_r": 3256.0,
+       "n": 327,
+       "quarters": [
+        "2017 Q4",
+        "2018 Q2",
+        "2018 Q3",
+        "2018 Q4"
+       ],
+       "recipe": "1 cut (cut length 0.95)",
+       "trim_pass_pct": 87.46177370030581
+      },
+      "limit_table_changed": false,
+      "limit_tables_mixed": true,
+      "moved_points": 10.68817761420246,
+      "same_table": {
+       "after_first": "2022-10-06",
+       "after_last": "2025-02-24",
+       "after_n": 1027,
+       "after_pct": 98.14995131450827,
+       "after_share": 1.0,
+       "before_first": "2018-05-09",
+       "before_last": "2018-10-30",
+       "before_n": 251,
+       "before_pct": 84.4621513944223,
+       "graded": 281,
+       "n": 1278,
+       "rows": 281
+      }
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 1354,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 327.0,
+     "summary": "Between 2018 Q4 and 2022 Q4 the recipe on Laser 2 (DLTS) changed. Units leaving the laser inside their trim limits went from 87% (327 tracks) to 98% (1,027 tracks), a move of +11 points. Median incoming resistance was 3,256 before and 2,840 after, so the recipe is not the only thing that changed. More than one limit table was in use (2 before, 1 after). A pass rate is a verdict against a test, so part of this move may be a change in which test was applied, not in the parts. On the 281-point table alone the move was 84% (251 tracks, 2018-05-09 to 2018-10-30) to 98% (1,027 tracks, 2022-10-06 to 2025-02-24).",
+     "systems": [
+      "A"
+     ],
+     "title": "Laser 2 (DLTS): recipe changed from 1 cut (cut length 0.95) to 1 cut (cut length 0.85)",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "machine_compare",
+     "annual_volume": 845,
+     "category": "Machine comparison",
+     "evidence": {
+      "best_laser": "A",
+      "by_laser": {
+       "Laser 1 (LTS)": {
+        "n": 610,
+        "pass_pct": 76.39344262295081
+       },
+       "Laser 2 (DLTS)": {
+        "n": 488,
+        "pass_pct": 98.56557377049181
+       }
+      },
+      "graded_points": 281,
+      "months": [
+       "2023-07",
+       "2025-02"
+      ],
+      "table": "880befdcf4",
+      "worst_laser": "B"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 1098,
+     "scope_annual_tracks": 0,
+     "strength_name": "percentage points, best laser vs worst",
+     "strength_value": 22.2,
+     "summary": "On the same 281-point limit table, over the 14 months both ran it (2023-07 to 2025-02), Laser 2 (DLTS) passed 99% of 488 tracks against Laser 1 (LTS)'s 76% of 610. Settings that work on one laser may not transfer; this compares what each laser achieved on the same test in the same months, not why.",
+     "systems": [
+      "A",
+      "B"
+     ],
+     "title": "Laser 2 (DLTS) passes 99%, Laser 1 (LTS) 76%, same test and months",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2022-10-20",
+       "graded_n": 515,
+       "last": "2023-07-10",
+       "median_incoming_r": 2733.0,
+       "n": 515,
+       "trim_pass_pct": 95.72815533980582,
+       "value": 42.0
+      },
+      "before": {
+       "first": "2019-05-22",
+       "graded_n": 490,
+       "last": "2022-10-20",
+       "median_incoming_r": 3335.0,
+       "n": 490,
+       "trim_pass_pct": 89.38775510204081,
+       "value": 52.0
+      },
+      "setting": "laser_power",
+      "track": "TRK1"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 1005,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 490.0,
+     "summary": "Between 2022-10-20 and 2022-10-20 laser power on Laser 2 (DLTS) \u00b7 TRK1 changed from 52 to 42. Units leaving the laser inside their linearity limits went from 89% (490 tracks) to 96% (515 tracks). Median incoming resistance was 3,335 before and 2,733 after, so laser power is not the only thing that changed.",
+     "systems": [
+      "A"
+     ],
+     "title": "Laser 2 (DLTS): laser power changed from 52 to 42",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "station_setup",
+     "annual_volume": 845,
+     "category": "Station setup",
+     "evidence": {
+      "ft_typ_band": 0.05,
+      "matched_positions": 901,
+      "note": "96% of the positions both stations measure are graded to different limits (trim \u00b10.015\u20130.150 V, final test \u00b10.050\u20130.150 V)",
+      "pct_positions_differing": 0.9600443951165372,
+      "trim_typ_band": 0.015
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_limit_table",
+     "lever_label": "Laser limit table",
+     "model": "6126",
+     "n_units": 845,
+     "scope_annual_tracks": 0,
+     "strength_name": "% of matched positions graded to different limits",
+     "strength_value": 96.0,
+     "summary": "96% of the positions both stations measure are graded to different limits (trim \u00b10.015\u20130.150 V, final test \u00b10.050\u20130.150 V). This is visibility, not a disposition: nothing here re-grades a unit or says which station's limits are correct, so no yield gain is claimed -- only that a pass rate compared across trim and final test here is not really a comparison of one test.",
+     "systems": [
+      "A",
+      "B"
+     ],
+     "title": "The laser and final test grade to different limits over 96% of the travel",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "limit_tables",
+     "annual_volume": 845,
+     "category": "Limit table",
+     "evidence": {
+      "comparison": {
+       "compared_positions": 56,
+       "graded_new": 57,
+       "graded_old": 141,
+       "kind": "same_band_other_density",
+       "narrower": 0,
+       "travel_differs": false,
+       "travel_new": [
+        -140.86,
+        139.14
+       ],
+       "travel_old": [
+        -140.75,
+        139.25
+       ],
+       "wider": 0
+      },
+      "concurrent": true,
+      "newer": {
+       "from": "2026-04-30",
+       "graded": 57,
+       "n": 166,
+       "rows": 57,
+       "to": "2026-09-11",
+       "trim_pass_pct": 87.95180722891567
+      },
+      "older": {
+       "from": "2025-11-12",
+       "graded": 141,
+       "n": 617,
+       "rows": 141,
+       "to": "2026-08-24",
+       "trim_pass_pct": 88.97893030794165
+      },
+      "overlap_days": 115,
+      "tables_live": 2,
+      "track": "Track A",
+      "window_to": "2026-09-14"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_limit_table",
+     "lever_label": "Laser limit table",
+     "model": "6126",
+     "n_units": 842,
+     "scope_annual_tracks": 0,
+     "strength_name": "share of that year graded against the second-busiest table",
+     "strength_value": 0.197,
+     "summary": "In the 12 months to 2026-09-14 Laser 1 (LTS) graded Track A against 2 different limit tables at the same time (the two busiest overlap by 115 days). The earlier one: 141 graded points (141 rows), 617 tracks, the central 90% of them between 2025-11-12 and 2026-08-24, 89% left the laser inside limits. The later one: 57 graded points (57 rows), 166 tracks, the central 90% of them between 2026-04-30 and 2026-09-11, 88% left the laser inside limits. Both carry the same band wherever their travel overlaps (56 positions compared), but one grades 141 points and the other 57. Linearity is zero-tolerance per point, so the denser table is the stricter test of the two. Pass rates measured against different tables are not comparable.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): 2 limit tables were in service at once",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "recipe_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-01-15",
+       "graded_n": 433,
+       "last": "2024-06-04",
+       "limit_table": {
+        "graded": 281,
+        "key": "880befdcf4",
+        "rows": 281,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "880befdcf4"
+       ],
+       "median_incoming_r": 3434.0,
+       "n": 433,
+       "quarters": [
+        "2024 Q1",
+        "2024 Q2"
+       ],
+       "recipe": "1 cut (cut length 3500)",
+       "trim_pass_pct": 74.82678983833718
+      },
+      "before": {
+       "first": "2023-07-29",
+       "graded_n": 325,
+       "last": "2023-12-21",
+       "limit_table": {
+        "graded": 281,
+        "key": "880befdcf4",
+        "rows": 281,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "880befdcf4"
+       ],
+       "median_incoming_r": 2849.0,
+       "n": 325,
+       "quarters": [
+        "2023 Q3",
+        "2023 Q4"
+       ],
+       "recipe": "1 cut (cut length 3740)",
+       "trim_pass_pct": 88.3076923076923
+      },
+      "limit_table_changed": false,
+      "limit_tables_mixed": false,
+      "moved_points": -13.48090246935513,
+      "same_table": null
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 758,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 325.0,
+     "summary": "Between 2023 Q4 and 2024 Q1 the recipe on Laser 1 (LTS) changed. Units leaving the laser inside their trim limits went from 88% (325 tracks) to 75% (433 tracks), a move of -13 points. Median incoming resistance was 2,849 before and 3,434 after, so the recipe is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): recipe changed from 1 cut (cut length 3740) to 1 cut (cut length 3500)",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-10-03",
+       "graded_n": 117,
+       "last": "2025-02-07",
+       "median_incoming_r": 3387.0,
+       "n": 117,
+       "trim_pass_pct": 82.05128205128206,
+       "value": 2.0
+      },
+      "before": {
+       "first": "2024-02-09",
+       "graded_n": 565,
+       "last": "2024-10-03",
+       "median_incoming_r": 3370.0,
+       "n": 565,
+       "trim_pass_pct": 70.4424778761062,
+       "value": 1.0
+      },
+      "setting": "initial_points_ignored",
+      "track": "Track A"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 682,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 117.0,
+     "summary": "Between 2024-10-03 and 2024-10-03 initial points ignored on Laser 1 (LTS) \u00b7 Track A changed from 1 to 2. Units leaving the laser inside their linearity limits went from 70% (565 tracks) to 82% (117 tracks). Median incoming resistance was 3,370 before and 3,387 after, so initial points ignored is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): initial points ignored changed from 1 to 2",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-10-03",
+       "graded_n": 117,
+       "last": "2025-02-07",
+       "median_incoming_r": 3387.0,
+       "n": 117,
+       "trim_pass_pct": 82.05128205128206,
+       "value": 2.0
+      },
+      "before": {
+       "first": "2024-02-09",
+       "graded_n": 565,
+       "last": "2024-10-03",
+       "median_incoming_r": 3370.0,
+       "n": 565,
+       "trim_pass_pct": 70.4424778761062,
+       "value": 1.0
+      },
+      "setting": "points_from_start",
+      "track": "Track A"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 682,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 117.0,
+     "summary": "Between 2024-10-03 and 2024-10-03 points from start on Laser 1 (LTS) \u00b7 Track A changed from 1 to 2. Units leaving the laser inside their linearity limits went from 70% (565 tracks) to 82% (117 tracks). Median incoming resistance was 3,370 before and 3,387 after, so points from start is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): points from start changed from 1 to 2",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "recipe_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-10-02",
+       "graded_n": 122,
+       "last": "2025-02-07",
+       "limit_table": {
+        "graded": 281,
+        "key": "880befdcf4",
+        "rows": 281,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "880befdcf4"
+       ],
+       "median_incoming_r": 3384.0,
+       "n": 122,
+       "quarters": [
+        "2024 Q4",
+        "2025 Q1"
+       ],
+       "recipe": "1 cut (cut length 3700)",
+       "trim_pass_pct": 85.24590163934427
+      },
+      "before": {
+       "first": "2024-01-15",
+       "graded_n": 433,
+       "last": "2024-06-04",
+       "limit_table": {
+        "graded": 281,
+        "key": "880befdcf4",
+        "rows": 281,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "880befdcf4"
+       ],
+       "median_incoming_r": 3434.0,
+       "n": 433,
+       "quarters": [
+        "2024 Q1",
+        "2024 Q2"
+       ],
+       "recipe": "1 cut (cut length 3500)",
+       "trim_pass_pct": 74.82678983833718
+      },
+      "limit_table_changed": false,
+      "limit_tables_mixed": false,
+      "moved_points": 10.419111801007091,
+      "same_table": null
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 555,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 122.0,
+     "summary": "Between 2024 Q2 and 2024 Q4 the recipe on Laser 1 (LTS) changed. Units leaving the laser inside their trim limits went from 75% (433 tracks) to 85% (122 tracks), a move of +10 points. Median incoming resistance was 3,434 before and 3,384 after, so the recipe is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): recipe changed from 1 cut (cut length 3500) to 1 cut (cut length 3700)",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2023-10-27",
+       "graded_n": 112,
+       "last": "2024-03-22",
+       "median_incoming_r": 2962.0,
+       "n": 112,
+       "trim_pass_pct": 97.32142857142857,
+       "value": -90.851
+      },
+      "before": {
+       "first": "2023-01-09",
+       "graded_n": 412,
+       "last": "2023-10-08",
+       "median_incoming_r": 2691.5,
+       "n": 412,
+       "trim_pass_pct": 97.0873786407767,
+       "value": -93.533
+      },
+      "setting": "laser_height",
+      "track": "TRK1"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 524,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 112.0,
+     "summary": "Between 2023-10-08 and 2023-10-27 laser height on Laser 2 (DLTS) \u00b7 TRK1 changed from -93.533 to -90.851. Units leaving the laser inside their linearity limits went from 97% (412 tracks) to 97% (112 tracks). Median incoming resistance was 2,692 before and 2,962 after, so laser height is not the only thing that changed.",
+     "systems": [
+      "A"
+     ],
+     "title": "Laser 2 (DLTS): laser height changed from -93.533 to -90.851",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-08-23",
+       "graded_n": 199,
+       "last": "2025-02-24",
+       "median_incoming_r": 3149.0,
+       "n": 199,
+       "trim_pass_pct": 97.98994974874371,
+       "value": 30.0
+      },
+      "before": {
+       "first": "2024-03-01",
+       "graded_n": 108,
+       "last": "2024-08-23",
+       "median_incoming_r": 3135.0,
+       "n": 108,
+       "trim_pass_pct": 99.07407407407408,
+       "value": 36.0
+      },
+      "setting": "laser_power",
+      "track": "TRK1"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 307,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 108.0,
+     "summary": "Between 2024-08-23 and 2024-08-23 laser power on Laser 2 (DLTS) \u00b7 TRK1 changed from 36 to 30. Units leaving the laser inside their linearity limits went from 99% (108 tracks) to 98% (199 tracks). Median incoming resistance was 3,135 before and 3,149 after, so laser power is not the only thing that changed.",
+     "systems": [
+      "A"
+     ],
+     "title": "Laser 2 (DLTS): laser power changed from 36 to 30",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-04-27",
+       "graded_n": 163,
+       "last": "2024-12-19",
+       "median_incoming_r": 3363.0,
+       "n": 163,
+       "trim_pass_pct": 100.0,
+       "value": -89.553
+      },
+      "before": {
+       "first": "2023-10-27",
+       "graded_n": 112,
+       "last": "2024-03-22",
+       "median_incoming_r": 2962.0,
+       "n": 112,
+       "trim_pass_pct": 97.32142857142857,
+       "value": -90.851
+      },
+      "setting": "laser_height",
+      "track": "TRK1"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 275,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 112.0,
+     "summary": "Between 2024-03-22 and 2024-04-27 laser height on Laser 2 (DLTS) \u00b7 TRK1 changed from -90.851 to -89.553. Units leaving the laser inside their linearity limits went from 97% (112 tracks) to 100% (163 tracks). Median incoming resistance was 2,962 before and 3,363 after, so laser height is not the only thing that changed.",
+     "systems": [
+      "A"
+     ],
+     "title": "Laser 2 (DLTS): laser height changed from -90.851 to -89.553",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 845,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-03-01",
+       "graded_n": 108,
+       "last": "2024-08-23",
+       "median_incoming_r": 3135.0,
+       "n": 108,
+       "trim_pass_pct": 99.07407407407408,
+       "value": 36.0
+      },
+      "before": {
+       "first": "2023-07-11",
+       "graded_n": 151,
+       "last": "2024-03-01",
+       "median_incoming_r": 2821.0,
+       "n": 151,
+       "trim_pass_pct": 98.67549668874172,
+       "value": 26.0
+      },
+      "setting": "laser_power",
+      "track": "TRK1"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6126",
+     "n_units": 259,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 108.0,
+     "summary": "Between 2024-03-01 and 2024-03-01 laser power on Laser 2 (DLTS) \u00b7 TRK1 changed from 26 to 36. Units leaving the laser inside their linearity limits went from 99% (151 tracks) to 99% (108 tracks). Median incoming resistance was 2,821 before and 3,135 after, so laser power is not the only thing that changed.",
+     "systems": [
+      "A"
+     ],
+     "title": "Laser 2 (DLTS): laser power changed from 26 to 36",
+     "tracks_per_year": null
+    }
+   ],
+   "6607": [
+    {
+     "analyzer": "cut_setting",
+     "annual_volume": 1367,
+     "category": "Cut setting",
+     "evidence": {
+      "best": 6800.0,
+      "changeover": "2024-10",
+      "current": 6900.0,
+      "days_mixed_pct": 1.1235955056179776,
+      "grade": "two_periods",
+      "group": {
+       "current_setting": 6900.0,
+       "days_with_more_than_one_setting_pct": 1.1235955056179776,
+       "n": 2110,
+       "settings": [
+        {
+         "median_incoming_resistance": 4285.0,
+         "n": 813,
+         "pass_pct": 87.08487084870849,
+         "setting": 6800.0,
+         "window": "2023-09-27 .. 2024-09-03"
+        },
+        {
+         "median_incoming_resistance": 4241.0,
+         "n": 1283,
+         "pass_pct": 60.40530007794232,
+         "setting": 6900.0,
+         "window": "2024-09-03 .. 2026-09-22"
+        }
+       ],
+       "window": "2023-09-27 .. 2026-09-22"
+      },
+      "halves": {
+       "above": {
+        "best_n": 426,
+        "best_pct": 89.9,
+        "current_n": 620,
+        "current_pct": 67.3
+       },
+       "below": {
+        "best_n": 387,
+        "best_pct": 84.0,
+        "current_n": 663,
+        "current_pct": 54.0
+       },
+       "median_resistance": 4255.5
+      },
+      "laser_last_ran": "2026-09-22",
+      "last_ran": "2026-09-22",
+      "months_side_by_side": 1,
+      "months_total": 33,
+      "ran_on_laser_since": false,
+      "stale": false,
+      "table": "2b196feaef",
+      "track": "Track A"
+     },
+     "expected_gain_points": 26.7,
+     "gain_definition": "percentage points of tracks leaving the laser inside their per-point linearity limits, best setting versus the setting now running, on one machine and one limit table",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2096,
+     "scope_annual_tracks": 680,
+     "strength_name": "points more often inside limits",
+     "strength_value": 26.7,
+     "summary": "On the same limit table, 6800 left 87% of 813 tracks inside their linearity limits against 60% of 1,283 at 6900 (a lower setting). It wins in both halves of incoming resistance (84% vs 54% below 4255.5 ohm, 90% vs 67% above), so the ink does not explain it. The laser moved from 6800 to 6900 in 2024-10 and has been 27 points worse since. That makes this a comparison of two PERIODS, so a change in material or handling over the same months cannot be ruled out from the data alone. It is cheap to settle: alternate 6800 and 6900 by lot for a week and this page will read the answer back. Worth asking why the setting changed in 2024-10.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): cut 6800 passed 27 points more often than the 6900 now running",
+     "tracks_per_year": 181.56
+    },
+    {
+     "analyzer": "cut_setting",
+     "annual_volume": 1367,
+     "category": "Cut setting",
+     "evidence": {
+      "best": 6800.0,
+      "changeover": "2024-10",
+      "current": 6900.0,
+      "days_mixed_pct": 1.1299435028248588,
+      "grade": "two_periods",
+      "group": {
+       "current_setting": 6900.0,
+       "days_with_more_than_one_setting_pct": 1.1299435028248588,
+       "n": 1986,
+       "settings": [
+        {
+         "median_incoming_resistance": 4360.0,
+         "n": 766,
+         "pass_pct": 89.42558746736293,
+         "setting": 6800.0,
+         "window": "2023-09-27 .. 2024-09-03"
+        },
+        {
+         "median_incoming_resistance": 4259.0,
+         "n": 1207,
+         "pass_pct": 70.17398508699254,
+         "setting": 6900.0,
+         "window": "2024-09-03 .. 2026-09-22"
+        }
+       ],
+       "window": "2023-09-27 .. 2026-09-22"
+      },
+      "halves": {
+       "above": {
+        "best_n": 430,
+        "best_pct": 92.3,
+        "current_n": 555,
+        "current_pct": 78.9
+       },
+       "below": {
+        "best_n": 336,
+        "best_pct": 85.7,
+        "current_n": 652,
+        "current_pct": 62.7
+       },
+       "median_resistance": 4301.0
+      },
+      "laser_last_ran": "2026-09-22",
+      "last_ran": "2026-09-22",
+      "months_side_by_side": 1,
+      "months_total": 33,
+      "ran_on_laser_since": true,
+      "stale": false,
+      "table": "2b196feaef",
+      "track": "Track B"
+     },
+     "expected_gain_points": 19.3,
+     "gain_definition": "percentage points of tracks leaving the laser inside their per-point linearity limits, best setting versus the setting now running, on one machine and one limit table",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 1973,
+     "scope_annual_tracks": 610,
+     "strength_name": "points more often inside limits",
+     "strength_value": 19.3,
+     "summary": "On the same limit table, 6800 left 89% of 766 tracks inside their linearity limits against 70% of 1,207 at 6900 (a lower setting). It wins in both halves of incoming resistance (86% vs 63% below 4301 ohm, 92% vs 79% above), so the ink does not explain it. The laser moved from 6800 to 6900 in 2024-10 and has been 19 points worse since. That makes this a comparison of two PERIODS, so a change in material or handling over the same months cannot be ruled out from the data alone. It is cheap to settle: alternate 6800 and 6900 by lot for a week and this page will read the answer back. Worth asking why the setting changed in 2024-10.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): cut 6800 passed 19 points more often than the 6900 now running",
+     "tracks_per_year": 117.73
+    },
+    {
+     "analyzer": "ink_target",
+     "annual_volume": 1367,
+     "category": "Ink target",
+     "evidence": {
+      "bins": [
+       {
+        "n": 486,
+        "r_high": 3982.0,
+        "r_low": 422.0,
+        "success_pct": 43.62139917695473
+       },
+       {
+        "n": 487,
+        "r_high": 4164.0,
+        "r_low": 3982.0,
+        "success_pct": 68.78850102669405
+       },
+       {
+        "n": 486,
+        "r_high": 4348.0,
+        "r_low": 4164.0,
+        "success_pct": 66.2551440329218
+       },
+       {
+        "n": 487,
+        "r_high": 4564.0,
+        "r_low": 4348.0,
+        "success_pct": 77.61806981519507
+       },
+       {
+        "n": 486,
+        "r_high": 8244.0,
+        "r_low": 4564.0,
+        "success_pct": 71.60493827160494
+       }
+      ],
+      "configured_disagrees": null,
+      "configured_incoming": null,
+      "final_resistance_window": [
+       4650.0,
+       5350.0
+      ],
+      "limit_table": {
+       "graded": 45,
+       "rows": 45
+      },
+      "out_of_sample_gain_each_fold": [
+       5.6,
+       6.7
+      ],
+      "overall_pct": 65.58388157894737,
+      "period": [
+       "2024-09-03",
+       "2026-09-22"
+      ],
+      "recipe": "1 cut (cut length 6900)",
+      "superseded": false,
+      "window": {
+       "n": 973,
+       "r_high": 8244.0,
+       "r_low": 4348.0,
+       "success_pct": 74.61459403905447
+      }
+     },
+     "expected_gain_points": 6.2,
+     "gain_definition": "good-at-laser rate inside the recommended window minus the rate over the rest of the period, measured OUT OF SAMPLE (window chosen on one half, scored on the other, both ways, averaged) and scaled by the group's own last-year track count; good = the app's trim linearity verdict AND final resistance inside the station's final limits",
+     "lead_time": "next lot",
+     "lever": "ink",
+     "lever_label": "Ink formulation (incoming resistance)",
+     "model": "6607",
+     "n_units": 2432,
+     "scope_annual_tracks": 1240,
+     "strength_name": "Spearman correlation, incoming resistance vs good-at-laser",
+     "strength_value": 0.19851464519524084,
+     "summary": "Within Laser 1 (LTS) running 1 cut (cut length 6900) (2024-09-03 to 2026-09-22, 2,432 tracks), units arriving between 4,348 and 8,244 \u03a9 left the laser good 75% of the time against 66% overall (1,240 of those tracks are from the last year, which is what the rate is scaled by). The +6.2 points is measured OUT OF SAMPLE: the window was chosen on one half of the period and scored on the other, both ways round (+5.6 and +6.7 points). These files carry no configured incoming window, so this is a computed target, not a comparison with a setting. Laser, recipe, limit table and the station's final-resistance window are held constant, so none of them explains the difference. Period, operator and lot are not.",
+     "systems": [
+      "B"
+     ],
+     "title": "Incoming resistance: aim higher -- 4,348 to 8,244 \u03a9 does best",
+     "tracks_per_year": 76.88
+    },
+    {
+     "analyzer": "recipe_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-10-04",
+       "graded_n": 2294,
+       "last": "2026-09-22",
+       "limit_table": {
+        "graded": 45,
+        "key": "2b196feaef",
+        "rows": 45,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "2b196feaef"
+       ],
+       "median_incoming_r": 4245.5,
+       "n": 2294,
+       "quarters": [
+        "2024 Q4",
+        "2025 Q1",
+        "2025 Q2",
+        "2025 Q3",
+        "2025 Q4",
+        "2026 Q1",
+        "2026 Q2",
+        "2026 Q3"
+       ],
+       "recipe": "1 cut (cut length 6900)",
+       "trim_pass_pct": 65.86748038360942
+      },
+      "before": {
+       "first": "2023-10-03",
+       "graded_n": 1312,
+       "last": "2024-06-21",
+       "limit_table": {
+        "graded": 45,
+        "key": "2b196feaef",
+        "rows": 45,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "2b196feaef"
+       ],
+       "median_incoming_r": 4331.5,
+       "n": 1312,
+       "quarters": [
+        "2023 Q4",
+        "2024 Q1",
+        "2024 Q2"
+       ],
+       "recipe": "1 cut (cut length 6800)",
+       "trim_pass_pct": 88.03353658536585
+      },
+      "limit_table_changed": false,
+      "limit_tables_mixed": false,
+      "moved_points": -22.166056201756433,
+      "same_table": null
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 3606,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 1312.0,
+     "summary": "Between 2024 Q2 and 2024 Q4 the recipe on Laser 1 (LTS) changed. Units leaving the laser inside their trim limits went from 88% (1,312 tracks) to 66% (2,294 tracks), a move of -22 points. Median incoming resistance was 4,332 before and 4,246 after, so the recipe is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): recipe changed from 1 cut (cut length 6800) to 1 cut (cut length 6900)",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2026-06-08",
+       "graded_n": 165,
+       "last": "2026-09-22",
+       "median_incoming_r": 4387.0,
+       "n": 165,
+       "trim_pass_pct": 64.84848484848484,
+       "value": 3000.0
+      },
+      "before": {
+       "first": "2023-03-30",
+       "graded_n": 2477,
+       "last": "2026-06-05",
+       "median_incoming_r": 4264.0,
+       "n": 2477,
+       "trim_pass_pct": 73.47597900686314,
+       "value": 2000.0
+      },
+      "setting": "laser_prr",
+      "track": "Track A"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2642,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 165.0,
+     "summary": "Between 2026-06-05 and 2026-06-08 laser prr on Laser 1 (LTS) \u00b7 Track A changed from 2000 to 3000. Units leaving the laser inside their linearity limits went from 73% (2,477 tracks) to 65% (165 tracks). Median incoming resistance was 4,264 before and 4,387 after, so laser prr is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): laser prr changed from 2000 to 3000",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2026-06-08",
+       "graded_n": 135,
+       "last": "2026-09-22",
+       "median_incoming_r": 4310.0,
+       "n": 135,
+       "trim_pass_pct": 41.48148148148148,
+       "value": 3000.0
+      },
+      "before": {
+       "first": "2023-03-30",
+       "graded_n": 2351,
+       "last": "2026-06-05",
+       "median_incoming_r": 4318.0,
+       "n": 2351,
+       "trim_pass_pct": 81.92258613356019,
+       "value": 2000.0
+      },
+      "setting": "laser_prr",
+      "track": "Track B"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2486,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 135.0,
+     "summary": "Between 2026-06-05 and 2026-06-08 laser prr on Laser 1 (LTS) \u00b7 Track B changed from 2000 to 3000. Units leaving the laser inside their linearity limits went from 82% (2,351 tracks) to 41% (135 tracks). Median incoming resistance was 4,318 before and 4,310 after, so laser prr is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): laser prr changed from 2000 to 3000",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2025-06-19",
+       "graded_n": 430,
+       "last": "2026-01-12",
+       "median_incoming_r": 4255.5,
+       "n": 430,
+       "trim_pass_pct": 64.4186046511628,
+       "value": 100.0
+      },
+      "before": {
+       "first": "2023-03-30",
+       "graded_n": 1759,
+       "last": "2025-06-19",
+       "median_incoming_r": 4274.0,
+       "n": 1759,
+       "trim_pass_pct": 75.49744172825469,
+       "value": 50.0
+      },
+      "setting": "pulse_duration",
+      "track": "Track A"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2189,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 430.0,
+     "summary": "Between 2025-06-19 and 2025-06-19 pulse duration on Laser 1 (LTS) \u00b7 Track A changed from 50 to 100. Units leaving the laser inside their linearity limits went from 75% (1,759 tracks) to 64% (430 tracks). Median incoming resistance was 4,274 before and 4,256 after, so pulse duration is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): pulse duration changed from 50 to 100",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "recipe_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2023-03-30",
+       "graded_n": 1007,
+       "last": "2023-09-27",
+       "limit_table": {
+        "graded": 45,
+        "key": "2b196feaef",
+        "rows": 45,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "2b196feaef"
+       ],
+       "median_incoming_r": 4355.0,
+       "n": 1007,
+       "quarters": [
+        "2023 Q1",
+        "2023 Q2",
+        "2023 Q3"
+       ],
+       "recipe": "1 cut (cut length 6200)",
+       "trim_pass_pct": 85.60079443892751
+      },
+      "before": {
+       "first": "2015-04-21",
+       "graded_n": 1120,
+       "last": "2016-04-20",
+       "limit_table": {
+        "graded": 41,
+        "key": "6e4cb449c2",
+        "rows": 41,
+        "share": 0.996
+       },
+       "limit_tables_material": [
+        "6e4cb449c2"
+       ],
+       "median_incoming_r": 4050.5,
+       "n": 1120,
+       "quarters": [
+        "2015 Q2",
+        "2015 Q3",
+        "2015 Q4",
+        "2016 Q1",
+        "2016 Q2"
+       ],
+       "recipe": "1 cut (cut length 8500)",
+       "trim_pass_pct": 43.57142857142857
+      },
+      "limit_table_changed": true,
+      "limit_tables_mixed": true,
+      "moved_points": 42.02936586749894,
+      "same_table": null
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2127,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 1007.0,
+     "summary": "Between 2016 Q2 and 2023 Q1 the recipe on Laser 1 (LTS) changed. Units leaving the laser inside their trim limits went from 44% (1,120 tracks) to 86% (1,007 tracks), a move of +42 points. Median incoming resistance was 4,050 before and 4,355 after, so the recipe is not the only thing that changed. The limit table changed too: most tracks were graded at 41 points before and 45 after. A pass rate is a verdict against a test, so part of this move may be a change in which test was applied, not in the parts. No single table has 100 graded tracks on both sides, so there is no like-for-like figure.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): recipe changed from 1 cut (cut length 8500) to 1 cut (cut length 6200)",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2025-06-19",
+       "graded_n": 421,
+       "last": "2026-01-12",
+       "median_incoming_r": 4228.0,
+       "n": 421,
+       "trim_pass_pct": 60.80760095011876,
+       "value": 100.0
+      },
+      "before": {
+       "first": "2023-03-30",
+       "graded_n": 1675,
+       "last": "2025-06-19",
+       "median_incoming_r": 4348.0,
+       "n": 1675,
+       "trim_pass_pct": 89.01492537313433,
+       "value": 50.0
+      },
+      "setting": "pulse_duration",
+      "track": "Track B"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2096,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 421.0,
+     "summary": "Between 2025-06-19 and 2025-06-19 pulse duration on Laser 1 (LTS) \u00b7 Track B changed from 50 to 100. Units leaving the laser inside their linearity limits went from 89% (1,675 tracks) to 61% (421 tracks). Median incoming resistance was 4,348 before and 4,228 after, so pulse duration is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): pulse duration changed from 50 to 100",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2025-10-08",
+       "graded_n": 207,
+       "last": "2026-01-05",
+       "median_incoming_r": 4252.0,
+       "n": 207,
+       "trim_pass_pct": 66.18357487922705,
+       "value": 60.0
+      },
+      "before": {
+       "first": "2023-05-02",
+       "graded_n": 1884,
+       "last": "2025-10-08",
+       "median_incoming_r": 4261.0,
+       "n": 1884,
+       "trim_pass_pct": 74.52229299363057,
+       "value": 52.0
+      },
+      "setting": "laser_power",
+      "track": "Track A"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2091,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 207.0,
+     "summary": "Between 2025-10-08 and 2025-10-08 laser power on Laser 1 (LTS) \u00b7 Track A changed from 52 to 60. Units leaving the laser inside their linearity limits went from 75% (1,884 tracks) to 66% (207 tracks). Median incoming resistance was 4,261 before and 4,252 after, so laser power is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): laser power changed from 52 to 60",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2025-10-08",
+       "graded_n": 202,
+       "last": "2026-01-05",
+       "median_incoming_r": 4206.5,
+       "n": 202,
+       "trim_pass_pct": 62.87128712871287,
+       "value": 60.0
+      },
+      "before": {
+       "first": "2023-05-02",
+       "graded_n": 1809,
+       "last": "2025-09-12",
+       "median_incoming_r": 4335.0,
+       "n": 1809,
+       "trim_pass_pct": 86.56716417910448,
+       "value": 52.0
+      },
+      "setting": "laser_power",
+      "track": "Track B"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2011,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 202.0,
+     "summary": "Between 2025-09-12 and 2025-10-08 laser power on Laser 1 (LTS) \u00b7 Track B changed from 52 to 60. Units leaving the laser inside their linearity limits went from 87% (1,809 tracks) to 63% (202 tracks). Median incoming resistance was 4,335 before and 4,206 after, so laser power is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): laser power changed from 52 to 60",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "loss_origin",
+     "annual_volume": 1367,
+     "category": "Where the loss is made",
+     "evidence": {
+      "facts": {
+       "auc_error": 0.7359504724666015,
+       "auc_resistance": 0.40244379276637343,
+       "fails": 465,
+       "n": 1290
+      }
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "next lot, or ECN",
+     "lever": "deposition",
+     "lever_label": "Deposition / upstream",
+     "model": "6607",
+     "n_units": 1290,
+     "scope_annual_tracks": 0,
+     "strength_name": "AUC, incoming max|error| vs laser verdict",
+     "strength_value": 0.736,
+     "summary": "Tracks that fail at the laser already arrived with worse linearity: the loss starts before the laser, so deposition is the lever to look at first. This routes the question; it never grades a part.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): incoming linearity predicts the laser verdict (AUC 0.74)",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "station_setup",
+     "annual_volume": 1367,
+     "category": "Station setup",
+     "evidence": {
+      "ft_typ_band": 0.05,
+      "matched_positions": 58,
+      "note": "21% of the positions both stations measure are graded to different limits (trim \u00b10.010\u20130.200 V, final test \u00b10.010\u20130.357 V)",
+      "pct_positions_differing": 0.20689655172413793,
+      "trim_typ_band": 0.05
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_limit_table",
+     "lever_label": "Laser limit table",
+     "model": "6607",
+     "n_units": 1290,
+     "scope_annual_tracks": 0,
+     "strength_name": "% of matched positions graded to different limits",
+     "strength_value": 20.7,
+     "summary": "21% of the positions both stations measure are graded to different limits (trim \u00b10.010\u20130.200 V, final test \u00b10.010\u20130.357 V). This is visibility, not a disposition: nothing here re-grades a unit or says which station's limits are correct, so no yield gain is claimed -- only that a pass rate compared across trim and final test here is not really a comparison of one test.",
+     "systems": [
+      "B"
+     ],
+     "title": "The laser and final test grade to different limits over 21% of the travel",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2026-01-12",
+       "graded_n": 453,
+       "last": "2026-09-22",
+       "median_incoming_r": 4276.0,
+       "n": 453,
+       "trim_pass_pct": 71.08167770419426,
+       "value": 200.0
+      },
+      "before": {
+       "first": "2025-06-19",
+       "graded_n": 430,
+       "last": "2026-01-12",
+       "median_incoming_r": 4255.5,
+       "n": 430,
+       "trim_pass_pct": 64.4186046511628,
+       "value": 100.0
+      },
+      "setting": "pulse_duration",
+      "track": "Track A"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 883,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 430.0,
+     "summary": "Between 2026-01-12 and 2026-01-12 pulse duration on Laser 1 (LTS) \u00b7 Track A changed from 100 to 200. Units leaving the laser inside their linearity limits went from 64% (430 tracks) to 71% (453 tracks). Median incoming resistance was 4,256 before and 4,276 after, so pulse duration is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): pulse duration changed from 100 to 200",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "limit_tables",
+     "annual_volume": 1367,
+     "category": "Limit table",
+     "evidence": {
+      "comparison": {
+       "compared_positions": 41,
+       "graded_new": 41,
+       "graded_old": 41,
+       "kind": "different_band",
+       "max_abs_diff": 0.157,
+       "narrower": 16,
+       "travel_differs": false,
+       "travel_new": [
+        -20.0,
+        20.0
+       ],
+       "travel_old": [
+        -20.0,
+        20.0
+       ],
+       "wider": 0
+      },
+      "concurrent": false,
+      "newer": {
+       "from": "2011-12-21",
+       "graded": 41,
+       "n": 206,
+       "rows": 41,
+       "to": "2012-01-17",
+       "trim_pass_pct": 38.83495145631068
+      },
+      "older": {
+       "from": "2011-04-13",
+       "graded": 41,
+       "n": 545,
+       "rows": 41,
+       "to": "2011-10-06",
+       "trim_pass_pct": 69.72477064220183
+      },
+      "overlap_days": -77,
+      "tables_live": 2,
+      "track": "default",
+      "window_to": "2012-01-23"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_limit_table",
+     "lever_label": "Laser limit table",
+     "model": "6607",
+     "n_units": 856,
+     "scope_annual_tracks": 0,
+     "strength_name": "share of that year graded against the second-busiest table",
+     "strength_value": 0.241,
+     "summary": "In the 12 months to 2012-01-23 Laser 1 (LTS) changed the limit table it grades default against, around 2011-12-21. Before: 41 graded points (41 rows), 545 tracks, the central 90% of them between 2011-04-13 and 2011-10-06, 70% left the laser inside limits. After: 41 graded points (41 rows), 206 tracks, the central 90% of them between 2011-12-21 and 2012-01-17, 39% left the laser inside limits. Of the 41 positions the later table grades inside the earlier one's travel, it is NARROWER at 16 (by up to 0.157 V of half-width). These are different REQUIREMENTS, not different sampling. Pass rates measured against different tables are not comparable.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): the limit table changed",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2026-01-12",
+       "graded_n": 390,
+       "last": "2026-09-22",
+       "median_incoming_r": 4310.0,
+       "n": 390,
+       "trim_pass_pct": 60.256410256410255,
+       "value": 200.0
+      },
+      "before": {
+       "first": "2025-06-19",
+       "graded_n": 421,
+       "last": "2026-01-12",
+       "median_incoming_r": 4228.0,
+       "n": 421,
+       "trim_pass_pct": 60.80760095011876,
+       "value": 100.0
+      },
+      "setting": "pulse_duration",
+      "track": "Track B"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 811,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 390.0,
+     "summary": "Between 2026-01-12 and 2026-01-12 pulse duration on Laser 1 (LTS) \u00b7 Track B changed from 100 to 200. Units leaving the laser inside their linearity limits went from 61% (421 tracks) to 60% (390 tracks). Median incoming resistance was 4,228 before and 4,310 after, so pulse duration is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): pulse duration changed from 100 to 200",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2026-01-06",
+       "graded_n": 472,
+       "last": "2026-09-22",
+       "median_incoming_r": 4273.0,
+       "n": 472,
+       "trim_pass_pct": 68.64406779661017,
+       "value": 55.0
+      },
+      "before": {
+       "first": "2025-10-08",
+       "graded_n": 207,
+       "last": "2026-01-05",
+       "median_incoming_r": 4252.0,
+       "n": 207,
+       "trim_pass_pct": 66.18357487922705,
+       "value": 60.0
+      },
+      "setting": "laser_power",
+      "track": "Track A"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 679,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 207.0,
+     "summary": "Between 2026-01-05 and 2026-01-06 laser power on Laser 1 (LTS) \u00b7 Track A changed from 60 to 55. Units leaving the laser inside their linearity limits went from 66% (207 tracks) to 69% (472 tracks). Median incoming resistance was 4,252 before and 4,273 after, so laser power is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): laser power changed from 60 to 55",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2026-01-06",
+       "graded_n": 408,
+       "last": "2026-09-22",
+       "median_incoming_r": 4297.0,
+       "n": 408,
+       "trim_pass_pct": 57.84313725490196,
+       "value": 55.0
+      },
+      "before": {
+       "first": "2025-10-08",
+       "graded_n": 202,
+       "last": "2026-01-05",
+       "median_incoming_r": 4206.5,
+       "n": 202,
+       "trim_pass_pct": 62.87128712871287,
+       "value": 60.0
+      },
+      "setting": "laser_power",
+      "track": "Track B"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 610,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 202.0,
+     "summary": "Between 2026-01-05 and 2026-01-06 laser power on Laser 1 (LTS) \u00b7 Track B changed from 60 to 55. Units leaving the laser inside their linearity limits went from 63% (202 tracks) to 58% (408 tracks). Median incoming resistance was 4,206 before and 4,297 after, so laser power is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): laser power changed from 60 to 55",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2014-03-10",
+       "graded_n": 234,
+       "last": "2014-09-05",
+       "median_incoming_r": 4100.5,
+       "n": 234,
+       "trim_pass_pct": 35.8974358974359,
+       "value": 30.0
+      },
+      "before": {
+       "first": "2012-12-17",
+       "graded_n": 356,
+       "last": "2014-03-10",
+       "median_incoming_r": 4135.0,
+       "n": 356,
+       "trim_pass_pct": 48.59550561797753,
+       "value": 20.0
+      },
+      "setting": "speed_crossover",
+      "track": "Track B"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 590,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 234.0,
+     "summary": "Between 2014-03-10 and 2014-03-10 speed crossover on Laser 1 (LTS) \u00b7 Track B changed from 20 to 30. Units leaving the laser inside their linearity limits went from 49% (356 tracks) to 36% (234 tracks). Median incoming resistance was 4,135 before and 4,100 after, so speed crossover is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): speed crossover changed from 20 to 30",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "setup_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2014-09-05",
+       "graded_n": 345,
+       "last": "2015-03-30",
+       "median_incoming_r": 4005.0,
+       "n": 345,
+       "trim_pass_pct": 43.768115942028984,
+       "value": 40.0
+      },
+      "before": {
+       "first": "2014-03-10",
+       "graded_n": 234,
+       "last": "2014-09-05",
+       "median_incoming_r": 4100.5,
+       "n": 234,
+       "trim_pass_pct": 35.8974358974359,
+       "value": 30.0
+      },
+      "setting": "speed_crossover",
+      "track": "Track B"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 579,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 234.0,
+     "summary": "Between 2014-09-05 and 2014-09-05 speed crossover on Laser 1 (LTS) \u00b7 Track B changed from 30 to 40. Units leaving the laser inside their linearity limits went from 36% (234 tracks) to 44% (345 tracks). Median incoming resistance was 4,100 before and 4,005 after, so speed crossover is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): speed crossover changed from 30 to 40",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "rework_load",
+     "annual_volume": 1367,
+     "category": "Rework load",
+     "evidence": {
+      "comparison": "one-sided rank test (Mann-Whitney U, normal approximation with tie correction): the final-test / laser worst-error ratios of the 244 reworked unit-days against those of the 139 pass/pass unit-days in the top third of laser error (0.0332 V and up), over the travel both stations grade; confirmed at p < 0.01 with the rework median at 0.9x theirs or less",
+      "facts": {
+       "control_n": 415,
+       "control_top_third_n": 139,
+       "effect_ratio": 0.805,
+       "mann_whitney_u": 12367.0,
+       "median_ratio_control_top_third": 1.002,
+       "median_ratio_rework": 0.806,
+       "p_value": 5.244e-06,
+       "reduction": "per track the latest final test against that track's last laser attempt; per unit-day the track with the largest laser error",
+       "rework_ratio_n": 244,
+       "rework_unit_days": 261,
+       "skipped_pairs": 0
+      }
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 261,
+     "scope_annual_tracks": 0,
+     "strength_name": "reworked units' median final-test/laser error ratio, as a share of the untouched units' that started nearest them",
+     "strength_value": 0.805,
+     "summary": "261 unit-days in the last year failed linearity at the laser and then passed final test. That is hand trim, not an unnecessary rejection: their error fell more between the stations than it did for the untouched units that started nearest them. Over the travel both stations grade, each corrected with its own offset, final test's worst error on 244 of these units is a median 81% of the laser's on the same track, against 100% on the 139 untouched units (their track passed at both stations) with the largest laser errors (the top third, 0.0332 V and up); a one-sided rank test puts the difference at p = 5.2e-06. No gain is claimed: this counts laser time hand trim is already spending on this model's own failures.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): 261 units a year fail here and pass final test after rework",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "trim_effort",
+     "annual_volume": 1367,
+     "category": "Pass effectiveness",
+     "evidence": {
+      "facts": {
+       "after_cut1_n": 8264,
+       "arrive_in_spec_below_r_floor_n": 477,
+       "arrive_in_spec_n": 684,
+       "arrive_in_spec_pct": 8.276863504356244,
+       "cuts": {
+        "1": 8156,
+        "2": 65,
+        "3+": 43
+       },
+       "graded_untrimmed_n": 8264,
+       "in_limits_after_cut1_pct": 64.4240077444337,
+       "multi_cut_n": 108,
+       "multi_in_limits_after_first_pct": 16.666666666666668,
+       "multi_in_limits_after_last_pct": 12.037037037037036,
+       "tracks_cut": 8264
+      }
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 108,
+     "scope_annual_tracks": 0,
+     "strength_name": "points added by the later cuts",
+     "strength_value": -4.6296296296296315,
+     "summary": "On 108 tracks that received more than one cut, 17% were inside limits after the first cut and 12% after the last. The later cuts are using laser time without moving the result.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): the extra cuts add only -5 points",
+     "tracks_per_year": null
+    }
+   ]
+  }
+ },
+ "pre_pull": {
+  "facts": {
+   "6607": {
+    "annual_volume": 1367,
+    "cut_setting": {
+     "Laser 1 (LTS) \u00b7 Track A": {
+      "current_setting": 6900.0,
+      "days_with_more_than_one_setting_pct": 1.1235955056179776,
+      "n": 2110,
+      "settings": [
+       {
+        "median_incoming_resistance": 4285.0,
+        "n": 813,
+        "pass_pct": 87.08487084870849,
+        "setting": 6800.0,
+        "window": "2023-09-27 .. 2024-09-03"
+       },
+       {
+        "median_incoming_resistance": 4241.0,
+        "n": 1283,
+        "pass_pct": 60.40530007794232,
+        "setting": 6900.0,
+        "window": "2024-09-03 .. 2026-09-22"
+       }
+      ],
+      "window": "2023-09-27 .. 2026-09-22"
+     },
+     "Laser 1 (LTS) \u00b7 Track B": {
+      "current_setting": 6900.0,
+      "days_with_more_than_one_setting_pct": 1.1299435028248588,
+      "n": 1986,
+      "settings": [
+       {
+        "median_incoming_resistance": 4360.0,
+        "n": 766,
+        "pass_pct": 89.42558746736293,
+        "setting": 6800.0,
+        "window": "2023-09-27 .. 2024-09-03"
+       },
+       {
+        "median_incoming_resistance": 4259.0,
+        "n": 1207,
+        "pass_pct": 70.17398508699254,
+        "setting": 6900.0,
+        "window": "2024-09-03 .. 2026-09-22"
+       }
+      ],
+      "window": "2023-09-27 .. 2026-09-22"
+     }
+    },
+    "errors": {},
+    "latest": "2026-09-22",
+    "limit_tables": [
+     {
+      "first": "2018-04-18",
+      "graded": 45,
+      "last": "2019-07-30",
+      "n": 554,
+      "rows": 45,
+      "system": "A",
+      "track": "TRK1",
+      "trim_pass_pct": 62.81588447653429
+     },
+     {
+      "first": "2012-12-17",
+      "graded": 41,
+      "last": "2016-04-20",
+      "n": 1672,
+      "rows": 41,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 47.66746411483253
+     },
+     {
+      "first": "2014-01-07",
+      "graded": 43,
+      "last": "2015-04-22",
+      "n": 40,
+      "rows": 43,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 20.0
+     },
+     {
+      "first": "2014-04-14",
+      "graded": 45,
+      "last": "2026-09-22",
+      "n": 2653,
+      "rows": 45,
+      "system": "B",
+      "track": "Track A",
+      "trim_pass_pct": 72.63475310968715
+     },
+     {
+      "first": "2012-12-17",
+      "graded": 41,
+      "last": "2016-04-20",
+      "n": 1505,
+      "rows": 41,
+      "system": "B",
+      "track": "Track B",
+      "trim_pass_pct": 42.05980066445183
+     },
+     {
+      "first": "2023-03-30",
+      "graded": 45,
+      "last": "2026-09-22",
+      "n": 2486,
+      "rows": 45,
+      "system": "B",
+      "track": "Track B",
+      "trim_pass_pct": 79.72646822204344
+     },
+     {
+      "first": "2011-03-03",
+      "graded": 41,
+      "last": "2011-04-04",
+      "n": 76,
+      "rows": 41,
+      "system": "B",
+      "track": "default",
+      "trim_pass_pct": 6.578947368421052
+     },
+     {
+      "first": "2011-04-04",
+      "graded": 41,
+      "last": "2011-10-11",
+      "n": 545,
+      "rows": 41,
+      "system": "B",
+      "track": "default",
+      "trim_pass_pct": 69.72477064220183
+     },
+     {
+      "first": "2011-12-15",
+      "graded": 41,
+      "last": "2012-01-23",
+      "n": 206,
+      "rows": 41,
+      "system": "B",
+      "track": "default",
+      "trim_pass_pct": 38.83495145631068
+     }
+    ],
+    "model": "6607",
+    "pass_burden": {
+     "Laser 1 (LTS) \u00b7 Track A \u00b7 cut 6900": {
+      "cut_counts": {
+       "1": 662,
+       "2": 15,
+       "4": 3
+      },
+      "cut_setting": 6900.0,
+      "n": 680,
+      "normal_cuts": 1,
+      "share_over_recipe": 2.6,
+      "tracks_over_recipe": 18,
+      "unplanned_passes": 24,
+      "unplanned_passes_per_100_tracks": 3.5
+     },
+     "Laser 1 (LTS) \u00b7 Track B \u00b7 cut 6900": {
+      "cut_counts": {
+       "1": 578,
+       "2": 20,
+       "3": 6,
+       "4": 4,
+       "5": 2
+      },
+      "cut_setting": 6900.0,
+      "n": 610,
+      "normal_cuts": 1,
+      "share_over_recipe": 5.2,
+      "tracks_over_recipe": 32,
+      "unplanned_passes": 52,
+      "unplanned_passes_per_100_tracks": 8.5
+     }
+    },
+    "recipe_history": [
+     {
+      "first": "2018-11-19",
+      "graded_n": 373,
+      "last": "2019-06-30",
+      "limit_table": {
+       "graded": 45,
+       "key": "2b196feaef",
+       "rows": 45,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "2b196feaef"
+      ],
+      "median_incoming_r": 4513.0,
+      "n": 373,
+      "quarters": [
+       "2018 Q4",
+       "2019 Q2"
+      ],
+      "recipe": "1 cut (cut length 1.8)",
+      "system": "A",
+      "trim_pass_pct": 58.71313672922252
+     },
+     {
+      "first": "2013-08-09",
+      "graded_n": 1560,
+      "last": "2015-03-30",
+      "limit_table": {
+       "graded": 41,
+       "key": "6e4cb449c2",
+       "rows": 41,
+       "share": 0.994
+      },
+      "limit_tables_material": [
+       "6e4cb449c2"
+      ],
+      "median_incoming_r": 4069.0,
+      "n": 1560,
+      "quarters": [
+       "2013 Q3",
+       "2013 Q4",
+       "2014 Q2",
+       "2014 Q3",
+       "2014 Q4",
+       "2015 Q1"
+      ],
+      "recipe": "1 cut",
+      "system": "B",
+      "trim_pass_pct": 50.51282051282051
+     },
+     {
+      "first": "2015-04-21",
+      "graded_n": 1120,
+      "last": "2016-04-20",
+      "limit_table": {
+       "graded": 41,
+       "key": "6e4cb449c2",
+       "rows": 41,
+       "share": 0.996
+      },
+      "limit_tables_material": [
+       "6e4cb449c2"
+      ],
+      "median_incoming_r": 4050.5,
+      "n": 1120,
+      "quarters": [
+       "2015 Q2",
+       "2015 Q3",
+       "2015 Q4",
+       "2016 Q1",
+       "2016 Q2"
+      ],
+      "recipe": "1 cut (cut length 8500)",
+      "system": "B",
+      "trim_pass_pct": 43.57142857142857
+     },
+     {
+      "first": "2023-03-30",
+      "graded_n": 1007,
+      "last": "2023-09-27",
+      "limit_table": {
+       "graded": 45,
+       "key": "2b196feaef",
+       "rows": 45,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "2b196feaef"
+      ],
+      "median_incoming_r": 4355.0,
+      "n": 1007,
+      "quarters": [
+       "2023 Q1",
+       "2023 Q2",
+       "2023 Q3"
+      ],
+      "recipe": "1 cut (cut length 6200)",
+      "system": "B",
+      "trim_pass_pct": 85.60079443892751
+     },
+     {
+      "first": "2023-10-03",
+      "graded_n": 1312,
+      "last": "2024-06-21",
+      "limit_table": {
+       "graded": 45,
+       "key": "2b196feaef",
+       "rows": 45,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "2b196feaef"
+      ],
+      "median_incoming_r": 4331.5,
+      "n": 1312,
+      "quarters": [
+       "2023 Q4",
+       "2024 Q1",
+       "2024 Q2"
+      ],
+      "recipe": "1 cut (cut length 6800)",
+      "system": "B",
+      "trim_pass_pct": 88.03353658536585
+     },
+     {
+      "first": "2024-10-04",
+      "graded_n": 2294,
+      "last": "2026-09-22",
+      "limit_table": {
+       "graded": 45,
+       "key": "2b196feaef",
+       "rows": 45,
+       "share": 1.0
+      },
+      "limit_tables_material": [
+       "2b196feaef"
+      ],
+      "median_incoming_r": 4245.5,
+      "n": 2294,
+      "quarters": [
+       "2024 Q4",
+       "2025 Q1",
+       "2025 Q2",
+       "2025 Q3",
+       "2025 Q4",
+       "2026 Q1",
+       "2026 Q2",
+       "2026 Q3"
+      ],
+      "recipe": "1 cut (cut length 6900)",
+      "system": "B",
+      "trim_pass_pct": 65.86748038360942
+     }
+    ],
+    "tracks": 10036,
+    "trim_effort": {
+     "A": {
+      "after_cut1_n": 555,
+      "arrive_in_spec_below_r_floor_n": 31,
+      "arrive_in_spec_n": 46,
+      "arrive_in_spec_pct": 8.288288288288289,
+      "cuts": {
+       "1": 501,
+       "2": 50,
+       "3+": 4
+      },
+      "graded_untrimmed_n": 555,
+      "in_limits_after_cut1_pct": 60.72072072072072,
+      "multi_cut_n": 54,
+      "multi_in_limits_after_first_pct": 50.0,
+      "multi_in_limits_after_last_pct": 70.37037037037037,
+      "tracks_cut": 555
+     },
+     "B": {
+      "after_cut1_n": 8264,
+      "arrive_in_spec_below_r_floor_n": 477,
+      "arrive_in_spec_n": 684,
+      "arrive_in_spec_pct": 8.276863504356244,
+      "cuts": {
+       "1": 8156,
+       "2": 65,
+       "3+": 43
+      },
+      "graded_untrimmed_n": 8264,
+      "in_limits_after_cut1_pct": 64.4240077444337,
+      "multi_cut_n": 108,
+      "multi_in_limits_after_first_pct": 16.666666666666668,
+      "multi_in_limits_after_last_pct": 12.037037037037036,
+      "tracks_cut": 8264
+     }
+    },
+    "yardstick": {
+     "agreement": 0.9995919200163232,
+     "faithful": true,
+     "min_agreement": 0.99,
+     "min_n": 30,
+     "n": 9802
+    }
+   }
+  },
+  "findings": {
+   "6607": [
+    {
+     "analyzer": "cut_setting",
+     "annual_volume": 1367,
+     "category": "Cut setting",
+     "evidence": {
+      "best": 6800.0,
+      "changeover": "2024-10",
+      "current": 6900.0,
+      "days_mixed_pct": 1.1235955056179776,
+      "group": {
+       "current_setting": 6900.0,
+       "days_with_more_than_one_setting_pct": 1.1235955056179776,
+       "n": 2110,
+       "settings": [
+        {
+         "median_incoming_resistance": 4285.0,
+         "n": 813,
+         "pass_pct": 87.08487084870849,
+         "setting": 6800.0,
+         "window": "2023-09-27 .. 2024-09-03"
+        },
+        {
+         "median_incoming_resistance": 4241.0,
+         "n": 1283,
+         "pass_pct": 60.40530007794232,
+         "setting": 6900.0,
+         "window": "2024-09-03 .. 2026-09-22"
+        }
+       ],
+       "window": "2023-09-27 .. 2026-09-22"
+      },
+      "halves": {
+       "above": {
+        "best_n": 426,
+        "best_pct": 89.9,
+        "current_n": 620,
+        "current_pct": 67.3
+       },
+       "below": {
+        "best_n": 387,
+        "best_pct": 84.0,
+        "current_n": 663,
+        "current_pct": 54.0
+       },
+       "median_resistance": 4255.5
+      },
+      "months_side_by_side": 1,
+      "months_total": 33
+     },
+     "expected_gain_points": 26.7,
+     "gain_definition": "percentage points of tracks leaving the laser inside their per-point linearity limits, best setting versus the setting now running, on one machine and one limit table",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2096,
+     "scope_annual_tracks": 680,
+     "strength_name": "points more often inside limits",
+     "strength_value": 26.7,
+     "summary": "On the same limit table, 6800 left 87% of 813 tracks inside their linearity limits against 60% of 1,283 at 6900 (a lower setting). It wins in both halves of incoming resistance (84% vs 54% below 4255.5 ohm, 90% vs 67% above), so the ink does not explain it. The laser moved from 6800 to 6900 in 2024-10 and has been 27 points worse since. That makes this a comparison of two PERIODS, so a change in material or handling over the same months cannot be ruled out from the data alone. It is cheap to settle: alternate 6800 and 6900 by lot for a week and this page will read the answer back. Worth asking why the setting changed in 2024-10.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): cut 6800 passed 27 points more often than the 6900 now running",
+     "tracks_per_year": 181.56
+    },
+    {
+     "analyzer": "cut_setting",
+     "annual_volume": 1367,
+     "category": "Cut setting",
+     "evidence": {
+      "best": 6800.0,
+      "changeover": "2024-10",
+      "current": 6900.0,
+      "days_mixed_pct": 1.1299435028248588,
+      "group": {
+       "current_setting": 6900.0,
+       "days_with_more_than_one_setting_pct": 1.1299435028248588,
+       "n": 1986,
+       "settings": [
+        {
+         "median_incoming_resistance": 4360.0,
+         "n": 766,
+         "pass_pct": 89.42558746736293,
+         "setting": 6800.0,
+         "window": "2023-09-27 .. 2024-09-03"
+        },
+        {
+         "median_incoming_resistance": 4259.0,
+         "n": 1207,
+         "pass_pct": 70.17398508699254,
+         "setting": 6900.0,
+         "window": "2024-09-03 .. 2026-09-22"
+        }
+       ],
+       "window": "2023-09-27 .. 2026-09-22"
+      },
+      "halves": {
+       "above": {
+        "best_n": 430,
+        "best_pct": 92.3,
+        "current_n": 555,
+        "current_pct": 78.9
+       },
+       "below": {
+        "best_n": 336,
+        "best_pct": 85.7,
+        "current_n": 652,
+        "current_pct": 62.7
+       },
+       "median_resistance": 4301.0
+      },
+      "months_side_by_side": 1,
+      "months_total": 33
+     },
+     "expected_gain_points": 19.3,
+     "gain_definition": "percentage points of tracks leaving the laser inside their per-point linearity limits, best setting versus the setting now running, on one machine and one limit table",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 1973,
+     "scope_annual_tracks": 610,
+     "strength_name": "points more often inside limits",
+     "strength_value": 19.3,
+     "summary": "On the same limit table, 6800 left 89% of 766 tracks inside their linearity limits against 70% of 1,207 at 6900 (a lower setting). It wins in both halves of incoming resistance (86% vs 63% below 4301 ohm, 92% vs 79% above), so the ink does not explain it. The laser moved from 6800 to 6900 in 2024-10 and has been 19 points worse since. That makes this a comparison of two PERIODS, so a change in material or handling over the same months cannot be ruled out from the data alone. It is cheap to settle: alternate 6800 and 6900 by lot for a week and this page will read the answer back. Worth asking why the setting changed in 2024-10.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): cut 6800 passed 19 points more often than the 6900 now running",
+     "tracks_per_year": 117.73
+    },
+    {
+     "analyzer": "ink_target",
+     "annual_volume": 1367,
+     "category": "Ink target",
+     "evidence": {
+      "bins": [
+       {
+        "n": 486,
+        "r_high": 3982.0,
+        "r_low": 422.0,
+        "success_pct": 43.62139917695473
+       },
+       {
+        "n": 487,
+        "r_high": 4164.0,
+        "r_low": 3982.0,
+        "success_pct": 68.78850102669405
+       },
+       {
+        "n": 486,
+        "r_high": 4348.0,
+        "r_low": 4164.0,
+        "success_pct": 66.2551440329218
+       },
+       {
+        "n": 487,
+        "r_high": 4564.0,
+        "r_low": 4348.0,
+        "success_pct": 77.61806981519507
+       },
+       {
+        "n": 486,
+        "r_high": 8244.0,
+        "r_low": 4564.0,
+        "success_pct": 71.60493827160494
+       }
+      ],
+      "configured_incoming": null,
+      "final_resistance_window": [
+       4650.0,
+       5350.0
+      ],
+      "limit_table": {
+       "graded": 45,
+       "rows": 45
+      },
+      "out_of_sample_gain_each_fold": [
+       5.6,
+       6.7
+      ],
+      "overall_pct": 65.58388157894737,
+      "period": [
+       "2024-09-03",
+       "2026-09-22"
+      ],
+      "recipe": "1 cut (cut length 6900)",
+      "superseded": false,
+      "window": {
+       "n": 973,
+       "r_high": 8244.0,
+       "r_low": 4348.0,
+       "success_pct": 74.61459403905447
+      }
+     },
+     "expected_gain_points": 6.2,
+     "gain_definition": "good-at-laser rate inside the recommended window minus the rate over the rest of the period, measured OUT OF SAMPLE (window chosen on one half, scored on the other, both ways, averaged) and scaled by the group's own last-year track count; good = the app's trim linearity verdict AND final resistance inside the station's final limits",
+     "lead_time": "next lot",
+     "lever": "ink",
+     "lever_label": "Ink formulation (incoming resistance)",
+     "model": "6607",
+     "n_units": 2432,
+     "scope_annual_tracks": 1240,
+     "strength_name": "Spearman correlation, incoming resistance vs good-at-laser",
+     "strength_value": 0.19851464519524084,
+     "summary": "Within Laser 1 (LTS) running 1 cut (cut length 6900) (2024-09-03 to 2026-09-22, 2,432 tracks), units arriving between 4,348 and 8,244 \u03a9 left the laser good 75% of the time against 66% overall (1,240 of those tracks are from the last year, which is what the rate is scaled by). The +6.2 points is measured OUT OF SAMPLE: the window was chosen on one half of the period and scored on the other, both ways round (+5.6 and +6.7 points). These files carry no configured incoming window, so this is a computed target, not a comparison with a setting. Laser, recipe, limit table and the station's final-resistance window are held constant, so none of them explains the difference. Period, operator and lot are not.",
+     "systems": [
+      "B"
+     ],
+     "title": "Incoming resistance: aim higher -- 4,348 to 8,244 \u03a9 does best",
+     "tracks_per_year": 76.88
+    },
+    {
+     "analyzer": "recipe_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2024-10-04",
+       "graded_n": 2294,
+       "last": "2026-09-22",
+       "limit_table": {
+        "graded": 45,
+        "key": "2b196feaef",
+        "rows": 45,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "2b196feaef"
+       ],
+       "median_incoming_r": 4245.5,
+       "n": 2294,
+       "quarters": [
+        "2024 Q4",
+        "2025 Q1",
+        "2025 Q2",
+        "2025 Q3",
+        "2025 Q4",
+        "2026 Q1",
+        "2026 Q2",
+        "2026 Q3"
+       ],
+       "recipe": "1 cut (cut length 6900)",
+       "trim_pass_pct": 65.86748038360942
+      },
+      "before": {
+       "first": "2023-10-03",
+       "graded_n": 1312,
+       "last": "2024-06-21",
+       "limit_table": {
+        "graded": 45,
+        "key": "2b196feaef",
+        "rows": 45,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "2b196feaef"
+       ],
+       "median_incoming_r": 4331.5,
+       "n": 1312,
+       "quarters": [
+        "2023 Q4",
+        "2024 Q1",
+        "2024 Q2"
+       ],
+       "recipe": "1 cut (cut length 6800)",
+       "trim_pass_pct": 88.03353658536585
+      },
+      "limit_table_changed": false,
+      "limit_tables_mixed": false,
+      "moved_points": -22.166056201756433,
+      "same_table": null
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 3606,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 1312.0,
+     "summary": "Between 2024 Q2 and 2024 Q4 the recipe on Laser 1 (LTS) changed. Units leaving the laser inside their trim limits went from 88% (1,312 tracks) to 66% (2,294 tracks), a move of -22 points. Median incoming resistance was 4,332 before and 4,246 after, so the recipe is not the only thing that changed.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): recipe changed from 1 cut (cut length 6800) to 1 cut (cut length 6900)",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "recipe_change",
+     "annual_volume": 1367,
+     "category": "Setting change",
+     "evidence": {
+      "after": {
+       "first": "2023-03-30",
+       "graded_n": 1007,
+       "last": "2023-09-27",
+       "limit_table": {
+        "graded": 45,
+        "key": "2b196feaef",
+        "rows": 45,
+        "share": 1.0
+       },
+       "limit_tables_material": [
+        "2b196feaef"
+       ],
+       "median_incoming_r": 4355.0,
+       "n": 1007,
+       "quarters": [
+        "2023 Q1",
+        "2023 Q2",
+        "2023 Q3"
+       ],
+       "recipe": "1 cut (cut length 6200)",
+       "trim_pass_pct": 85.60079443892751
+      },
+      "before": {
+       "first": "2015-04-21",
+       "graded_n": 1120,
+       "last": "2016-04-20",
+       "limit_table": {
+        "graded": 41,
+        "key": "6e4cb449c2",
+        "rows": 41,
+        "share": 0.996
+       },
+       "limit_tables_material": [
+        "6e4cb449c2"
+       ],
+       "median_incoming_r": 4050.5,
+       "n": 1120,
+       "quarters": [
+        "2015 Q2",
+        "2015 Q3",
+        "2015 Q4",
+        "2016 Q1",
+        "2016 Q2"
+       ],
+       "recipe": "1 cut (cut length 8500)",
+       "trim_pass_pct": 43.57142857142857
+      },
+      "limit_table_changed": true,
+      "limit_tables_mixed": true,
+      "moved_points": 42.02936586749894,
+      "same_table": null
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 2127,
+     "scope_annual_tracks": 0,
+     "strength_name": "tracks on the smaller side of the change",
+     "strength_value": 1007.0,
+     "summary": "Between 2016 Q2 and 2023 Q1 the recipe on Laser 1 (LTS) changed. Units leaving the laser inside their trim limits went from 44% (1,120 tracks) to 86% (1,007 tracks), a move of +42 points. Median incoming resistance was 4,050 before and 4,355 after, so the recipe is not the only thing that changed. The limit table changed too: most tracks were graded at 41 points before and 45 after. A pass rate is a verdict against a test, so part of this move may be a change in which test was applied, not in the parts. No single table has 100 graded tracks on both sides, so there is no like-for-like figure.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): recipe changed from 1 cut (cut length 8500) to 1 cut (cut length 6200)",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "limit_tables",
+     "annual_volume": 1367,
+     "category": "Limit table",
+     "evidence": {
+      "comparison": {
+       "compared_positions": 41,
+       "graded_new": 41,
+       "graded_old": 41,
+       "kind": "different_band",
+       "max_abs_diff": 0.157,
+       "narrower": 16,
+       "travel_differs": false,
+       "travel_new": [
+        -20.0,
+        20.0
+       ],
+       "travel_old": [
+        -20.0,
+        20.0
+       ],
+       "wider": 0
+      },
+      "concurrent": false,
+      "newer": {
+       "from": "2011-12-21",
+       "graded": 41,
+       "n": 206,
+       "rows": 41,
+       "to": "2012-01-17",
+       "trim_pass_pct": 38.83495145631068
+      },
+      "older": {
+       "from": "2011-04-13",
+       "graded": 41,
+       "n": 545,
+       "rows": 41,
+       "to": "2011-10-06",
+       "trim_pass_pct": 69.72477064220183
+      },
+      "overlap_days": -77,
+      "tables_live": 2,
+      "track": "default",
+      "window_to": "2012-01-23"
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_limit_table",
+     "lever_label": "Laser limit table",
+     "model": "6607",
+     "n_units": 856,
+     "scope_annual_tracks": 0,
+     "strength_name": "share of that year graded against the second-busiest table",
+     "strength_value": 0.241,
+     "summary": "In the 12 months to 2012-01-23 Laser 1 (LTS) changed the limit table it grades default against, around 2011-12-21. Before: 41 graded points (41 rows), 545 tracks, the central 90% of them between 2011-04-13 and 2011-10-06, 70% left the laser inside limits. After: 41 graded points (41 rows), 206 tracks, the central 90% of them between 2011-12-21 and 2012-01-17, 39% left the laser inside limits. Of the 41 positions the later table grades inside the earlier one's travel, it is NARROWER at 16 (by up to 0.157 V of half-width). These are different REQUIREMENTS, not different sampling. Pass rates measured against different tables are not comparable.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): the limit table changed",
+     "tracks_per_year": null
+    },
+    {
+     "analyzer": "trim_effort",
+     "annual_volume": 1367,
+     "category": "Pass effectiveness",
+     "evidence": {
+      "facts": {
+       "after_cut1_n": 8264,
+       "arrive_in_spec_below_r_floor_n": 477,
+       "arrive_in_spec_n": 684,
+       "arrive_in_spec_pct": 8.276863504356244,
+       "cuts": {
+        "1": 8156,
+        "2": 65,
+        "3+": 43
+       },
+       "graded_untrimmed_n": 8264,
+       "in_limits_after_cut1_pct": 64.4240077444337,
+       "multi_cut_n": 108,
+       "multi_in_limits_after_first_pct": 16.666666666666668,
+       "multi_in_limits_after_last_pct": 12.037037037037036,
+       "tracks_cut": 8264
+      }
+     },
+     "expected_gain_points": null,
+     "gain_definition": "",
+     "lead_time": "same day",
+     "lever": "laser_settings",
+     "lever_label": "Laser settings",
+     "model": "6607",
+     "n_units": 108,
+     "scope_annual_tracks": 0,
+     "strength_name": "points added by the later cuts",
+     "strength_value": -4.6296296296296315,
+     "summary": "On 108 tracks that received more than one cut, 17% were inside limits after the first cut and 12% after the last. The later cuts are using laser time without moving the result.",
+     "systems": [
+      "B"
+     ],
+     "title": "Laser 1 (LTS): the extra cuts add only -5 points",
+     "tracks_per_year": null
+    }
+   ]
+  }
+ }
+}
