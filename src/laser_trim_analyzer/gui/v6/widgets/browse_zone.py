@@ -1,8 +1,10 @@
 """Spec 3b — BrowseZone: search + scrollable model list (tier word, last-processed date)."""
-from typing import Callable, List, Optional
+from datetime import datetime
+from typing import Callable, Dict, List, Optional
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.core.activity import inactive_tag
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.ml.drift_types import ModelSummary
@@ -24,6 +26,7 @@ class BrowseZone(ctk.CTkFrame):
         self._cb = on_row_click
         self._models: List[ModelSummary] = []
         self._failed = False                           # set_models(None): the load failed
+        self._inactive = {}                            # {model: newest trim file} -- see set_models
         self._rows: List[ctk.CTkFrame] = []
         self._header: Optional[ctk.CTkFrame] = None   # blocks.group_header wrap; rebuilt each _render()
         t = theme
@@ -34,7 +37,9 @@ class BrowseZone(ctk.CTkFrame):
         # alphabetical list): this is the lookup list; "Needs a look" above is the ranked one.
         self._legend = ctk.CTkLabel(self, text=(
                 "Status = drift tier. Date = last processed. 'Active' scope = "
-                "models with recent data or pinned in Settings → Active Models."),
+                "models with recent data or pinned in Settings → Active Models. A model not "
+                "trimmed in the two years before the newest file reads Inactive instead — still "
+                "listed, never hidden."),
                 font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w", justify="left")
         self._legend.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         # Bound ONCE: `self` (this zone) is never destroyed/rebuilt for its own lifetime, so this
@@ -56,12 +61,18 @@ class BrowseZone(ctk.CTkFrame):
         self._list.pack(side="top", fill="both", expand=True)
         self._render()
 
-    def set_models(self, models: Optional[List[ModelSummary]]) -> None:
+    def set_models(self, models: Optional[List[ModelSummary]], *,
+                   inactive: Optional[Dict[str, datetime]] = None) -> None:
         """`None` means the model list could not be LOADED -- say so, with no count: a failed
         query drawn as "All models · 0" reads as an empty database (final review, 2026-09-24).
-        The page's banner names the failure."""
+        The page's banner names the failure.
+
+        `inactive` = {model: newest trim file} of the models core/activity calls inactive (James,
+        2026-09-25): their status reads "Inactive · last trimmed Mon YYYY", never a drift tier --
+        a tier means nothing without recent data. Nothing is filtered out."""
         self._failed = models is None
         self._models = list(models or [])
+        self._inactive = dict(inactive or {})
         self._render()
 
     def set_filter(self, text: str) -> None:
@@ -96,7 +107,9 @@ class BrowseZone(ctk.CTkFrame):
             self._cap_label.configure(text="")
             return
         for m in matches[:ROW_CAP]:
-            row = blocks.row(self._list, t, m.model, _tier_label(m.tier),
+            status = (inactive_tag(self._inactive[m.model]) if m.model in self._inactive
+                      else _tier_label(m.tier))
+            row = blocks.row(self._list, t, m.model, status,
                              m.last_processed.strftime("%Y-%m-%d") if m.last_processed else "—",
                              on_click=lambda mm=m.model: self._cb(mm))
             row._summary = m     # test hook, alongside blocks.row's own _on_click_all/_set_hover

@@ -8,7 +8,9 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+from laser_trim_analyzer.core.activity import inactive_tag
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +95,9 @@ class Row:
     when: Optional[str] = None                      # ISO date, history rows
     base: str = ""          # the statement as first worded, before arrange() named a track in it
     ident: Tuple = ()       # what tells this row's findings apart from another's (_identity)
+    # The model's newest trim file when core/activity calls the model INACTIVE (James, 2026-09-25:
+    # labelled, never hidden); None for an active model, or when arrange() was told nothing.
+    inactive_since: Optional[datetime] = None
 
     @property
     def key(self) -> Tuple:
@@ -394,7 +399,13 @@ def _sort(key: str, rows: List[Row]) -> None:
         rows.sort(key=lambda r: (r.value is None, -(r.value or 0.0), r.model))
 
 
-def arrange(findings: Sequence[Dict[str, Any]], *, include_empty: bool = True) -> List[Group]:
+def arrange(findings: Sequence[Dict[str, Any]], *, include_empty: bool = True,
+            inactive: Optional[Mapping[str, datetime]] = None) -> List[Group]:
+    """`inactive` = {model: newest trim file} for the models core/activity calls inactive (the
+    screen's own load_activity; F5, 2026-09-25): each of their rows gets the quiet tag
+    "Inactive · last trimmed Mon YYYY" and `inactive_since`. Nothing else changes -- every row
+    stays, in the same order, so every count stays too; `preview` is where active rows come first."""
+    inactive = inactive or {}
     buckets: Dict[str, List[Row]] = {s.key: [] for s in (*GROUPS, OTHER)}
     merged: Dict[Tuple, Row] = {}
     unmapped = set()
@@ -423,6 +434,9 @@ def arrange(findings: Sequence[Dict[str, Any]], *, include_empty: bool = True) -
         for r in rows:
             r.value = _sum(readout(x) for x in r.findings)
             r.tags = _tags(r.findings)
+            if r.model in inactive:
+                r.inactive_since = inactive[r.model]
+                r.tags.append(inactive_tag(r.inactive_since))
             # Sorted, so a refresh that returns the merged findings in another order keeps the key.
             r.ident = tuple(sorted((_identity(x) for x in r.findings), key=repr))
             if len(r.findings) > 1:
@@ -436,6 +450,19 @@ def arrange(findings: Sequence[Dict[str, Any]], *, include_empty: bool = True) -
         if rows or (include_empty and spec is not OTHER):
             out.append(Group(spec, rows))
     return out
+
+
+def preview(group: Group, n: int) -> List[Row]:
+    """The rows a group shows before "Show all": its first `n`, ACTIVE models' rows first and then
+    the inactive ones, each part in the group's own order (James, 2026-09-25: a model not trimmed
+    in two years is labelled, never hidden -- so it can fall down a short list, never off the long
+    one). The full list (`group.rows`) keeps its order. "What changed" is a history, newest first
+    by date, and stays that way."""
+    rows = group.rows
+    if group.spec.key != "history":
+        rows = ([r for r in rows if r.inactive_since is None]
+                + [r for r in rows if r.inactive_since is not None])
+    return rows[:n]
 
 
 def _plural(n: int, one: str, many: str) -> str:

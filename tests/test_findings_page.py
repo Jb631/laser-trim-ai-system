@@ -197,3 +197,50 @@ def test_an_older_findings_page_load_never_overwrites_a_newer_one(make_app, monk
     notices = " | ".join(_labels(page._notices))
     assert "could not be loaded" not in notices, "an older load overwrote a newer one"
     assert "No findings yet" in notices
+
+
+# ---- F5 (2026-09-25): "Inactive" models -- labelled, never hidden ------------------------------
+
+def _seed_inactive(app):
+    """LIVE trimmed at the fleet's newest file; OLD last trimmed 900 days before it."""
+    from datetime import timedelta
+    from test_model_activity import NEWEST, _file
+    _file(app.db, "LIVE", NEWEST)
+    old_last = NEWEST - timedelta(days=900)
+    _file(app.db, "OLD", old_last)
+    return f"Inactive · last trimmed {old_last:%b %Y}"
+
+
+def test_an_inactive_models_finding_is_tagged_listed_after_the_active_ones_and_still_counted(make_app):
+    app = make_app()
+    tag = _seed_inactive(app)
+    app.db.replace_process_findings("OLD", {"tracks": 1, "errors": {}},
+                                    [_finding("OLD", "the old one", 900.0)])
+    for i in range(5):
+        app.db.replace_process_findings(f"LIVE{i}", {"tracks": 1, "errors": {}},
+                                        [_finding(f"LIVE{i}", f"live {i}", 800.0 - i)])
+    page = app.page_container.get_page("findings")
+    page.reload_now()
+    assert [k[1] for k in page._view.row_widgets] == [f"LIVE{i}" for i in range(5)]
+    assert "Show all 6" in _texts(page._view)
+    assert page._caption.cget("text").startswith("6 changes worth testing")      # still counted
+    page._view.show_all("yield")
+    assert [k[1] for k in page._view.row_widgets][0] == "OLD"                     # every row, in rank
+    assert tag in _texts(page._view)
+    assert _texts(page._view).count(tag) == 1
+
+
+def test_when_which_models_are_inactive_cannot_be_read_the_page_says_so(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.pages.findings_page as fp
+
+    def boom(db):
+        raise RuntimeError("invented activity crash")
+    app = make_app()
+    app.db.replace_process_findings("BIG", {"tracks": 1, "errors": {}}, [_finding("BIG", "big", 500.0)])
+    monkeypatch.setattr(fp, "load_activity", boom)
+    page = app.page_container.get_page("findings")
+    page.reload_now()
+    notices = " | ".join(_labels(page._notices))
+    assert "Which models are inactive could not be worked out" in notices
+    assert "RuntimeError: invented activity crash" in notices
+    assert len(page._view.row_widgets) == 1                         # the list itself is still true

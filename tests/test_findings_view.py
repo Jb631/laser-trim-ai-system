@@ -340,3 +340,34 @@ def test_a_rework_rows_readout_says_unit_days_beside_a_rows_in_tracks(tk_root):
     texts = _texts(v)
     assert "261 unit-days" in texts and "1,008" in texts
 
+
+
+# ---- F5 (2026-09-25): "Inactive" models -- labelled, never hidden ------------------------------
+
+def _row_tags(view, key):
+    import customtkinter as ctk
+    return [w.cget("text") for w in view.row_widgets[key].winfo_children()[1].winfo_children()
+            if isinstance(w, ctk.CTkLabel)]
+
+
+def test_an_inactive_models_rows_are_tagged_and_come_after_the_active_ones(tk_root):
+    from datetime import datetime
+    v = FindingsView(tk_root, ThemeManager())
+    ranked = [cut("OLD", 900.0, best=1.0)] + [cut(f"LIVE{i}", 800.0 - i, best=2.0 + i) for i in range(6)]
+    v.set_findings(ranked, inactive={"OLD": datetime(2016, 3, 7)})
+    shown = [k[1] for k in v.row_widgets]
+    assert shown == [f"LIVE{i}" for i in range(P.ROWS_PER_GROUP)]      # the preview: active first
+    assert "Show all 7" in _texts(v)
+    v.show_all("yield")
+    assert [k[1] for k in v.row_widgets] == ["OLD"] + [f"LIVE{i}" for i in range(6)]   # unchanged
+    old = next(k for k in v.row_widgets if k[1] == "OLD")
+    assert "Inactive · last trimmed Mar 2016" in _row_tags(v, old)
+    assert not any(t.startswith("Inactive") for k in v.row_widgets if k[1] != "OLD"
+                   for t in _row_tags(v, k))
+
+
+def test_with_nothing_inactive_the_view_is_exactly_as_before(tk_root):
+    v = FindingsView(tk_root, ThemeManager())
+    ranked = [cut(f"M{i}", 800.0 - i, best=float(i)) for i in range(7)]
+    v.set_findings(ranked)
+    assert [k[1] for k in v.row_widgets] == [f"M{i}" for i in range(P.ROWS_PER_GROUP)]

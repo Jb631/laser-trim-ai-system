@@ -41,6 +41,7 @@ class FindingsView(ctk.CTkFrame):
         # (arrange() itself already omits an EMPTY "other", listed or not).
         self._groups = None if groups is None else set(groups)
         self._findings: List[Dict[str, Any]] = []
+        self._inactive: Dict[str, Any] = {}       # {model: newest trim file} -- see set_findings
         self._expanded: Set[str] = set()
         self._rows: Dict[Tuple, P.Row] = {}
         self.row_widgets: Dict[Tuple, ctk.CTkFrame] = {}
@@ -48,8 +49,13 @@ class FindingsView(ctk.CTkFrame):
         self._detail: Optional[ctk.CTkFrame] = None
 
     # ---- public ----
-    def set_findings(self, findings: List[Dict[str, Any]]) -> None:
+    def set_findings(self, findings: List[Dict[str, Any]], *,
+                     inactive: Optional[Dict[str, Any]] = None) -> None:
+        """`inactive` = {model: newest trim file} of the models core/activity calls inactive, as
+        the page's own load worked it out: their rows are tagged, and come after the active ones
+        in a group's preview (presentation.arrange / preview). Every row is still drawn."""
         self._findings = list(findings or [])
+        self._inactive = dict(inactive or {})
         self._render()
 
     def toggle(self, key: Tuple) -> None:
@@ -80,7 +86,7 @@ class FindingsView(ctk.CTkFrame):
         self.row_widgets.clear()
         self._detail = None
         was_open, self.open_key = self.open_key, None
-        groups = P.arrange(self._findings, include_empty=self._include_empty)
+        groups = P.arrange(self._findings, include_empty=self._include_empty, inactive=self._inactive)
         if self._groups is not None:
             groups = [g for g in groups if g.spec.key in self._groups]
         for group in groups:
@@ -93,7 +99,8 @@ class FindingsView(ctk.CTkFrame):
                              text_color=t.TEXT_SECONDARY, anchor="w", justify="left",
                              wraplength=1000).pack(fill="x", padx=t.SPACE_SM)
                 continue
-            shown = group.rows if spec.key in self._expanded else group.rows[:self._rows_per_group]
+            shown = (group.rows if spec.key in self._expanded
+                     else P.preview(group, self._rows_per_group))
             for r in shown:
                 tone = P.value_tone(spec.key, r.value, r.findings)
                 color = t.PASS_FG if tone == "up" else t.CHECK if tone == "down" else None

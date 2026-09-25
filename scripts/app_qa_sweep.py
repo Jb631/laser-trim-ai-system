@@ -3110,14 +3110,15 @@ class _ViewRecorder:
     made: list = []
 
     def __init__(self, master, theme, **kw):
-        self.kw, self.rows = kw, []
+        self.kw, self.rows, self.inactive = kw, [], {}
         _ViewRecorder.made.append(self)
 
     def pack(self, *a, **k):
         pass
 
-    def set_findings(self, rows):
+    def set_findings(self, rows, *, inactive=None):
         self.rows = list(rows or [])
+        self.inactive = dict(inactive or {})        # F5: which models' rows the page marks
 
 
 def _rows_handed(view) -> int:

@@ -245,13 +245,17 @@ class FindingsTab(ctk.CTkFrame):
         self.set_data(None)
 
     # ---- public ----
-    def set_data(self, data: Optional[Dict[str, Any]], *, failed: Optional[str] = None) -> None:
+    def set_data(self, data: Optional[Dict[str, Any]], *, failed: Optional[str] = None,
+                 inactive: Optional[Dict[str, Any]] = None) -> None:
         """Three states, never two (facelift F4; the Model page's "Worth changing" section has had
         them since the final review):
           * FAILED -- the load itself crashed; `failed` names the error ("ExcType: message"). A
             check-tone banner and nothing else: whatever this tab drew before is not this load's.
           * NOT COMPUTED -- no facts cached (`data` None, or no "facts" in it).
           * computed -- the facts, then the findings, or "Nothing to act on" (the EMPTY state).
+
+        `inactive` = {model: newest trim file} when the model is inactive (the Model page's own
+        load, core/activity): its rows carry the quiet "Inactive · last trimmed" tag (F5).
         """
         t = self.theme
         for child in self._body.winfo_children():
@@ -277,7 +281,7 @@ class FindingsTab(ctk.CTkFrame):
             # on this model -- and empty groups hidden, since one model rarely has all four.
             view = FindingsView(self._body, t, on_open=None, include_empty=False)
             view.pack(fill="x")
-            view.set_findings(findings)
+            view.set_findings(findings, inactive=inactive)
         else:
             self._line("Nothing to act on. No analyzer found a lever worth pulling on this model — "
                        "that is a result, not a gap.", muted=True)

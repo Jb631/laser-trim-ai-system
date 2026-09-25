@@ -562,3 +562,42 @@ def test_the_failure_banner_wraps_to_the_page(make_app, monkeypatch, scale):
     finally:
         ctk.set_widget_scaling(1.0)
         ctk.set_window_scaling(1.0)
+
+
+# ---- F5 (2026-09-25): "Inactive" models -- labelled, never hidden ------------------------------
+
+def _statement(row):
+    """blocks.row's statement: the first label in its middle column."""
+    import customtkinter as ctk
+    mid = row.winfo_children()[1]
+    return next(w.cget("text") for w in mid.winfo_children() if isinstance(w, ctk.CTkLabel))
+
+
+def test_all_models_reads_inactive_with_its_month_where_a_drift_tier_would_mean_nothing(make_app):
+    from test_findings_page import _seed_inactive
+    app = make_app()
+    tag = _seed_inactive(app)
+    page = app.page_container.get_page("triage")
+    page._on_scope_change("All models")
+    page.reload_now()
+    status = {r._summary.model: _statement(r) for r in page._browse._rows}
+    assert status["OLD"] == tag
+    assert status["LIVE"] == "Stable"
+    assert "Inactive" in page._browse._legend.cget("text")
+
+
+def test_triage_says_so_when_which_models_are_inactive_cannot_be_read(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.pages.triage_page as tp
+    from test_findings_page import _seed_inactive
+
+    def boom(db):
+        raise RuntimeError("invented activity crash")
+    monkeypatch.setattr(tp, "load_activity", boom)
+    app = make_app()
+    _seed_inactive(app)
+    page = app.page_container.get_page("triage")
+    page._on_scope_change("All models")
+    page.reload_now()
+    assert page._load_banner.winfo_manager() == "pack"
+    assert "Which models are inactive could not be worked out" in page._load_banner.cget("text")
+    assert {r._summary.model: _statement(r) for r in page._browse._rows}["OLD"] == "Stable"

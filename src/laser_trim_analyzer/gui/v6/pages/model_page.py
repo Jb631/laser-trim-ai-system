@@ -9,6 +9,7 @@ import customtkinter as ctk
 
 logger = logging.getLogger(__name__)
 
+from laser_trim_analyzer.core.activity import inactive_caption, load_activity
 from laser_trim_analyzer.core.model_stats import (
     compute_lot_verdicts, compute_model_stats, default_lot_index, model_lots)
 from laser_trim_analyzer.core.spec_alignment import compare_station_specs
@@ -495,6 +496,16 @@ class ModelPage(PageBase):
                 logger.exception("Model %s: process findings failed", model)
                 failed.append("process findings")
                 findings_error = f"{type(exc).__name__}: {exc}"
+            inactive_since = None
+            try:
+                # Worked out on every load, never read from cached findings (F5, James 2026-09-25):
+                # a model turns inactive when OTHER models' newer files move the fleet forward.
+                activity = load_activity(self.app.db)
+                if activity.is_inactive(model):
+                    inactive_since = activity.last_trimmed(model)
+            except Exception:
+                logger.exception("Model %s: last-trimmed date failed", model)
+                failed.append("last-trimmed date")
             if findings_data is not None:
                 # The final-test predictor's own AUC, set beside loss_origin's on the Findings
                 # tab (spec ruling 2). Its own guard: a failed read is named on the tab, and it
@@ -539,7 +550,13 @@ class ModelPage(PageBase):
                 # run drift training in Settings" -- confident, specific, and false when the
                 # real reason is a crashed query. The banner below says what happened.
                 shown = verdict if (verdict and "drift status" not in failed) else None
-                _try("caption", lambda: self.set_caption(shown[0] if shown else "—"))
+                caption = shown[0] if shown else "—"
+                inactive = {}
+                if inactive_since is not None:
+                    # Starts with it (James: labelled, never hidden) -- the verdict still follows.
+                    caption = inactive_caption(inactive_since) + (f"  ·  {shown[0]}" if shown else "")
+                    inactive = {model: inactive_since}
+                _try("caption", lambda: self.set_caption(caption))
                 # Load banner first, spec banner second: both pack with
                 # before=self._worth_section (a fixed anchor, never each other -- see
                 # _set_load_banner / _set_spec_banner), and pack(before=X) always lands a
@@ -548,7 +565,8 @@ class ModelPage(PageBase):
                 # when both have something to say on the same pass.
                 _try("load banner", lambda: self._set_load_banner(failed))
                 _try("spec banner", lambda: self._set_spec_banner(spec))
-                _try("worth changing", lambda: self._set_findings_section(findings_data, failed))
+                _try("worth changing", lambda: self._set_findings_section(findings_data, failed,
+                                                                          inactive=inactive))
                 _try("lot selector", lambda: self._set_lot_choices(lots, lot_label))
                 _try("stats table", lambda: self._stats_table.set_stats(
                     stats, lot_stats=lot_stats, verdicts=verdicts,
@@ -564,7 +582,7 @@ class ModelPage(PageBase):
                 # A failed load is the tab's own FAILED state, naming the error -- never its "not
                 # computed yet" line under the banner that names the crash (facelift F4).
                 _try("findings tab", lambda: self._findings_tab.set_data(
-                    findings_data, failed=findings_error))
+                    findings_data, failed=findings_error, inactive=inactive))
             if sync:
                 apply()                 # already on the Tk thread — post nothing
             else:
@@ -659,7 +677,7 @@ class ModelPage(PageBase):
                                pady=(0, self.theme.SPACE_SM),
                                before=self._worth_section)
 
-    def _set_findings_section(self, findings_data, failed) -> None:
+    def _set_findings_section(self, findings_data, failed, *, inactive=None) -> None:
         """"Worth changing on this model" (design doc item 3): the model's findings, in
         the same FindingsView the Findings page and the Findings tab draw, capped to 3
         rows across the three ACTIONABLE groups (_WORTH_CHANGING_GROUPS) -- "history"
@@ -735,7 +753,7 @@ class ModelPage(PageBase):
         view = FindingsView(body, t, on_open=None, include_empty=False,
                             rows_per_group=3, groups=_WORTH_CHANGING_GROUPS)
         view.pack(fill="x")
-        view.set_findings(findings)
+        view.set_findings(findings, inactive=inactive)        # {model: last trimmed} when inactive
         blocks.link_button(body, t, "See all in the Findings tab",
                            lambda: self._select_tab(_FINDINGS_TAB_NAME)
                            ).pack(anchor="w", padx=t.SPACE_XS, pady=(t.SPACE_XS, 0))

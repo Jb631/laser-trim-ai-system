@@ -37,6 +37,7 @@ import customtkinter as ctk
 logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.core import ingest_run
+from laser_trim_analyzer.core.activity import activity_unknown_notice, load_activity
 from laser_trim_analyzer.core.ft_regrade import legacy_ft_count, legacy_ft_notice
 from laser_trim_analyzer.core.ingest_run import (
     EtaEstimator, ProgressCoalescer, ProgressTicker, format_ingest_summary,
@@ -499,8 +500,11 @@ class HomePage(PageBase):
         * which models' last refresh had an analyzer fail (get_process_errors) -- their
           findings may be MISSING from the list, so the banner says so (final review,
           2026-09-24: Home used to say nothing). If this read alone fails, the list is still
-          true and still shown, and `errors_failed` says the other thing is unknown."""
-        out = {"rows": [], "failed": None, "errors": {}, "errors_failed": None}
+          true and still shown, and `errors_failed` says the other thing is unknown;
+        * which models are inactive (core/activity, F5) -- their rows are tagged and follow the
+          active ones in the top three; if this read alone fails, `activity_failed` says so."""
+        out = {"rows": [], "failed": None, "errors": {}, "errors_failed": None,
+               "inactive": {}, "activity_failed": None}
         try:
             out["rows"] = self.app.db.get_process_findings()
         except Exception as exc:
@@ -512,6 +516,11 @@ class HomePage(PageBase):
         except Exception as exc:
             logger.exception("Home: could not read which models failed")
             out["errors_failed"] = f"{type(exc).__name__}: {exc}"
+        try:
+            out["inactive"] = load_activity(self.app.db).inactive()
+        except Exception as exc:
+            logger.exception("Home: could not work out which models are inactive")
+            out["activity_failed"] = f"{type(exc).__name__}: {exc}"
         return out
 
     def _reload_findings(self) -> None:
@@ -544,8 +553,11 @@ class HomePage(PageBase):
                                     before=self._worth_section)
             self._update_caption()
             return
-        notice = (P.errors_unknown_notice(data["errors_failed"]) if data.get("errors_failed")
-                  else P.errors_notice(data["errors"]) if data.get("errors") else "")
+        notices = [P.errors_unknown_notice(data["errors_failed"]) if data.get("errors_failed")
+                   else P.errors_notice(data["errors"]) if data.get("errors") else "",
+                   activity_unknown_notice(data["activity_failed"])
+                   if data.get("activity_failed") else ""]
+        notice = "\n".join(n for n in notices if n)
         if notice:
             self._worth_banner.configure(text=notice)
             self._worth_banner.pack(side="top", fill="x", pady=(0, t.SPACE_SM),
@@ -553,6 +565,7 @@ class HomePage(PageBase):
         else:
             self._worth_banner.pack_forget()
         rows = data.get("rows") or []
+        # An inactive model's rows still count here (F5): they are labelled, never hidden.
         # No cached findings at all is "never worked out" as much as "nothing found" -- this page
         # cannot tell them apart, so the caption states no N rather than a zero it cannot vouch
         # for (the Findings page drops its caption the same way); the section's own line below,
@@ -573,7 +586,7 @@ class HomePage(PageBase):
                                 include_empty=False, rows_per_group=3,
                                 groups=(_WORTH_CHANGING_GROUP,), open_as="link")
             view.pack(fill="x")
-            view.set_findings(rows)
+            view.set_findings(rows, inactive=data.get("inactive"))
             self._worth_view = view
         blocks.link_button(self._worth_section, t, "Open Findings", self._open_findings
                            ).pack(anchor="w", padx=t.SPACE_XS, pady=(t.SPACE_XS, 0))

@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.core.activity import activity_unknown_notice, load_activity
 from laser_trim_analyzer.findings import presentation as P
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
@@ -60,15 +61,19 @@ class FindingsPage(PageBase):
         threading.Thread(target=work, daemon=True).start()
 
     def _query(self) -> Dict[str, Any]:
-        """{"rows", "errors", "failed", "errors_failed"}. TWO reads, guarded separately:
+        """{"rows", "errors", "failed", "errors_failed", "inactive", "activity_failed"}. THREE
+        reads, guarded separately:
 
         * the list itself fails -> `failed` = "ExcType: message". A failed load must never come
           back looking like an empty, healthy result.
         * only "which models could not be worked out" fails -> the list is still true, so it is
           still shown; `errors_failed` says the OTHER thing is unknown. One try block around both
           used to replace a good list with an error page.
+        * only "which models are inactive" fails (core/activity, worked out on every load, F5) ->
+          the list is still true; `activity_failed` says no row could be marked.
         """
-        out: Dict[str, Any] = {"rows": [], "errors": {}, "failed": None, "errors_failed": None}
+        out: Dict[str, Any] = {"rows": [], "errors": {}, "failed": None, "errors_failed": None,
+                               "inactive": {}, "activity_failed": None}
         try:
             out["rows"] = self.app.db.get_process_findings()
         except Exception as exc:
@@ -80,6 +85,11 @@ class FindingsPage(PageBase):
         except Exception as exc:
             logger.exception("Findings page: could not read which models failed")
             out["errors_failed"] = f"{type(exc).__name__}: {exc}"
+        try:
+            out["inactive"] = load_activity(self.app.db).inactive()
+        except Exception as exc:
+            logger.exception("Findings page: could not work out which models are inactive")
+            out["activity_failed"] = f"{type(exc).__name__}: {exc}"
         return out
 
     def _apply(self, data: Any) -> None:
@@ -111,6 +121,8 @@ class FindingsPage(PageBase):
             notice(P.errors_unknown_notice(data["errors_failed"]))
         if errors:
             notice(P.errors_notice(errors))
+        if data.get("activity_failed"):
+            notice(activity_unknown_notice(data["activity_failed"]))
         if not rows:
             self.set_caption("")
             notice("No findings yet. They are worked out after each ingest that saves trim files; "
@@ -125,8 +137,8 @@ class FindingsPage(PageBase):
         # (or withdrawn, as in the tests) has nothing mapped whether the view is packed or not.
         if self._view.winfo_manager() == "":
             self._view.pack(fill="x")
-        self.set_caption(P.caption(P.arrange(rows), rows))
-        self._view.set_findings(rows)
+        self.set_caption(P.caption(P.arrange(rows), rows))       # an inactive finding still counts
+        self._view.set_findings(rows, inactive=data.get("inactive"))
 
     def _open(self, model: str) -> None:
         self.app.set_model_route(model, tab="findings")

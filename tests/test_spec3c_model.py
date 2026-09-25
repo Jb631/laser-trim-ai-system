@@ -2281,3 +2281,50 @@ def test_the_failure_texts_wrap_to_the_page(make_app, monkeypatch, state, scale)
     finally:
         ctk.set_widget_scaling(1.0)
         ctk.set_window_scaling(1.0)
+
+
+# ---- F5 (2026-09-25): "Inactive" models -- labelled, never hidden ------------------------------
+
+def _inactive_model_app(make_app):
+    """OLD's lots end 2023-03-20; LIVE's file is the fleet's newest (2026-09-22)."""
+    from test_model_activity import NEWEST, _file
+    app = make_app()
+    _seed_tracks(app.db, "OLD", "untrimmed_resistance", start=datetime(2023, 1, 2))
+    _file(app.db, "LIVE", NEWEST)
+    app.db.replace_process_findings("OLD", {"tracks": 36, "errors": {}},
+                                    [dict(_WORTH_CHANGING_FINDING, model="OLD")])
+    app.set_model_route("OLD")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    return app, page
+
+
+def test_an_inactive_models_caption_says_so_first_and_its_findings_carry_the_tag(make_app):
+    app, page = _inactive_model_app(make_app)
+    caption = page._caption.cget("text")
+    assert caption.startswith("Inactive — last trimmed Mar 2023"), caption
+    assert len(caption) > len("Inactive — last trimmed Mar 2023")       # the verdict still follows
+    tag = "Inactive · last trimmed Mar 2023"
+    assert tag in _worth_texts(page)
+    assert tag in [w.cget("text") for w in _all_labels(page._findings_tab)]
+    assert "last-trimmed date" not in page._load_banner.cget("text")
+
+
+def test_an_active_models_page_carries_no_inactive_label(make_app):
+    app, page = _worth_app(make_app)
+    assert not page._caption.cget("text").startswith("Inactive")
+    assert not any(str(t).startswith("Inactive") for t in _worth_texts(page))
+
+
+def test_when_the_last_trimmed_date_cannot_be_read_the_page_says_so(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+
+    def boom(db):
+        raise RuntimeError("invented activity crash")
+    monkeypatch.setattr(mp, "load_activity", boom)
+    app, page = _inactive_model_app(make_app)
+    assert "last-trimmed date" in page._load_banner.cget("text")
+    assert not page._caption.cget("text").startswith("Inactive")

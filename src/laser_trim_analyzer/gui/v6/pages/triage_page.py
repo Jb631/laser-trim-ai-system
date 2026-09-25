@@ -30,6 +30,7 @@ import customtkinter as ctk
 
 logger = logging.getLogger(__name__)
 
+from laser_trim_analyzer.core.activity import activity_unknown_notice, load_activity
 from laser_trim_analyzer.gui.v6.focus_data import focus_failed, load_focus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
@@ -57,6 +58,7 @@ class TriagePage(PageBase):
         self._models = []
         self._active = set()
         self._browse_failed = None     # "ExcType: message" when the model list failed to load
+        self._inactive = {}            # {model: newest trim file} -- core/activity's, this load's
         self._focus_header = None      # blocks.group_header wrap; rebuilt in _apply() (needs the count)
         # Reload generation (the Model page's _reload_gen pattern, facelift F4): a load's apply is
         # dropped unless it is the newest -- workers finish in any order, and an older, slower
@@ -151,7 +153,8 @@ class TriagePage(PageBase):
         threading.Thread(target=work, daemon=True).start()
 
     def _query(self):
-        """One DB pass -> (FocusResult, models, active, last, browse_failed). Worker-safe: no Tk.
+        """One DB pass -> (FocusResult, models, active, last, browse_failed, inactive,
+        activity_failed). Worker-safe: no Tk.
 
         The FOCUS half goes through `focus_data.load_focus`, which Home calls
         too — the two landing screens must not be able to disagree about what
@@ -173,12 +176,21 @@ class TriagePage(PageBase):
             logger.exception("Triage query failed")
             browse_failed = f"{type(exc).__name__}: {exc}"
             models, active = [], set()
+        # Which models are INACTIVE (core/activity, F5): worked out on every load, so the browse
+        # list's status word follows the fleet. A failure is named, never "every model active".
+        inactive, activity_failed = {}, None
+        try:
+            inactive = load_activity(self.app.db).inactive()
+        except Exception as exc:
+            logger.exception("Triage: could not work out which models are inactive")
+            activity_failed = f"{type(exc).__name__}: {exc}"
         # A failed inventory is no stamp for the FOCUS list's "last processed": let
         # load_focus read it for itself rather than hand it an empty list.
         result, last = load_focus(self.app.db, models=None if browse_failed else models)
-        return result, models, active, last, browse_failed
+        return result, models, active, last, browse_failed, inactive, activity_failed
 
-    def _apply(self, result, models, active, last, browse_failed=None):
+    def _apply(self, result, models, active, last, browse_failed=None, inactive=None,
+               activity_failed=None):
         # Rebuilt whole each load, like every other dynamic blocks.group_header in the app
         # (findings_view.py's own _render()) -- the count pill can only be right once the data
         # is in hand, and a FAILED load has no count at all (count=None: no pill).
@@ -188,7 +200,7 @@ class TriagePage(PageBase):
             except Exception:
                 pass
         focus_error = focus_failed(result)
-        self._set_load_banner(focus_error, browse_failed)
+        self._set_load_banner(focus_error, browse_failed, activity_failed)
         self._focus_header = blocks.group_header(
             self._content_parent, self.theme, "Needs a look",
             None if focus_error else len(result.focus))
@@ -204,24 +216,31 @@ class TriagePage(PageBase):
         self._focus.set_result(result, last_processed=last)
         self._models, self._active = models, active
         self._browse_failed = browse_failed
+        self._inactive = dict(inactive or {})
         self._apply_browse()
         self._fit_focus_zone()
 
-    def _set_load_banner(self, focus_error, browse_error) -> None:
+    def _set_load_banner(self, focus_error, browse_error, activity_error=None) -> None:
         """Name every load that failed this pass -- the same shape as the Model and Dashboard
         pages' `_set_load_banner` -- or unpack the banner. `before=self._focus_wrap`: the header
-        is packed after this, also before the wrap, so the banner leads the page."""
+        is packed after this, also before the wrap, so the banner leads the page. Which models are
+        inactive failing empties nothing (the list shows drift tiers instead), so it says that."""
         failed = []
         if focus_error:
             failed.append(f"the drifting-now list ({focus_error})")
         if browse_error:
             failed.append(f"the model list ({browse_error})")
-        if not failed:
+        lines = []
+        if failed:
+            lines.append("⚠ Could not load: " + "; ".join(failed) + ". Those parts of this page "
+                         "are empty — this is an error, not an absence of data. The log has the "
+                         "details.")
+        if activity_error:
+            lines.append("⚠ " + activity_unknown_notice(activity_error))
+        if not lines:
             self._load_banner.pack_forget()
             return
-        self._load_banner.configure(
-            text=("⚠ Could not load: " + "; ".join(failed) + ". Those parts of this page are "
-                  "empty — this is an error, not an absence of data. The log has the details."))
+        self._load_banner.configure(text="\n".join(lines))
         self._load_banner.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM),
                                before=self._focus_wrap)
 
@@ -235,7 +254,7 @@ class TriagePage(PageBase):
         # long-lived DB were last run years ago — real, but not "today".
         if not self._show_all and self._active:
             models = [m for m in models if m.model in self._active]
-        self._browse.set_models(models)
+        self._browse.set_models(models, inactive=self._inactive)
 
     # ---- events ----
     def _on_scope_change(self, value):

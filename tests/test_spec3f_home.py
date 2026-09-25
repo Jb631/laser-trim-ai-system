@@ -886,3 +886,38 @@ def test_the_failure_banners_and_notices_wrap_to_the_page(make_app, monkeypatch,
     finally:
         ctk.set_widget_scaling(1.0)
         ctk.set_window_scaling(1.0)
+
+
+# ---- F5 (2026-09-25): "Inactive" models -- labelled, never hidden ------------------------------
+
+def test_worth_changing_lists_active_models_first_and_still_counts_the_inactive_one(make_app):
+    from test_findings_page import _seed_inactive
+    app = make_app()
+    tag = _seed_inactive(app)
+    app.db.replace_process_findings("OLD", {"tracks": 1}, [_finding("OLD", "old one", 900.0)])
+    for i in range(3):
+        app.db.replace_process_findings(f"LIVE{i}", {"tracks": 1},
+                                        [_finding(f"LIVE{i}", f"live {i}", 800.0 - i)])
+    page = _home(app)
+    page.reload_now()
+    assert [k[1] for k in page._worth_view.row_widgets] == ["LIVE0", "LIVE1", "LIVE2"]
+    assert "4 worth changing" in page._caption.cget("text")                     # still counted
+    page._worth_view.show_all("yield")
+    assert [k[1] for k in page._worth_view.row_widgets][0] == "OLD"
+    assert tag in _labels(page._worth_section)
+
+
+def test_home_says_so_when_which_models_are_inactive_cannot_be_read(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.pages.home_page as home_mod
+
+    def boom(db):
+        raise RuntimeError("invented activity crash")
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    app.db.replace_process_findings("BIG", {"tracks": 1}, [_finding("BIG", "big one", 500.0)])
+    monkeypatch.setattr(home_mod, "load_activity", boom)
+    page = _home(app)
+    page.reload_now()
+    assert page._worth_banner.winfo_manager() == "pack"
+    assert "Which models are inactive could not be worked out" in page._worth_banner.cget("text")
+    assert len(page._worth_view.row_widgets) == 1

@@ -373,3 +373,56 @@ def test_each_groups_words_cover_its_analyzers():
     assert "hand" in groups["laser_time"].empty.lower()   # rework_load: hand trim after a laser fail
     assert groups["history"].empty != "No recipe changes found."
     assert "setting" in groups["history"].empty.lower()   # setup_change sits in this group too
+
+
+# ---- F5 (2026-09-25): "Inactive" models -- labelled, never hidden ------------------------------
+# James: "models that havnt been trimmed in 2 years should show inacative or something but i dont
+# want to hide them". core/activity decides WHICH models; these are the rules for their rows.
+
+from datetime import datetime as _dt
+
+_LAST = _dt(2016, 3, 7)
+_TAG = "Inactive · last trimmed Mar 2016"
+
+
+def _ranked(*models_and_rates):
+    return [f("ink_target", m, tpy=r, category="Ink target") for m, r in models_and_rates]
+
+
+def _group(groups, key):
+    return [g for g in groups if g.spec.key == key][0]
+
+
+def test_every_row_of_an_inactive_model_carries_the_quiet_tag_and_nothing_else_changes():
+    fs = (_ranked(("LIVE", 50.0), ("OLD", 500.0)) + [cut("OLD", tpy=90.0)]
+          + [lt("Track A", model="OLD"), lt("Track A", model="LIVE")])
+    plain = P.arrange(fs)
+    marked = P.arrange(fs, inactive={"OLD": _LAST})
+    assert [(g.spec.key, [r.key for r in g.rows]) for g in marked] == \
+        [(g.spec.key, [r.key for r in g.rows]) for g in plain]           # every row, same order
+    tagged = [(r.model, r.tags[-1:] == [_TAG], r.inactive_since) for g in marked for r in g.rows]
+    assert tagged and all(t == (m == "OLD") for m, t, _ in tagged)
+    assert all(since == (_LAST if m == "OLD" else None) for m, _, since in tagged)
+    assert P.caption(marked, fs) == P.caption(plain, fs)                  # counts unchanged
+
+
+def test_a_preview_lists_active_models_first_and_the_full_list_is_unchanged():
+    fs = _ranked(("OLD1", 900.0), ("LIVE1", 800.0), ("OLD2", 700.0), ("LIVE2", 600.0),
+                 ("LIVE3", 500.0))
+    group = _group(P.arrange(fs, inactive={"OLD1": _LAST, "OLD2": _LAST}), "yield")
+    assert [r.model for r in group.rows] == ["OLD1", "LIVE1", "OLD2", "LIVE2", "LIVE3"]
+    assert [r.model for r in P.preview(group, 3)] == ["LIVE1", "LIVE2", "LIVE3"]
+    assert [r.model for r in P.preview(group, 5)] == ["LIVE1", "LIVE2", "LIVE3", "OLD1", "OLD2"]
+    plain = _group(P.arrange(fs), "yield")                          # nothing inactive: as before
+    assert [r.model for r in P.preview(plain, 3)] == ["OLD1", "LIVE1", "OLD2"]
+
+
+def test_what_changed_stays_newest_first_in_its_preview():
+    def change(model, first):
+        return f("recipe_change", model, title="Laser 1 (LTS): recipe changed from 1 cut to 2 cuts",
+                 evidence={"before": {"trim_pass_pct": 50.0},
+                           "after": {"trim_pass_pct": 70.0, "first": first}})
+    fs = [change("LIVE", "2015-06-01"), change("OLD", "2016-01-05")]
+    group = _group(P.arrange(fs, inactive={"OLD": _LAST}), "history")
+    assert [r.model for r in P.preview(group, 5)] == ["OLD", "LIVE"]
+    assert group.rows[0].tags[-1] == _TAG
