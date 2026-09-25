@@ -105,9 +105,13 @@ class UnitsTab(RowBudgetMixin, ctk.CTkFrame):
         self._selected: set = set()   # analysis_id of checked rows (subset export)
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
-        ctk.CTkButton(bar, text="Export to Excel", fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                      text_color=theme.TEXT_INVERSE, command=self._on_export,
-                      corner_radius=theme.RADIUS_SM).pack(side="right")
+        # Outlined, not teal-filled (final review, 2026-09-24): the Model page's header already
+        # carries its one teal button ("Export model to Excel"), and with this tab open the
+        # screen showed three -- this one and "Search" below as well. Same outline as its
+        # neighbour "Export charts (PDF)".
+        ctk.CTkButton(bar, text="Export to Excel", fg_color=theme.CARD, hover_color=theme.ELEVATED,
+                      text_color=theme.TEXT_PRIMARY, border_width=1, border_color=theme.BORDER,
+                      command=self._on_export, corner_radius=theme.RADIUS_SM).pack(side="right")
         if on_export_charts is not None:
             # Chart export: the checked rows (or all shown if none are checked)
             # as a single multi-page print-ready PDF.
@@ -121,9 +125,11 @@ class UnitsTab(RowBudgetMixin, ctk.CTkFrame):
                                     font=theme.font(theme.SIZE_BODY))
         self._search.pack(side="left")
         self._search.bind("<Return>", lambda e: self._do_search())
-        ctk.CTkButton(bar, text="Search", width=64, fg_color=theme.ACCENT,
-                      hover_color=theme.ACCENT_HOVER, text_color=theme.TEXT_INVERSE,
-                      command=self._do_search, corner_radius=theme.RADIUS_SM
+        # Outlined like "Recent" beside it (see "Export to Excel" above: one teal per screen).
+        ctk.CTkButton(bar, text="Search", width=64, fg_color="transparent",
+                      hover_color=theme.ELEVATED, border_width=1, border_color=theme.BORDER,
+                      text_color=theme.TEXT_PRIMARY, command=self._do_search,
+                      corner_radius=theme.RADIUS_SM
                       ).pack(side="left", padx=(theme.SPACE_XS, 0))
         ctk.CTkButton(bar, text="Recent", width=64, fg_color="transparent",
                       border_width=1, border_color=theme.BORDER, text_color=theme.TEXT_SECONDARY,

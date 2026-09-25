@@ -143,12 +143,14 @@ def primary_button(parent, theme, text: str, command) -> ctk.CTkButton:
                          corner_radius=t.RADIUS_MD, height=32)
 
 
-def link_button(parent, theme, text: str, command) -> ctk.CTkButton:
-    """Teal text that acts -- 'Show all 53'."""
+def link_button(parent, theme, text: str, command, tone: str = "act") -> ctk.CTkButton:
+    """Teal text that acts -- 'Show all 53'. tone="check" is the coral for an action that
+    destroys something ("Clear selected" deletes records): still a link, never a filled button,
+    but it must not look like every harmless link beside it (final review, 2026-09-24)."""
     t = theme
     return ctk.CTkButton(parent, text=text, command=command, fg_color="transparent",
-                         hover_color=t.CARD, text_color=t.ACCENT, font=t.font(t.SIZE_BODY),
-                         anchor="w", width=0, height=28)
+                         hover_color=t.CARD, text_color=t.CHECK if tone == "check" else t.ACCENT,
+                         font=t.font(t.SIZE_BODY), anchor="w", width=0, height=28)
 
 
 def wrap_to_width(label: ctk.CTkLabel, container, padding: int = 0) -> None:

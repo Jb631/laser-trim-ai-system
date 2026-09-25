@@ -155,10 +155,12 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
     btns = ctk.CTkFrame(parent, fg_color="transparent")
     btns.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
     blocks.link_button(btns, t, "Preview", _preview).pack(side="left")
-    # Destructive, but the CONFIRMATION dialog above (messagebox.askyesno, unchanged) is what
-    # actually gates the delete -- not this button's fill colour, which blocks.py has no
-    # separate "danger" variant for (ruling 3: actions use primary_button/link_button).
-    blocks.link_button(btns, t, "Clear selected", _execute).pack(side="left", padx=(t.SPACE_SM, 0))
+    # Destructive: the CONFIRMATION dialog above (messagebox.askyesno, unchanged) is what
+    # actually gates the delete. Still a link (ruling 3: actions use primary_button/link_button;
+    # Settings has no teal-filled button at all), but in the CHECK coral, so the danger cue
+    # survives beside the harmless teal "Preview" (final review, 2026-09-24).
+    blocks.link_button(btns, t, "Clear selected", _execute, tone="check"
+                       ).pack(side="left", padx=(t.SPACE_SM, 0))
 
     def _reset_skipped():
         from tkinter import messagebox

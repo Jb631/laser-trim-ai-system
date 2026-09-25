@@ -179,6 +179,28 @@ def test_database_cleanup_section_builds(tk_root, tmp_path):
                                    app=_fake_app(tmp_path, "dc.db"))
 
 
+def test_the_destructive_link_keeps_its_danger_cue(tk_root, tmp_path):
+    """M8 (final review, 2026-09-24): "Clear selected" DELETES records. It stays a link (Settings
+    has no teal button at all), but in the CHECK coral, not the teal every other action here
+    wears -- the confirmation dialog still gates it (unchanged)."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_database_cleanup_section
+    t = ThemeManager()
+    frame = ctk.CTkFrame(tk_root)
+    build_database_cleanup_section(frame, theme=t, app=_fake_app(tmp_path, "dc2.db"))
+
+    def walk(w):
+        for c in w.winfo_children():
+            yield c
+            yield from walk(c)
+    buttons = {b.cget("text"): b for b in walk(frame) if isinstance(b, ctk.CTkButton)}
+    clear = buttons["Clear selected"]
+    assert clear.cget("text_color") == t.CHECK
+    assert clear.cget("fg_color") == "transparent"                   # still a link, never filled
+    assert buttons["Preview"].cget("text_color") == t.ACCENT          # the harmless one stays teal
+
+
 def test_build_cleanup_options():
     from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_cleanup_options
     base = dict(non_mps=False, before_date_enabled=False, date_str="", suspect=False,

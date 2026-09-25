@@ -38,7 +38,9 @@ def test_primary_text_reads_comfortably_on_every_surface(surface):
     assert contrast(T.TEXT_PRIMARY, getattr(T, surface)) >= 7.0
 
 
-@pytest.mark.parametrize("text", ("TEXT_SECONDARY", "TEXT_DISABLED", "ACCENT"))
+# CHECK too since the final review (2026-09-24): the coral is the text of a destructive link
+# ("Clear selected", Settings -> Database), on the card like every other link.
+@pytest.mark.parametrize("text", ("TEXT_SECONDARY", "TEXT_DISABLED", "ACCENT", "CHECK"))
 @pytest.mark.parametrize("surface", SURFACES)
 def test_every_other_text_colour_clears_the_minimum_on_every_surface(text, surface):
     # TEXT_DISABLED included on purpose: this app uses it for real information (chart tick

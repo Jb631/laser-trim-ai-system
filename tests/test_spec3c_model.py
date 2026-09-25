@@ -1874,6 +1874,21 @@ def test_a_failed_findings_load_banners_never_the_quiet_line(make_app, monkeypat
     assert page._worth_view is None
 
 
+def test_one_teal_button_on_the_model_page_whichever_tab_is_open(make_app):
+    """I4 (final review, 2026-09-24): with the Units tab open the page drew THREE teal-filled
+    buttons -- the header's "Export model to Excel" plus the tab's own "Export to Excel" and
+    "Search". At most one per screen: the header's stays teal, the tab's are outlined."""
+    import customtkinter as ctk
+    app, page = _worth_app(make_app)
+    t = page.theme
+    for name in list(page._tabs._name_list):
+        page._tabs.set(name)
+        app.update_idletasks()
+        teal = [w.cget("text") for w in _all_labels(page)
+                if isinstance(w, ctk.CTkButton) and w.cget("fg_color") == t.ACCENT]
+        assert teal == ["Export model to Excel"], f"{name}: {teal}"
+
+
 def test_spec_and_load_banners_are_check_tone_blocks_hidden_when_quiet(make_app):
     app, page = _worth_app(make_app, finding=False)
     t = page.theme
