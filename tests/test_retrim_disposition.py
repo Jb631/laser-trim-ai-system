@@ -569,3 +569,40 @@ def test_overkill_unit_days_without_a_unit_id_count_the_linked_file(tmp_path, mo
     out = _agreement(db, "M1")
     assert out["overkills"] == 3
     assert out["overkill_unit_days"] == 2
+
+
+def test_the_trim_pass_rate_leaves_out_tracks_that_failed_processing(tmp_path, models):
+    """The Model page's trim linearity rate (fix round 2, 2026-09-25). An analysis passes when
+    every track with a verdict passed -- a track the analyser could not read has none, and
+    counting its NULL as a failure turned a real pass into a fail; an analysis whose ONLY track
+    is unreadable is not a trim at all, so it is not in the denominator either."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    DBAR, DBFT, DBTR, StatusType, SystemType = models
+
+    db = DatabaseManager(tmp_path / "trim_rate.db")
+    day = datetime(2026, 3, 2, 9, 0)
+
+    def analysis(s, serial, tracks):
+        a = DBAR(filename=f"M1_{serial}.xls", file_path=f"/t/M1/{serial}",
+                 file_hash=f"M1{serial}".ljust(64, "0"), model="M1", serial=serial,
+                 system=SystemType.A, file_date=day, timestamp=day,
+                 overall_status=StatusType.PASS, has_multi_tracks=len(tracks) > 1,
+                 processing_time=0.1)
+        s.add(a)
+        s.flush()
+        for track_id, status, lin_pass in tracks:
+            s.add(DBTR(analysis_id=a.id, track_id=track_id, status=status,
+                       linearity_pass=lin_pass, sigma_gradient=0.01, sigma_pass=True))
+
+    with db.session() as s:
+        analysis(s, "5", [("TRK1", StatusType.PASS, True), ("TRK2", StatusType.ERROR, None)])
+        analysis(s, "6", [("TRK1", StatusType.ERROR, None)])
+        analysis(s, "7", [("TRK1", StatusType.FAIL, False)])
+        analysis(s, "8", [("TRK1", StatusType.PROCESSING_FAILED, None),
+                          ("TRK2", StatusType.PASS, True)])
+        s.commit()
+
+    out = _agreement(db, "M1")
+    assert out["trim_total"] == 3         # 5, 7 and 8; 6's only track could not be read
+    assert out["trim_pass"] == 2          # 5 and 8 pass on their one real track each
+    assert out["trim_pass_rate"] == pytest.approx(200 / 3)

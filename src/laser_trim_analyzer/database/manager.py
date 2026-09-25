@@ -142,6 +142,15 @@ def extract_shop_number(serial: Optional[str]) -> Optional[str]:
     return match.group(0) if match else None
 
 
+def _no_disposition_status_names() -> List[str]:
+    """Track statuses that carry no linearity disposition: an untrimmed sweep, and a file whose
+    processing failed (core/model_stats' one definition, ERROR / PROCESSING_FAILED). Names, as
+    the stored Enum column compares them. Shared by the trim-vs-FT disposition and the Model
+    page's trim pass rate, so the two cannot count a different set of tracks."""
+    return ([DBStatusType.UNTRIMMED.name]
+            + [st.name for st in failed_processing_statuses()])
+
+
 def compute_unit_id(
     model: Optional[str],
     serial: Optional[str],
@@ -2904,9 +2913,8 @@ class DatabaseManager:
         )
 
         # Tracks that carry no disposition: an untrimmed sweep, or a file whose
-        # processing failed. Names, as the stored Enum column compares them.
-        no_disposition = ([DBStatusType.UNTRIMMED.name]
-                          + [st.name for st in failed_processing_statuses()])
+        # processing failed (the module helper's one list).
+        no_disposition = _no_disposition_status_names()
 
         # Last attempt per (unit-day, track), ordered by the clock time the
         # parser now keeps; id breaks exact ties deterministically.
@@ -3049,13 +3057,16 @@ class DatabaseManager:
             cutoff = cutoff_date if cutoff_date is not None else (
                 (datetime.now() - timedelta(days=days_back)) if days_back else None)
 
-            # Trim linearity pass rate (unit = analysis; pass = ALL tracks pass).
+            # Trim linearity pass rate (unit = analysis; pass = ALL tracks pass). A track
+            # with no disposition -- untrimmed, or unreadable (2026-09-25) -- is not a
+            # track that failed: it is left out, and an analysis with no other track is
+            # not in the rate at all.
             tq = (session.query(
                     DBAnalysisResult.id,
                     func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label("all_pass"))
                   .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
                   .filter(DBAnalysisResult.model == model,
-                          DBTrackResult.status != DBStatusType.UNTRIMMED.name))
+                          DBTrackResult.status.notin_(_no_disposition_status_names())))
             if cutoff is not None:
                 tq = tq.filter(DBAnalysisResult.file_date >= cutoff)
             trim_rows = tq.group_by(DBAnalysisResult.id).all()
