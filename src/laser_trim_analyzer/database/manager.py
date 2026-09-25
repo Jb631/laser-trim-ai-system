@@ -3975,6 +3975,25 @@ class DatabaseManager:
                 self._write_trim_passes(session, db_track, track)
             self._write_trim_setup(session, existing.id, getattr(analysis, 'trim_setup', None))
 
+            # Record as processed file -- same call save_analysis's "create
+            # new" branch makes, in this same transaction. Before this, a
+            # reprocess updated analysis_results/track_results but left
+            # processed_files exactly as the EARLIER run wrote it: a file
+            # that failed once and then processed cleanly still read as
+            # failed on the Model page (and the reverse), and
+            # `_load_processed_hashes` (success=True only) would keep
+            # offering a since-fixed file as an error forever.
+            is_success = analysis.overall_status != AnalysisStatus.ERROR
+            self._record_processed_file(
+                session,
+                analysis.metadata.file_path,
+                existing.id,
+                success=is_success,
+                # See save_analysis for why reason/marker_reason differ.
+                reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
+                marker_reason=_error_reason(analysis),
+            )
+
             logger.debug(f"Updated analysis ID {existing.id}: status={analysis.overall_status.value}")
             return existing.id
 
@@ -3985,6 +4004,19 @@ class DatabaseManager:
         for track, db_track in zip(analysis.tracks, db_analysis.tracks):
             self._write_trim_passes(session, db_track, track)
         self._write_trim_setup(session, db_analysis.id, getattr(analysis, 'trim_setup', None))
+
+        # Same reasoning as the branch above: this fallback mirrors
+        # save_analysis's "create new" path, which records the processed
+        # file too.
+        is_success = analysis.overall_status != AnalysisStatus.ERROR
+        self._record_processed_file(
+            session,
+            analysis.metadata.file_path,
+            db_analysis.id,
+            success=is_success,
+            reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
+            marker_reason=_error_reason(analysis),
+        )
         return db_analysis.id
 
     # =========================================================================
