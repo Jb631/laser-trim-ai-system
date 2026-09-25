@@ -1,5 +1,26 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-25 — one measurement for the speed work (about 6 minutes, safe with the app open)
+
+This pull adds `scripts\ingest_save_probe.py`; nothing in the app changes. It measures, on YOUR
+laptop's disk, what a save really costs and where the ingest loop's time goes — the numbers the
+speed work (TRACKER A4/A3) is tuned from. From PowerShell:
+
+```powershell
+cd C:\dev\laser-trim-ai-system
+.\.venv\Scripts\python scripts\ingest_save_probe.py "\\192.168.66.9\BTXData\Departments\System Data\TEST_DATA\DLTS" 120
+```
+
+- It copies `data\analysis.db` READ-ONLY (the app can stay open) to your TEMP folder, measures on the
+  copy, and deletes it at the end — on Ctrl-C or an error too. It needs about twice the database's
+  size free on the TEMP drive (~13 GB) and refuses otherwise.
+- About 6 minutes; add `--no-loop` to stop after the save timings (~3 minutes).
+- **Paste the whole output back to Claude.** If the last line starts with `FAILED:` or `REFUSED:`,
+  that line says what happened, and the copy is already gone.
+- Three quick questions while you are there: did the 09-22 rebuild run at work or over the VPN
+  overnight? Was the V6 window open during the 674-file timing run on 09-21? What does
+  `.\.venv\Scripts\python --version` print?
+
 ## ⚡ 2026-09-25 midday — the rest of the findings catalogue (pull, then refresh once)
 
 Six more analyzers — each reviewed on its own, then all together (a whole-branch review, one fix
