@@ -1363,12 +1363,61 @@ def test_model_page_units_toggle_draws_the_unit_view(make_app, monkeypatch):
     assert [kind for kind, _ in calls] == ["units"]
     assert calls[0][1]["metric"] == "linearity_fail_fraction"
     # The Units view opens on the last 12 months (James: the all-history wall "looks
-    # horrible"); dropping the kwarg at this call site would bring the wall back.
+    # horrible"); dropping the kwarg at this call site would bring the wall back -- while the
+    # window control is at its default. An explicit choice is honoured (final review I6).
     assert calls[0][1].get("default_window_days") == 366
+    page._window_choice = "All"
+    calls.clear()
+    page._render_focus_chart()
+    assert calls[0][1].get("default_window_days") is None
+    page._window_choice = "90d"
     calls.clear()
     page._on_chart_view_change("Lots · SPC")           # and back
     assert page._chart_view == "lots"
     assert [kind for kind, _ in calls] == ["spc"]
+
+
+def _two_years_app(make_app, monkeypatch, model="LONG"):
+    """A model with ~2 years of weekly lots of the page's default metric and a trained baseline
+    (so the Units view draws its key), routed onto the Model page; reloads run synchronously."""
+    from laser_trim_analyzer.database.models import ModelMetricState
+    from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
+    app = make_app()
+    _seed_tracks(app.db, model, "untrimmed_sigma_gradient", n_lots=110, n_per=3,
+                 start=datetime(2024, 1, 1))
+    with app.db.session() as s:
+        s.add(ModelMetricState(model=model, metric="untrimmed_sigma_gradient",
+                               baseline_mean=0.03, baseline_std=0.01, baseline_count=100,
+                               is_trained=True))
+        s.commit()
+    app.set_model_route(model)
+    page = app.page_container.get_page("model")
+    monkeypatch.setattr(page, "_reload", lambda **kw: ModelPage._reload(page, sync=True))
+    app.show_page("model")
+    page._on_chart_view_change("Units")
+    return app, page
+
+
+def _units_view(page):
+    import matplotlib.dates as mdates
+    x0, x1 = page._focus_chart._ax.get_xlim()
+    span = (mdates.num2date(x1) - mdates.num2date(x0)).days
+    key = next(t.get_text() for t in page._focus_chart._ax.texts if t.get_text().startswith("━"))
+    return span, key
+
+
+def test_the_units_view_honours_an_explicit_all_window(make_app, monkeypatch):
+    """I6 (final review, 2026-09-24): with the Units view's 12-month default passed on every
+    call, choosing "All" still showed only the last 12 months -- silently. Ruling: the default
+    applies only while the window control is at its default; an explicit choice is honoured,
+    and past 18 months the rolling median becomes 90 days, as designed."""
+    app, page = _two_years_app(make_app, monkeypatch)
+    span, key = _units_view(page)                      # the page's default window (90d)
+    assert span <= 100 and "30-day median" in key, (span, key)
+    page._on_window_change("All")
+    span, key = _units_view(page)
+    assert span >= 700, f"'All' showed only {span} days of ~760"
+    assert "90-day median" in key, key
 
 
 def test_chart_toggle_re_renders_loaded_data_without_touching_the_db(make_app, monkeypatch):

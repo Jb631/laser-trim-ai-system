@@ -160,11 +160,11 @@ class FocusChart(ctk.CTkFrame):
         full range when there is less. It is OPT IN and None by default:
         SmoothnessTab's embedded FocusChart states "the chart always sees
         every record", so only a caller that wants the shorter default
-        passes one — the Model page's Units toggle passes 366 (see
-        model_page.py); the page's own 30d/90d/365d/All window control is
-        untouched and still decides what reaches this function at all (every
-        one of those choices already spans <= 366 days, so only "All" — or
-        an unbounded caller like the QA harness — ever needs this trim).
+        passes one — the Model page's Units toggle passes 366 while its own
+        30d/90d/365d/All window control is at its default, and None once the
+        user picks a window: an explicit choice, "All" above all, is shown
+        whole (final review, 2026-09-24 — "All" used to be cut to a year,
+        silently). That control still decides what reaches this function.
 
         Round 2 (same task, controller + James, on real 6607/8340-1 renders):
         round 1's per-CALENDAR-DAY median still zigzagged hard on a sparse

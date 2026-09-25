@@ -38,6 +38,8 @@ from laser_trim_analyzer.ml.manager import get_model_drift_status, list_known_mo
 from laser_trim_analyzer.ml.spc import compute_spc_series
 
 _WINDOW_DAYS = {"30d": 30, "90d": 90, "365d": 365, "All": None}
+# The window control's own default -- what the page opens on, before anyone picks.
+_DEFAULT_WINDOW_CHOICE = "90d"
 
 # Headline-chart views (2026-08-29 FOCUS/SPC redesign). Production runs in
 # LOTS, so a lot — not a unit — is what goes in or out of control, and the lot
@@ -54,10 +56,11 @@ _ALL_HISTORY = "All history (no lot)"
 # The Units chart view's own default framing (facelift step 2 Task 3b, James:
 # "that chart looks horrible" on 6607's whole-history render). The window
 # control below (_WINDOW_DAYS: 30d/90d/365d/All) is untouched and still
-# decides what data reaches the chart at all -- three of its four choices
-# already span <= 366 days, so only "All" can ever exceed this, and the
-# chart opens on just the newest year of it rather than the model's whole
-# multi-year record. See FocusChart.set_series's own docstring.
+# decides what data reaches the chart at all. The 12-month framing applies
+# ONLY while that control is at its default (_DEFAULT_WINDOW_CHOICE): an
+# explicit choice is honoured (final review, 2026-09-24 -- "All" used to be
+# cut to the newest year, silently), and past ~18 months the rolling median
+# widens to 90 days, as designed. See FocusChart.set_series's own docstring.
 _UNITS_VIEW_DEFAULT_DAYS = 366
 
 # Default focus metric when no alert-triggered focus is supplied. The headline
@@ -111,7 +114,7 @@ class ModelPage(PageBase):
     def __init__(self, master, *, theme, app, page_title="Model"):
         self._current_model: Optional[str] = None
         self._current_metric: str = _DEFAULT_METRIC
-        self._window_choice: str = "90d"
+        self._window_choice: str = _DEFAULT_WINDOW_CHOICE
         self._reload_gen = 0
         # The "Worth changing" FindingsView, when this model has findings to show --
         # None otherwise (no findings, or the load failed). Rebuilt by
@@ -743,9 +746,13 @@ class ModelPage(PageBase):
             self._focus_chart.set_spc_series(self._spc_series)
             return
         metric, dates, values, baseline = self._unit_series
+        # The 12-month framing only while the window control is at its default; an explicit
+        # choice ("All" above all) is what the user asked to see (final review, 2026-09-24).
+        framing = (_UNITS_VIEW_DEFAULT_DAYS if self._window_choice == _DEFAULT_WINDOW_CHOICE
+                   else None)
         self._focus_chart.set_series(metric=metric, dates=dates, values=values,
                                      baseline_mean=baseline[0], baseline_std=baseline[1],
-                                     default_window_days=_UNITS_VIEW_DEFAULT_DAYS)
+                                     default_window_days=framing)
 
     # ---- loaders (all materialize to plain values inside the session — I8) ----
     def _window_cutoff(self, model: Optional[str] = None,
