@@ -1,5 +1,51 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-24 night — the other six pages, and a chart you can read (pull, then look)
+
+Step 2 of the facelift: every page now leads with the most important thing on it, in words. No
+schema change, nothing to retrain, nothing to click on first launch. **If you have not pulled the
+2026-09-24 section below yet, that one comes with this pull too — read it as well.**
+
+1. **`git pull`.**
+2. **Look at each page** — at your saved window size, then drag the window down to about
+   1280×720. Looking is the check; the audit helper at the end only catches cut-off text.
+   - **Investigate (the model page).** The caption now says the drift verdict in words.
+     **"Worth changing on this model"** — the top three findings — comes first, with "Show all"
+     and a link to the Findings tab; then **"How it's running"**: the metric pills, a ONE-line σ key
+     (the full explanation moved into the *Drift metrics* tab, beside its numbers), and the stats
+     table. Tabs are in sentence case. The predictor panel starts with what it is: *how well the
+     final-test predictor would have called these units (AUC …). It grades nothing.*
+   - **The chart.** It opens on **Lots** (one point per production run). A lot's callout never
+     contradicts itself any more ("55.2% of 67 units failed — expected at most 54.7%", not
+     "55% … at most 55%"), and the shaded band stops at 100%. **Units** was redrawn after you
+     said it looked horrible: it opens on the **last 12 months**; faint dots are the units, the one
+     strong line is the **30-day median** (90-day when you pick a range longer than 18 months),
+     **red dots** are units beyond ±3σ, and **▲** marks months that had points off the top of the
+     chart, with the total in the note above. The key above the chart names only what is drawn.
+     Chart numbers are in IBM Plex Mono; the unit chart's legend is dark like the rest.
+   - **Home.** The caption reads "Last processed … · N worth changing · M drifting now".
+     **"Worth changing"** shows the top three from the Findings page's first group across all
+     models (click one → that model's Findings tab; "Open Findings" goes to the page); then
+     **"Drifting now"**. Still exactly one teal button ("Process everything new").
+   - **Settings.** Cards in this order: **Ingest folders** (open) · Backlog — active models and
+     pricing · Alert thresholds · Per-model specs · ML training · Database. Every action is a
+     link-style button now (no teal); the Database card's destructive actions ask before they act,
+     exactly as before.
+   - **Dashboard.** Caption: "Laser x% · final test y% over the last …". A query that fails is
+     NAMED in a banner — never drawn as 0%; the lowest-yield list says "Unavailable" then.
+   - **Triage.** "Needs a look" (what the app flagged) and "All models" (each row now has a
+     status WORD, not just a coloured dot). It fits at 1280×720 now — the model list used to be
+     squeezed out entirely there.
+   - **Process.** One teal "Start processing"; when a run ends, **"See what changed"** takes you
+     to Findings.
+3. **Then, if you like, the helper** (app closed; PowerShell from the repo folder):
+
+       .\.venv\Scripts\python scripts\snapshot_db.py data\analysis.db $env:TEMP\qa_copy.db
+       .\.venv\Scripts\python scripts\render_pages.py $env:TEMP\qa_copy.db qa_output\pages --audit
+
+   **Expect ZERO clipped widgets now** — the one known Triage line is gone. Anything it lists is
+   new; tell Claude the line. Then `Remove-Item $env:TEMP\qa_copy.db`.
+
 ## ⚡ 2026-09-24 — the new look and the parse fixes (pull, then look)
 
 This pull brings step 1 of the facelift — a new dark theme, bigger and more readable text, the

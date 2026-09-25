@@ -21,9 +21,9 @@ that rested on a final-test verdict has been re-derived on it (B3).
 | **A. Processing speed** | the share and the scanner are cleared (A1a); the save is the serial half (A0) | A4 batch the saves, then A3 processes — Claude |
 | **B. More useful information** | rebuild done; findings engine + 6 analyzers shipped; laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
 | **C. Review and refactor** | the review is done (C1) | C2 refactors — Claude |
-| **D. Checks at the shop** | D1, D3, D4, D5, D6 open | James |
+| **D. Checks at the shop** | D1, D3, D4, D5, D6, D7 open | James |
 | **E. Backlog upload** | shipped (E1) | — |
-| **F. Facelift** | step 1 shipped; step 2 (the other six pages) being built | Claude, now |
+| **F. Facelift** | step 1 shipped; step 2 (the other six pages) built and reviewed | its final review, then the push — Claude |
 | **G. Parse fixes** | all built, reviewed and pushed (`422da7a`) | — (the back-fill is yours, optional) |
 
 ### One thing of mine to own (2026-09-24): the home database was written to
@@ -565,6 +565,11 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
 - [ ] **D5 · What is "Micro-Lin max. error slope" for?** A setting/check on about 1% of laser-2
       (DLTS) files, found in the 2026-09-24 survey of what those files carry. Not read today. If it
       is a real acceptance check at the machine, it is worth capturing; if it is a leftover, not.
+- [ ] **D7 · What screen resolution and Windows display scaling does the work laptop use?** The app
+      lets its window shrink to 960×640, and below 1280×720 some text is cut (the audit counts 261
+      clipped widgets at 960×640, on every page). Raising the minimum to 1280×720 would stop that —
+      but at 150% scaling (a common laptop default) 1280×720 is the whole screen, so it waits on
+      your answer. At your saved size and at 1280×720 nothing is cut.
 - [ ] **D6 · 8506A / 8506B on laser 2: were the limits loosened by ECN?** Every band went from
       ±0.01 V to ±0.0375 V in the first week of July 2025 (pass rate 83 → 100 %, 70 → 100 %). The
       limit-table analyzer reports it as a change of TEST, never as a yield gain.
@@ -639,7 +644,16 @@ i dont like the layout its just a bunch of rows and its hard to see whats import
       presence, the family match against the actual files, the graceful-fallback path, and the
       Windows call itself (faked — this Mac can't take that branch for real). See
       `BRING_TO_WORK.md` for what James will see and how to confirm it at the work machine.
-- [ ] **F3… · Relayout each remaining page**, one design round each: Model, Home,
+- [x] **F3 · The other six pages — DONE 2026-09-24** (plan `docs/superpowers/plans/2026-09-24-facelift-step2-pages.md`,
+      every task reviewed; `render_pages.py --audit`: 0 clipped widgets at the saved size and 1280×720).
+      Each page now leads with its most important thing, in words: **Investigate** — the verdict
+      in the caption, "Worth changing on this model" first, then "How it's running"; **Home** —
+      N worth changing · M drifting now; **Settings** — Ingest folders first, sentence case, no
+      teal; **Dashboard** — every failed query named, never drawn as zero; **Triage** — "Needs a
+      look" / "All models", fits at 1280×720; **Process** — one button, "See what changed".
+      **The Units chart was redrawn after James said it "looks horrible"** (2026-09-24): last 12
+      months, faint units, one 30-day median line, red = beyond ±3σ, ▲ = months off the chart —
+      prototyped on real data first, then built. Was: *Relayout each remaining page*, one design round each: Model, Home,
       Dashboard, Triage, Process, Settings. **Designed and planned 2026-09-24** (rulings, yours to
       overturn once you have seen the pages): `docs/superpowers/specs/2026-09-24-facelift-step2-pages-design.md`,
       plan `docs/superpowers/plans/2026-09-24-facelift-step2-pages.md`. Next to build.
@@ -761,6 +775,11 @@ first and reviewed; the whole test suite is the gate.
   (`scripts/atp_spec_audit.py`).
 
 ## Done recently
+
+**2026-09-24 night:** facelift step 2 (F3) — the other six pages, and the Units chart redrawn after
+James's "that chart looks horrible"; three streams ran at once in separate worktrees after James
+asked why only one task ran at a time (pages, findings analyzers, refactors). C2 step 1: 13 unused
+`DatabaseManager` definitions deleted (683 lines), each re-proved unused by a separate reviewer.
 
 **2026-09-23/24** (every item made to fail first and reviewed; the whole suite green at each step):
 
