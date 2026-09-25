@@ -195,16 +195,25 @@ def test_ft_track_is_paired_to_the_trim_track_by_designator(tmp_path):
     assert pair_ft_track("TRK1", [{"track_id": "default"}])["track_id"] == "default"
 
 
+# ---- positions_on_trim_axis: ONE alignment, both callers (fix round 2, 2026-09-25) --------------
+# The final-test sweep placed on the trim sweep's axis, index for index, and how it got there:
+# "as measured", "shifted", "rescaled", or (None, None) when there is no honest common axis.
+# rework_load compares the stations position by position -- a MEASUREMENT, never rescaled onto a
+# guessed axis. The overlay draws a labelled PICTURE, so rescale=True keeps its old mapping of a
+# column recorded in other units. Both shift a final test measured from another zero: the overlay
+# used to draw those (8340-1, 8397-2 and 41 more models) half off the trim travel.
+
 def test_positions_are_left_alone_when_the_two_sweeps_share_a_scale():
     """No cosmetic rescaling when none is needed — that would distort the FT
     trace against a trim sweep it already lines up with."""
-    from laser_trim_analyzer.core.ft_overlay import align_positions
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
 
     trim = [float(i) for i in range(100)]
     ft = [float(i) + 0.5 for i in range(98)]
-    out, rescaled = align_positions(ft, trim)
-    assert rescaled is False
-    assert out == pytest.approx(ft)
+    for picture in (True, False):
+        out, how = positions_on_trim_axis(ft, trim, rescale=picture)
+        assert how == "as measured"
+        assert out == pytest.approx(ft)
 
 
 def test_a_shorter_ft_sweep_is_not_stretched_to_fill_the_trim_axis():
@@ -212,34 +221,29 @@ def test_a_shorter_ft_sweep_is_not_stretched_to_fill_the_trim_axis():
     +/-20 trim travel. That is a shorter SWEEP, not a different scale — and
     stretching it would move every FT error to a position it was never
     measured at."""
-    from laser_trim_analyzer.core.ft_overlay import align_positions
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
 
     trim = [-20.0 + i for i in range(41)]
     ft = [-14.0 + i * 0.5 for i in range(57)]
-    out, rescaled = align_positions(ft, trim)
-    assert rescaled is False
-    assert out[0] == pytest.approx(-14.0) and out[-1] == pytest.approx(14.0)
+    for picture in (True, False):
+        out, how = positions_on_trim_axis(ft, trim, rescale=picture)
+        assert how == "as measured"
+        assert out[0] == pytest.approx(-14.0) and out[-1] == pytest.approx(14.0)
 
 
-def test_positions_are_rescaled_and_flagged_when_the_scales_differ():
-    """FT files can be recorded in a different unit entirely (electrical
-    angle vs travel). Then the overlay must map the sweep onto the trim's
-    span AND admit that it did."""
-    from laser_trim_analyzer.core.ft_overlay import align_positions
+def test_a_picture_rescales_a_column_recorded_in_other_units_and_says_so():
+    """FT files can be recorded in a different unit entirely. The overlay maps
+    such a sweep onto the trim's span AND admits that it did -- a measurement
+    never does (next test)."""
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
 
     trim = [float(i) for i in range(100)]          # 0..99
     ft = [i * 0.01 for i in range(100)]            # 0..0.99 — 100x smaller
-    out, rescaled = align_positions(ft, trim)
-    assert rescaled is True
+    out, how = positions_on_trim_axis(ft, trim, rescale=True)
+    assert how == "rescaled"
     assert out[0] == pytest.approx(0.0)
     assert out[-1] == pytest.approx(99.0)
 
-
-# ---- positions_on_trim_axis: comparing the two sweeps POSITION BY POSITION ----------------
-# align_positions is for a picture whose axis is labelled; a point-by-point comparison (rework_load's
-# "the travel both stations grade") needs the FT points where they physically are on the trim's
-# axis. Two real shapes count the same travel from a different zero -- align_positions leaves both
-# alone -- and one "position" column is not a position column at all.
 
 def test_the_same_span_from_a_different_zero_is_shifted_onto_the_trim_axis_8340_1_shape():
     """8340-1: the FT file counts 0 to 0.61, the trim file -0.305 to 0.305 -- the same travel,
@@ -248,11 +252,12 @@ def test_the_same_span_from_a_different_zero_is_shifted_onto_the_trim_axis_8340_
 
     ft = [round(0.01 * i, 2) for i in range(62)]                    # 0.00 .. 0.61
     trim = [-0.305 + 0.61 * i / 62 for i in range(63)]              # -0.305 .. 0.305
-    out, shifted = positions_on_trim_axis(ft, trim)
-    assert shifted is True
-    assert len(out) == len(ft)                                      # index for index
-    assert out[0] == pytest.approx(-0.305) and out[-1] == pytest.approx(0.305)
-    assert out[31] == pytest.approx(0.005)                          # every point moves by the same amount
+    for picture in (True, False):
+        out, how = positions_on_trim_axis(ft, trim, rescale=picture)
+        assert how == "shifted"
+        assert len(out) == len(ft)                                  # index for index
+        assert out[0] == pytest.approx(-0.305) and out[-1] == pytest.approx(0.305)
+        assert out[31] == pytest.approx(0.005)                      # every point moves by the same amount
 
 
 def test_the_same_span_from_a_different_zero_is_shifted_onto_the_trim_axis_8397_2_shape():
@@ -261,9 +266,10 @@ def test_the_same_span_from_a_different_zero_is_shifted_onto_the_trim_axis_8397_
 
     ft = [0.05 + 4.0 * i for i in range(61)]                        # 0.05 .. 240.05
     trim = [-120.0 + 4.0 * i for i in range(61)]                    # -120 .. 120
-    out, shifted = positions_on_trim_axis(ft, trim)
-    assert shifted is True
-    assert out == pytest.approx(trim)
+    for picture in (True, False):
+        out, how = positions_on_trim_axis(ft, trim, rescale=picture)
+        assert how == "shifted"
+        assert out == pytest.approx(trim)
 
 
 def test_a_genuinely_shorter_ft_sweep_is_left_where_it_was_measured_6607_shape():
@@ -273,8 +279,8 @@ def test_a_genuinely_shorter_ft_sweep_is_left_where_it_was_measured_6607_shape()
 
     ft = [-14.0 + 0.5 * i for i in range(57)]
     trim = [-22.0 + i for i in range(45)]
-    out, shifted = positions_on_trim_axis(ft, trim)
-    assert shifted is False
+    out, how = positions_on_trim_axis(ft, trim)
+    assert how == "as measured"
     assert out == pytest.approx(ft)
 
 
@@ -283,32 +289,136 @@ def test_a_matching_sweep_is_left_alone():
 
     ft = [-28.0 + i for i in range(57)]
     trim = [-27.5 + 0.5 * i for i in range(111)]
-    out, shifted = positions_on_trim_axis(ft, trim)
-    assert shifted is False and out == pytest.approx(ft)
+    out, how = positions_on_trim_axis(ft, trim)
+    assert how == "as measured" and out == pytest.approx(ft)
 
 
-def test_a_column_an_order_of_magnitude_off_the_trim_span_is_no_axis_at_all():
+def test_a_column_an_order_of_magnitude_off_the_trim_span_is_no_axis_for_a_measurement():
     """25 real 8397-2 files hold one stray value and then zeros in their position column (span
     0.046 against the trim's 240). A measurement is never rescaled onto a guessed axis: None."""
     from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
 
     ft = [-0.046] + [0.0] * 24
     trim = [-120.0 + 10.0 * i for i in range(25)]
-    assert positions_on_trim_axis(ft, trim) == (None, False)
-    assert positions_on_trim_axis([0.0, 1.0], [5.0]) == (None, False)    # fewer than 2 trim positions
+    assert positions_on_trim_axis(ft, trim) == (None, None)
+    for picture in (True, False):                                   # fewer than 2 trim positions
+        assert positions_on_trim_axis([0.0, 1.0], [5.0], rescale=picture) == (None, None)
 
 
 def test_a_missing_position_stays_missing_and_keeps_its_index():
-    """The FT arrays are index-aligned (errors, limits, graded window): dropping a None, as
-    align_positions does, would slide every later point onto its neighbour's error."""
+    """The FT arrays are index-aligned (errors, limits, graded window): dropping a None, as the
+    old align_positions did, would slide every later point onto its neighbour's error."""
     from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
 
     ft = [0.0, None, 0.2, 0.3, 0.4, 0.5, 0.6]
     trim = [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3]
-    out, shifted = positions_on_trim_axis(ft, trim)
-    assert shifted is True
-    assert out[1] is None and len(out) == 7
-    assert out[0] == pytest.approx(-0.3) and out[6] == pytest.approx(0.3)
+    for picture in (True, False):
+        out, how = positions_on_trim_axis(ft, trim, rescale=picture)
+        assert how == "shifted"
+        assert out[1] is None and len(out) == 7
+        assert out[0] == pytest.approx(-0.3) and out[6] == pytest.approx(0.3)
+
+
+def test_spans_within_a_quarter_of_each_other_are_the_same_travel():
+    """_SAME_SPAN at its boundary: a final test 1.24x the trim span, counted from another zero, is
+    the same travel shifted; at 1.26x it is a different sweep and is left where it was measured."""
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
+
+    trim = [-10.0 + i for i in range(21)]                            # span 20, centre 0
+    for factor, expected in ((1.24, "shifted"), (1.26, "as measured")):
+        ft = [100.0 + 20.0 * factor * i / 20 for i in range(21)]    # centre far from 0
+        assert positions_on_trim_axis(ft, trim)[1] == expected, factor
+
+
+def test_centres_more_than_a_tenth_of_the_span_apart_count_from_another_zero():
+    """_OTHER_ZERO at its boundary: the same span with its centre 0.09 of the trim span away is
+    left alone; 0.11 away it is shifted."""
+    from laser_trim_analyzer.core.ft_overlay import positions_on_trim_axis
+
+    trim = [-10.0 + i for i in range(21)]                            # span 20
+    for offset, expected in ((0.09 * 20, "as measured"), (0.11 * 20, "shifted")):
+        ft = [p + offset for p in trim]
+        assert positions_on_trim_axis(ft, trim)[1] == expected, offset
+
+
+# ---- the overlay itself, on both real shapes -----------------------------------------------------
+
+def _seed_axes(db, trim_positions, ft_positions):
+    """One trim analysis on `trim_positions` and one linked final test on `ft_positions`, flat
+    errors inside flat limits -- only the axes differ. Returns the analysis id."""
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, FinalTestResult as DBFT,
+        FinalTestTrack as DBFTT, StatusType, SystemType)
+
+    when, tested = datetime(2026, 3, 1), datetime(2026, 4, 1)
+    n_t, n_f = len(trim_positions), len(ft_positions)
+    with db.session() as s:
+        ar = DBAR(filename="axes.xls", file_path="/t/axes", file_hash="axes".ljust(64, "0"),
+                  model="8340-1", serial="77", system=SystemType.B, file_date=when,
+                  timestamp=when, overall_status=StatusType.PASS, has_multi_tracks=False,
+                  processing_time=0.1)
+        s.add(ar)
+        s.flush()
+        s.add(DBTR(analysis_id=ar.id, track_id="Track A", status=StatusType.PASS,
+                   position_data=list(trim_positions), error_data=[0.001] * n_t,
+                   upper_limits=[0.025] * n_t, lower_limits=[-0.025] * n_t,
+                   optimal_offset=0.0, optimal_slope=0.0, linearity_pass=True,
+                   linearity_fail_points=0))
+        ft = DBFT(filename="axes_ft.xls", model="8340-1", serial="77", test_date=tested,
+                  file_date=tested, timestamp=tested, overall_status=StatusType.PASS,
+                  linked_trim_id=ar.id, match_confidence=0.99)
+        s.add(ft)
+        s.flush()
+        s.add(DBFTT(final_test_id=ft.id, track_id="default", status=StatusType.PASS,
+                    position_data=list(ft_positions), error_data=[0.010] * n_f,
+                    upper_limits=[0.025] * n_f, lower_limits=[-0.025] * n_f,
+                    optimal_offset=0.0, optimal_slope=0.0, linearity_pass=True))
+        s.commit()
+        return ar.id
+
+
+@pytest.mark.parametrize("trim,ft", [
+    ([-0.305 + 0.01 * i for i in range(62)], [0.01 * i for i in range(62)]),        # 8340-1
+    ([-120.0 + 4.0 * i for i in range(61)], [0.05 + 4.0 * i for i in range(61)]),   # 8397-2
+], ids=["8340-1", "8397-2"])
+def test_the_overlay_draws_a_final_test_measured_from_another_zero_over_the_trim_travel(
+        tmp_path, trim, ft):
+    from laser_trim_analyzer.core.ft_overlay import load_ft_overlay
+
+    db = _db(tmp_path)
+    aid = _seed_axes(db, trim, ft)
+    ov = load_ft_overlay(db, aid, trim_track_id="Track A", trim_positions=trim)
+    assert ov["available"] is True
+    assert ov["positions"][0] == pytest.approx(trim[0])             # over the trim travel,
+    assert ov["positions"][-1] == pytest.approx(trim[-1])           # not half off its right
+    assert len(ov["positions"]) == len(ov["errors"]) == len(ft)
+    assert ov["shifted"] is True and ov["rescaled"] is False
+    assert "shifted to the trim's zero" in ov["label"]
+
+
+def test_the_overlay_still_rescales_a_column_in_other_units_and_says_so(tmp_path):
+    from laser_trim_analyzer.core.ft_overlay import load_ft_overlay
+
+    db = _db(tmp_path)
+    trim = [float(i) for i in range(100)]
+    aid = _seed_axes(db, trim, [i * 0.01 for i in range(100)])
+    ov = load_ft_overlay(db, aid, trim_track_id="Track A", trim_positions=trim)
+    assert ov["rescaled"] is True and ov["shifted"] is False
+    assert ov["positions"][-1] == pytest.approx(99.0)
+    assert "x aligned to trim travel" in ov["label"]
+
+
+def test_the_overlay_with_no_trim_axis_draws_the_final_test_where_it_was_measured(tmp_path):
+    from laser_trim_analyzer.core.ft_overlay import load_ft_overlay
+
+    db = _db(tmp_path)
+    ft = [0.01 * i for i in range(62)]
+    aid = _seed_axes(db, [-0.305 + 0.01 * i for i in range(62)], ft)
+    ov = load_ft_overlay(db, aid, trim_track_id="Track A", trim_positions=None)
+    assert ov["available"] is True
+    assert ov["shifted"] is False and ov["rescaled"] is False
+    assert ov["positions"] == pytest.approx(ft)
+    assert "shifted" not in ov["label"] and "aligned" not in ov["label"]
 
 
 def test_export_document_draws_the_ft_overlay_with_its_own_band(tmp_path):

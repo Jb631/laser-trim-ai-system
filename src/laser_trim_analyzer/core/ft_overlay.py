@@ -80,40 +80,15 @@ def pair_ft_track(trim_track_id, ft_tracks: Sequence[Dict]) -> Optional[Dict]:
     return ft_tracks[0]
 
 
-def align_positions(ft_positions: Sequence[float],
-                    trim_positions: Sequence[float]) -> Tuple[List[float], bool]:
-    """(positions_to_draw, was_rescaled).
-
-    Left ALONE whenever the two sweeps are on the same kind of scale — even a
-    much shorter FT sweep, because covering less travel is a FACT about the
-    sweep, and stretching it to fill the trim axis would move every FT error
-    to a position it was never measured at. Only an order-of-magnitude gap
-    (`_SCALE_RATIO`) means the FT column is in different units altogether;
-    then it is mapped onto the trim span, and the second return value exists
-    so the caller can SAY so rather than pass a transformed axis off as
-    measured.
-    """
-    ft = [float(p) for p in (ft_positions or []) if p is not None]
-    trim = [float(p) for p in (trim_positions or []) if p is not None]
-    if len(ft) < 2 or len(trim) < 2:
-        return list(ft), False
-    f_lo, f_hi = min(ft), max(ft)
-    t_lo, t_hi = min(trim), max(trim)
-    f_span, t_span = f_hi - f_lo, t_hi - t_lo
-    if f_span <= 0 or t_span <= 0:
-        return list(ft), False
-    ratio = max(f_span, t_span) / min(f_span, t_span)
-    if ratio < _SCALE_RATIO:
-        return list(ft), False
-    scale = t_span / f_span
-    return [t_lo + (p - f_lo) * scale for p in ft], True
-
-
 # Two sweeps whose spans agree to within this share cover the same travel ...
 _SAME_SPAN = 0.25
 # ... and if their centres then sit further apart than this share of the trim's span, the
 # final-test column counts that travel from a different zero.
 _OTHER_ZERO = 0.10
+
+# How a final-test sweep was placed on the trim's axis (the second value positions_on_trim_axis
+# returns; None there means there is no honest common axis).
+AS_MEASURED, SHIFTED, RESCALED = "as measured", "shifted", "rescaled"
 
 
 def _position(p) -> Optional[float]:
@@ -127,46 +102,53 @@ def _position(p) -> Optional[float]:
     return v if v == v and v not in (float("inf"), float("-inf")) else None
 
 
-def positions_on_trim_axis(ft_positions: Sequence[Any], trim_positions: Sequence[Any]
-                           ) -> Tuple[Optional[List[Optional[float]]], bool]:
-    """The FT sweep's positions placed on the TRIM sweep's axis, index for index, for comparing
-    the two stations POSITION BY POSITION -- and whether they had to be shifted.
+def positions_on_trim_axis(ft_positions: Sequence[Any], trim_positions: Sequence[Any], *,
+                           rescale: bool = False
+                           ) -> Tuple[Optional[List[Optional[float]]], Optional[str]]:
+    """The FT sweep's positions placed on the TRIM sweep's axis, index for index, and how they
+    got there: AS_MEASURED, SHIFTED or RESCALED -- (None, None) when there is no honest common
+    axis. The ONE alignment of a final test to its trim sweep (fix round 2, 2026-09-25): the
+    overlay draws with it and findings/analyzers/rework_load compares the stations with it, so
+    the picture and the comparison can never put a final-test point in different places.
 
-    `align_positions` is for a picture whose axis is labelled. A point-by-point comparison
-    (findings/analyzers/rework_load: "the travel both stations grade") needs every FT point where
-    it physically is, so this differs from it in three ways, each found on real data:
+    * Left where it was MEASURED whenever the two sweeps are on the same kind of scale and
+      centred together -- even a much shorter FT sweep, because covering less travel is a FACT
+      about the sweep, and stretching it to fill the trim axis would move every FT error to a
+      position it was never measured at (analysis 104050: +/-14 of a +/-20 travel; 6607: +/-14
+      of +/-22).
+    * SHIFTED when the same span is counted from a DIFFERENT ZERO: the two centres are made to
+      coincide. 8340-1's final test counts 0 to 0.61 against the trim's -0.305 to 0.305, some
+      8397-2 files 0.05 to 240.05 against +/-120 -- 7,155 linked sweeps over 43 models in the
+      work database (2026-09-25), which the overlay used to draw half off the trim travel.
+    * Spans an order of magnitude apart (`_SCALE_RATIO`) are a column in other units, or no
+      position column at all (25 real 8397-2 files hold one stray value and then zeros). A
+      MEASUREMENT is never moved onto a guessed axis: None. A PICTURE (`rescale=True`, the
+      overlay) maps the sweep onto the trim span and says RESCALED, so the chart can label it
+      rather than pass a transformed axis off as measured.
 
-    * the same span counted from a DIFFERENT ZERO is shifted so the two centres coincide.
-      8340-1's final test counts 0 to 0.61 against the trim's -0.305 to 0.305; some 8397-2
-      files count 0.05 to 240.05 against +/-120. Compared unshifted, only half the travel
-      overlaps -- and the wrong half is compared with the wrong half.
-    * spans an order of magnitude apart (`_SCALE_RATIO`) give None, never a rescaled axis:
-      a measurement is not moved onto a guessed axis. 25 real 8397-2 files hold one stray value
-      and then zeros in their position column (a span of 0.046 against the trim's 240).
-    * a missing position stays None IN PLACE. The FT arrays are index-aligned -- errors, limits,
-      the graded window -- and dropping a None would slide every later point onto its
-      neighbour's error.
-
-    Everything else is left exactly where it was measured, including a genuinely SHORTER FT
-    sweep centred on the same zero (6607: +/-14 of the trim's +/-22), for align_positions' own
-    reason. None also when either side has fewer than two positions or no span.
+    A missing position stays None IN PLACE: the FT arrays are index-aligned -- errors, limits,
+    the graded window -- and dropping a None would slide every later point onto its neighbour's
+    error. (None, None) also when either side has fewer than two positions or no span.
     """
     ft_all = [_position(p) for p in (ft_positions or [])]
     ft = [p for p in ft_all if p is not None]
     trim = [p for p in (_position(p) for p in (trim_positions or [])) if p is not None]
     if len(ft) < 2 or len(trim) < 2:
-        return None, False
+        return None, None
     f_lo, f_hi = min(ft), max(ft)
     t_lo, t_hi = min(trim), max(trim)
     f_span, t_span = f_hi - f_lo, t_hi - t_lo
     if f_span <= 0 or t_span <= 0:
-        return None, False
+        return None, None
     if max(f_span, t_span) / min(f_span, t_span) >= _SCALE_RATIO:
-        return None, False
+        if not rescale:
+            return None, None
+        scale = t_span / f_span
+        return [None if p is None else t_lo + (p - f_lo) * scale for p in ft_all], RESCALED
     shift = (t_lo + t_hi) / 2.0 - (f_lo + f_hi) / 2.0
     if abs(f_span / t_span - 1.0) <= _SAME_SPAN and abs(shift) > _OTHER_ZERO * t_span:
-        return [None if p is None else p + shift for p in ft_all], True
-    return ft_all, False
+        return [None if p is None else p + shift for p in ft_all], SHIFTED
+    return ft_all, AS_MEASURED
 
 
 def is_sweep_axis(positions: Sequence[float], min_monotone: float = 0.95) -> bool:
@@ -254,8 +236,9 @@ def load_ft_overlay(db, analysis_id: int, trim_track_id=None,
     """Everything the chart needs to draw the FT trace, or a plain reason why
     it cannot — never an empty overlay the reader has to interpret.
 
-    On success: positions (aligned to the trim sweep when the scales differ,
-    with `rescaled` saying so), raw `errors`, `corrected` (the FT's OWN
+    On success: positions (placed on the trim sweep's axis by the one alignment,
+    positions_on_trim_axis -- `shifted` / `rescaled` say when they had to be
+    moved), raw `errors`, `corrected` (the FT's OWN
     adjustment), the FT's OWN `upper_limits`/`lower_limits`, and a `label`
     naming the test date and, when the unit was tested more than once, which
     of how many this is.
@@ -304,19 +287,25 @@ def load_ft_overlay(db, analysis_id: int, trim_track_id=None,
 
     offset = float(track["optimal_offset"] or 0.0)
     k = float(track["optimal_slope"] or 0.0)
-    positions, rescaled = align_positions(track["position_data"], trim_positions or [])
+    positions, how = positions_on_trim_axis(track["position_data"], trim_positions or [],
+                                            rescale=True)
+    if positions is None:            # no trim sweep to place it against: drawn as measured
+        positions, how = [_position(p) for p in track["position_data"]], AS_MEASURED
 
     label = f"Final test {link['date']}".strip()
     if link["n_links"] > 1:
         label += f" (newest of {link['n_links']})"
-    if rescaled:
+    if how == RESCALED:
         label += " · x aligned to trim travel"
+    elif how == SHIFTED:
+        label += " · x shifted to the trim's zero"
 
     out = dict(link)
     out.update({
         "track_id": track["track_id"],
         "positions": positions,
-        "rescaled": rescaled,
+        "rescaled": how == RESCALED,
+        "shifted": how == SHIFTED,
         "errors": track["error_data"],
         # The FT station's own adjustment, through the ONE definition of a
         # graded trace. The trim's offset/k never touch this curve.

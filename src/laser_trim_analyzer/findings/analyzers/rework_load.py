@@ -139,7 +139,7 @@ def graded_maxima(ft: Dict[str, Any], trim: Dict[str, Any]) -> Optional[Tuple[fl
     never 0.0 (core/analyzer.max_abs_measured).
     """
     t_pos = list(trim.get("positions") or [])
-    f_pos, _shifted = positions_on_trim_axis(ft.get("positions") or [], t_pos)
+    f_pos, _how = positions_on_trim_axis(ft.get("positions") or [], t_pos)   # never rescaled
     if f_pos is None:
         return None
     f_err, t_err = list(ft.get("errors") or []), list(trim.get("errors") or [])

@@ -1332,6 +1332,76 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
           "escape / overkill / agreement / agreement")
 
 
+def check_ft_overlay_shifted_origin(db, raw, want: int = 25) -> None:
+    """The overlay draws a final test measured from ANOTHER ZERO over the trim travel (2026-09-25).
+
+    7,155 linked final-test sweeps over 43 models in the work database count the same travel as
+    their trim sweep from a different origin -- 8340-1: 0..0.61 against -0.305..0.305; some 8397-2
+    files 0..240 against +/-120 -- and the overlay drew them half off the trim's travel. Units are
+    found by the PROPERTY, from the stored arrays and independently of the code under test: the
+    newest confident link (the one the overlay draws), a one-track final test, spans within a
+    quarter of each other, centres more than a tenth of the trim span apart. Each must be drawn
+    centred on the trim travel (to 1% of its span) and say it was shifted.
+
+    Falsify before trusting (2026-09-25): with ft_overlay._OTHER_ZERO set to 99 (no shift ever)
+    this FAILs, naming every unit checked.
+    """
+    import json as _json
+    from laser_trim_analyzer.core.ft_overlay import MIN_MATCH_CONFIDENCE, load_ft_overlay
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import load_unit_track
+
+    def arr(text_):
+        try:
+            v = _json.loads(text_) if text_ else None
+        except ValueError:
+            return []
+        return [x for x in v if isinstance(x, (int, float))] if isinstance(v, list) else []
+
+    rows = raw.execute(
+        "SELECT f.linked_trim_id, t.position_data, t.electrical_angle_data "
+        "FROM final_test_results f JOIN final_test_tracks t ON t.final_test_id = f.id "
+        "WHERE f.linked_trim_id IS NOT NULL AND f.match_confidence >= ? "
+        "  AND (SELECT COUNT(*) FROM final_test_tracks t2 WHERE t2.final_test_id = f.id) = 1 "
+        "ORDER BY COALESCE(f.test_date, f.file_date) DESC, f.id DESC LIMIT 5000",
+        (MIN_MATCH_CONFIDENCE,)).fetchall()
+    seen, checked, bad = set(), 0, []
+    for aid, pos_text, angle_text in rows:
+        if aid in seen or checked >= want:
+            continue
+        seen.add(aid)                       # the newest link only: the one the overlay draws
+        f = arr(pos_text) or arr(angle_text)
+        try:
+            trim = load_unit_track(db, aid)
+        except Exception as exc:
+            bad.append((aid, repr(exc)))
+            continue
+        t = [x for x in ((trim or {}).get("position_data") or []) if isinstance(x, (int, float))]
+        if len(f) < 2 or len(t) < 2:
+            continue
+        f_span, t_span = max(f) - min(f), max(t) - min(t)
+        t_mid = (max(t) + min(t)) / 2
+        if not t_span or abs(f_span / t_span - 1) > 0.25 \
+                or abs((max(f) + min(f)) / 2 - t_mid) <= 0.10 * t_span:
+            continue                        # not the shifted-origin shape
+        try:
+            ov = load_ft_overlay(db, aid, trim_track_id=trim.get("track_id"),
+                                 trim_positions=trim.get("position_data"))
+        except Exception as exc:
+            bad.append((aid, repr(exc)))
+            continue
+        if not ov.get("available"):
+            continue                        # a refusal with a reason is the check above's business
+        checked += 1
+        drawn = [x for x in ov.get("positions") or [] if x is not None]
+        d_mid = (max(drawn) + min(drawn)) / 2 if drawn else float("nan")
+        if not ov.get("shifted") or not abs(d_mid - t_mid) <= 0.01 * t_span:
+            bad.append((aid, f"drawn centre {d_mid:.4g} vs trim centre {t_mid:.4g}"))
+    check("trim/FT overlay: a final test measured from another zero is drawn over the trim travel",
+          checked > 0 and not bad,
+          f"{checked} shifted-origin units checked, {len(bad)} wrong"
+          + (f" e.g. {bad[:3]}" if bad else ""))
+
+
 def check_ingest_reoffers_only_retryable() -> None:
     """A file the parser can NEVER read is offered exactly once (2026-09-14).
 
@@ -3876,6 +3946,9 @@ def main() -> int:
               f"{ov_ok} drawn ({ov_multi} multi-test units), {ov_refused} refused "
               f"with a reason, {len(ov_bad)} wrong"
               + (f" e.g. {ov_bad[:3]}" if ov_bad else ""))
+
+    with _guard("trim/FT overlay: a shifted-origin final test"):
+        check_ft_overlay_shifted_origin(db, raw)
 
     # ============ 6. EXPORTS ===================================================
     with _guard("evidence pack (6607)"):
