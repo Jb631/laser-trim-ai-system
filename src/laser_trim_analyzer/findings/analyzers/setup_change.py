@@ -113,7 +113,6 @@ Mamimum', later fixed to 'Length Maximum' (25,782 files carry the one, 32,014 th
 **Values are compared per their own kind**: a number rounded to 6 dp (an int one file and the
 equal float the next are no change), anything else as its `str()`.
 """
-import math
 from datetime import timedelta
 from statistics import median
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
@@ -318,9 +317,12 @@ def _span(tracks) -> timedelta:
 
 
 def _apart(gap: timedelta) -> str:
-    """"61 days", or "60 days 20 hours": to the hour, rounded UP, so a gap past the cap can never
-    read as the cap itself."""
-    days, hours = divmod(math.ceil(gap.total_seconds() / 3600), 24)
+    """"61 days", or "60 days 20 hours" -- whole hours, never rounded up (6126's 60 d 20 h 1 min
+    reads "60 days 20 hours"). A gap past the cap by less than an hour reads "just over 60 days",
+    never as the cap itself."""
+    days, hours = gap.days, gap.seconds // 3600
+    if days == MIN_RUN_DAYS and not hours and gap > _MIN_RUN:
+        return f"just over {MIN_RUN_DAYS} days"
     text = f"{days} day{'s' if days != 1 else ''}"
     return text if not hours else f"{text} {hours} hour{'s' if hours != 1 else ''}"
 

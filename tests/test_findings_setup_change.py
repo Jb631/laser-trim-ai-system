@@ -260,6 +260,18 @@ def test_stable_setups_60_days_and_20_hours_apart_are_a_period_not_a_change():
     assert "60 days 20 hours apart" in facts[0]["why_not"]
 
 
+@pytest.mark.parametrize("gap,said", [
+    (timedelta(days=60, hours=20, minutes=1), "60 days 20 hours apart"),    # 6126's own shape
+    (timedelta(days=60, minutes=30), "just over 60 days apart"),            # never "60 days apart"
+    (timedelta(days=61), "61 days apart"),
+])
+def test_a_periods_reason_names_the_gap_to_the_whole_hour(gap, said):
+    s1 = setup_era(0, START, 200, {"laser_power": 50}, 0.80)
+    s2 = setup_era(1000, s1[-1].file_date + gap, 200, {"laser_power": 62}, 0.50)
+    facts, findings = analyze(s1 + s2)
+    assert findings == [] and said in facts[0]["why_not"], facts[0]["why_not"]
+
+
 def test_stable_setups_59_days_and_23_hours_apart_are_one_change():
     s1 = setup_era(0, START, 200, {"laser_power": 50}, 0.80)
     s2 = setup_era(1000, s1[-1].file_date + timedelta(days=59, hours=23), 200,
