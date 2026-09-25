@@ -86,6 +86,10 @@ def warn(name, detail=""):
     print(f"WARN | {name}" + (f" | {detail}" if detail else ""))
 
 
+class _Skipped(Exception):
+    """Raised by `_needs` when the block a block depends on crashed -- see `_needs`."""
+
+
 class _guard:
     """One check block. An exception inside it is ONE FAIL that names the block and carries the
     exception, and the sweep goes on with the next block -- never a PASS, never a silent skip.
@@ -97,10 +101,14 @@ class _guard:
 
         with _guard("company trend"):
             ...
+
+    A block that reads what an earlier block built opens with `_needs(<that block>)`, and binds
+    the earlier one with `as`; `crashed` is what it reads.
     """
 
     def __init__(self, name: str):
         self.name = name
+        self.crashed = False
 
     def __enter__(self):
         return self
@@ -108,9 +116,24 @@ class _guard:
     def __exit__(self, exc_type, exc, tb):
         if exc_type is None or not issubclass(exc_type, Exception):
             return False
+        if issubclass(exc_type, _Skipped):
+            check(f"{self.name} (skipped: {exc})", False,
+                  "its inputs come from that block, which crashed first -- its own FAIL says why")
+            return True
+        self.crashed = True
         check(f"{self.name} (the check itself crashed)", False, f"{exc_type.__name__}: {exc}")
         traceback.print_exception(exc_type, exc, tb, file=sys.stdout)
         return True
+
+
+def _needs(block: "_guard") -> None:
+    """The first line of a block that reads an EARLIER block's locals. If that block crashed, this
+    block is ONE FAIL naming it ("skipped: 'verdict consistency' crashed") -- never a crash of its
+    own about a name the other block never got to bind (F4 review, Minor 3: one crash in
+    section 5 read as three FAILs, two of them an UnboundLocalError about `rows`).
+    tests/test_sweep_db_checks.py checks main() statically: every such block opens with this."""
+    if block.crashed:
+        raise _Skipped(f"'{block.name}' crashed")
 
 
 def check_ft_incremental_fastpath() -> None:
@@ -3816,7 +3839,7 @@ def main() -> int:
     # tolerated the exact defect it existed to catch: 831 units rendering
     # "Fail Points: N" beside "Linearity Pass: YES" (2026-08-31, found on
     # 8415-1 SN 26). Weak assertions are forbidden in this sweep.
-    with _guard("verdict consistency"):
+    with _guard("verdict consistency") as verdict:
         from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
             compute_fail_points, unmeasured_points)
         from laser_trim_analyzer.export.unit_chart import (
@@ -3920,6 +3943,7 @@ def main() -> int:
     # now derive from ONE re-grade, so this is zero-tolerance by construction —
     # asserted on real rows, including deliberately falsified fail points.
     with _guard("unit export document"):
+        _needs(verdict)                       # its rows and helpers are that block's
         def _doc_texts(fig):
             return [t.get_text() for ax in fig.axes for t in ax.texts]
 
@@ -3968,6 +3992,7 @@ def main() -> int:
     # show (the 2026-08-31 divergence: 597 gradeable tracks whose marker count
     # was short of their stored linearity_fail_points).
     with _guard("unit export document: unmeasured markers"):
+        _needs(verdict)                       # its rows and helpers are that block's
         mark_bad: list = []
         mark_checked = 0
         for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows:

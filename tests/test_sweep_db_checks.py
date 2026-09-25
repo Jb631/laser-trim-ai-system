@@ -240,6 +240,111 @@ def test_a_block_that_crashes_is_one_fail_and_the_sweep_goes_on():
     assert "Traceback" in r.stdout and "invented crash" in r.stdout     # where, not only what
 
 
+def test_a_block_that_needs_a_crashed_one_is_one_fail_naming_it():
+    """F4 review (Minor 3): the two unit-export blocks read the verdict-consistency block's locals,
+    so one crash there was three FAILs, two of them an UnboundLocalError about `rows`. A block that
+    needs an earlier one starts with `_needs(that block)`: one FAIL naming the block that crashed."""
+    r, results = _run_code(
+        "with sweep._guard('invented upstream') as up:\n"
+        "    raise ValueError('invented crash')\n"
+        "    rows = [1]\n"
+        "with sweep._guard('invented downstream'):\n"
+        "    sweep._needs(up)\n"
+        "    sweep.check('invented downstream: read the rows', bool(rows))\n"
+        "sweep.check('the next block still runs', True)\n")
+    assert r.returncode == 0 and results is not None, r.stdout[-2000:] + r.stderr[-2000:]
+    assert [(v, n) for v, n, _ in results] == [
+        ("FAIL", "invented upstream (the check itself crashed)"),
+        ("FAIL", "invented downstream (skipped: 'invented upstream' crashed)"),
+        ("PASS", "the next block still runs")]
+    assert "NameError" not in r.stdout and "UnboundLocalError" not in r.stdout
+
+
+def test_a_block_whose_inputs_were_built_runs_as_before():
+    r, results = _run_code(
+        "with sweep._guard('invented upstream') as up:\n"
+        "    rows = [1]\n"
+        "with sweep._guard('invented downstream'):\n"
+        "    sweep._needs(up)\n"
+        "    sweep.check('invented downstream: read the rows', bool(rows))\n")
+    assert r.returncode == 0 and results == [("PASS", "invented downstream: read the rows", "")]
+
+
+def test_every_sweep_block_that_reads_an_earlier_blocks_locals_needs_it_first():
+    """Static, over main(): a `with _guard(...)` block that loads a name only an EARLIER guard block
+    binds must open with `_needs(<that block>)` -- or a crash upstream reads as an UnboundLocalError
+    here (F4 review, Minor 3). A name bound outside every block (main's own, module-level, a
+    builtin) is not a dependency. Approximate on purpose: a name the block binds itself anywhere
+    counts as its own."""
+    import ast
+    import builtins
+    tree = ast.parse((REPO / "scripts" / "app_qa_sweep.py").read_text())
+    module_names = set(dir(builtins))
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            module_names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            module_names |= {(a.asname or a.name).split(".")[0] for a in node.names}
+        elif isinstance(node, ast.Assign):
+            module_names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+
+    def bound(nodes):
+        out = set()
+        for n in nodes:
+            for sub in ast.walk(n):
+                if isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
+                    out.add(sub.id)
+                elif isinstance(sub, (ast.FunctionDef, ast.ClassDef)):
+                    out.add(sub.name)
+                elif isinstance(sub, (ast.Import, ast.ImportFrom)):
+                    out |= {(a.asname or a.name).split(".")[0] for a in sub.names}
+                elif isinstance(sub, ast.arg):
+                    out.add(sub.arg)
+                elif isinstance(sub, ast.ExceptHandler) and sub.name:
+                    out.add(sub.name)
+        return out
+
+    def loaded(nodes):
+        return {sub.id for n in nodes for sub in ast.walk(n)
+                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)}
+
+    def guard_of(stmt):
+        if isinstance(stmt, ast.With) and len(stmt.items) == 1:
+            call = stmt.items[0].context_expr
+            if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "_guard":
+                var = stmt.items[0].optional_vars
+                return ast.literal_eval(call.args[0]), (var.id if var is not None else None)
+        return None
+
+    outside = {a.arg for a in main.args.args}       # bound by main() itself, before this block
+    earlier, problems, blocks = [], [], 0
+    for stmt in main.body:
+        g = guard_of(stmt)
+        if g is None:
+            outside |= bound([stmt])
+            continue
+        blocks += 1
+        name, _var = g
+        mine = bound(stmt.body)
+        free = loaded(stmt.body) - mine - outside - module_names
+        for up_name, up_var, up_bound in earlier:
+            needs = free & up_bound
+            if not needs:
+                continue
+            first = stmt.body[0]
+            ok = (up_var is not None and isinstance(first, ast.Expr)
+                  and isinstance(first.value, ast.Call)
+                  and getattr(first.value.func, "id", None) == "_needs"
+                  and [getattr(a, "id", None) for a in first.value.args] == [up_var])
+            if not ok:
+                problems.append(f"{name!r} reads {sorted(needs)} from {up_name!r} "
+                                f"without opening with _needs({up_var or '<no as-name>'})")
+        earlier.append((name, g[1], mine))
+    assert blocks > 40, blocks                      # the walk found main()'s blocks
+    assert not problems, "\n".join(problems)
+
+
 def test_stopping_the_run_is_never_swallowed():
     r, results = _run_code("with sweep._guard('invented block'):\n    raise KeyboardInterrupt\n")
     assert r.returncode != 0 and results is None                     # it propagated
