@@ -362,22 +362,30 @@ def test_a_real_laser1_cut_length_change_is_only_recipe_changes_finding(tmp_path
 
 
 # ---- Task 5: _fleet_latest -- what "now" means, and what cannot be trusted to say so ----
+# Since F5 (2026-09-25) core/activity owns the definition: a trim file is a laser file with a track
+# that did not fail processing, so each file here carries the one track it stands for.
+
+def _one_track_file(s, *, serial, when, status):
+    from laser_trim_analyzer.database.models import AnalysisResult, StatusType, SystemType, TrackResult
+    a = AnalysisResult(model="M", serial=serial, system=SystemType.B, filename=f"{serial}.xls",
+                       file_date=when, overall_status=StatusType[status])
+    s.add(a)
+    s.flush()
+    s.add(TrackResult(analysis_id=a.id, track_id="default", status=StatusType[status]))
+
 
 def test_a_failed_processing_row_does_not_move_fleet_latest(tmp_path):
     """A PROCESSING_FAILED/ERROR row's file_date is when the analyser gave up
     (_create_minimal_metadata sets it to datetime.now()), not a measurement -- so a fresh
     crash must never be able to make itself "the latest data"."""
     from datetime import datetime
-    from laser_trim_analyzer.database.models import AnalysisResult, StatusType, SystemType
     from laser_trim_analyzer.findings.engine import _fleet_latest
     db = _db(tmp_path)
     with db.session() as s:
-        s.add(AnalysisResult(model="M", serial="M-1", system=SystemType.B,
-                             filename="m1.xls", file_date=START, overall_status=StatusType.PASS))
+        _one_track_file(s, serial="M-1", when=START, status="PASS")
     before = _fleet_latest(db)
     with db.session() as s:
-        s.add(AnalysisResult(model="M", serial="M-2", system=SystemType.B,
-                             filename="m2.xls", file_date=datetime.now(), overall_status=StatusType.ERROR))
+        _one_track_file(s, serial="M-2", when=datetime.now(), status="ERROR")
     assert _fleet_latest(db) == before == START
 
 
@@ -385,17 +393,13 @@ def test_a_row_dated_more_than_a_day_in_the_future_does_not_move_fleet_latest(tm
     """A mistyped filename date can put a file months out -- which would make every OTHER
     model's real, current data look "stale" by comparison if it were allowed to set "now"."""
     from datetime import datetime, timedelta
-    from laser_trim_analyzer.database.models import AnalysisResult, StatusType, SystemType
     from laser_trim_analyzer.findings.engine import _fleet_latest
     db = _db(tmp_path)
     with db.session() as s:
-        s.add(AnalysisResult(model="M", serial="M-1", system=SystemType.B,
-                             filename="m1.xls", file_date=START, overall_status=StatusType.PASS))
+        _one_track_file(s, serial="M-1", when=START, status="PASS")
     before = _fleet_latest(db)
     with db.session() as s:
-        s.add(AnalysisResult(model="M", serial="M-2", system=SystemType.B,
-                             filename="m2.xls", file_date=datetime.now() + timedelta(days=400),
-                             overall_status=StatusType.PASS))
+        _one_track_file(s, serial="M-2", when=datetime.now() + timedelta(days=400), status="PASS")
     assert _fleet_latest(db) == before == START
 
 

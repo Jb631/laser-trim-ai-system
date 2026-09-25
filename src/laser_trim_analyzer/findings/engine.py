@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import text
 
+from ..core.activity import load_activity
 from .analyzers import (cut_setting, ink_target, limit_tables, loss_origin, machine_compare,
                         pass_burden, recipe_change, rework_load, setup_change, station_setup,
                         trim_effort)
@@ -35,25 +36,13 @@ def _fleet_latest(db) -> Optional[datetime]:
     put a file months in the future, which would make every model's real, current data
     look "stale" by comparison. Neither exists in the work database today (checked
     2026-09-23), so this changes nothing yet -- it is here for when one turns up.
+
+    One definition (F5, 2026-09-25): core/activity owns both rules and the query, so this "now"
+    and the date the screens' "Inactive" label is measured from are the same date. (Until then
+    this read the FILE's status; a trim file is now one with a track that did not fail -- the
+    same date for every model on the work database, 326 of 326.)
     """
-    from .data import _date
-    from laser_trim_analyzer.core.model_stats import _FAILED_PROCESSING
-    params: Dict[str, Any] = {f"failed{i}": name for i, name in enumerate(_FAILED_PROCESSING)}
-    placeholders = ", ".join(f":{k}" for k in params)
-    # Bound as a string, not a raw datetime: text() does not apply SQLAlchemy's own DATETIME
-    # bind_processor (that only fires for ORM-typed columns), so a bare datetime falls back to
-    # sqlite3's own adapter registry -- deprecated since 3.12. file_date is stored in exactly
-    # this format ("%Y-%m-%d %H:%M:%S.%f", fixed-width and zero-padded, SQLAlchemy's sqlite
-    # DATETIME default), so a plain string comparison sorts identically to a chronological one.
-    cutoff = datetime.now() + timedelta(days=1)
-    params["cutoff"] = f"{cutoff:%Y-%m-%d %H:%M:%S.%f}"
-    with db.session() as s:
-        v = s.execute(text(
-            "SELECT MAX(file_date) FROM analysis_results "
-            "WHERE system IN ('A','B','C') "
-            f"AND overall_status NOT IN ({placeholders}) "
-            "AND file_date <= :cutoff"), params).scalar()
-    return _date(v)
+    return load_activity(db).fleet
 
 
 def compute_for_model(db, model: str,

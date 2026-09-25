@@ -12,7 +12,8 @@ test (`test_findings_limit_tables.py`'s domain rule applies here too).
 described 2013-2016 and read as current: 7539-2 compared 2014-12..2015-02 though all three lasers
 still run it, and 8232-1 compared 2013-10..2016-03 though laser 2 last ran it in 2022. A finding now
 pools only the shared months inside the WINDOW_MONTHS calendar months ending with the MODEL'S OWN
-newest trim file (graded or not -- the model still being run). A comparable pair outside that window
+newest trim file (graded or not -- the model still being run; `core/activity.newest_trim_file`, so
+a file dated more than a day in the future never moves it). A comparable pair outside that window
 is a dated FACT (`in_window: False`), never a finding, and the title names the months it covers.
 
 Why the model's own newest file and not the fleet's: the owner's decision (James, 2026-09-25) --
@@ -46,6 +47,7 @@ words: settings that work on one laser may not transfer.
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from ...core.activity import newest_trim_file
 from ..model import Finding
 from ..stats import pct
 
@@ -86,8 +88,11 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
               and t.file_date is not None]
     if not graded:
         return facts, findings
-    # The model's own newest trim file, graded or not (the owner's "Inactive" decision above).
-    anchor = max(t.file_date for t in tracks if t.file_date is not None)
+    # The model's own newest trim file, graded or not (the owner's "Inactive" decision above) --
+    # core/activity's, so a file dated more than a day ahead never moves the window (F5).
+    anchor = newest_trim_file(t.file_date for t in tracks)
+    if anchor is None:
+        return {}, findings
     window = (_months_back(anchor, WINDOW_MONTHS - 1), _months_back(anchor, 0))
     facts = {"window": {"first": window[0], "last": window[1], "months": WINDOW_MONTHS,
                         "anchored_to": anchor.date().isoformat()},

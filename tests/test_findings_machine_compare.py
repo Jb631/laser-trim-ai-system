@@ -221,3 +221,26 @@ def test_a_table_shared_both_before_and_inside_the_window_is_two_comparisons():
     assert f.evidence["by_laser"]["Laser 1 (LTS)"] == {"n": 200, "pass_pct": pytest.approx(80.0)}
     assert [(c["in_window"], c["months"]) for c in comparisons(facts)] == [
         (False, ["2015-05"]), (True, ["2025-10"])]
+
+
+# ---- F5 (2026-09-25): the window anchor is core/activity's newest trim file, future-date guard and all
+
+def test_a_file_dated_far_in_the_future_never_moves_the_window():
+    """A mistyped filename date more than a day ahead is not the model's newest trim file (the
+    engine's guard, now core/activity's, which this anchor lacked -- re-review, out of scope 1). It
+    would push the window three years forward and turn the real, recent comparison into a dated
+    fact."""
+    from datetime import timedelta
+    tracks = (block(0, datetime(2026, 3, 1), 200, "A", 0.95)
+              + block(1000, datetime(2026, 3, 1), 200, "B", 0.60)
+              + newest(date=datetime.now() + timedelta(days=3 * 365)))
+    facts, findings = machine_compare.analyze("M", tracks, label)
+    assert facts["window"]["anchored_to"] == "2026-03-10"
+    assert only(findings).title.endswith("same test, Mar 2026")
+
+
+def test_a_model_whose_every_file_is_dated_in_the_future_has_no_window():
+    from datetime import timedelta
+    ahead = datetime.now() + timedelta(days=400)
+    tracks = block(0, ahead, 200, "A", 0.95) + block(1000, ahead, 200, "B", 0.60)
+    assert machine_compare.analyze("M", tracks, label) == ({}, [])
