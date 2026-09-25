@@ -408,9 +408,8 @@ class HomePage(PageBase):
         both kinds: anything still in flight is dropped when it lands."""
         self._focus_gen += 1
         self._findings_gen += 1
-        self._apply_focus(*load_focus(self.app.db))
-        self._apply_legacy_ft(legacy_ft_count(self.app.db))
-        self._apply_unreadable(unreadable_count(self.app.db))
+        self._apply_focus_load(load_focus(self.app.db), legacy_ft_count(self.app.db),
+                               unreadable_count(self.app.db))
         self._apply_findings(self._query_findings())
 
     def _reload_focus(self) -> None:
@@ -425,11 +424,22 @@ class HomePage(PageBase):
             def apply():
                 if gen != self._focus_gen:
                     return              # a newer load superseded this one
-                self._apply_focus(*data)
-                self._apply_legacy_ft(legacy)
-                self._apply_unreadable(unreadable)
+                self._apply_focus_load(data, legacy, unreadable)
             self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
+
+    def _apply_focus_load(self, data, legacy, unreadable) -> None:
+        """FOCUS and the two ingest notices, from ONE load -- each drawn under its own guard, the
+        Model page's `_try`: a render error in one is logged and the other two still update (F4
+        review, Minor 4: as one closure, a crash in the FOCUS list stopped both notices, and
+        safe_after swallowed it). Tk thread; the caller has already checked the load is current."""
+        for what, update in (("drifting-now list", lambda: self._apply_focus(*data)),
+                             ("final-test notice", lambda: self._apply_legacy_ft(legacy)),
+                             ("unreadable-files notice", lambda: self._apply_unreadable(unreadable))):
+            try:
+                update()
+            except Exception:
+                logger.exception("Home: the %s could not be drawn", what)
 
     def _apply_legacy_ft(self, count: int) -> None:
         """Show or hide the legacy-verdict line. Tk thread."""

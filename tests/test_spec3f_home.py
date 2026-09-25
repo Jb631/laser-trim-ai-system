@@ -759,6 +759,46 @@ def _older_then_newer(fake_older, fake_newer):
     return loader
 
 
+@pytest.mark.parametrize("path", ("async", "sync"))
+@pytest.mark.parametrize("broken", ("focus", "legacy", "unreadable"))
+def test_one_render_error_in_the_focus_apply_never_stops_the_other_two(
+        make_app, monkeypatch, caplog, broken, path):
+    """F4 review (Minor 4): since F4, FOCUS and the two ingest notices apply as ONE closure, so a
+    render error in the FOCUS list stopped both notices -- and safe_after swallowed it. Each of the
+    three is guarded on its own now (the Model page's _try: log, go on), under the one counter
+    check."""
+    import logging
+    import laser_trim_analyzer.gui.v6.pages.home_page as home_mod
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    page = _home(app)
+    _settle_workers(app)
+    monkeypatch.setattr(home_mod, "legacy_ft_count", lambda db: 5)
+    monkeypatch.setattr(home_mod, "unreadable_count", lambda db: 7)
+
+    def boom(*a, **k):
+        raise RuntimeError(f"invented {broken} render crash")
+    if broken == "focus":
+        monkeypatch.setattr(page._focus, "set_result", boom)
+    else:
+        monkeypatch.setattr(home_mod, f"{broken}_notice" if broken == "unreadable"
+                            else "legacy_ft_notice", boom)
+    with caplog.at_level(logging.ERROR):
+        if path == "async":
+            page._reload_focus()
+            _pump_until(app, lambda: f"invented {broken} render crash" in caplog.text)
+            _pump_ui(app)
+        else:
+            page.reload_now()
+    assert f"invented {broken} render crash" in caplog.text          # logged, never silent
+    if broken != "legacy":
+        assert page._legacy_ft_label.winfo_manager() == "pack"
+    if broken != "unreadable":
+        assert page._unreadable_label.winfo_manager() == "pack"
+    if broken != "focus":
+        assert page._focus_count == 0 and "0 drifting now" in page._caption.cget("text")
+
+
 @pytest.mark.parametrize("newer", ("async", "sync"))
 def test_an_older_focus_load_never_overwrites_a_newer_one(make_app, monkeypatch, newer):
     import laser_trim_analyzer.gui.v6.pages.home_page as home_mod
