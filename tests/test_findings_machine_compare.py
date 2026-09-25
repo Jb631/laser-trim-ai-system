@@ -150,17 +150,22 @@ def test_a_third_laser_under_the_floor_is_left_out_of_the_comparison():
     assert set(one_comparison(facts)["by_laser"]) == {"Laser 2 (DLTS)", "Laser 1 (LTS)"}
 
 
-# ---- I1 (final review, 2026-09-25): recent months only, anchored to the FLEET's latest file ----
-# Three of the five real findings described 2013-2016 and read as current: 8081-4's last file is
-# 2016-03, yet anchored to its OWN latest year it still qualified.
+# ---- I1 (final review, 2026-09-25): recent months only, in the MODEL's own last 24 months -------
+# Owner decision (James, 2026-09-25): a model not trimmed in two years is labelled Inactive, never
+# hidden -- so the window ends at the model's OWN newest trim file. A live model whose only
+# comparable months are old (7539-2: 2014-12..2015-02, all three lasers still run it) gets a dated
+# fact; a model that stopped running (8081-4, last file 2016-03) keeps its finding.
 
-NOW = datetime(2026, 9, 22)          # the fleet's newest trim file, as the engine passes it
+def newest(date=datetime(2026, 9, 22), system="B"):
+    """One ungraded file: the model's newest trim file, which alone decides where the window ends
+    (graded or not -- it is the model still being run), in a month no second laser shares."""
+    return [replace(make_track(99999, date=date, system=system), linearity_pass=None)]
 
 
-def test_a_pair_entirely_before_the_window_is_a_dated_fact_not_a_finding():
+def test_a_live_models_old_only_comparison_is_a_dated_fact_not_a_finding():
     tracks = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
-              + block(1000, datetime(2015, 5, 1), 200, "B", 0.60))
-    facts, findings = machine_compare.analyze("M", tracks, label, now=NOW)
+              + block(1000, datetime(2015, 5, 1), 200, "B", 0.60) + newest())
+    facts, findings = machine_compare.analyze("M", tracks, label)
     assert findings == []
     c = one_comparison(facts)
     assert c["in_window"] is False and c["months"] == ["2015-05"]
@@ -169,29 +174,39 @@ def test_a_pair_entirely_before_the_window_is_a_dated_fact_not_a_finding():
                                "anchored_to": "2026-09-22"}
 
 
+def test_a_stopped_models_comparison_inside_its_own_last_24_months_is_a_finding():
+    tracks = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
+              + block(1000, datetime(2015, 5, 1), 200, "B", 0.60))
+    facts, findings = machine_compare.analyze("M", tracks, label)
+    f = only(findings)
+    assert f.title.endswith("same test, May 2015")
+    assert facts["window"]["anchored_to"] == "2015-05-10" and facts["window"]["last"] == "2015-05"
+
+
 def test_a_pair_inside_the_window_is_a_finding_whose_title_names_the_months():
     tracks = (block(0, datetime(2025, 10, 1), 200, "A", 0.95, n_days=40)
-              + block(1000, datetime(2025, 10, 1), 200, "B", 0.60, n_days=40))
-    f = only(machine_compare.analyze("M", tracks, label, now=NOW)[1])
+              + block(1000, datetime(2025, 10, 1), 200, "B", 0.60, n_days=40) + newest())
+    f = only(machine_compare.analyze("M", tracks, label)[1])
     assert f.title == "Laser 2 (DLTS) passes 95%, Laser 1 (LTS) 60%, same test, Oct 2025 – Nov 2025"
     assert f.evidence["months"] == ["2025-10", "2025-11"]
+    assert f.evidence["window"] == ["2024-10", "2026-09"]
 
 
 def test_one_shared_month_is_named_once():
     tracks = (block(0, datetime(2025, 10, 1), 200, "A", 0.95)
-              + block(1000, datetime(2025, 10, 1), 200, "B", 0.60))
-    f = only(machine_compare.analyze("M", tracks, label, now=NOW)[1])
+              + block(1000, datetime(2025, 10, 1), 200, "B", 0.60) + newest())
+    f = only(machine_compare.analyze("M", tracks, label)[1])
     assert f.title.endswith("same test, Oct 2025")
 
 
 def test_the_windows_first_month_counts_and_the_month_before_it_does_not():
     assert machine_compare.WINDOW_MONTHS == 24
     first = (block(0, datetime(2024, 10, 1), 200, "A", 0.95)
-             + block(1000, datetime(2024, 10, 1), 200, "B", 0.60))
-    assert len(machine_compare.analyze("M", first, label, now=NOW)[1]) == 1
+             + block(1000, datetime(2024, 10, 1), 200, "B", 0.60) + newest())
+    assert len(machine_compare.analyze("M", first, label)[1]) == 1
     before = (block(0, datetime(2024, 9, 1), 200, "A", 0.95)
-              + block(1000, datetime(2024, 9, 1), 200, "B", 0.60))
-    facts, findings = machine_compare.analyze("M", before, label, now=NOW)
+              + block(1000, datetime(2024, 9, 1), 200, "B", 0.60) + newest())
+    facts, findings = machine_compare.analyze("M", before, label)
     assert findings == [] and one_comparison(facts)["in_window"] is False
 
 
@@ -201,14 +216,8 @@ def test_a_table_shared_both_before_and_inside_the_window_is_two_comparisons():
            + block(1000, datetime(2015, 5, 1), 200, "B", 0.50))
     new = (block(2000, datetime(2025, 10, 1), 200, "A", 0.95)
            + block(3000, datetime(2025, 10, 1), 200, "B", 0.80))
-    facts, findings = machine_compare.analyze("M", old + new, label, now=NOW)
+    facts, findings = machine_compare.analyze("M", old + new + newest(), label)
     f = only(findings)
     assert f.evidence["by_laser"]["Laser 1 (LTS)"] == {"n": 200, "pass_pct": pytest.approx(80.0)}
     assert [(c["in_window"], c["months"]) for c in comparisons(facts)] == [
         (False, ["2015-05"]), (True, ["2025-10"])]
-
-
-def test_with_no_fleet_anchor_the_window_ends_at_the_models_own_latest():
-    tracks = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
-              + block(1000, datetime(2015, 5, 1), 200, "B", 0.60))
-    assert len(machine_compare.analyze("M", tracks, label)[1]) == 1

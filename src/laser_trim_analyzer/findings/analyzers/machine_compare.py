@@ -8,15 +8,19 @@ then pooled per limit table over exactly those shared-month cells: never a laser
 month the other laser did not also run there, and never two tables pooled as if they were one
 test (`test_findings_limit_tables.py`'s domain rule applies here too).
 
-**Recent months only** (final review, 2026-09-25, I1). A finding is a recommendation read as
-current, so the shared months it pools must fall inside the WINDOW_MONTHS calendar months ending
-with the FLEET's newest trim file (`now`, the engine's `fleet_latest`, the anchor cut_setting
-uses) -- never the model's own latest: 8081-4's last file is 2016-03, and anchored to its own
-"latest year" its 2015 comparison still read as a finding. Of the five findings before this, three
-described 2013-2016 (7539-2 compared 2014-12..2015-02 though all three lasers still run it). A
-comparable pair outside the window is a dated FACT (`in_window: False`), never a finding, and the
-title names the months it covers. Without an anchor (`now=None`) the window ends at the model's
-own latest graded track.
+**Recent months only** (final review, 2026-09-25, I1). With no window, three of the five findings
+described 2013-2016 and read as current: 7539-2 compared 2014-12..2015-02 though all three lasers
+still run it, and 8232-1 compared 2013-10..2016-03 though laser 2 last ran it in 2022. A finding now
+pools only the shared months inside the WINDOW_MONTHS calendar months ending with the MODEL'S OWN
+newest trim file (graded or not -- the model still being run). A comparable pair outside that window
+is a dated FACT (`in_window: False`), never a finding, and the title names the months it covers.
+
+Why the model's own newest file and not the fleet's: the owner's decision (James, 2026-09-25) --
+a model not trimmed in two years is labelled "Inactive" on screen, never hidden (a follow-up task).
+So a model that stopped running keeps its last comparison as a finding (8081-4, last file 2016-03,
+compares 2015-05..2015-12) for that label to mark, while a live model whose only comparable months
+are old gets the dated fact. (The review's first ruling anchored to the fleet's newest file, which
+would have hidden 8081-4's comparison.)
 
 `facts` = {"window": {first, last, months, anchored_to}, "comparisons": [...]}: every COMPARABLE
 measurement, not only the ones worth a finding. Per limit table, its shared months inside the
@@ -28,11 +32,11 @@ under the population floor is left out of facts as well as the comparison, never
 The window is WINDOW_MONTHS whole calendar months, the anchor's own month the last of them (a
 month cell is pooled whole, so a partial month at the far end would reach past the window).
 
-Measured on a copy of the work database, 2026-09-25, anchored to the fleet's newest file
-(2026-09-22, so Oct 2024 - Sep 2026): one finding -- 6126, laser 2 (DLTS) 98% of 174 against laser
-1 (LTS) 82% of 130, Oct 2024 - Feb 2025 -- and five dated facts (7539-2, 8081-4 and 8232-1 from
-2013-2016; 6952 pooled 2014-12..2024-07; 6126's own months before the window), where there were
-five findings with no window.
+Measured on a copy of the work database, 2026-09-25: two findings -- 6126 (newest file 2026-09-14),
+laser 2 (DLTS) 98% of 174 against laser 1 (LTS) 82% of 130, Oct 2024 - Feb 2025; and 8081-4 (newest
+file 2016-03-07), laser 2 98% of 189 against laser 1 86% of 347, May 2015 - Dec 2015 -- and four
+dated facts (7539-2 2014-12..2015-02, 8232-1 2013-10..2016-03, 6952 pooled 2014-12..2024-07, 6126's
+own months before its window), where there were five findings with no window.
 
 This says WHERE the two lasers differ, never WHY. The gap could be a laser setting, wear, an
 operator habit, or something upstream that happens to correlate with which machine a lot landed
@@ -74,8 +78,7 @@ def _rate(rows) -> Optional[float]:
     return pct([bool(t.linearity_pass) for t in rows])
 
 
-def analyze(model: str, tracks, laser_label,
-            now: Optional[datetime] = None) -> Tuple[Dict[str, Any], List[Finding]]:
+def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Finding]]:
     facts: Dict[str, Any] = {}
     findings: List[Finding] = []
 
@@ -83,7 +86,8 @@ def analyze(model: str, tracks, laser_label,
               and t.file_date is not None]
     if not graded:
         return facts, findings
-    anchor = now if now is not None else max(t.file_date for t in graded)
+    # The model's own newest trim file, graded or not (the owner's "Inactive" decision above).
+    anchor = max(t.file_date for t in tracks if t.file_date is not None)
     window = (_months_back(anchor, WINDOW_MONTHS - 1), _months_back(anchor, 0))
     facts = {"window": {"first": window[0], "last": window[1], "months": WINDOW_MONTHS,
                         "anchored_to": anchor.date().isoformat()},

@@ -436,22 +436,31 @@ def test_importing_the_findings_engine_loads_no_plotting_code():
     assert loaded == "[]", f"importing the findings engine loaded {loaded}"
 
 
-# ---- I1 (final review, 2026-09-25): machine_compare's window ends at the FLEET's newest file ----
+# ---- I1 (final review, 2026-09-25): machine_compare's window ends at the MODEL's newest file ---
 
-def test_the_engine_anchors_machine_compare_to_the_fleets_newest_file(tmp_path, monkeypatch):
-    """8081-4's shape: a model last run in 2015-16, compared on its own 'latest year', read as a
-    current recommendation. Anchored to the fleet's newest file it is a dated fact only."""
+def test_the_engine_anchors_machine_compare_to_the_models_own_newest_file(tmp_path, monkeypatch):
+    """Owner decision (James, 2026-09-25): a model not trimmed in two years is labelled Inactive,
+    never hidden. So the fleet's newest file does not decide machine_compare's window: a stopped
+    model keeps its comparison (8081-4's shape), a live model's old-only comparison is a fact."""
     from datetime import datetime
+    from dataclasses import replace
     from laser_trim_analyzer.findings import engine
+    from findings_helpers import make_track
     from test_findings_machine_compare import block
     old = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
            + block(1000, datetime(2015, 5, 1), 200, "B", 0.60))
+    fleet = datetime(2026, 9, 22)
     monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: old)
-    facts, findings = engine.compute_for_model(_db(tmp_path), "OLD", fleet_latest=datetime(2026, 9, 22))
+    facts, findings = engine.compute_for_model(_db(tmp_path), "STOPPED", fleet_latest=fleet)
+    assert len([f for f in findings if f.analyzer == "machine_compare"]) == 1
+    assert facts["machine_compare"]["window"]["anchored_to"] == "2015-05-10"
+
+    live = old + [replace(make_track(99999, date=fleet, system="B"), linearity_pass=None)]
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: live)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "LIVE", fleet_latest=fleet)
     assert [f for f in findings if f.analyzer == "machine_compare"] == []
     (c,) = facts["machine_compare"]["comparisons"]
     assert c["in_window"] is False and c["months"] == ["2015-05"]
-    assert facts["machine_compare"]["window"]["anchored_to"] == "2026-09-22"
 
 
 # ---- I4 (final review, 2026-09-25): a crash in machine_compare or loss_origin is named too ------
