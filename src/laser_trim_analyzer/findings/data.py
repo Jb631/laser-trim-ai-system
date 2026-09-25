@@ -99,6 +99,13 @@ class TrackView:
     # setup_change.py. Track 1's own block, except a TRK2 track whose file captured a Track 2
     # block (Task 9): {**parameters, **track2_parameters} then -- see load_model_tracks below.
     setup: Optional[Dict[str, Any]] = None
+    # Where `setup` came from (final review, 2026-09-25, I2): True for a TRK2 track whose file
+    # captured NO Track 2 block, so `setup` is Track 1's block, not this track's. Laser 2's
+    # 'Track Parameters' sheet holds every laser setting per track (Model Parameters holds only
+    # identity, counts and axis limits), so an inherited block says nothing about Track 2's own
+    # settings -- and the day the capture starts, Track 1's values give way to Track 2's, which
+    # must never read as a change. Every other track's block is its own.
+    setup_inherited: bool = False
 
     @cached_property
     def limit_table(self) -> Optional[LimitTable]:
@@ -214,6 +221,8 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
         # the same "captured overrides, else Track 1's" rule the resistance limits above follow.
         params = _dict(r[17])
         setup = {**(params or {}), **t2_params} if t2_params else params
+        # ...and says which: a TRK2 track with no captured Track 2 block is reading Track 1's.
+        setup_inherited = track_name == "TRK2" and not t2_params
         out.append(TrackView(
             track_id=r[0], file_date=d, system=str(r[2]),
             untrimmed_errors=_arr(r[3]), untrimmed_resistance=r[4], trimmed_resistance=r[5],
@@ -222,7 +231,8 @@ def load_model_tracks(db, model: str) -> List[TrackView]:
             initial_r_low=initial_r_low, initial_r_high=initial_r_high,
             final_r_low=final_r_low, final_r_high=final_r_high,
             passes=tuple(passes.get(r[0], ())),
-            track_name=track_name, final_positions=_arr(r[15]), setup=setup))
+            track_name=track_name, final_positions=_arr(r[15]), setup=setup,
+            setup_inherited=setup_inherited))
     return out
 
 

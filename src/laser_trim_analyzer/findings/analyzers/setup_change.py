@@ -1,98 +1,252 @@
-"""Setup-change detection: a laser setting BEYOND the cut recipe changed -- did the pass rate follow?
+"""Setup-change detection: the laser's setup beyond the cut recipe changed -- did the pass rate follow?
 
-`recipe_change` covers the cut recipe (how many cuts, and each one's cut-length setting -- the
-per-pass `trim_passes` log). Everything else the laser was told to do for a file -- power,
-duration, pulse rate, frequency, tolerances, indexing method, and the rest of the 40-odd keys
-`trim_setup.parameters` carries -- is this analyzer's job (TRACKER B1c: "captured and analysed by
-nothing"). Same shape as `recipe_change`, applied to a dict instead of a recipe tuple: per (model,
-laser, track), order a key's values by date, find runs of a constant value, and report each
-boundary where the run either side is long and large enough to trust, held to ONE limit table.
+`recipe_change` covers the cut recipe. Everything else the laser was told to do for a file -- power,
+pulse duration, pulse rate, speeds, tolerances, indexing, ignored points and the rest of the block
+`trim_setup.parameters` carries -- is this analyzer's (TRACKER B1c: "captured and analysed by
+nothing").
 
-**Never claims the setting caused the move.** Like `recipe_change`, this is a "what changed"
-history entry, not a recommendation -- `expected_gain_points` is always None, and median incoming
-resistance travels beside the pass-rate move for the same reason recipe_change discloses it: a
-setting and the material often change together.
+**A change is a boundary between two consecutive STABLE SETUPS** on one (model, laser, track) --
+the final review of 2026-09-25 (C1, risk 10). The first version followed each setting's own run of
+constant value, and that run spanned every other change on the track: 6607's pulse-duration change
+of 2025-06-19 read 75.5% -> 64.4% (a fall, coloured coral) because its "before" pooled five
+setups; setup against setup the move was 38.6% -> 67.6%. And one day's seven changed settings on
+6644-04 were seven rows. So:
 
-**Never across a limit table change.** A pass rate is a verdict against a test (CLAUDE.md). Unlike
-`recipe_change`, which still reports a like-for-like figure when the table moved too, this
-analyzer says nothing when the before and after runs are not graded against the exact same single
-table -- ruling 6 asks for the move "with the limit table held constant", not a disclosed blend.
+  * The track's files are cut into SETUPS on the whole setup: every captured key except identity
+    keys (`EXCLUDED`), per-unit readings (`READINGS`) and mirrored label rows (below), plus the cut
+    recipe -- `recipe_change.RECIPE_PARAMETER_KEYS` from the block and the first cut's setting from
+    the pass log (laser 2's cut length lives only there) -- which bounds a setup but is never named
+    here: recipe_change owns it. A file starts a new setup when any key it carries holds a value
+    different from that key's last captured value; a key a file does not carry keeps its last
+    value, and a key's first capture is not a change (nothing was known before it).
+  * A setup is STABLE when it has `MIN_TRACKS_SIDE` graded tracks spanning `MIN_RUN_DAYS`.
+  * Each pair of consecutive stable setups is compared, stable against stable. A short-lived setup
+    between them (one that does not meet the floors) is absorbed: its tracks are in neither side,
+    and the settings that differ between the two stable setups are one compound change (6607's
+    power change of 2026-01-06 and pulse change of 2026-01-12 become one). A change with no stable
+    setup on a side is not reported. There is no limit on the time between the two stable setups
+    -- recipe_change's consecutive stable runs have none either -- so the summary always gives
+    both sides' dates, and says how many short-lived setups (and tracks) sat between them.
+  * One finding per (laser, track) change, naming EVERY setting that differs, with the file's own
+    label (`LABELS`). A setting that moved and came back inside the absorbed stretch is no change.
+  * Facts keep every per-setting boundary, reported or not, each with the reason it was not.
 
-**No move-size filter.** Every boundary that clears `MIN_RUN_DAYS` and `MIN_TRACKS_SIDE` on both
-sides, on one table, is reported, whether the pass rate moved a lot, a little, or not at all --
-the question this analyzer answers is "did it follow", and a "no" is as informative as a "yes".
-Ruling 6's own containment against a noisy history group is exactly these two floors and the
-table rule, not a move threshold.
+**Never across a limit-table change.** A pass rate is a verdict against a test (CLAUDE.md): each
+side must be graded against ONE limit table, the same one, or the change is not reported.
 
-**`EXCLUDED`** holds the identity-like keys actually present in the six local fixtures'
-`trim_setup.parameters` (`dlts_7553_10B`, `dlts_8074_18`, `dlts_8232-1_242/243`,
-`lts_8232-1_193/194` -- see test_findings_data.py's `fixture_db`), not a guess at a wider corpus
-that is not on disk here:
-  - `alias` -- names the TRACK ("Outer Track" / "Inner Track" / "Track"), not a laser setting.
-  - `model` / `model_number` -- restates the model number the file is already filtered to.
-  - `track_parameters` -- the block's own section header ("SEC1-TRK1" / "SEC1-TRK2"), naming
-    which track's block this is, the same thing `track_name` already carries.
-None of serial, date, file name, operator or comment keys are present in these two sheets at all
-(a per-unit serial/date lives on `analysis_results`, not in the laser's own parameter block) --
-so the narrower set above is the whole of what needs excluding here, not an oversight.
+**Never claims the setting caused the move.** A history entry, not a recommendation --
+`expected_gain_points` is always None; median incoming resistance travels beside the move because
+a setting and the material often change together; a cut recipe that changed at the same point is
+said too.
 
-**`ALIASES`** folds laser 1's `Response` (key `response`) and laser 2's `Response (Linear or
-Function)` (key `response_linear_or_function`) onto one canonical key, ruled one setting on
-2026-09-23. Confirmed against `core.trim_setup.normalise_key` on the fixtures directly:
-`normalise_key("Response") == "response"`, `normalise_key("Response (Linear or Function)") ==
-"response_linear_or_function"`. Grouping is already per (system, track) -- so aliasing does not
-change which tracks get compared, only the KEY NAME a finding reports, so the same setting reads
-the same regardless of which laser wrote it.
+**Track 2's own settings** (I2). A TRK2 track whose file captured no Track 2 block carries Track 1's
+block (`TrackView.setup_inherited`). Laser 2's 'Track Parameters' sheet holds every laser setting
+per track -- its 'Model Parameters' holds only identity, counts and axis limits -- so such a track
+has no known setup of its own and is left out here entirely: an inherited block contributes no
+key, so no setup ever spans an inherited stretch and a captured one. (The work database has 0 of
+1,868 two-track analyses captured; without this, the day capture starts, Track 1's 10,350-ohm
+incoming limit giving way to Track 2's 4,000 would read as a setting change.)
 
-**Values are compared per their own kind.** A numeric value (`int`/`float`, `bool` excluded) is
-rounded to 6dp and compared as a number, so `200` and `200.0` -- an int one file and a float the
-next, both meaning the same reading -- are never reported as a "change". Anything else is compared
-as its `str()` form (the brief's "non-numeric values are compared as strings"), which also means a
-value that arrived typed inconsistently (e.g. `"Linear"` one file, `Linear` -- already a str --
-the next) still compares equal instead of manufacturing a boundary out of a parsing accident.
+**`EXCLUDED` -- identity, never a setting:** `alias` (names the track), `model` / `model_number`
+(restate the model), `track_parameters` (the block's own header), `customer` and `drawing` (whose
+part it is), `template_updated` (the template's revision date), `report_info` (a section header).
 
-**One real change, one finding.** `recipe_change` already owns the cut-length setting (its per-pass
-`trim_passes.laser_cut_length` log), and the very same physical setting is ALSO captured, once per
-file, as a nominal value in `trim_setup.parameters` -- under the key `laser_cut_length` (laser
-1/System B) or `laser_cut_length_mm` (laser 2/System A; not observed in the six local fixtures,
-but `core.trim_setup.normalise_key` produces it deterministically from "Laser Cut Length (mm)"
-should a captured file ever carry it). Left in scope on the first pass of this analyzer, a real
-laser-1 cut-length change was independently readable from BOTH analyzers -- two redundantly-worded
-findings in the same "What changed" group for one real event (fix round 1, task-6-review.md,
-Important #1). `recipe_change.RECIPE_PARAMETER_KEYS` (imported here, never re-typed) is excluded
-in `_canonical_setup` for exactly this reason -- owned by `recipe_change` because that module is
-the one that knows what its own recipe consists of. Resistance-window keys
-(`initial_resistance_lower_limit`, etc.) STAY in scope: they are `ink_target`'s domain for the
-configured window's current STATE, never a change EVENT, so there is no equivalent overlap to
-guard against. `laser_cut_length`'s wording (were it ever reported) would in any case have been
-direction-free like every other key here -- CLAUDE.md's "cut length is two different quantities"
-trap is about POOLING laser 1's and laser 2's numbers, which never happens in this per-(model,
-laser, track) grouping, and about calling a laser-1 move "longer"/"shorter", which this module's
-title and summary never do for any key ("changed from A to B", never a direction or a unit) -- but
-the exclusion below means the wording question no longer arises for this specific setting at all.
+**`READINGS` -- what the machine measured or found, not what anyone set** (curated on a copy of
+the work database, 2026-09-25: per key, how often it differs between consecutive files of a
+(model, laser, track), and how often a change lands on a value that track never held before -- a
+setting returns to known values or changes rarely, a reading keeps producing new ones. The rates
+are not bimodal, so no threshold decides this alone):
+  * laser 2 / laser 3 format -- `length_theoretical`, `starting_position`, and the four
+    `error_split_{low,high}_{voltage,position}`: the element's measured length and the coordinates
+    derived from it, per unit. 5,000+ distinct values over 57,909 laser-2 files; they differ on
+    20-22% of consecutive files, in lockstep; 78% of their changes land on a value never held
+    before (the review: 874-914 distinct values over 1,434-1,875 files on 8204-3 and 6126).
+    `angle_theoretical` is the rotary twin (8614: 14 distinct values over 113 files).
+  * `laser_height`: a machine coordinate found at each setup (the focus), not a dialed setting --
+    1,583 distinct values across 294 laser-2 groups; 83% of its changes land on a new value and
+    55% happen with no other setting moving. Counted as a setting it splits a setup at every
+    re-focus: 57 findings on 19 models fall to 48 on 16.
+  * `index_position`, `index_voltage`: found per unit where the machine indexes the element itself
+    -- 6828 holds 390 distinct index positions over 669 files, differing on 66% of consecutive
+    files; constant on 163 of 166 laser-2 groups (so leaving them out moves no finding today).
+  * laser 1 -- `low_/high_error_split_volts`, `low_/high_error_split_position`, `start_position`,
+    `pot_angle`, `stop_angle`: the error-split points found on the unit and the travel derived
+    from them (6126: 671-692 distinct values over 1,945 files, differing on 47% of consecutive
+    files; counted as settings, 57 findings fall to 53); `low_/high_end_volts`,
+    `low_/high_end_position`: found per unit on some models (8340: 35 distinct values over 75
+    files; 8531-1 Track B: 46 over 106).
+The review's list alone (the six laser-2 readings, and the angle twin) gives 44 findings on
+14 models. The whole rule, on the copy of 2026-09-25: 57 findings on 19 models.
+Kept as settings although they flip on a few models, because a change in them is a change of
+what the sweep measures: `num_of_lin_positions` and laser 1's `number_of_readings_lin` / `_trim`
+(how many points the sweep takes -- 8232-1's 111 -> 57 readings at the same -55 degree travel is
+the known limit-table density change; the count follows the measured length on a few models, such
+as 8824's 81 distinct values over 150 files, and there the tables move with it, so the table rule
+silences them either way) and `points_from_start` / `points_from_end` (the trim window). A changed
+point count changes the limit table, so it only ever BOUNDS a setup -- which splits a two-table
+setup into two one-table ones (57 findings on 19 models; 54 on 18 counting it a reading).
 
-**Track 2 setup** (`findings/data.py::load_model_tracks`) is `{**parameters, **track2_parameters}`
-on a TRK2 track when a Track 2 block was captured (Task 9, System A two-track files only), else
-Track 1's own `parameters` -- resolved once in the loader, read here as `track.setup` without
-knowing which case it was.
+**Mirrored label rows.** The parser tries each parameter sheet in both layouts and keeps the
+first value it sees, so a laser-1 value-first sheet read label-first leaves rows like
+`{"no": "Use Table Theory?"}` beside the real `{"use_table_theory": "NO"}` -- the key is a value,
+the value is the label of a real key in the same block (laser 2's label-first sheet read
+value-first does the same, and there the key can be a customer or drawing name). Such a row
+renames and re-points whenever the real setting moves, so it is dropped: an unknown key whose
+text value normalises to a KNOWN key. On the copy this caught every unknown key but two real ones
+(`circle_cut_radius`, `trim_delta_source`, both in `LABELS`), and flagged no known key.
+
+**`LABELS`** are the files' own row labels (read with the parser's layouts from the local corpus,
+2026-09-25), with two cleanups for a sentence: a numeric-range parenthetical is dropped, as
+`normalise_key` drops it ('Laser Power (0-255)' -> 'Laser Power'; a unit such as '(ns)' stays), and
+a trailing '?' or ':' goes. `circle_cut_radius` is the one label not read from a file (no local file
+carries it; named by its sibling 'Circle Cut Length'). A captured key the map does not know yet is
+still a setting -- it bounds a setup, so a change is never pooled -- and is named by its stored key
+and "(no label yet)", never as if that were a label.
+
+**`ALIASES`** fold one setting's two names onto one: laser 1's `Response` and laser 2's `Response
+(Linear or Function)` (ruled one setting, 2026-09-23), and the laser-2 template's own typo 'Length
+Mamimum', later fixed to 'Length Maximum' (25,782 files carry the one, 32,014 the other).
+
+**Values are compared per their own kind**: a number rounded to 6 dp (an int one file and the
+equal float the next are no change), anything else as its `str()`.
 """
 from statistics import median
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
+from ...core.trim_setup import normalise_key
 from ..model import Finding
 from ..stats import pct, plausible_resistance
 from .recipe_change import RECIPE_PARAMETER_KEYS
 
-MIN_RUN_DAYS = 60          # each side of a change must span at least this many days
-MIN_TRACKS_SIDE = 100       # graded tracks needed on EACH side before a change is reported
+MIN_RUN_DAYS = 60          # a stable setup spans at least this many days...
+MIN_TRACKS_SIDE = 100       # ...with at least this many graded tracks
 
-# Laser 1's `Response` and laser 2's `Response (Linear or Function)` are one setting (2026-09-23).
-# {alias-of -> canonical}; extend here, never by special-casing a laser in the analyzer body.
-ALIASES: Dict[str, str] = {"response_linear_or_function": "response"}
+ALIASES: Dict[str, str] = {"response_linear_or_function": "response",
+                           "length_mamimum": "length_maximum"}
 
-# Identity-like keys actually present in the fixtures' trim_setup.parameters -- see the module
-# docstring for what each one is and why serial/date/file-name/operator/comment keys are not here.
-EXCLUDED: FrozenSet[str] = frozenset({"alias", "model", "model_number", "track_parameters"})
+EXCLUDED: FrozenSet[str] = frozenset({
+    "alias", "model", "model_number", "track_parameters", "customer", "drawing",
+    "template_updated", "report_info"})
+
+READINGS: FrozenSet[str] = frozenset({
+    # laser 2 / laser 3 format
+    "length_theoretical", "angle_theoretical", "starting_position",
+    "error_split_low_voltage", "error_split_high_voltage",
+    "error_split_low_position", "error_split_high_position",
+    "laser_height", "index_position", "index_voltage",
+    # laser 1 format
+    "low_error_split_volts", "high_error_split_volts",
+    "low_error_split_position", "high_error_split_position",
+    "start_position", "pot_angle", "stop_angle",
+    "low_end_volts", "high_end_volts", "low_end_position", "high_end_position"})
+
+LABELS: Dict[str, str] = {
+    # laser 2 / laser 3 format ('Track Parameters', 'Model Parameters')
+    "a_axis_current_limit": "A-Axis Current Limit",
+    "angle_maximum": "Angle Maximum",
+    "angle_minimum": "Angle Minimum",
+    "center_tap_lower_limit": "Center-Tap Lower Limit",
+    "center_tap_target": "Center-Tap Target",
+    "center_tap_upper_limit": "Center-Tap Upper Limit",
+    "end_collet_release": "End Collet Release",
+    "final_resistance_lower_limit": "Final Resistance Lower Limit",
+    "final_resistance_upper_limit": "Final Resistance Upper Limit",
+    "high_tap": "HIGH-TAP",
+    "indexing_method": "Indexing Method",
+    "initial_resistance_lower_limit": "Initial Resistance Lower Limit",
+    "initial_resistance_upper_limit": "Initial Resistance Upper Limit",
+    "inner_edge_position": "Inner Edge Position",
+    "laser_duration_ns": "Laser Duration (ns)",
+    "laser_pulse_repetition_rate_hz": "Laser Pulse Repetition Rate (Hz)",
+    "length_maximum": "Length Maximum",
+    "length_minimum": "Length Minimum",
+    "linearity_velocity": "Linearity Velocity",
+    "low_tap": "LOW-TAP",
+    "next_position": "Next Position",
+    "next_position_index": "Next Position Index",
+    "num_of_lin_positions": "# of Lin Positions",
+    "num_of_sections": "# of Sections",
+    "num_of_tracks": "# of Tracks",
+    "num_of_trim_parameters": "# of Trim Parameters",
+    "outer_edge_position": "Outer Edge Position",
+    "plate_move_during_setup": "Plate Move During Setup",
+    "resistance_threshold_pct": "Resistance Threshold %",
+    "test_voltage": "Test Voltage",
+    "theoretical_resistance": "Theoretical Resistance",
+    "type": "Type",
+    "x_axis_current_limit": "X-Axis Current Limit",
+    "y_axis_current_limit": "Y-Axis Current Limit",
+    "z_axis_current_limit": "Z-Axis Current Limit",
+    # both formats
+    "end_position": "End Position",
+    "laser_power": "Laser Power",
+    "response": "Response",
+    # laser 1 format ('Model Parameters', value first)
+    "absolute_end_position": "Absolute End Position",
+    "auto_retrim": "Auto-Retrim",
+    "balance_ends": "Balance Ends",
+    "circle_cut_length": "Circle Cut Length",
+    "circle_cut_radius": "Circle Cut Radius",
+    "coarse_lower_tolerance": "Coarse Lower Tolerance",
+    "coarse_trim_voltage": "Coarse Trim Voltage",
+    "coarse_upper_tolerance": "Coarse Upper Tolerance",
+    "delta_rank": "Delta Rank",
+    "element_configuration": "Element Configuration",
+    "end_balance_limit": "End-Balance Limit",
+    "end_degree_increment": "End Degree Increment",
+    "end_degree_start": "End Degree Start",
+    "end_point": "End point",
+    "ending_points_ignored": "Ending points Ignored",
+    "endset": "Endset",
+    "endset_voltage_tolerance": "Endset Voltage Tolerance",
+    "endsetpct": "Endset%",
+    "establish_coordinates": "Establish Coordinates",
+    "fine_lower_tolerance": "Fine lower Tolerance",
+    "fine_trim_voltage": "Fine Trim Voltage",
+    "fine_upper_tolerance": "Fine Upper Tolerance",
+    "initial_end_balance": "Initial End-Balance",
+    "initial_points_ignored": "Initial Points Ignored",
+    "laser_back_length": "Laser Back Length",
+    "laser_current": "Laser Current",
+    "laser_cut_segments": "Laser Cut Segments",
+    "laser_frequency": "Laser Frequency",
+    "laser_prr": "Laser PRR",
+    "laser_speed_high": "Laser Speed High",
+    "laser_speed_slow": "Laser Speed Slow",
+    "laser_start_position": "Laser Start Position",
+    "max_elec_angle": "max elec. Angle",
+    "max_resistance": "Max resistance",
+    "max_stroke": "Max Stroke",
+    "min_elec_angle": "min elec. Angle",
+    "min_resistance": "Min Resistance",
+    "min_stroke": "Min Stroke",
+    "move_plate_during_setup": "Move plate during setup",
+    "number_of_readings_lin": "Number of Readings (Lin)",
+    "number_of_readings_trim": "Number of Readings (trim)",
+    "points_from_end": "Points From End",
+    "points_from_start": "Points From Start",
+    "pot_type": "Pot Type",
+    "pulse_duration": "Pulse Duration",
+    "readings_deg": "Readings/Deg.",
+    "reserved": "<Reserved>",
+    "source_of_trim_deltas": "Source of trim deltas",
+    "speed_crossover": "Speed Crossover",
+    "start_point": "Start Point",
+    "theo_resistance": "Theo. Resistance",
+    "theory_delta_multiplier": "Theory Delta Multiplier",
+    "trim_delta_source": "Trim Delta Source",
+    "trim_range": "Trim Range",
+    "use_table_theory": "Use Table Theory",
+    "vfinder_increment_multiplier": "Vfinder Increment Multiplier",
+}
+
+# Every key this module has a rule for; a mirrored label row points at one of these.
+_KNOWN: FrozenSet[str] = frozenset(LABELS) | frozenset(ALIASES) | EXCLUDED | READINGS | \
+    RECIPE_PARAMETER_KEYS
+# The first cut's setting from the pass log, as one more recipe component. Bounds, never named.
+FIRST_CUT = "__first_cut__"
+_RECIPE: FrozenSet[str] = RECIPE_PARAMETER_KEYS | {FIRST_CUT}
+_NORMALISED: Dict[str, str] = {}     # normalise_key of a text value, memoised (values repeat heavily)
 
 
 def _normalise(v: Any):
@@ -105,27 +259,47 @@ def _normalise(v: Any):
     return str(v)
 
 
-def _canonical_setup(setup: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """One track's `setup` dict, alias-mapped and identity-filtered, values normalised. `None`
-    values are dropped -- a key a file did not capture is absent, not a value of "None". Also
-    drops `recipe_change.RECIPE_PARAMETER_KEYS` -- the cut-length keys that analyzer already
-    reports from its own per-pass log (fix round 1, task-6-review.md, Important #1) -- imported,
-    never re-typed, so the two analyzers can never silently drift apart on what "the recipe" is."""
+def _mirrored_label(key: str, value: Any) -> bool:
+    """A row whose key is a VALUE and whose value is the LABEL of a known key -- a parameter sheet
+    read in the other layout (module docstring). Only ever asked of a key this module does not know."""
+    if not isinstance(value, str):
+        return False
+    target = _NORMALISED.get(value)
+    if target is None:
+        target = _NORMALISED[value] = normalise_key(value)
+    return target != key and target in _KNOWN
+
+
+def _signature(track) -> Dict[str, Any]:
+    """What one file tells us of the setup: every captured key but identity, readings and mirrored
+    label rows, alias-mapped and normalised -- plus the pass log's first cut. None values are
+    dropped: a key a file did not capture is absent, not a value of "None"."""
     out: Dict[str, Any] = {}
-    if not setup:
-        return out
-    for k, v in setup.items():
+    for k, v in (track.setup or {}).items():
         if v is None:
             continue
         key = ALIASES.get(k, k)
-        if key in EXCLUDED or key in RECIPE_PARAMETER_KEYS:
+        if key in EXCLUDED or key in READINGS:
+            continue
+        if key not in _KNOWN and _mirrored_label(key, v):
             continue
         out[key] = _normalise(v)
+    if track.passes and track.passes[0].cut_setting is not None:
+        out[FIRST_CUT] = round(float(track.passes[0].cut_setting), 6)
     return out
 
 
 def _fmt(v: Any) -> str:
     return f"{v:g}" if isinstance(v, float) else str(v)
+
+
+def _name(key: str) -> str:
+    """The file's own label -- or, for a key the map does not know yet, its stored name AS such."""
+    return LABELS.get(key) or f"'{key}' (no label yet)"
+
+
+def _and(names: List[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def _span_days(tracks) -> int:
@@ -144,82 +318,144 @@ def _side(tracks) -> Dict[str, Any]:
     rs = [t.untrimmed_resistance for t in tracks if plausible_resistance(t.untrimmed_resistance)]
     return {"n": len(tracks), "trim_pass_pct": pct(graded), "graded_n": len(graded),
             "median_incoming_r": median(rs) if rs else None,
-            "first": min(t.file_date for t in tracks).date().isoformat(),
-            "last": max(t.file_date for t in tracks).date().isoformat()}
+            "first": tracks[0].file_date.date().isoformat(),
+            "last": tracks[-1].file_date.date().isoformat(),
+            "limit_table": _single_table_key(tracks),
+            "track_ids": [tracks[0].track_id, tracks[-1].track_id]}
 
 
-def _finding(model: str, system: str, track_name: str, key: str,
-            before_value: Any, after_value: Any, b: Dict[str, Any], a: Dict[str, Any],
-            laser_label) -> Finding:
-    setting = key.replace("_", " ")
+def _setups(rows) -> List[Dict[str, Any]]:
+    """`rows` (one laser and track, in file order) cut into setups. Each: its tracks, the settings
+    that changed where it starts [(key, old, new)], and the setup it ran at (every key's last value)."""
+    setups: List[Dict[str, Any]] = []
+    state: Dict[str, Any] = {}
+    for t in rows:
+        sig = _signature(t)
+        moved = [(k, state[k], v) for k, v in sorted(sig.items()) if k in state and state[k] != v]
+        if not setups or moved:
+            if setups:
+                setups[-1]["state"] = dict(state)
+            setups.append({"tracks": [], "moved": moved})
+        state.update(sig)
+        setups[-1]["tracks"].append(t)
+    if setups:
+        setups[-1]["state"] = dict(state)
+    for s in setups:
+        s["side"] = _side(s["tracks"])
+        s["stable"] = (s["side"]["graded_n"] >= MIN_TRACKS_SIDE
+                       and _span_days(s["tracks"]) >= MIN_RUN_DAYS)
+    return setups
+
+
+def _compare(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
+    """Two consecutive stable setups: which settings differ, whether the recipe moved too, and
+    whether both sides were graded against one and the same limit table."""
+    bs, as_ = before["state"], after["state"]
+    diff = [k for k in sorted(bs.keys() & as_.keys()) if bs[k] != as_[k]]
+    tb, ta = before["side"]["limit_table"], after["side"]["limit_table"]
+    return {"settings": sorted((k for k in diff if k not in _RECIPE),
+                               key=lambda k: (_name(k).lower(), k)),
+            "recipe_changed": any(k in _RECIPE for k in diff),
+            "same_table": tb is not None and tb == ta,
+            "graded": (before["side"]["trim_pass_pct"] is not None
+                       and after["side"]["trim_pass_pct"] is not None)}
+
+
+def _title(laser: str, settings: List[Dict[str, Any]]) -> str:
+    if len(settings) <= 2:
+        return f"{laser}: " + ", ".join(f"{_name(s['setting'])} {_fmt(s['from'])} → {_fmt(s['to'])}"
+                                        for s in settings)
+    return f"{laser}: {len(settings)} settings changed ({_and([_name(s['setting']) for s in settings])})"
+
+
+def _finding(model: str, system: str, track_name: str, settings: List[Dict[str, Any]],
+             b: Dict[str, Any], a: Dict[str, Any], absorbed: List[Dict[str, Any]],
+             recipe_changed: bool, laser_label) -> Finding:
     where = laser_label(system) if track_name == "default" else f"{laser_label(system)} · {track_name}"
-    title = f"{laser_label(system)}: {setting} changed from {_fmt(before_value)} to {_fmt(after_value)}"
+    moved = "; ".join(f"{_name(s['setting'])} went from {_fmt(s['from'])} to {_fmt(s['to'])}"
+                      for s in settings)
+    absorbed_tracks = sum(len(s["tracks"]) for s in absorbed)
     summary = (
-        f"Between {b['last']} and {a['first']} {setting} on {where} changed from "
-        f"{_fmt(before_value)} to {_fmt(after_value)}. Units leaving the laser inside their "
-        f"linearity limits went from {b['trim_pass_pct']:.0f}% ({b['graded_n']:,} tracks) to "
-        f"{a['trim_pass_pct']:.0f}% ({a['graded_n']:,} tracks).")
+        f"Between {b['last']} and {a['first']}, on {where}: {moved}. Units leaving the laser inside "
+        f"their linearity limits went from {b['trim_pass_pct']:.0f}% ({b['graded_n']:,} tracks, "
+        f"{b['first']} to {b['last']}) to {a['trim_pass_pct']:.0f}% ({a['graded_n']:,} tracks, "
+        f"{a['first']} to {a['last']}) -- one setup on each side, both graded against the same "
+        "limit table.")
+    if absorbed:
+        summary += (f" {len(absorbed)} short-lived setup{'s' if len(absorbed) != 1 else ''} ran in "
+                    f"between ({absorbed_tracks:,} tracks); neither side includes "
+                    f"{'them' if len(absorbed) != 1 else 'it'}.")
+    if recipe_changed:
+        summary += " The cut recipe changed at the same point too, so this move is not the settings' alone."
     if b["median_incoming_r"] and a["median_incoming_r"]:
+        which = "this setting is" if len(settings) == 1 else "these settings are"
         summary += (f" Median incoming resistance was {b['median_incoming_r']:,.0f} before and "
-                    f"{a['median_incoming_r']:,.0f} after, so {setting} is not the only thing "
-                    "that changed.")
+                    f"{a['median_incoming_r']:,.0f} after, so {which} not the only thing that changed.")
     return Finding(
         model=model, analyzer="setup_change", category="Setting change",
         lever="laser_settings", systems=(system,),
-        title=title, summary=summary,
+        title=_title(laser_label(system), settings), summary=summary,
         n_units=b["n"] + a["n"],
         strength_name="tracks on the smaller side of the change",
         strength_value=float(min(b["graded_n"], a["graded_n"])),
         expected_gain_points=None,             # a detection, never a recommendation
-        evidence={"before": {**b, "value": before_value}, "after": {**a, "value": after_value},
-                 "track": track_name, "setting": key})
+        evidence={"before": b, "after": a, "track": track_name, "settings": settings,
+                  "absorbed_setups": len(absorbed), "absorbed_tracks": absorbed_tracks,
+                  "recipe_changed": recipe_changed})
 
 
 def analyze(model: str, tracks, laser_label) -> Tuple[List[Dict[str, Any]], List[Finding]]:
-    """(one entry per reported boundary, for the facts strip; findings -- the same population,
-    Finding-shaped). Facts hold every boundary that clears the floors on one shared limit table --
-    `machine_compare`'s rule, "facts only for comparable pairs" (fix round 1, task-6-review.md,
-    Minor #2, controller ruling): a run too short, too thin, or graded across more than one table
-    is not a COMPARISON, so it is neither a fact nor a finding here, exactly as it is neither for
-    `machine_compare`. `MIN_RUN_DAYS`/`MIN_TRACKS_SIDE`/the table rule gate both alike -- there is
-    no lower tier the way `recipe_change`'s quarter-binned `facts["recipe_history"]` has one."""
-    history: List[Dict[str, Any]] = []
+    """(every per-setting boundary, for the facts; one finding per reported change)."""
+    boundaries: List[Dict[str, Any]] = []
     findings: List[Finding] = []
-    cut = [t for t in tracks if t.passes and t.setup]      # a real cut, with a captured setup block
-    for system in sorted({t.system for t in cut}):
-        on_laser = [t for t in cut if t.system == system]
-        for track_name in sorted({t.track_name for t in on_laser}):
-            rows = sorted((t for t in on_laser if t.track_name == track_name),
-                          key=lambda t: t.file_date)
-            canon = {t.track_id: _canonical_setup(t.setup) for t in rows}
-            keys = set()
-            for c in canon.values():
-                keys.update(c)
-            for key in sorted(keys):
-                seq = [(t, canon[t.track_id][key]) for t in rows if key in canon[t.track_id]]
-                if len(seq) < 2:
+    own = [t for t in tracks if t.passes and t.setup and not t.setup_inherited]
+    for system in sorted({t.system for t in own}):
+        for track_name in sorted({t.track_name for t in own if t.system == system}):
+            rows = sorted((t for t in own if t.system == system and t.track_name == track_name),
+                          key=lambda t: (t.file_date, t.track_id))
+            setups = _setups(rows)
+            stable = [i for i, s in enumerate(setups) if s["stable"]]
+            changes: Dict[Tuple[int, int], Dict[str, Any]] = {}
+            for i, j in zip(stable, stable[1:]):
+                c = changes[(i, j)] = _compare(setups[i], setups[j])
+                if not (c["settings"] and c["same_table"] and c["graded"]):
                     continue
-                runs: List[Dict[str, Any]] = []            # [{"value": v, "tracks": [...]}, ...]
-                for t, v in seq:
-                    if runs and runs[-1]["value"] == v:
-                        runs[-1]["tracks"].append(t)
-                    else:
-                        runs.append({"value": v, "tracks": [t]})
-                for before, after in zip(runs, runs[1:]):
-                    bt, at = before["tracks"], after["tracks"]
-                    b, a = _side(bt), _side(at)
-                    if b["graded_n"] < MIN_TRACKS_SIDE or a["graded_n"] < MIN_TRACKS_SIDE:
-                        continue                            # too thin a side to call
-                    if _span_days(bt) < MIN_RUN_DAYS or _span_days(at) < MIN_RUN_DAYS:
-                        continue                             # too short a run to trust
-                    tb, ta = _single_table_key(bt), _single_table_key(at)
-                    if tb is None or ta is None or tb != ta:
-                        continue                             # never across a limit-table change
-                    if b["trim_pass_pct"] is None or a["trim_pass_pct"] is None:
-                        continue                             # nothing graded on one side
-                    history.append({"system": system, "track": track_name, "setting": key,
-                                    "before": {**b, "value": before["value"]},
-                                    "after": {**a, "value": after["value"]}})
-                    findings.append(_finding(model, system, track_name, key,
-                                             before["value"], after["value"], b, a, laser_label))
-    return history, findings
+                bstate, astate = setups[i]["state"], setups[j]["state"]
+                settings = [{"setting": k, "label": LABELS.get(k), "from": bstate[k], "to": astate[k]}
+                            for k in c["settings"]]
+                findings.append(_finding(model, system, track_name, settings, setups[i]["side"],
+                                         setups[j]["side"], setups[i + 1:j], c["recipe_changed"],
+                                         laser_label))
+            for idx, s in enumerate(setups):
+                for key, old, new in s["moved"]:
+                    if key in _RECIPE:
+                        continue                          # recipe_change's, never named here
+                    boundaries.append({"system": system, "track": track_name, "setting": key,
+                                       "label": LABELS.get(key),
+                                       "date": s["tracks"][0].file_date.date().isoformat(),
+                                       "from": old, "to": new,
+                                       **_why(idx, key, setups, stable, changes)})
+    return boundaries, findings
+
+
+def _why(idx: int, key: str, setups, stable: List[int],
+         changes: Dict[Tuple[int, int], Dict[str, Any]]) -> Dict[str, Any]:
+    """Whether the boundary where setup `idx` starts (for `key`) is part of a reported change,
+    and if not, why not."""
+    before = next((i for i in reversed(stable) if i < idx), None)
+    after = idx if setups[idx]["stable"] else next((j for j in stable if j > idx), None)
+    if before is None:
+        return {"reported": False, "why_not": "no stable setup before it"}
+    if after is None:
+        return {"reported": False, "why_not": "no stable setup after it yet"}
+    c = changes[(before, after)]
+    if key not in setups[before]["state"]:
+        return {"reported": False, "why_not": "not captured in the stable setup before it"}
+    if key not in c["settings"]:
+        return {"reported": False, "why_not": "undone before the next stable setup"}
+    if not c["same_table"]:
+        return {"reported": False,
+                "why_not": "the setups either side were not graded against one and the same limit table"}
+    if not c["graded"]:
+        return {"reported": False, "why_not": "nothing graded on one side"}
+    return {"reported": True, "why_not": None}

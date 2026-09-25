@@ -216,6 +216,14 @@ def statement(finding: Dict[str, Any]) -> str:
         return f"{_laser(finding)}: cut {current:g} → try {best:g}"
     if group_key(finding) == "history":
         when = _month((ev.get("after") or {}).get("first"))
+        if finding.get("analyzer") == "setup_change":
+            # A setup change happened somewhere between the last file of the stable setup before
+            # and the first of the one after (setup_change's docstring: nothing limits that gap,
+            # and two setups can sit years apart). Both months, when they differ -- never a
+            # decade-wide comparison under its last month alone.
+            since = _month((ev.get("before") or {}).get("last"))
+            if since and when and since != when:
+                when = f"{since} – {when}"
         m = _RECIPE.match(title)
         body = f"{m['laser']}: {_recipe_move(m['a'], m['b'])}" if m else title
         return f"{when} · {body}" if when else body

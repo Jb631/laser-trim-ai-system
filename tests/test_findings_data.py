@@ -139,6 +139,28 @@ def test_setup_is_track1s_parameters_except_a_captured_track2_block_overrides_it
     assert tracks["TRK1"].setup["laser_power"] == tracks["TRK2"].setup["laser_power"] == 62
 
 
+def test_a_trk2_track_says_whether_its_setup_is_its_own_or_track_1s(fixture_db):
+    """I2 (final review, 2026-09-25): a TRK2 track whose file captured no Track 2 block carries
+    Track 1's `setup` -- and SAYS so, so that setup_change never reads Track 2's settings off
+    Track 1's block (the work database has 0 of 1,868 two-track analyses captured, and files
+    ingested after the capture carry their own: an unmarked switch reads as a setting change)."""
+    from sqlalchemy import text
+    from laser_trim_analyzer.findings.data import load_model_tracks
+    tracks = {t.track_name: t for t in load_model_tracks(fixture_db, "8074")}
+    assert tracks["TRK1"].setup_inherited is False and tracks["TRK2"].setup_inherited is False
+    with fixture_db.session() as s:
+        s.execute(text("UPDATE trim_setup SET track2_parameters = NULL"))
+        s.commit()
+    tracks = {t.track_name: t for t in load_model_tracks(fixture_db, "8074")}
+    assert tracks["TRK2"].setup_inherited is True
+    assert tracks["TRK2"].setup == tracks["TRK1"].setup          # Track 1's block, unchanged
+    assert tracks["TRK1"].setup_inherited is False
+    (lone,) = load_model_tracks(fixture_db, "7553")
+    assert lone.track_name == "TRK2" and lone.setup_inherited is True
+    laser1 = [t for t in load_model_tracks(fixture_db, "8232-1") if t.system == "B"]
+    assert laser1 and all(t.setup_inherited is False for t in laser1)   # one block per file: its own
+
+
 def test_a_lone_track2_file_still_gets_its_own_captured_block(fixture_db):
     """dlts_7553_10B.xls carries only a TRK2 track_result (no TRK1 row at all in this file) --
     the merge is keyed off THIS row's track_name, never off a sibling TRK1 row existing too."""
