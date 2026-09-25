@@ -452,3 +452,36 @@ def test_the_engine_anchors_machine_compare_to_the_fleets_newest_file(tmp_path, 
     (c,) = facts["machine_compare"]["comparisons"]
     assert c["in_window"] is False and c["months"] == ["2015-05"]
     assert facts["machine_compare"]["window"]["anchored_to"] == "2026-09-22"
+
+
+# ---- I4 (final review, 2026-09-25): a crash in machine_compare or loss_origin is named too ------
+# With both guards changed to swallow silently, every findings test that could run still passed.
+
+def test_a_crash_in_machine_compare_is_named_like_any_other(tmp_path, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    hot = _hot()
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
+
+    def boom(*a, **k):
+        raise RuntimeError("bad month cell")
+    monkeypatch.setattr(engine.machine_compare, "analyze", boom)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
+    assert facts["errors"] == {"machine_compare": "RuntimeError: bad month cell"}
+    assert facts["machine_compare"] is None
+    assert facts["loss_origin"] is not None and facts["recipe_history"] is not None   # the rest ran
+    assert [f.analyzer for f in findings] == ["ink_target"]
+
+
+def test_a_crash_in_loss_origin_is_named_like_any_other(tmp_path, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    hot = _hot()
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
+
+    def boom(*a, **k):
+        raise RuntimeError("bad incoming sweep")
+    monkeypatch.setattr(engine.loss_origin, "analyze", boom)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
+    assert facts["errors"] == {"loss_origin": "RuntimeError: bad incoming sweep"}
+    assert facts["loss_origin"] is None
+    assert facts["machine_compare"] is not None and facts["station_setup"] is not None  # the rest ran
+    assert [f.analyzer for f in findings] == ["ink_target"]
