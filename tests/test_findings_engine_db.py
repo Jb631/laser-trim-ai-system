@@ -434,3 +434,21 @@ def test_importing_the_findings_engine_loads_no_plotting_code():
     engine_file, loaded = out.stdout.strip().splitlines()[-2:]
     assert engine_file.startswith(str(src))            # the code under test, not another checkout
     assert loaded == "[]", f"importing the findings engine loaded {loaded}"
+
+
+# ---- I1 (final review, 2026-09-25): machine_compare's window ends at the FLEET's newest file ----
+
+def test_the_engine_anchors_machine_compare_to_the_fleets_newest_file(tmp_path, monkeypatch):
+    """8081-4's shape: a model last run in 2015-16, compared on its own 'latest year', read as a
+    current recommendation. Anchored to the fleet's newest file it is a dated fact only."""
+    from datetime import datetime
+    from laser_trim_analyzer.findings import engine
+    from test_findings_machine_compare import block
+    old = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
+           + block(1000, datetime(2015, 5, 1), 200, "B", 0.60))
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: old)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "OLD", fleet_latest=datetime(2026, 9, 22))
+    assert [f for f in findings if f.analyzer == "machine_compare"] == []
+    (c,) = facts["machine_compare"]["comparisons"]
+    assert c["in_window"] is False and c["months"] == ["2015-05"]
+    assert facts["machine_compare"]["window"]["anchored_to"] == "2026-09-22"

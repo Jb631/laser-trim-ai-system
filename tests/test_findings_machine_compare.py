@@ -32,6 +32,15 @@ def only(findings):
     return findings[0]
 
 
+def comparisons(facts):
+    return facts["comparisons"]
+
+
+def one_comparison(facts):
+    assert len(facts["comparisons"]) == 1, facts["comparisons"]
+    return facts["comparisons"][0]
+
+
 def test_two_lasers_same_table_same_months_a_real_gap_is_one_finding():
     tracks = block(0, START, 200, "A", 0.95) + block(1000, START, 200, "B", 0.75)
     facts, findings = machine_compare.analyze("M", tracks, label)
@@ -50,13 +59,18 @@ def test_facts_and_evidence_carry_the_documented_shape():
     facts, findings = machine_compare.analyze("M", tracks, label)
     f = only(findings)
     table_key = tracks[0].limit_table.key
-    assert set(facts) == {table_key}
-    assert facts[table_key]["months"] == ["2024-01"]
-    by_laser = facts[table_key]["by_laser"]
+    # With no fleet anchor the window ends at the model's own latest graded track (2024-01-10).
+    assert facts["window"] == {"first": "2022-02", "last": "2024-01", "months": 24,
+                               "anchored_to": "2024-01-10"}
+    c = one_comparison(facts)
+    assert c["table"] == table_key and c["in_window"] is True and c["graded_points"] == 12
+    assert c["months"] == ["2024-01"]
+    by_laser = c["by_laser"]
     assert by_laser["Laser 2 (DLTS)"] == {"n": 200, "pass_pct": pytest.approx(95.0)}
     assert by_laser["Laser 1 (LTS)"] == {"n": 200, "pass_pct": pytest.approx(75.0)}
     assert f.evidence["table"] == table_key
     assert f.evidence["months"] == ["2024-01", "2024-01"]
+    assert f.evidence["window"] == ["2022-02", "2024-01"]
     assert f.evidence["by_laser"] == by_laser
     assert f.evidence["best_laser"] == "A" and f.evidence["worst_laser"] == "B"
 
@@ -66,7 +80,7 @@ def test_different_limit_tables_are_never_compared():
     # the domain rule "a pass rate is a verdict against a test" exists to rule out.
     tracks = block(0, START, 200, "A", 0.95, tab=TAB) + block(1000, START, 200, "B", 0.75, tab=OTHER)
     facts, findings = machine_compare.analyze("M", tracks, label)
-    assert findings == [] and facts == {}
+    assert findings == [] and comparisons(facts) == []
 
 
 def test_different_months_are_never_pooled_as_shared():
@@ -75,7 +89,7 @@ def test_different_months_are_never_pooled_as_shared():
     tracks = (block(0, START, 200, "A", 0.95)
               + block(1000, datetime(2025, 1, 1), 200, "B", 0.75))
     facts, findings = machine_compare.analyze("M", tracks, label)
-    assert findings == [] and facts == {}
+    assert findings == [] and comparisons(facts) == []
 
 
 def test_a_gap_under_ten_points_says_nothing():
@@ -85,10 +99,9 @@ def test_a_gap_under_ten_points_says_nothing():
     # Under MIN_GAP_POINTS is still a COMPARABLE measurement: both lasers cleared
     # MIN_TRACKS_PER_LASER over the same shared month, so it is a FACT, just never a finding --
     # the population floor gates facts, the gap only gates a finding (review fix, 2026-09-24).
-    table_key = tracks[0].limit_table.key
-    assert set(facts) == {table_key}
-    assert facts[table_key]["months"] == ["2024-01"]
-    assert facts[table_key]["by_laser"] == {
+    c = one_comparison(facts)
+    assert c["months"] == ["2024-01"] and c["in_window"] is True
+    assert c["by_laser"] == {
         "Laser 2 (DLTS)": {"n": 200, "pass_pct": pytest.approx(86.0)},
         "Laser 1 (LTS)": {"n": 200, "pass_pct": pytest.approx(77.0)},
     }
@@ -99,7 +112,7 @@ def test_one_laser_under_the_track_floor_says_nothing():
     # are independent -- either alone must be enough to silence this.
     tracks = block(0, START, 99, "A", 0.95) + block(1000, START, 300, "B", 0.50)
     facts, findings = machine_compare.analyze("M", tracks, label)
-    assert findings == [] and facts == {}
+    assert findings == [] and comparisons(facts) == []
 
 
 def test_ungraded_tracks_are_not_counted():
@@ -114,7 +127,12 @@ def test_ungraded_tracks_are_not_counted():
 
 def test_one_laser_only_is_not_a_comparison():
     tracks = block(0, START, 300, "B", 0.5)
-    assert machine_compare.analyze("M", tracks, label) == ({}, [])
+    facts, findings = machine_compare.analyze("M", tracks, label)
+    assert findings == [] and comparisons(facts) == []
+
+
+def test_no_graded_tracks_is_no_facts_at_all():
+    assert machine_compare.analyze("M", [], label) == ({}, [])
 
 
 def test_a_third_laser_under_the_floor_is_left_out_of_the_comparison():
@@ -129,5 +147,68 @@ def test_a_third_laser_under_the_floor_is_left_out_of_the_comparison():
     f = only(findings)
     assert f.evidence["best_laser"] == "A" and f.evidence["worst_laser"] == "B"
     assert "Laser 3" not in f.title
-    table_key = tracks[0].limit_table.key
-    assert set(facts[table_key]["by_laser"]) == {"Laser 2 (DLTS)", "Laser 1 (LTS)"}
+    assert set(one_comparison(facts)["by_laser"]) == {"Laser 2 (DLTS)", "Laser 1 (LTS)"}
+
+
+# ---- I1 (final review, 2026-09-25): recent months only, anchored to the FLEET's latest file ----
+# Three of the five real findings described 2013-2016 and read as current: 8081-4's last file is
+# 2016-03, yet anchored to its OWN latest year it still qualified.
+
+NOW = datetime(2026, 9, 22)          # the fleet's newest trim file, as the engine passes it
+
+
+def test_a_pair_entirely_before_the_window_is_a_dated_fact_not_a_finding():
+    tracks = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
+              + block(1000, datetime(2015, 5, 1), 200, "B", 0.60))
+    facts, findings = machine_compare.analyze("M", tracks, label, now=NOW)
+    assert findings == []
+    c = one_comparison(facts)
+    assert c["in_window"] is False and c["months"] == ["2015-05"]
+    assert c["by_laser"]["Laser 1 (LTS)"]["pass_pct"] == pytest.approx(60.0)   # the numbers stay
+    assert facts["window"] == {"first": "2024-10", "last": "2026-09", "months": 24,
+                               "anchored_to": "2026-09-22"}
+
+
+def test_a_pair_inside_the_window_is_a_finding_whose_title_names_the_months():
+    tracks = (block(0, datetime(2025, 10, 1), 200, "A", 0.95, n_days=40)
+              + block(1000, datetime(2025, 10, 1), 200, "B", 0.60, n_days=40))
+    f = only(machine_compare.analyze("M", tracks, label, now=NOW)[1])
+    assert f.title == "Laser 2 (DLTS) passes 95%, Laser 1 (LTS) 60%, same test, Oct 2025 – Nov 2025"
+    assert f.evidence["months"] == ["2025-10", "2025-11"]
+
+
+def test_one_shared_month_is_named_once():
+    tracks = (block(0, datetime(2025, 10, 1), 200, "A", 0.95)
+              + block(1000, datetime(2025, 10, 1), 200, "B", 0.60))
+    f = only(machine_compare.analyze("M", tracks, label, now=NOW)[1])
+    assert f.title.endswith("same test, Oct 2025")
+
+
+def test_the_windows_first_month_counts_and_the_month_before_it_does_not():
+    assert machine_compare.WINDOW_MONTHS == 24
+    first = (block(0, datetime(2024, 10, 1), 200, "A", 0.95)
+             + block(1000, datetime(2024, 10, 1), 200, "B", 0.60))
+    assert len(machine_compare.analyze("M", first, label, now=NOW)[1]) == 1
+    before = (block(0, datetime(2024, 9, 1), 200, "A", 0.95)
+              + block(1000, datetime(2024, 9, 1), 200, "B", 0.60))
+    facts, findings = machine_compare.analyze("M", before, label, now=NOW)
+    assert findings == [] and one_comparison(facts)["in_window"] is False
+
+
+def test_a_table_shared_both_before_and_inside_the_window_is_two_comparisons():
+    """The finding pools ONLY the recent months: 2015's 50% on laser 1 must not dilute it."""
+    old = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
+           + block(1000, datetime(2015, 5, 1), 200, "B", 0.50))
+    new = (block(2000, datetime(2025, 10, 1), 200, "A", 0.95)
+           + block(3000, datetime(2025, 10, 1), 200, "B", 0.80))
+    facts, findings = machine_compare.analyze("M", old + new, label, now=NOW)
+    f = only(findings)
+    assert f.evidence["by_laser"]["Laser 1 (LTS)"] == {"n": 200, "pass_pct": pytest.approx(80.0)}
+    assert [(c["in_window"], c["months"]) for c in comparisons(facts)] == [
+        (False, ["2015-05"]), (True, ["2025-10"])]
+
+
+def test_with_no_fleet_anchor_the_window_ends_at_the_models_own_latest():
+    tracks = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
+              + block(1000, datetime(2015, 5, 1), 200, "B", 0.60))
+    assert len(machine_compare.analyze("M", tracks, label)[1]) == 1

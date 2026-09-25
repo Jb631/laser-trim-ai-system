@@ -120,7 +120,8 @@ def compute_for_model(db, model: str,
     except Exception as exc:
         failed("pass_burden", exc)
     try:
-        compare_facts, compare_findings = machine_compare.analyze(model, tracks, _laser_label)  # stored verdicts only
+        compare_facts, compare_findings = machine_compare.analyze(
+            model, tracks, _laser_label, now=fleet_latest)       # stored verdicts; the FLEET's window
         facts["machine_compare"] = compare_facts
         findings += compare_findings
     except Exception as exc:
