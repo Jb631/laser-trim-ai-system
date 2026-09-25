@@ -357,6 +357,38 @@ class DatabaseManager:
             },
         )
 
+        # Foreign keys (and, since ingest-speed Task 4, synchronous/cache_size) must be
+        # set on EVERY connection (SQLite pragmas are per-connection, not per-database).
+        # REGISTERED BEFORE THE FIRST CHECKOUT below, on purpose: with StaticPool (the
+        # app has exactly one SQLite connection -- F14) the pool creates its one-and-
+        # only DBAPI connection LAZILY, on the first checkout, and fires "connect" at
+        # that moment. A listener registered AFTER that first checkout (the order this
+        # code had before 2026-09-25) never sees it -- verified empirically: a print
+        # planted inside the old listener never fired across construction, an extra
+        # engine.connect(), or repeated session() calls. This project has exactly one
+        # create_engine() call, always StaticPool, so that was not "defense in depth
+        # in case the pool strategy changes" (the old comment here), it was silently
+        # dead code every time; foreign_keys=ON only ever worked because of the
+        # explicit statement in the block below, which this reordering now makes
+        # redundant (left in place anyway -- removing it is not this fix's job).
+        from sqlalchemy import event
+        @event.listens_for(self._engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            # WAL's documented safe setting (ruling 12): the WAL is synced before every
+            # checkpoint (automatic every ~1,000 pages), not at each commit. A power cut
+            # can roll back at most the batches committed since the last checkpoint; it
+            # never corrupts the file, and an app crash or kill loses nothing committed.
+            # A rolled-back file has neither its rows nor its processed marker, so the
+            # next run re-processes it -- re-runnable ingest is what makes this free.
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            # 64 MiB page cache (SQLite's own default is -2000, 2 MiB). Negative means
+            # KiB. Cheap and bounded; F1 measured little effect on this disk, more at
+            # larger batch sizes (fewer spills).
+            cursor.execute("PRAGMA cache_size=-65536")
+            cursor.close()
+
         # Enable WAL mode for better concurrency (allows readers during writes)
         # Enable foreign key enforcement (SQLite disables it by default!)
         with self._engine.connect() as conn:
@@ -364,16 +396,6 @@ class DatabaseManager:
             conn.execute(text("PRAGMA busy_timeout=30000"))  # 30 second timeout
             conn.execute(text("PRAGMA foreign_keys=ON"))
             conn.commit()
-
-        # Foreign keys must be enabled on EVERY connection (SQLite per-connection).
-        # With StaticPool there's only one connection, but add an event listener
-        # as defense-in-depth in case the pool strategy changes later.
-        from sqlalchemy import event
-        @event.listens_for(self._engine, "connect")
-        def _set_sqlite_pragma(dbapi_conn, connection_record):
-            cursor = dbapi_conn.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
 
         # Create session factory
         self._SessionFactory = sessionmaker(bind=self._engine)
@@ -915,6 +937,15 @@ class DatabaseManager:
                     # The Spec 1 column migration immediately after (untrimmed_sigma_gradient
                     # block) creates both the column and this index on first upgrade.
                     "CREATE INDEX IF NOT EXISTS idx_track_untrimmed_sigma_gradient ON track_results(untrimmed_sigma_gradient)",
+                    # file_hash lookups (ingest-speed spec 3.7, ruling 11): every
+                    # final-test and smoothness save checks "is this content already
+                    # on record?" by file_hash before deciding insert vs. duplicate/
+                    # upsert (save_final_test, save_smoothness_result), and so do
+                    # is_file_processed and the stat-heal pass. Unindexed, F9 measured
+                    # that SCANning the whole final_test_results table (151,793 rows)
+                    # was 20 of the FT save's 22 ms; indexed, 3.4-3.7 batched.
+                    "CREATE INDEX IF NOT EXISTS idx_ft_file_hash ON final_test_results(file_hash)",
+                    "CREATE INDEX IF NOT EXISTS idx_smoothness_file_hash ON smoothness_results(file_hash)",
                 ]
                 created = 0
                 for stmt in index_statements:
@@ -923,6 +954,10 @@ class DatabaseManager:
                 session.commit()
                 logger.info(f"Index migration: ensured {created} indexes exist")
             except Exception as e:
+                session.rollback()  # Clear error state from the failed statement (e.g. a
+                                     # read-only database, James's first launch on a pre-
+                                     # Task-3 file before these two are no-ops) -- matches
+                                     # every sibling migration's idiom in this method.
                 logger.warning(f"Index migration warning: {e}")
 
             # Migration: Add failure margin columns to track_results

@@ -31,8 +31,10 @@ without that explicit BEGIN pysqlite commits at the first RELEASE, and a "batch"
 file again (spec F4). The 12 settings run interleaved, two rounds in opposite orders; each line is
 the median of its two rounds, in ms per file: total, then Python/ORM (building the rows, the unit
 of work), SQL (the statements themselves) and commit (the WAL write, its flush, and any automatic
-checkpoint); p99 is over single saves at batch 1 and over whole batches otherwise. `1 FULL 2MB` is
-what the app does today; `1 OFF` is only the floor -- no flush at all, never a proposal.
+checkpoint); p99 is over single saves at batch 1 and over whole batches otherwise. `<- today` marks
+whichever row matches the app's OWN pragmas, read fresh off its connection -- `1 FULL 2MB` until
+Task 4 landed (ruling 12), `1 NORMAL 64MB` since; `1 OFF` is only the floor -- no flush at all, never
+a proposal.
 
 THE LOOP LINES. `rest` is what the ingest's own loop costs per file beyond parsing on 4 threads and
 the save's own CPU: batch barriers, GC, bookkeeping -- and whatever the unexplained part is. The LOOP
@@ -77,7 +79,7 @@ BATCHES = (1, 10, 50)
 SYNCS = ("FULL", "NORMAL")
 CACHES_MB = (2, 64)
 # PRAGMA cache_size values, in KiB when negative. "2MB" is SQLite's own default (-2000) -- what the
-# app runs today, having never set it; "64MB" is ruling 12's value.
+# app ran before Task 4; "64MB" is ruling 12's value, in _set_sqlite_pragma since.
 CACHE_PRAGMA = {2: -2000, 64: -65536}
 SYNC_CODE = {"OFF": 0, "NORMAL": 1, "FULL": 2}
 SETTINGS = [(b, s, c) for b in BATCHES for s in SYNCS for c in CACHES_MB]

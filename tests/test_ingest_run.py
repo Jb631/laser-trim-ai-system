@@ -494,6 +494,146 @@ def test_the_run_reports_where_its_time_goes_WITHOUT_finishing(tmp_path, monkeyp
     assert "save " in mid[0] and "everything else" in mid[0]
 
 
+# ---- Task 2 (ingest-speed spec 3.10, ruling 2): an honest batch line ------
+
+def test_the_batch_line_prints_save_cpu_beside_wall_time(monkeypatch):
+    """Wall time alone hides the GIL wait (F7: the thread loop's save is ~85%
+    waiting on other threads). The CPU figure belongs right beside the wall
+    figure it qualifies, not buried elsewhere in the line."""
+    line = _phase_line(monkeypatch,
+                        {"walk": 1.0, "process": 50.0, "save": 30.0, "save_cpu": 5.1},
+                        100)
+    assert "of which save 30.0s (60%, 300 ms/file)" in line
+    assert "save cpu 5.1s (17% of save wall, 51 ms/file)" in line
+    # beside, not after "rest": the wall and cpu clauses for the SAME phase stay adjacent
+    assert line.index("of which save") < line.index("save cpu") < line.index("rest ")
+
+
+def test_a_batch_with_no_cpu_measurement_prints_no_cpu_clause(monkeypatch):
+    """A caller that never populated save_cpu (old phases dict shape) must not
+    make log_phases crash or invent a number."""
+    line = _phase_line(monkeypatch, {"walk": 1.0, "process": 50.0, "save": 30.0}, 100)
+    assert "save cpu" not in line
+
+
+def test_the_saves_cpu_is_its_own_threads_not_the_whole_processs(tmp_path, monkeypatch):
+    """Review finding (task-2-4-review.md, Important #1): a single-threaded test cannot tell
+    time.thread_time() apart from time.process_time() -- with nothing else running, "this
+    thread's CPU" and "the whole process's CPU" are the same number, so a regression to the
+    wrong clock would pass silently. In production, with four parser threads running
+    concurrently, time.process_time() would count THEIR CPU as part of the save's figure too
+    (that is ruling 2's own reasoning -- F7 measured the save's wall time as ~85% GIL wait,
+    the OTHER threads' work). This test reproduces that shape directly: the save stub only
+    SLEEPS (near-zero CPU of its own) while a REAL background thread spins CPU concurrently
+    on a different thread for the whole run. time.thread_time() must stay near zero regardless
+    of the spinner; time.process_time() would inflate save_cpu with the spinner's work, because
+    it counts every thread in the process.
+    """
+    import threading
+    import time as _time
+    from types import SimpleNamespace
+    from laser_trim_analyzer.core.models import AnalysisStatus
+
+    (tmp_path / "a.xls").write_bytes(b"junk")
+    SAVE_S = 0.05
+    N = 5
+
+    def _result(i):
+        return SimpleNamespace(
+            file_type="trim",
+            metadata=SimpleNamespace(model="8232-1", filename=f"f{i}.xls"),
+            overall_status=AnalysisStatus.PASS)
+
+    class _Proc:
+        last_scan_stats = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        def process_batch(self, *a, **k):
+            for i in range(N):
+                yield _result(i)
+            return SimpleNamespace(processed=N)
+
+    class _SleepDb:
+        """This thread does almost no work of its own -- like a save mostly waiting on the
+        GIL or the write lock, not actually computing anything."""
+        def save_analysis(self, result):
+            _time.sleep(SAVE_S)
+
+    monkeypatch.setattr(ingest_run, "Processor", _Proc)
+    monkeypatch.setattr(ingest_run, "_post_batch", lambda *a, **k: None)
+
+    stop = threading.Event()
+
+    def _burn_cpu_on_a_different_thread():
+        # A tight, allocation-free loop: the whole point is to hold this OTHER thread's CPU
+        # as close to 100% as this machine allows, for as long as the save loop runs.
+        while not stop.is_set():
+            pass
+
+    spinner = threading.Thread(target=_burn_cpu_on_a_different_thread)
+    spinner.start()
+    try:
+        result = run_folder(str(tmp_path), db=_SleepDb(), config=None)
+    finally:
+        stop.set()
+        spinner.join(timeout=5)
+        assert not spinner.is_alive()
+
+    assert "save_cpu" in result.phases, "the ingest did not measure save CPU at all"
+    # the wall clock really did pass -- N sleeps of SAVE_S each
+    assert result.phases["save"] >= SAVE_S * N * 0.7
+    # ...but this thread did almost none of that as CPU, NO MATTER how hard the OTHER thread
+    # spun. time.process_time() would have summed the spinner's CPU into this number too --
+    # the mutation table below proves it does, by turning this assertion red.
+    assert result.phases["save_cpu"] < result.phases["save"] * 0.3, (
+        f"a sleeping save's own CPU should stay near zero even while another thread spins "
+        f"concurrently: save_cpu={result.phases['save_cpu']:.4f} save wall="
+        f"{result.phases['save']:.4f} -- this fails if the measurement is time.process_time() "
+        f"(process-wide) instead of time.thread_time() (this thread only)")
+
+
+def test_ingest_so_far_line_also_carries_the_cpu_figure(tmp_path, monkeypatch):
+    """The periodic mid-run line gets the same honesty as the folder-end one."""
+    import time as _time
+    from types import SimpleNamespace
+    from laser_trim_analyzer.core.models import AnalysisStatus
+    from laser_trim_analyzer.core import ingest_run as ir
+
+    (tmp_path / "a.xls").write_bytes(b"junk")
+    monkeypatch.setattr(ir, "SAVE_REPORT_EVERY", 3)
+    N = 3
+
+    class _Proc:
+        last_scan_stats = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        def process_batch(self, *a, **k):
+            for i in range(N):
+                yield SimpleNamespace(
+                    file_type="trim",
+                    metadata=SimpleNamespace(model="8232-1", filename=f"f{i}.xls"),
+                    overall_status=AnalysisStatus.PASS)
+            return SimpleNamespace(processed=N)
+
+    class _Db:
+        def save_analysis(self, result):
+            _time.sleep(0.01)
+
+    said = []
+    monkeypatch.setattr(ir.logger, "info", lambda fmt, *a: said.append(fmt % a if a else fmt))
+    monkeypatch.setattr(ir, "Processor", _Proc)
+    monkeypatch.setattr(ir, "_post_batch", lambda *a, **k: None)
+    run_folder(str(tmp_path), db=_Db(), config=None)
+
+    mid = [m for m in said if m.startswith("Ingest so far")]
+    assert len(mid) == 1
+    assert "cpu" in mid[0]
+
+
 def test_the_progress_report_fires_often_enough_to_be_useful_on_a_slow_run():
     """The test above monkeypatches the interval, so it cannot catch a bad default.
 

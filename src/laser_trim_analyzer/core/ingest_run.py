@@ -774,6 +774,15 @@ def log_phases(phases: dict, total: int, processor, summary) -> None:
         parts.append(f"of which save {phases['save']:.1f}s"
                      f" ({phases['save'] / proc_s * 100:.0f}%,"
                      f" {phases['save'] / done * 1000:.0f} ms/file)")
+        if "save_cpu" in phases:
+            # time.thread_time(), beside the wall figure it qualifies (spec 3.10):
+            # wall alone cannot tell a save mostly waiting on the GIL/write lock
+            # from one actually doing work (F7). Windows ticks this at ~15.6 ms,
+            # trustworthy only summed over the hundreds of saves this line covers.
+            save_wall = phases['save'] or 1
+            parts.append(f"save cpu {phases['save_cpu']:.1f}s"
+                         f" ({phases['save_cpu'] / save_wall * 100:.0f}% of save wall,"
+                         f" {phases['save_cpu'] / done * 1000:.0f} ms/file)")
         parts.append(f"rest {phases.get('process', 0) - phases['save']:.1f}s"
                      f" ({(phases.get('process', 0) - phases['save']) / done * 1000:.0f} ms/file)")
     parts.append(f"rematch {phases['rematch']:.1f}s" if "rematch" in phases
@@ -980,6 +989,10 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     new_trims = 0                # trim analyses actually saved by THIS batch
     new_final_tests = 0          # final tests THIS batch saved (the processor saves them)
     save_seconds = 0.0           # the serial half: every save, one after another
+    save_cpu_seconds = 0.0       # of which, actual CPU on this thread -- time.thread_time(),
+                                  # not wall: F7 measured the thread loop's save at ~85% GIL
+                                  # wait, so wall time alone credits the save with work it
+                                  # never did (spec 3.10, ruling 2).
     t = time.monotonic()
     try:
         while True:
@@ -995,18 +1008,22 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                     # alone costs 339.2, so 56% of the ingest is outside parse
                     # -- and a process pool would not touch any of it.
                     _t_save = time.monotonic()
+                    _c_save = time.thread_time()
                     db.save_analysis(result)
                     save_seconds += time.monotonic() - _t_save
+                    save_cpu_seconds += time.thread_time() - _c_save
                     new_trims += 1
                     if new_trims and new_trims % SAVE_REPORT_EVERY == 0:
                         _since = time.monotonic() - t
                         logger.info(
                             "Ingest so far: %s saved | %.0f ms/file overall | "
-                            "save %.0f ms/file (%.0f%%) | everything else %.0f ms/file. "
+                            "save %.0f ms/file wall, %.0f ms/file cpu (%.0f%%) | "
+                            "everything else %.0f ms/file. "
                             "Saving is SERIAL -- one at a time on this thread -- so it "
                             "is the part more workers cannot help.",
                             f"{new_trims:,}", _since / new_trims * 1000,
                             save_seconds / new_trims * 1000,
+                            save_cpu_seconds / new_trims * 1000,
                             (save_seconds / _since * 100) if _since else 0.0,
                             (_since - save_seconds) / new_trims * 1000)
                 except Exception as exc:
@@ -1032,6 +1049,7 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
         summary = stop.value
         phases["process"] = time.monotonic() - t
         phases["save"] = save_seconds
+        phases["save_cpu"] = save_cpu_seconds
     except Exception as exc:
         # 2026-07-09: an exception here previously killed the worker thread
         # silently — Start stayed disabled, the app looked locked, and the
