@@ -113,6 +113,8 @@ Mamimum', later fixed to 'Length Maximum' (25,782 files carry the one, 32,014 th
 **Values are compared per their own kind**: a number rounded to 6 dp (an int one file and the
 equal float the next are no change), anything else as its `str()`.
 """
+import math
+from datetime import timedelta
 from statistics import median
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
@@ -124,6 +126,10 @@ from .recipe_change import RECIPE_PARAMETER_KEYS
 
 MIN_RUN_DAYS = 60          # a stable setup spans at least this many days...
 MIN_TRACKS_SIDE = 100       # ...with at least this many graded tracks
+# Both day rules compare the WHOLE span, never whole days (re-review of the fix round, 2026-09-25):
+# floored, two stable setups 60 days 20 hours apart passed the 60-day cap as "60 days" (6126 laser 1
+# Track A). The floor below and the cap in _compare use this one timedelta.
+_MIN_RUN = timedelta(days=MIN_RUN_DAYS)
 
 ALIASES: Dict[str, str] = {"response_linear_or_function": "response",
                            "length_mamimum": "length_maximum"}
@@ -306,8 +312,17 @@ def _and(names: List[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def _span_days(tracks) -> int:
-    return (max(t.file_date for t in tracks) - min(t.file_date for t in tracks)).days
+def _span(tracks) -> timedelta:
+    """First file to last, to the second -- compared with _MIN_RUN whole (see it)."""
+    return max(t.file_date for t in tracks) - min(t.file_date for t in tracks)
+
+
+def _apart(gap: timedelta) -> str:
+    """"61 days", or "60 days 20 hours": to the hour, rounded UP, so a gap past the cap can never
+    read as the cap itself."""
+    days, hours = divmod(math.ceil(gap.total_seconds() / 3600), 24)
+    text = f"{days} day{'s' if days != 1 else ''}"
+    return text if not hours else f"{text} {hours} hour{'s' if hours != 1 else ''}"
 
 
 def _single_table_key(tracks) -> Optional[str]:
@@ -347,7 +362,7 @@ def _setups(rows) -> List[Dict[str, Any]]:
     for s in setups:
         s["side"] = _side(s["tracks"])
         s["stable"] = (s["side"]["graded_n"] >= MIN_TRACKS_SIDE
-                       and _span_days(s["tracks"]) >= MIN_RUN_DAYS)
+                       and _span(s["tracks"]) >= _MIN_RUN)
     return setups
 
 
@@ -358,11 +373,11 @@ def _compare(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
     bs, as_ = before["state"], after["state"]
     diff = [k for k in sorted(bs.keys() & as_.keys()) if bs[k] != as_[k]]
     tb, ta = before["side"]["limit_table"], after["side"]["limit_table"]
-    gap = (after["tracks"][0].file_date - before["tracks"][-1].file_date).days
+    gap = after["tracks"][0].file_date - before["tracks"][-1].file_date
     return {"settings": sorted((k for k in diff if k not in _RECIPE),
                                key=lambda k: (_name(k).lower(), k)),
             "recipe_changed": any(k in _RECIPE for k in diff),
-            "gap_days": gap, "within": gap <= MIN_RUN_DAYS,
+            "gap": gap, "within": gap <= _MIN_RUN,
             "same_table": tb is not None and tb == ta,
             "graded": (before["side"]["trim_pass_pct"] is not None
                        and after["side"]["trim_pass_pct"] is not None)}
@@ -458,7 +473,7 @@ def _why(idx: int, key: str, setups, stable: List[int],
     c = changes[(before, after)]
     if not c["within"]:
         return {"reported": False,
-                "why_not": (f"the stable setups either side are {c['gap_days']} days apart -- longer "
+                "why_not": (f"the stable setups either side are {_apart(c['gap'])} apart -- longer "
                             f"than a stable setup's own {MIN_RUN_DAYS}-day minimum, so a period, not "
                             "one change")}
     if key not in setups[before]["state"]:

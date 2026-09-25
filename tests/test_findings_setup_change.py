@@ -246,6 +246,41 @@ def test_stable_setups_61_days_apart_are_a_period_not_a_change():
     assert "61 days apart" in facts[0]["why_not"]
 
 
+def test_stable_setups_60_days_and_20_hours_apart_are_a_period_not_a_change():
+    """The cap compares the whole gap, never whole days (re-review of the fix round, 2026-09-25):
+    6126 laser 1 Track A's stable setups met 60 days 20 hours apart and were reported as one
+    change, because the gap was floored to 60. Its reason names the hours, so it never reads as
+    "60 days apart -- longer than ... 60-day minimum"."""
+    s1 = setup_era(0, START, 200, {"laser_power": 50}, 0.80)
+    s2 = setup_era(1000, s1[-1].file_date + timedelta(days=60, hours=20), 200,
+                   {"laser_power": 62}, 0.50)
+    facts, findings = analyze(s1 + s2)
+    assert findings == []
+    assert [(b["setting"], b["reported"]) for b in facts] == [("laser_power", False)]
+    assert "60 days 20 hours apart" in facts[0]["why_not"]
+
+
+def test_stable_setups_59_days_and_23_hours_apart_are_one_change():
+    s1 = setup_era(0, START, 200, {"laser_power": 50}, 0.80)
+    s2 = setup_era(1000, s1[-1].file_date + timedelta(days=59, hours=23), 200,
+                   {"laser_power": 62}, 0.50)
+    assert only(analyze(s1 + s2)[1]).title == "Laser 1 (LTS): Laser Power 50 → 62"
+
+
+def test_the_stability_floor_is_the_whole_span_too():
+    """Kept consistent with the cap: a setup spans at least 60 days when its first and last files
+    are 60 days apart, counted to the hour -- 59 days 23 hours is short of it."""
+    s1 = setup_era(0, START, 200, {"laser_power": 50, "pulse_duration": 50}, 0.80)
+    mid_start = after(s1)
+    span = timedelta(days=59, hours=23)
+    mid = setup_era(1000, mid_start, 100, {"laser_power": 60, "pulse_duration": 50}, 0.30,
+                    dates=[mid_start + span * (k / 99) for k in range(100)])
+    s3 = setup_era(2000, after(mid), 200, {"laser_power": 60, "pulse_duration": 100}, 0.50)
+    facts, findings = analyze(s1 + mid + s3)
+    assert findings == []                      # the middle setup is not stable, so no two changes
+    assert facts and all("61 days 23 hours apart" in b["why_not"] for b in facts)
+
+
 def test_the_gap_is_measured_between_the_stable_setups_not_across_the_short_one():
     """A short-lived setup halfway does not make a 61-day transition two short ones."""
     s1 = setup_era(0, START, 200, {"laser_power": 50, "pulse_duration": 50}, 0.80)
