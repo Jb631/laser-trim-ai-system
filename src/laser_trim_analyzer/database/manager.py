@@ -2167,6 +2167,10 @@ class DatabaseManager:
             DBProcessedFile.error_message.like(UNREADABLE_PREFIX + "%"),
         ).delete(synchronize_session=False)
 
+    # =========================================================================
+    # Dashboard Queries
+    # =========================================================================
+
     def get_dashboard_stats(self, days_back: int = 7,
                             element_type: Optional[str] = None,
                             product_class: Optional[str] = None) -> Dict[str, Any]:
