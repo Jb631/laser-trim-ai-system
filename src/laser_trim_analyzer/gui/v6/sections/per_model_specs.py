@@ -12,6 +12,7 @@ from laser_trim_analyzer.core.analyzer import (
     format_exclude_points, human_to_exclude_json, parse_exclude_points)
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 
 def build_spec_save_data(model, linearity_spec_text, linearity_spec_pct,
@@ -127,9 +128,7 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
 
     imp_row = ctk.CTkFrame(parent, fg_color="transparent")
     imp_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-    ctk.CTkButton(imp_row, text="Import spec sheet…", command=_import_sheet,
-                  fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
-                  corner_radius=t.RADIUS_SM).pack(side="left")
+    blocks.link_button(imp_row, t, "Import spec sheet…", _import_sheet).pack(side="left")
     ctk.CTkLabel(imp_row, text="  Bulk load/refresh every model from your master sheet "
                                "(merges — never deletes).",
                  font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY).pack(side="left")
@@ -236,7 +235,5 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
 
     btns = ctk.CTkFrame(parent, fg_color="transparent")
     btns.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
-    ctk.CTkButton(btns, text="Save spec", command=_save, fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
-                  text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM).pack(side="left")
-    ctk.CTkButton(btns, text="Delete spec", command=_delete, fg_color=t.CARD, hover_color=t.ELEVATED,
-                  text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM).pack(side="left", padx=(t.SPACE_SM, 0))
+    blocks.link_button(btns, t, "Save spec", _save).pack(side="left")
+    blocks.link_button(btns, t, "Delete spec", _delete).pack(side="left", padx=(t.SPACE_SM, 0))

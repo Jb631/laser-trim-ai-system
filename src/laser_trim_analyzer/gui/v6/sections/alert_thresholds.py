@@ -6,6 +6,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.sensitivity_slider import SensitivitySlider
 from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS, metric_label
 from laser_trim_analyzer.ml.manager import apply_sensitivity_preset, preview_alert_count
@@ -83,8 +84,7 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
             ctk.CTkLabel(desc, text=text, font=t.font(t.SIZE_CAPTION),
                          text_color=t.TEXT_SECONDARY, anchor="w").pack(side="top", fill="x")
 
-    save_btn = ctk.CTkButton(parent, text="Apply preset", fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
-                             text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM)
+    save_btn = blocks.link_button(parent, t, "Apply preset", None)
 
     def save():
         preset = state["selected"]

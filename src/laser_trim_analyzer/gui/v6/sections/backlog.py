@@ -22,6 +22,7 @@ import customtkinter as ctk
 from laser_trim_analyzer.core.backlog import Backlog, BacklogFormatError, parse_backlog
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 
 def rebuild_active_list(cfg) -> None:
@@ -181,14 +182,10 @@ def build_backlog_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, apply_ui)
         threading.Thread(target=work, daemon=True).start()
 
-    upload_btn = ctk.CTkButton(parent, text="Upload current backlog…", command=_upload,
-                               fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
-                               text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM)
+    upload_btn = blocks.link_button(parent, t, "Upload current backlog…", _upload)
     upload_btn.pack(side="top", anchor="w", pady=(0, t.SPACE_XS))
 
-    toggle_btn = ctk.CTkButton(parent, text="Show unrecognised items", command=_toggle_unmatched,
-                               fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                               corner_radius=t.RADIUS_SM)
+    toggle_btn = blocks.link_button(parent, t, "Show unrecognised items", _toggle_unmatched)
     toggle_btn.pack(side="top", anchor="w", pady=(0, t.SPACE_SM))
 
     status.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
@@ -245,8 +242,7 @@ def build_backlog_section(parent, theme: ThemeManager, app) -> None:
             save_status.configure(text=f"Save failed: {exc}")
         summary.configure(text=_summary_from_config(cfg))
 
-    ctk.CTkButton(parent, text="Save", command=_save, fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
-                 text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM)\
+    blocks.link_button(parent, t, "Save", _save)\
         .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
     save_status.pack(side="top", fill="x")
 

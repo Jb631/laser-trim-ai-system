@@ -11,6 +11,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 # (UI key, checkbox label, execute_cleanup kwarg)
 _CATEGORIES = [
@@ -97,9 +98,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             return "\n".join(lines) if len(lines) > 1 else "Database is clean."
         _async(work)
 
-    ctk.CTkButton(parent, text="Scan database", command=_scan, fg_color=t.CARD,
-                  hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
+    blocks.link_button(parent, t, "Scan database", _scan)\
+        .pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
 
     # Category checkboxes.
     cvars = {}
@@ -154,11 +154,11 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
 
     btns = ctk.CTkFrame(parent, fg_color="transparent")
     btns.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
-    ctk.CTkButton(btns, text="Preview", command=_preview, fg_color=t.CARD, hover_color=t.ELEVATED,
-                  text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM).pack(side="left")
-    ctk.CTkButton(btns, text="Clear selected", command=_execute, fg_color=t.TIER_OOC,
-                  hover_color=t.TIER_DRIFT, text_color=t.TEXT_PRIMARY,
-                  corner_radius=t.RADIUS_SM).pack(side="left", padx=(t.SPACE_SM, 0))
+    blocks.link_button(btns, t, "Preview", _preview).pack(side="left")
+    # Destructive, but the CONFIRMATION dialog above (messagebox.askyesno, unchanged) is what
+    # actually gates the delete -- not this button's fill colour, which blocks.py has no
+    # separate "danger" variant for (ruling 3: actions use primary_button/link_button).
+    blocks.link_button(btns, t, "Clear selected", _execute).pack(side="left", padx=(t.SPACE_SM, 0))
 
     def _reset_skipped():
         from tkinter import messagebox
@@ -183,9 +183,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
-    ctk.CTkButton(parent, text="Reset skipped files", command=_reset_skipped, fg_color=t.CARD,
-                  hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_MD, 0))
+    blocks.link_button(parent, t, "Reset skipped files", _reset_skipped)\
+        .pack(side="top", anchor="w", pady=(t.SPACE_MD, 0))
 
     def _retry_unreadable():
         """Offer the files that FAILED TO READ again (2026-09-17).
@@ -229,9 +228,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
-    ctk.CTkButton(parent, text="Retry unreadable files", command=_retry_unreadable,
-                  fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
+    blocks.link_button(parent, t, "Retry unreadable files", _retry_unreadable)\
+        .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
     def _refresh_findings():
         """Recompute cached process findings for every model (Task 10b, 2026-09-20).
@@ -297,11 +295,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
         if register is not None and thread is not None:
             register(cancel, thread, "A findings refresh")
 
-    ctk.CTkButton(parent, text="Refresh process findings",
-                  command=_refresh_findings, fg_color=t.CARD,
-                  hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w",
-                                                  pady=(t.SPACE_SM, 0))
+    blocks.link_button(parent, t, "Refresh process findings", _refresh_findings)\
+        .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
     def _recompute_statuses():
         """Re-grade Pass/Warning/Fail from stored track flags (M4, 2026-07-07).
@@ -351,9 +346,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
-    ctk.CTkButton(parent, text="Recompute unit statuses", command=_recompute_statuses,
-                  fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
+    blocks.link_button(parent, t, "Recompute unit statuses", _recompute_statuses)\
+        .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
     def _fix_missing_tracks():
         """Re-parse records whose track measurements are missing.
@@ -406,9 +400,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
-    ctk.CTkButton(parent, text="Fix missing tracks", command=_fix_missing_tracks,
-                  fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
+    blocks.link_button(parent, t, "Fix missing tracks", _fix_missing_tracks)\
+        .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
     # ---- Re-grade final tests (2026-09-13) --------------------------------
     regrade_cancel = {"event": None}
@@ -533,12 +526,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
 
     regrade_row = ctk.CTkFrame(parent, fg_color="transparent")
     regrade_row.pack(side="top", fill="x", anchor="w", pady=(t.SPACE_SM, 0))
-    ctk.CTkButton(regrade_row, text="Re-grade final tests",
-                  command=_regrade_final_tests, fg_color=t.CARD,
-                  hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                  corner_radius=t.RADIUS_SM).pack(side="left", anchor="w")
-    stop_btn = ctk.CTkButton(regrade_row, text="Stop", command=_stop_regrade,
-                             state="disabled", width=70, fg_color=t.CARD,
-                             hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                             corner_radius=t.RADIUS_SM)
+    blocks.link_button(regrade_row, t, "Re-grade final tests", _regrade_final_tests)\
+        .pack(side="left", anchor="w")
+    stop_btn = blocks.link_button(regrade_row, t, "Stop", _stop_regrade)
+    stop_btn.configure(state="disabled")
     stop_btn.pack(side="left", padx=(t.SPACE_SM, 0))

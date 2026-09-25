@@ -32,6 +32,7 @@ from laser_trim_analyzer.config import (
 )
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 
 class IngestFoldersSection:
@@ -63,24 +64,15 @@ class IngestFoldersSection:
             placeholder_text=r"\\192.168.66.9\Public\LaserTrim  (or Browse…)")
         self._entry.pack(side="left", fill="x", expand=True, padx=(0, t.SPACE_SM))
         self._entry.bind("<Return>", lambda _e: self._add_from_entry())
-        ctk.CTkButton(add_row, text="Add", width=70, fg_color=t.ACCENT,
-                      hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
-                      corner_radius=t.RADIUS_SM, command=self._add_from_entry)\
-            .pack(side="left", padx=(0, t.SPACE_XS))
-        ctk.CTkButton(add_row, text="Browse…", width=90, fg_color=t.CARD,
-                      hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
-                      corner_radius=t.RADIUS_SM, command=self._browse)\
-            .pack(side="left")
+        blocks.link_button(add_row, t, "Add", self._add_from_entry).pack(side="left", padx=(0, t.SPACE_XS))
+        blocks.link_button(add_row, t, "Browse…", self._browse).pack(side="left")
 
         self._status = ctk.CTkLabel(parent, text="", justify="left", anchor="w",
                                     wraplength=640, font=t.font(t.SIZE_CAPTION),
                                     text_color=t.TEXT_SECONDARY)
         self._status.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
 
-        ctk.CTkButton(parent, text="Check folders now", width=150,
-                      fg_color=t.CARD, hover_color=t.ELEVATED,
-                      text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM,
-                      command=self.check_folders)\
+        blocks.link_button(parent, t, "Check folders now", self.check_folders)\
             .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
         self._render()

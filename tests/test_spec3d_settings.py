@@ -195,17 +195,41 @@ def test_build_cleanup_options():
 # ---- Task 10: SettingsPage + auto-train ------------------------------------
 
 def test_settings_page_has_six_cards(make_app):
-    """Ingest Folders, Thresholds, Backlog, Per-model Specs, ML Training,
-    Database Cleanup. The former Active Models (MPS) and Pricing cards merged
-    into one Backlog section (2026-09-20, E1): one open-order upload now sets
-    both the active-models list and each model's price."""
+    """Ingest folders, Backlog, Alert thresholds, Per-model specs, ML training, Database --
+    ruling 3 (facelift step 2, 2026-09-24): sentence case, ordered so the one setting Home
+    cannot work without comes first, and only that first card starts expanded. The former
+    Active Models (MPS) and Pricing cards merged into one Backlog section (2026-09-20, E1):
+    one open-order upload now sets both the active-models list and each model's price."""
     app = make_app()
     page = app.page_container.get_page("settings")
     assert len(page._cards) == 6
     titles = [c._title.cget("text") for c in page._cards]
-    assert "Backlog — active models and pricing" in titles
-    assert not any("Active Models (MPS" in t for t in titles)
-    assert "Pricing" not in titles
+    assert titles == ["Ingest folders", "Backlog — active models and pricing",
+                       "Alert thresholds", "Per-model specs", "ML training", "Database"]
+    assert [c._expanded for c in page._cards] == [True, False, False, False, False, False]
+
+
+def test_no_settings_button_is_teal_filled(make_app):
+    """global-constraints.md: at most ONE teal-filled primary_button per screen. Settings has
+    no single natural call-to-action across its six independently-expandable cards (nothing
+    stops a user opening several at once), so ruling 3's "actions use primary_button/
+    link_button" means every action here is a link_button -- zero teal-filled buttons, not
+    one, so expanding any combination of cards can never show two."""
+    import customtkinter as ctk
+
+    def _buttons(widget):
+        out = []
+        for c in widget.winfo_children():
+            if isinstance(c, ctk.CTkButton):
+                out.append(c)
+            out.extend(_buttons(c))
+        return out
+
+    app = make_app()
+    page = app.page_container.get_page("settings")
+    t = page.theme
+    teal = [b for b in _buttons(page) if b.cget("fg_color") == t.ACCENT]
+    assert teal == [], [b.cget("text") for b in teal]
 
 
 def test_should_offer_first_startup_train_is_data_gated(make_app):

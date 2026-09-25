@@ -5,6 +5,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.training_modal import TrainingModal
 
 
@@ -49,13 +50,7 @@ def build_ml_training_section(parent, theme: ThemeManager, app) -> None:
         status.configure(text="Retraining per-model ML…")
         threading.Thread(target=work, daemon=True).start()
 
-    ctk.CTkButton(parent, text="Retrain drift detector", command=retrain_drift, fg_color=t.ACCENT,
-                  hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM)\
+    blocks.link_button(parent, t, "Retrain drift detector", retrain_drift)\
         .pack(side="top", anchor="w", pady=(0, t.SPACE_SM))
-    # Border so it reads as a BUTTON: fg_color=CARD on a CARD section made it
-    # look like a plain caption (live-walk finding, 2026-07-08).
-    ctk.CTkButton(parent, text="Retrain per-model ML (thresholds + predictor + profiler)",
-                  command=retrain_per_model, fg_color=t.CARD, hover_color=t.ELEVATED,
-                  text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM,
-                  border_width=1, border_color=t.BORDER)\
-        .pack(side="top", anchor="w")
+    blocks.link_button(parent, t, "Retrain per-model ML (thresholds + predictor + profiler)",
+                       retrain_per_model).pack(side="top", anchor="w")

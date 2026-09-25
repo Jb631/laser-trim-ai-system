@@ -24,14 +24,16 @@ class SettingsPage(PageBase):
         for title, expanded, build in (
             # First and open by default: on a fresh install this is the one
             # setting Home cannot work without, and Home's empty state sends
-            # the user straight here.
-            ("Ingest Folders (Home's “Process everything new”)", True,
-             build_ingest_folders_section),
-            ("Alert Thresholds", True, build_alert_thresholds_section),
+            # the user straight here. The Home connection is said in words
+            # INSIDE the card (its body's own opening line already names
+            # "Process everything new" -- see build_ingest_folders_section),
+            # so the title itself stays short, sentence case (ruling 3).
+            ("Ingest folders", True, build_ingest_folders_section),
             ("Backlog — active models and pricing", False, build_backlog_section),
-            ("Per-model Specs", False, build_per_model_specs_section),
-            ("ML Training", False, build_ml_training_section),
-            ("Database Cleanup", False, build_database_cleanup_section),
+            ("Alert thresholds", False, build_alert_thresholds_section),
+            ("Per-model specs", False, build_per_model_specs_section),
+            ("ML training", False, build_ml_training_section),
+            ("Database", False, build_database_cleanup_section),
         ):
             card = SettingsCard(scroll, theme=self.theme, title=title, expanded=expanded)
             card.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM))
