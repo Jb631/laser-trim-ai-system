@@ -8,7 +8,10 @@ Subclass contract:
 PageBase stores `self.app` (V6App | None) and `self.theme`, and offers safe_after().
 """
 import logging
-from typing import Optional
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 import customtkinter as ctk
 
@@ -18,6 +21,41 @@ from laser_trim_analyzer.gui.v6.widgets import blocks
 logger = logging.getLogger(__name__)
 
 HEADER_HEIGHT = 44
+
+# A screen update that KEEPS failing (F5 review): the 4 Hz ProgressTicker posts its paint through
+# safe_after for a whole ingest run -- hours -- so one persistent bug would write a traceback four
+# times a second. Each callback's FIRST failure is logged with its traceback; after that, at most
+# one line per _REPEAT_SECONDS per callback says how many more failed. A callback is keyed by
+# where its code lives (_callback_name): the ticker builds a fresh lambda every tick, and every
+# one of them is the same callback. Tk thread only, like everything safe_after runs.
+_REPEAT_SECONDS = 60.0
+_clock = time.monotonic
+_failing: Dict[str, Dict[str, Any]] = {}
+
+
+def _callback_name(fn) -> str:
+    """"HomePage._run.<locals>.<lambda> (home_page.py:355)": the qualname and where it starts."""
+    target = getattr(fn, "__func__", fn)                  # a bound method's own function
+    name = getattr(target, "__qualname__", None) or type(target).__qualname__
+    code = getattr(target, "__code__", None)
+    return f"{name} ({Path(code.co_filename).name}:{code.co_firstlineno})" if code else name
+
+
+def _report_failure(page: str, fn) -> None:
+    """Called from inside the except block that caught `fn`'s exception."""
+    name = _callback_name(fn)
+    now = _clock()
+    seen = _failing.get(name)
+    if seen is None:
+        _failing[name] = {"said_at": now, "more": 0, "since": time.strftime("%H:%M:%S")}
+        logger.exception("%s: a screen update failed -- %s", page, name)
+        return
+    seen["more"] += 1
+    if now - seen["said_at"] >= _REPEAT_SECONDS:
+        exc = sys.exc_info()[1]
+        logger.error("%s: %d more failures of %s since %s (the last: %s: %s)", page, seen["more"],
+                     name, seen["since"], type(exc).__name__, exc)
+        seen.update(said_at=now, more=0, since=time.strftime("%H:%M:%S"))
 
 
 class PageBase(ctk.CTkFrame):
@@ -93,7 +131,8 @@ class PageBase(ctk.CTkFrame):
 
         A callback that raises is LOGGED, with its traceback, and the next one still runs (F4
         review: this used to be a silent `pass`, so a render crash left a stale screen and no
-        trace). A page -- or an app -- already gone is not an error: nothing is left to update.
+        trace) -- once per callback, then counted (_report_failure). A page -- or an app --
+        already gone is not an error: nothing is left to update.
         """
         def guarded():
             try:
@@ -105,7 +144,7 @@ class PageBase(ctk.CTkFrame):
             try:
                 fn()
             except Exception:
-                logger.exception("%s: a screen update failed", type(self).__name__)
+                _report_failure(type(self).__name__, fn)
 
         dispatcher = getattr(self.app, "ui", None)
         if dispatcher is not None:

@@ -286,6 +286,95 @@ def test_a_ui_update_that_raises_through_the_dispatcher_is_logged_too(make_app, 
     assert len(_logged(caplog, "invented dispatched crash")) == 1
 
 
+# ---- F5 review (Important 1): a callback that keeps failing is logged once, then counted -------
+# The 4 Hz ProgressTicker posts its paint through safe_after for a whole ingest run (hours), so a
+# paint that keeps failing wrote a traceback four times a second.
+
+def _page(tk_root, monkeypatch, clock=None):
+    from laser_trim_analyzer.gui.v6 import page_base
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    monkeypatch.setattr(page_base, "_failing", {}, raising=False)   # no memory from an earlier test
+    if clock is not None:
+        monkeypatch.setattr(page_base, "_clock", clock, raising=False)
+
+    class _P(page_base.PageBase):
+        page_title = "T"
+        def build_content(self, parent): pass
+    return _P(tk_root, theme=ThemeManager())
+
+
+def _page_records(caplog):
+    return [r for r in caplog.records if r.name == "laser_trim_analyzer.gui.v6.page_base"]
+
+
+def test_a_callback_failing_on_every_tick_is_at_most_two_log_lines(tk_root, caplog, monkeypatch):
+    import logging
+    page = _page(tk_root, monkeypatch)
+    ran = []
+
+    def tick():                          # a FRESH lambda every tick, the way the ticker posts
+        return lambda: (ran.append(1), 1 / 0)
+    with caplog.at_level(logging.ERROR):
+        for _ in range(100):
+            page.safe_after(tick())
+        _pump_for(tk_root, lambda: len(ran) == 100)
+    records = _page_records(caplog)
+    assert len(ran) == 100
+    assert 1 <= len(records) <= 2, [r.getMessage() for r in records]
+    assert records[0].exc_info and isinstance(records[0].exc_info[1], ZeroDivisionError)
+
+
+def test_a_minute_later_one_line_says_how_many_more_failed(tk_root, caplog, monkeypatch):
+    import logging
+    now = [1000.0]
+    page = _page(tk_root, monkeypatch, clock=lambda: now[0])
+    ran = []
+
+    def fail():
+        ran.append(1)
+        raise RuntimeError("invented paint crash")
+
+    def run(n):
+        start = len(ran)
+        for _ in range(n):
+            page.safe_after(fail)
+        _pump_for(tk_root, lambda: len(ran) == start + n)
+    with caplog.at_level(logging.ERROR):
+        run(10)                          # the first, with its traceback; nine counted
+        now[0] += 61
+        run(1)                           # a minute on: ONE line, "10 more failures of ... since"
+        run(5)                           # counted again, silently
+    records = _page_records(caplog)
+    assert len(records) == 2, [r.getMessage() for r in records]
+    first, summary = records
+    assert first.exc_info and "invented paint crash" in str(first.exc_info[1])
+    assert "fail" in first.getMessage()                     # names the callback
+    assert not summary.exc_info
+    assert "10 more failures of" in summary.getMessage() and "since" in summary.getMessage()
+    assert "RuntimeError: invented paint crash" in summary.getMessage()
+
+
+def test_two_different_failing_callbacks_each_get_their_first_traceback(tk_root, caplog, monkeypatch):
+    import logging
+    page = _page(tk_root, monkeypatch)
+    ran = []
+
+    def first():
+        ran.append("first")
+        raise RuntimeError("invented first crash")
+
+    def second():
+        ran.append("second")
+        raise ValueError("invented second crash")
+    with caplog.at_level(logging.ERROR):
+        for fn in (first, second, first, second):
+            page.safe_after(fn)
+        _pump_for(tk_root, lambda: len(ran) == 4)
+    records = _page_records(caplog)
+    assert [type(r.exc_info[1]).__name__ for r in records if r.exc_info] == ["RuntimeError", "ValueError"]
+    assert len(records) == 2
+
+
 def test_page_base_set_caption_shows_and_clears(tk_root):
     """set_caption packs a caption line under the title bar on text, and clears it on "".
 
