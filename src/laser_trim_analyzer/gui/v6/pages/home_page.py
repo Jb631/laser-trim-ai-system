@@ -486,9 +486,12 @@ class HomePage(PageBase):
                         text_color=t.TEXT_SECONDARY, anchor="w", justify="left", wraplength=1000
                         ).pack(fill="x", padx=t.SPACE_SM)
         else:
+            # open_as="link": Home already carries its own primary_button ("Process everything
+            # new"); a second teal-filled "Open <model>" the moment a row is expanded would
+            # break "at most ONE teal-filled button per screen" (global-constraints.md).
             view = FindingsView(self._worth_section, t, on_open=self._open_finding,
                                 include_empty=False, rows_per_group=3,
-                                groups=(_WORTH_CHANGING_GROUP,))
+                                groups=(_WORTH_CHANGING_GROUP,), open_as="link")
             view.pack(fill="x")
             view.set_findings(rows)
             self._worth_view = view

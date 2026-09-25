@@ -547,5 +547,10 @@ def test_still_exactly_one_teal_button(make_app):
     page = _home(app)
     page.reload_now()
     t = page.theme
+    # CRITICAL (review, 7bc0743): expanding a "Worth changing" row draws findings_view.py's own
+    # "Open <model>" button -- before FindingsView grew open_as="link" for Home's use, that was
+    # a SECOND blocks.primary_button next to "Process everything new". Red on the code before
+    # that fix: the un-expanded check alone let it ship once already.
+    page._worth_view.toggle(next(iter(page._worth_view.row_widgets)))
     teal = [b for b in _buttons(page) if b.cget("fg_color") == t.ACCENT]
     assert len(teal) == 1 and teal[0].cget("text") == "Process everything new"

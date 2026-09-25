@@ -74,6 +74,34 @@ def test_without_an_open_handler_there_is_no_open_button(tk_root):
     assert not any(x.startswith("Open ") for x in _texts(v))
 
 
+def test_the_open_button_is_teal_filled_by_default(tk_root):
+    """The Findings page's own default (open_as="primary", unchanged) -- opening a row IS the
+    page's one call to action."""
+    t = ThemeManager()
+    v = FindingsView(tk_root, t, on_open=lambda m: None)
+    v.set_findings([cut("6607", 182.0)])
+    v.toggle(next(iter(v.row_widgets)))
+    btn = [b for b in v._detail.winfo_children() if isinstance(b, ctk.CTkButton)][0]
+    assert btn.cget("fg_color") == t.ACCENT
+
+
+def test_open_as_link_draws_a_link_not_a_second_teal_button(tk_root):
+    """Home (facelift step 2 review, 7bc0743): Home already has its own primary_button
+    ("Process everything new"), so its embedded FindingsView passes open_as="link" -- expanding
+    a row must never draw a SECOND teal-filled button (global-constraints.md: at most ONE per
+    screen). Red before FindingsView grew this option: every open button was primary_button."""
+    t = ThemeManager()
+    opened = []
+    v = FindingsView(tk_root, t, on_open=opened.append, open_as="link")
+    v.set_findings([cut("6607", 182.0)])
+    v.toggle(next(iter(v.row_widgets)))
+    btn = [b for b in v._detail.winfo_children() if isinstance(b, ctk.CTkButton)][0]
+    assert btn.cget("text") == "Open 6607"
+    assert btn.cget("fg_color") != t.ACCENT
+    btn.invoke()
+    assert opened == ["6607"]
+
+
 def test_a_merged_row_opens_with_each_track_named(tk_root):
     v = FindingsView(tk_root, ThemeManager(), on_open=lambda m: None)
     v.set_findings([cut("6607", 182.0, track="Track A"), cut("6607", 118.0, track="Track B")])
