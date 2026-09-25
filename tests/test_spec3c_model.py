@@ -2005,3 +2005,87 @@ def test_tabs_have_a_minimum_height_so_a_selected_tab_never_collapses(make_app):
     app = make_app()
     page = app.page_container.get_page("model")
     assert page._tabs.cget("height") >= 520
+
+
+# ---- F4 (2026-09-25): switching tabs ---------------------------------------------------------
+# Found by the facelift fix round's re-review. A tab's scrolled content sits on a canvas as a
+# window item; hiding the tab unmaps that item, and on this Mac nothing maps it again when the tab
+# comes back at the same size -- the tab reads blank until a resize, a scroll or a reload.
+
+def _mapped_offscreen(app, width=1400, height=900):
+    """Real geometry, never a window on the screen (the triage tests' technique): alpha 0,
+    borderless, far off-screen. Mapped, so winfo_viewable() means what it says -- under
+    make_app's withdrawn window it would always be 0."""
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.overrideredirect(True)
+    app.geometry(f"{width}x{height}+20000+20000")
+    app.deiconify()
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
+
+
+def _pump(app, seconds=0.4):
+    """Longer than CTkTabview's 100-ms deferral, so every switch has fully settled."""
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.update()
+        time.sleep(0.01)
+
+
+def _click_tab(page, name):
+    """What a click on the tab's name does: the segmented button's own button, invoked."""
+    page._tabs._segmented_button._buttons_dict[name].invoke()
+
+
+def _scroll_frames(widget):
+    import tkinter
+    import customtkinter as ctk
+    for child in tkinter.Misc.winfo_children(widget):
+        if isinstance(child, ctk.CTkScrollableFrame):
+            yield child
+        yield from _scroll_frames(child)
+
+
+@pytest.mark.parametrize("how", ("click", "set"))
+def test_a_scrolling_tab_is_drawn_again_when_you_come_back_to_it(make_app, how):
+    """Show Findings, go to another tab, come back: its scrolled content must be on screen again
+    -- by a click (the user) or by set() (a findings link, and render_pages' --audit, which
+    flagged the Findings tab "squeezed out" this way at 150%). Every tab with a scroll frame is
+    walked away from and back to; the audit's own detector must find nothing squeezed out."""
+    import pathlib
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    from render_pages import find_clipped_text_widgets
+
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {}})
+    show = (lambda name: _click_tab(page, name)) if how == "click" else page._tabs.set
+    _mapped_offscreen(app)
+    try:
+        names = list(page._tabs._name_list)
+        for name in names:                      # every tab shown once: its first layout
+            show(name)
+            _pump(app)
+        blank = {}
+        for name in names:
+            frames = list(_scroll_frames(page._tabs.tab(name)))
+            if not frames:
+                continue
+            show(names[0] if name != names[0] else names[1])     # away...
+            _pump(app)
+            show(name)                                           # ...and back
+            _pump(app)
+            gone = [f for f in frames if not f.winfo_viewable()]
+            squeezed = [h for h in find_clipped_text_widgets(page._tabs.tab(name))
+                        if h.why.startswith("squeezed out")]
+            if gone or squeezed:
+                blank[name] = (f"{len(gone)} of {len(frames)} scroll frame(s) not on screen, "
+                               f"{len(squeezed)} audit line(s) 'squeezed out'"
+                               + (f", e.g. {squeezed[0].text!r}" if squeezed else ""))
+        assert not blank, "\n".join(f"{name}: {why}" for name, why in blank.items())
+    finally:
+        app.withdraw()
