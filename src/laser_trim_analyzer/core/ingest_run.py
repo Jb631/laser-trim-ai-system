@@ -892,6 +892,25 @@ def _post_batch(db, models_in_batch: Set[str], new_trims: int, phases: dict,
         phases["findings"] = time.monotonic() - t
 
 
+class ApplyNowWriter:
+    """The ingest's writer (ingest-speed Task 9, spec 4.1, ruling 9).
+
+    The pool threads no longer write: each file's Outcome comes back to run_folder's thread,
+    and this makes its writes there, at once, through this run's database -- the final-test and
+    smoothness saves and the skip markers the pool threads used to make themselves, by the same
+    rules (`Processor.apply_outcome`). run_folder still saves each trim result itself, as
+    before. Task 10 replaces this with a writer that batches every write.
+    """
+
+    def __init__(self, processor: Processor, db) -> None:
+        self.processor = processor
+        self.db = db
+
+    def add(self, outcome):
+        """One file's writes, now; the result the batch loop yields."""
+        return self.processor.apply_outcome(outcome, db=self.db)
+
+
 @_with_ingest_switch_interval
 def run_folder(folder: str, *, db, config, incremental: bool = True,
                progress: Optional[ProgressCoalescer] = None,
@@ -997,7 +1016,8 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                                   progress_callback=progress_callback,
                                   incremental=incremental,
                                   disk_stats=disk_stats,
-                                  cancel=cancel)
+                                  cancel=cancel,
+                                  writer=ApplyNowWriter(processor, db))
     summary = None
     models_in_batch: Set[str] = set()
     new_trims = 0                # trim analyses actually saved by THIS batch
@@ -1011,8 +1031,8 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     try:
         while True:
             result = next(gen)
-            # Persist trim results (the caller owns the trim save; FT and
-            # smoothness are already saved inside the processor).
+            # Persist trim results (the caller owns the trim save; FT and smoothness were
+            # saved by this run's writer, on this thread, before the result was yielded).
             if getattr(result, "file_type", "trim") == "trim":
                 try:
                     # Timed because it is the SERIAL half of the loop: the pool
@@ -1051,7 +1071,7 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                                     f"{result.metadata.filename}: save failed: {exc}")
             elif (getattr(result, "file_type", None) == "final_test"
                   and getattr(result, "final_test_id", None) is not None):
-                new_final_tests += 1     # saved inside the processor: it carries its row id
+                new_final_tests += 1     # saved by the writer: it carries its row id
             model = getattr(result.metadata, "model", None)
             if model and model != "Unknown":
                 models_in_batch.add(model)

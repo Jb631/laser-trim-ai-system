@@ -3288,6 +3288,139 @@ def check_write_batch_fixtures() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def check_worker_outcomes() -> None:
+    """Values out of the worker (ingest-speed Task 9, spec 4.1-4.2, ruling 9) on REAL files from
+    the regression corpus -- trims from both lasers, final tests of the formats the corpus holds,
+    smoothness exports -- into throwaway databases (--only worker-outcomes). The pool now runs
+    `analyse_path`, which must write nothing; the consumer makes every write. Three promises:
+      1. analysing them reaches for NO database: get_database, DatabaseManager(...) and
+         sqlite3.connect all refuse, and every reach is recorded (a worker process -- Task 11 --
+         has none to reach);
+      2. the Outcomes are the whole story: applied afterwards the way V5's loop does it (side
+         writes at once, each trim saved by the loop), they store exactly what `process_file`
+         stores file by file -- every column of every row but the clocks;
+      3. a trim's Outcome carries its file's own (size, mtime) and SHA-256.
+
+    Falsify before trusting (2026-09-25): make `_skipped` write its marker itself -- check 1
+    goes FAIL; make `apply_outcome` drop a final test's save -- check 2 goes FAIL.
+    """
+    import hashlib
+    import shutil
+    import tempfile
+    from collections import Counter
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
+
+    def firsts(folder: Path, n: int) -> list:
+        """The first workbook of each of the first n model folders (sorted)."""
+        if not folder.is_dir():
+            return []
+        out = []
+        for d in sorted(x for x in folder.iterdir() if x.is_dir()):
+            f = min((x for x in d.rglob("*") if x.is_file() and x.suffix.lower() in
+                     (".xls", ".xlsx") and not x.name.startswith("~$")), default=None)
+            if f is not None:
+                out.append(f)
+            if len(out) >= n:
+                break
+        return out
+
+    files = (firsts(base / "DLTS", 12) + firsts(base / "LTS", 8)
+             + firsts(base / "Test Station", 30)
+             + firsts(base / "Smoothness_Sample_2026-04-10" / "Test Station", 12))
+    if not files:
+        warn("worker outcomes: the corpus", f"no files under {base} -- not run")
+        return
+    tables = _SAVE_TABLES + ("final_test_results", "final_test_tracks", "smoothness_results",
+                             "smoothness_tracks")
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None))
+    tmp = Path(tempfile.mkdtemp(prefix="worker_outcomes_sweep_"))
+    opened = []
+    try:
+        applied = _mgr.DatabaseManager(tmp / "outcomes.db")
+        opened.append(applied)
+        per_file = _mgr.DatabaseManager(tmp / "per_file.db")
+        opened.append(per_file)
+
+        proc = Processor(use_ml=False, snapshot=SpecSnapshot())
+        proc.ml_storage_path = tmp / "no_ml_models"
+        reached = []
+
+        def refuse(what):
+            def refused(*a, **k):
+                reached.append(what)          # recorded: a reach the caller swallows shows
+                raise RuntimeError(f"the analysis reached for {what}")
+            return refused
+
+        real = (_mgr.get_database, getattr(_dbpkg, "get_database"),
+                _mgr.DatabaseManager.__init__, sqlite3.connect)
+        _mgr.get_database = _dbpkg.get_database = refuse("get_database")
+        _mgr.DatabaseManager.__init__ = refuse("DatabaseManager(...)")
+        sqlite3.connect = refuse("sqlite3.connect")
+        try:
+            outcomes = [proc.analyse_path(f) for f in files]
+        finally:
+            (_mgr.get_database, _dbpkg.get_database, _mgr.DatabaseManager.__init__,
+             sqlite3.connect) = real
+        kinds = Counter(("not test data" if o.result is None else o.result.file_type)
+                        for o in outcomes)
+        check("worker outcomes: analysing real files of every kind reaches for no database",
+              not reached and len(outcomes) == len(files),
+              f"{len(files)} files ({dict(kinds)}); reached={sorted(set(reached))[:3]}")
+
+        _mgr._db_manager = _dbpkg._db_manager = applied
+        for outcome in outcomes:              # V5's loop, applied afterwards
+            result = proc.apply_outcome(outcome, db=applied)
+            if result is not None:
+                applied.save_analysis(result)
+        _mgr._db_manager = _dbpkg._db_manager = per_file
+        one_by_one = Processor(use_ml=False, snapshot=SpecSnapshot())
+        one_by_one.ml_storage_path = tmp / "no_ml_models"
+        for f in files:
+            result = one_by_one.process_file(f)
+            if result is not None:
+                per_file.save_analysis(result)
+
+        def rows(path):
+            out = _saved_rows(path, tables)
+            for row in out["analysis_results"]:
+                if row["model"] == "Unknown" and row["overall_status"] == "ERROR":
+                    row["file_date"] = row["unit_id"] = "<now>"   # _create_minimal_metadata
+            return out
+
+        got, want = rows(tmp / "outcomes.db"), rows(tmp / "per_file.db")
+        counts = {t: len(v) for t, v in got.items()}
+        check("worker outcomes: the Outcomes, applied afterwards, store exactly what process_file "
+              "stores file by file (every column but the clocks)",
+              got == want and all(counts[t] for t in ("analysis_results", "final_test_results",
+                                                      "smoothness_results", "processed_files")),
+              f"rows {counts}; identical={got == want}")
+
+        wrong, trims = [], 0
+        for f, o in zip(files, outcomes):
+            if o.result is not None and o.result.file_type == "trim" \
+                    and o.result.overall_status.name != "ERROR":
+                trims += 1
+                st = f.stat()
+                if (o.stat != (st.st_size, st.st_mtime)
+                        or o.file_hash != hashlib.sha256(f.read_bytes()).hexdigest()):
+                    wrong.append(f.name)
+        check("worker outcomes: a trim's Outcome carries its file's own (size, mtime) and SHA-256",
+              trims > 0 and not wrong, f"{trims} trims; wrong={wrong[:3]}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("worker outcomes: the corpus runs through the analysis", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        _mgr._db_manager, _dbpkg._db_manager = saved
+        for m in opened:
+            m.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _same_values(a, b) -> bool:
     """Exact equality of two model_dump()s, a NaN equal to a NaN (a stored NaN is a value)."""
     if isinstance(a, float) and isinstance(b, float):
@@ -4722,6 +4855,8 @@ def main() -> int:
         check_track2_setup_on_database(raw)
     with _guard("write batch: fixtures"):
         check_write_batch_fixtures()
+    with _guard("worker outcomes: the corpus"):
+        check_worker_outcomes()
     with _guard("spec snapshot: on the database"):
         check_spec_snapshot_on_database(db, raw)
 
@@ -5341,7 +5476,8 @@ STANDALONE = {"glosses": check_usability_glosses,
                                           check_increment_volts_corpus()),
               "initial-trim-value": check_initial_trim_value_fixtures,
               "track2-setup": check_track2_setup_fixtures,
-              "write-batch": check_write_batch_fixtures}
+              "write-batch": check_write_batch_fixtures,
+              "worker-outcomes": check_worker_outcomes}
 
 
 if __name__ == "__main__":

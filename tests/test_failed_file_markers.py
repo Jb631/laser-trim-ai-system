@@ -7,7 +7,7 @@ Two populations came back on EVERY run of the work share:
 
   A. 67 output-smoothness exports (`*_OS_*`). `detect_file_type` routes them to
      the smoothness parser on the name, the parser finds no usable columns and
-     returns no tracks, and `_process_smoothness_file` built an error result
+     returns no tracks, and the smoothness analysis built an error result
      and returned — recording NOTHING anywhere. The scan offered them as new
      forever. On 2026-09-17: 214 files offered, 179 opened, 110 verdicts; 67
      were these.
@@ -121,7 +121,7 @@ def _unreadable_os_workbook(path: Path) -> None:
     The work-share signature, reproduced exactly: the generic parser logs
     "Generic parser found no usable columns in sheet 'Sheet1'
     (pos_col='Electrical Angle* + 280 min:', smooth_cols=[])" and returns no
-    tracks, so `_process_smoothness_file` raises "Smoothness parser returned
+    tracks, so the smoothness analysis raises "Smoothness parser returned
     no tracks for …".
     """
     import openpyxl
@@ -212,7 +212,7 @@ def test_final_test_failure_is_recorded_and_skipped(tmp_path, monkeypatch):
         raise ValueError("Could not find data start")
 
     monkeypatch.setattr(proc.final_test_parser, "parse_file", boom)
-    result = proc._process_final_test_file(p, 0.0)
+    result = proc.apply_outcome(proc._final_test_outcome(p, 0.0))   # analysed, then written
     assert result.overall_status is AnalysisStatus.ERROR
     assert getattr(result, "file_type", None) == "final_test"
 
@@ -327,7 +327,7 @@ def test_a_locked_smoothness_file_is_not_marked(tmp_path, monkeypatch):
         raise PermissionError(13, "Permission denied", str(p))
 
     monkeypatch.setattr(proc.smoothness_parser, "parse_file", locked)
-    proc._process_smoothness_file(p, 0.0)
+    proc.apply_outcome(proc._smoothness_outcome(p, 0.0))            # analysed, then written
 
     assert _failure_marker(db, p) is None, (
         "a workbook someone had open in Excel would never be read again")

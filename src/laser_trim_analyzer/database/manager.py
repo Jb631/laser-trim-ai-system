@@ -410,7 +410,7 @@ _default_database_allowed = False
 
 # Set the first time DatabaseManager.__init__ logs the refusal below, so a
 # whole process writes it once -- not once per refusal. The Processor's
-# model-spec lookups (_get_linearity_type, _get_spec_for_analysis) each call
+# model-spec lookup (_get_spec_for_analysis, without a snapshot) calls
 # get_database() per file, so an unattended run over many files used to write
 # one ERROR line per file for the exact same cause. Tests reset this per test
 # (see conftest.py), the same way they pin _default_database_allowed.
