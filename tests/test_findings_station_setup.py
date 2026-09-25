@@ -69,10 +69,14 @@ def test_a_mismatch_over_part_of_the_travel_is_one_finding(db):
     assert f.analyzer == "station_setup" and f.lever == "laser_limit_table"
     assert f.category == "Station setup"
     assert f.expected_gain_points is None and f.gain_definition == ""
-    assert f.title == "The laser and final test grade to different limits over 40% of the travel"
+    # M5 (final review, 2026-09-25) -- spec ruling 1's wording: the laser whose limits were
+    # compared (the seeded trim rows are laser 2's), and how much wider or narrower they are over
+    # the positions that differ (0.05 against 0.30 there: six times narrower).
+    assert f.title == ("Laser 2 (DLTS): the laser grades to limits about 6× narrower than final "
+                       "test over 40% of the travel")
     # The note-style sentence: the share, and BOTH stations' bands.
     assert "40%" in f.summary and "0.050" in f.summary and "0.300" in f.summary
-    assert f.n_units == 20 and f.systems == ("B",)
+    assert f.n_units == 20 and f.systems == ("A",)
     assert f.strength_value == pytest.approx(40.0)
 
 
@@ -87,17 +91,24 @@ def test_facts_and_evidence_carry_the_comparisons_own_fields(db):
     facts, findings = station_setup.analyze("M", db, tracks_for(days(START, 20)), label)
     f = only(findings)
     assert set(facts) == {"status", "pct_positions_differing", "matched_positions",
-                          "trim_typ_band", "ft_typ_band", "note"}
+                          "trim_typ_band", "ft_typ_band", "note", "sampled_lasers",
+                          "differing_ratio", "differing_wider_share"}
+    assert facts["sampled_lasers"] == ["Laser 2 (DLTS)"]
+    assert facts["differing_ratio"] == pytest.approx(1 / 6)
+    assert facts["differing_wider_share"] == 0.0
     assert facts["status"] == "differs"
     assert facts["pct_positions_differing"] == pytest.approx(0.40)
     assert facts["matched_positions"] == 160          # _seed's default n=2 linked units, 80 each
     assert facts["trim_typ_band"] == pytest.approx(0.05)
     assert set(f.evidence) == {"pct_positions_differing", "matched_positions", "trim_typ_band",
-                               "ft_typ_band", "note"}
+                               "ft_typ_band", "note", "sampled_lasers", "differing_ratio",
+                               "differing_wider_share"}
     assert f.evidence["note"] == facts["note"]
 
 
-def test_systems_are_every_laser_among_the_graded_population(db):
+def test_systems_are_the_lasers_whose_limits_were_compared_not_the_whole_population(db):
+    """M5: the comparison samples the newest linked pairs -- here laser 2's. The readout stays the
+    model's graded tracks in its latest year (spec ruling 1); the lasers named are the sampled."""
     n, share = 80, 32
     pos = [float(x) for x in range(n)]
     trim_up, trim_lo = _flat(n, 0.05)
@@ -107,7 +118,82 @@ def test_systems_are_every_laser_among_the_graded_population(db):
 
     tracks = tracks_for(days(START, 10), system="A") + tracks_for(days(START, 10), system="B")
     f = only(station_setup.analyze("M", db, tracks, label)[1])
-    assert f.systems == ("A", "B") and f.n_units == 20
+    assert f.systems == ("A",) and f.n_units == 20
+
+
+def _seed_on(db, model, system, trim_spec, ft_spec, *, n=2, tag="S"):
+    """_seed with the trim rows on `system` (test_spec_alignment's helper always uses laser 2)."""
+    from test_spec_alignment import D0
+    from laser_trim_analyzer.database.models import (AnalysisResult, FinalTestResult,
+                                                     FinalTestTrack, StatusType, TrackResult)
+    for k in range(n):
+        with db.session() as s:
+            a = AnalysisResult(model=model, serial=f"{model}-{tag}{k}", system=system, file_date=D0,
+                               filename=f"{model}_{tag}{k}.xls", overall_status=StatusType.PASS)
+            s.add(a)
+            s.flush()
+            s.add(TrackResult(analysis_id=a.id, track_id="Track A", status=StatusType.PASS,
+                              position_data=list(trim_spec[0]), upper_limits=list(trim_spec[1]),
+                              lower_limits=list(trim_spec[2])))
+            f = FinalTestResult(model=model, serial=f"{model}-{tag}F{k}",
+                                filename=f"{model}_{tag}F{k}.xls", file_date=D0,
+                                overall_status=StatusType.PASS, linked_trim_id=a.id)
+            s.add(f)
+            s.flush()
+            s.add(FinalTestTrack(final_test_id=f.id, track_id="TRK1", status=StatusType.PASS,
+                                 position_data=list(ft_spec[0]), upper_limits=list(ft_spec[1]),
+                                 lower_limits=list(ft_spec[2])))
+
+
+def test_limits_wider_at_the_laser_say_so_with_the_ratio(db):
+    from laser_trim_analyzer.database.models import SystemType
+    pos = _positions()
+    _seed_on(db, "W", SystemType.B, (pos, *_flat(N_PTS, 0.15)), (pos, *_flat(N_PTS, 0.05)))
+    f = only(station_setup.analyze("W", db, tracks_for(days(START, 5)), label)[1])
+    assert f.title == ("Laser 1 (LTS): the laser grades to limits about 3× wider than final test "
+                       "over 100% of the travel")
+
+
+def test_two_sampled_lasers_are_both_named_in_shop_order(db):
+    from laser_trim_analyzer.database.models import SystemType
+    pos = _positions()
+    _seed_on(db, "TWO", SystemType.A, (pos, *_flat(N_PTS, 0.15)), (pos, *_flat(N_PTS, 0.05)), tag="A")
+    _seed_on(db, "TWO", SystemType.B, (pos, *_flat(N_PTS, 0.15)), (pos, *_flat(N_PTS, 0.05)), tag="B")
+    f = only(station_setup.analyze("TWO", db, tracks_for(days(START, 5)), label)[1])
+    assert f.systems == ("B", "A")
+    assert f.title.startswith("Laser 1 (LTS) and Laser 2 (DLTS): the lasers grade to limits about 3×")
+
+
+def _mixed_band(n_narrow, n_wide, n=100):
+    """Trim +/-0.05 everywhere; final test six times wider at the first `n_narrow` positions
+    (trim narrower there) and five times narrower at the next `n_wide` (trim wider there)."""
+    ft = [0.30] * n_narrow + [0.01] * n_wide + [0.05] * (n - n_narrow - n_wide)
+    return ([float(x) for x in range(n)], *_flat(n, 0.05)), \
+        ([float(x) for x in range(n)], ft, [-u for u in ft])
+
+
+def test_limits_that_differ_both_ways_name_no_single_direction(db):
+    from laser_trim_analyzer.database.models import SystemType
+    trim, ft = _mixed_band(20, 20)
+    _seed_on(db, "MIX", SystemType.B, trim, ft)
+    facts, findings = station_setup.analyze("MIX", db, tracks_for(days(START, 5)), label)
+    assert only(findings).title == ("Laser 1 (LTS): the laser and final test grade to different "
+                                    "limits over 40% of the travel (wider in places, narrower in "
+                                    "others)")
+    assert facts["differing_wider_share"] == pytest.approx(0.5)
+
+
+def test_nine_in_ten_differing_positions_one_way_is_one_way_eight_in_ten_is_not(db):
+    from laser_trim_analyzer.database.models import SystemType
+    assert station_setup.ONE_WAY == 0.9
+    trim, ft = _mixed_band(18, 2)                                   # 90% narrower
+    _seed_on(db, "N9", SystemType.B, trim, ft)
+    assert "about 6× narrower" in only(station_setup.analyze("N9", db, tracks_for(days(START, 5)),
+                                                           label)[1]).title
+    trim, ft = _mixed_band(16, 4)                                   # 80% narrower
+    _seed_on(db, "N8", SystemType.B, trim, ft)
+    assert "wider in places" in only(station_setup.analyze("N8", db, tracks_for(days(START, 5)),
+                                                         label)[1]).title
 
 
 # ---- aligned stations: a real, comparable fact -- never a finding (the rule machine_compare
@@ -203,3 +289,11 @@ def test_a_raising_sampler_is_not_caught_here(db, monkeypatch):
     monkeypatch.setattr(spec_alignment, "sample_and_compare", boom)
     with pytest.raises(RuntimeError, match="database is locked"):
         station_setup.analyze("M", db, tracks_for(days(START, 20)), label)
+
+
+def test_nine_in_ten_differing_positions_wider_is_wider(db):
+    from laser_trim_analyzer.database.models import SystemType
+    trim, ft = _mixed_band(2, 18)                                   # 90% wider
+    _seed_on(db, "W9", SystemType.B, trim, ft)
+    assert "about 5× wider" in only(station_setup.analyze("W9", db, tracks_for(days(START, 5)),
+                                                        label)[1]).title

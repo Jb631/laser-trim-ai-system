@@ -74,6 +74,12 @@ class SpecComparison:
     trim_typ_band: Optional[float]    # typical (median) HALF-band at matched pts
     ft_typ_band: Optional[float]
     note: str                         # one plain-language sentence for the UI
+    # Which lasers' trim limits were compared (their code letters), and, over the positions
+    # that DIFFER, the median trim/final-test half-band ratio and the share of those positions
+    # where the trim band is the wider (station_setup's "about N times wider/narrower").
+    trim_systems: Tuple[str, ...] = ()
+    differing_ratio: Optional[float] = None
+    differing_wider_share: Optional[float] = None
 
 
 def clear_spec_alignment_cache() -> None:
@@ -110,7 +116,8 @@ def _spacing(points: Sequence[_Point]) -> float:
     return gaps[len(gaps) // 2] if gaps else 1.0
 
 
-def compare_arrays(pairs: Sequence[Tuple[Sequence[_Point], Sequence[_Point]]]
+def compare_arrays(pairs: Sequence[Tuple[Sequence[_Point], Sequence[_Point]]],
+                   differing_ratios: Optional[List[float]] = None
                    ) -> Tuple[int, int, List[float], List[float]]:
     """Position-matched limit comparison — the census's walk, extracted.
 
@@ -118,6 +125,8 @@ def compare_arrays(pairs: Sequence[Tuple[Sequence[_Point], Sequence[_Point]]]
     stations — and returns (matched, differing, trim half-bands, ft half-bands)
     accumulated over them. The `j` cursor only ever moves forward because both
     sides are sorted, which is what keeps this linear instead of quadratic.
+    Given a list as `differing_ratios`, it also appends the trim/final-test
+    half-band ratio at every position that differs.
     """
     matched = differing = 0
     trim_bands: List[float] = []
@@ -140,6 +149,9 @@ def compare_arrays(pairs: Sequence[Tuple[Sequence[_Point], Sequence[_Point]]]
             ft_bands.append((F[j][1] - F[j][2]) / 2.0)
             if max(abs(u - F[j][1]), abs(l - F[j][2])) > BAND_TOL * width:
                 differing += 1
+                ft_half = (F[j][1] - F[j][2]) / 2.0
+                if differing_ratios is not None and ft_half > 0:
+                    differing_ratios.append(((u - l) / 2.0) / ft_half)
     return matched, differing, trim_bands, ft_bands
 
 
@@ -187,8 +199,12 @@ def half_bands(upper_limits: Sequence, lower_limits: Sequence) -> List[float]:
 # DB layer — sampling the newest stored limit arrays on each side.
 # ---------------------------------------------------------------------------
 
+def _code(system) -> str:
+    return str(getattr(system, "value", system) or "")
+
+
 def _linked_pairs(db, model: str, limit: int) -> List[Tuple[List[_Point],
-                                                            List[_Point]]]:
+                                                            List[_Point], str]]:
     """The census's population: the SAME unit's trim track and FT track.
 
     This is the pairing that makes the comparison mean something. Sampling the
@@ -198,6 +214,7 @@ def _linked_pairs(db, model: str, limit: int) -> List[Tuple[List[_Point],
     arbitrary pairing matched a fifth as many positions and read "aligned"
     where the census's linked pairs say 100% of matched positions differ.
     Compare a unit against ITSELF, exactly like `data_trust_census.py` does.
+    Each pair carries the trim file's laser (its code letter) as a third item.
     """
     from laser_trim_analyzer.database.models import AnalysisResult as DBAR
     from laser_trim_analyzer.database.models import FinalTestResult as DBFT
@@ -206,7 +223,7 @@ def _linked_pairs(db, model: str, limit: int) -> List[Tuple[List[_Point],
     with db.session() as s:
         rows = (s.query(DBTR.position_data, DBTR.upper_limits,
                         DBTR.lower_limits, DBFTT.position_data,
-                        DBFTT.upper_limits, DBFTT.lower_limits)
+                        DBFTT.upper_limits, DBFTT.lower_limits, DBAR.system)
                 .select_from(DBFT)
                 .join(DBAR, DBAR.id == DBFT.linked_trim_id)
                 .join(DBTR, DBTR.analysis_id == DBAR.id)
@@ -219,21 +236,21 @@ def _linked_pairs(db, model: str, limit: int) -> List[Tuple[List[_Point],
                         DBFTT.upper_limits.isnot(None),
                         DBFTT.lower_limits.isnot(None))
                 .order_by(DBFT.id.desc()).limit(limit).all())
-    return [(_points(*r[:3]), _points(*r[3:])) for r in rows]
+    return [(_points(*r[:3]), _points(*r[3:6]), _code(r[6])) for r in rows]
 
 
-def _trim_arrays(db, model: str, limit: int) -> List[List[_Point]]:
+def _trim_arrays(db, model: str, limit: int) -> List[Tuple[List[_Point], str]]:
     from laser_trim_analyzer.database.models import AnalysisResult as DBAR
     from laser_trim_analyzer.database.models import TrackResult as DBTR
     with db.session() as s:
-        rows = (s.query(DBTR.position_data, DBTR.upper_limits, DBTR.lower_limits)
+        rows = (s.query(DBTR.position_data, DBTR.upper_limits, DBTR.lower_limits, DBAR.system)
                 .join(DBAR, DBAR.id == DBTR.analysis_id)
                 .filter(DBAR.model == model,
                         DBTR.position_data.isnot(None),
                         DBTR.upper_limits.isnot(None),
                         DBTR.lower_limits.isnot(None))
                 .order_by(DBTR.id.desc()).limit(limit).all())
-    return [_points(*r) for r in rows]
+    return [(_points(*r[:3]), _code(r[3])) for r in rows]
 
 
 def _ft_arrays(db, model: str, limit: int) -> List[List[_Point]]:
@@ -277,21 +294,27 @@ def sample_and_compare(db, model: str, sample_per_side: int = 5) -> SpecComparis
     findings engine's own `facts["errors"]`, never swallowed as a silent
     "insufficient" — calls this instead of `compare_station_specs`.
     """
-    pairs = [(t, f) for t, f in _linked_pairs(db, model, sample_per_side) if t and f]
-    if not pairs:
-        trim = [t for t in _trim_arrays(db, model, sample_per_side) if t]
+    linked = [(t, f, s) for t, f, s in _linked_pairs(db, model, sample_per_side) if t and f]
+    if linked:
+        pairs = [(t, f) for t, f, _ in linked]
+        systems = {s for _, _, s in linked}
+    else:
+        trim = [(t, s) for t, s in _trim_arrays(db, model, sample_per_side) if t]
         ft = [t for t in _ft_arrays(db, model, sample_per_side) if t]
-        pairs = list(zip(trim, ft))
+        pairs = [(t, f) for (t, _), f in zip(trim, ft)]
+        systems = {s for (_, s), _ in zip(trim, ft)}
     if not pairs:
         return _INSUFFICIENT_NO_ARRAYS
+    trim_systems = tuple(sorted(s for s in systems if s))
 
-    matched, differing, trim_bands, ft_bands = compare_arrays(pairs)
+    ratios: List[float] = []
+    matched, differing, trim_bands, ft_bands = compare_arrays(pairs, ratios)
     if matched < MIN_MATCHED:
         return SpecComparison(
             status="insufficient", pct_positions_differing=0.0,
             matched_positions=matched, trim_typ_band=None, ft_typ_band=None,
             note=(f"only {matched} positions are measured by both stations "
-                  "— too few to compare their limits"))
+                  "— too few to compare their limits"), trim_systems=trim_systems)
 
     pct = differing / matched
     trim_typ, ft_typ = median(trim_bands), median(ft_bands)
@@ -311,7 +334,9 @@ def sample_and_compare(db, model: str, sample_per_side: int = 5) -> SpecComparis
         status = "aligned"
     return SpecComparison(
         status=status, pct_positions_differing=pct, matched_positions=matched,
-        trim_typ_band=trim_typ, ft_typ_band=ft_typ, note=note)
+        trim_typ_band=trim_typ, ft_typ_band=ft_typ, note=note, trim_systems=trim_systems,
+        differing_ratio=median(ratios) if ratios else None,
+        differing_wider_share=(sum(1 for r in ratios if r > 1) / len(ratios)) if ratios else None)
 
 
 def compare_station_specs(db, model: str, *,
