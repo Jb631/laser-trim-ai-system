@@ -12,9 +12,11 @@ test (`test_findings_limit_tables.py`'s domain rule applies here too).
 described 2013-2016 and read as current: 7539-2 compared 2014-12..2015-02 though all three lasers
 still run it, and 8232-1 compared 2013-10..2016-03 though laser 2 last ran it in 2022. A finding now
 pools only the shared months inside the WINDOW_MONTHS calendar months ending with the MODEL'S OWN
-newest trim file (graded or not -- the model still being run; `core/activity.newest_trim_file`, so
-a file dated more than a day in the future never moves it). A comparable pair outside that window
-is a dated FACT (`in_window: False`), never a finding, and the title names the months it covers.
+newest trim file: a track that was CUT (`t.passes`), graded or not -- the model still being run; a
+sweep the laser measured but did not cut is not a trim (controller ruling, 2026-09-25); and
+`core/activity.newest_trim_file`, so a file dated more than a day in the future never moves it. A
+comparable pair outside that window is a dated FACT (`in_window: False`), never a finding, and the
+title names the months it covers.
 
 Why the model's own newest file and not the fleet's: the owner's decision (James, 2026-09-25) --
 a model not trimmed in two years is labelled "Inactive" on screen, never hidden (a follow-up task).
@@ -88,9 +90,10 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
               and t.file_date is not None]
     if not graded:
         return facts, findings
-    # The model's own newest trim file, graded or not (the owner's "Inactive" decision above) --
-    # core/activity's, so a file dated more than a day ahead never moves the window (F5).
-    anchor = newest_trim_file(t.file_date for t in tracks)
+    # The model's own newest trim file, graded or not (the owner's "Inactive" decision above): a
+    # track that was cut (t.passes, the analyzers' own "was this cut" -- cut_setting, pass_burden,
+    # trim_effort and recipe_change read it the same way), through core/activity's guard (F5).
+    anchor = newest_trim_file(t.file_date for t in tracks if t.passes)
     if anchor is None:
         return {}, findings
     window = (_months_back(anchor, WINDOW_MONTHS - 1), _months_back(anchor, 0))

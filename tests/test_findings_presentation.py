@@ -426,3 +426,15 @@ def test_what_changed_stays_newest_first_in_its_preview():
     group = _group(P.arrange(fs, inactive={"OLD": _LAST}), "history")
     assert [r.model for r in P.preview(group, 5)] == ["OLD", "LIVE"]
     assert group.rows[0].tags[-1] == _TAG
+
+
+def test_a_model_never_trimmed_is_tagged_no_trims_on_record_and_follows_the_active_ones():
+    """Controller ruling (2026-09-25): a model with laser files but no cut is inactive -- `None`
+    in the inactive map -- and reads "Inactive · no trims on record"."""
+    fs = _ranked(("SWEPT", 900.0), ("LIVE1", 800.0), ("LIVE2", 700.0))
+    group = _group(P.arrange(fs, inactive={"SWEPT": None}), "yield")
+    swept = next(r for r in group.rows if r.model == "SWEPT")
+    assert swept.tags[-1:] == ["Inactive · no trims on record"] and swept.inactive
+    assert swept.inactive_since is None
+    assert [r.model for r in P.preview(group, 3)] == ["LIVE1", "LIVE2", "SWEPT"]
+    assert [r.model for r in group.rows] == ["SWEPT", "LIVE1", "LIVE2"]        # the full list

@@ -516,3 +516,29 @@ def test_the_inactive_check_never_passes_on_nothing_to_check(tmp_path):
                                   tmp_path)
     assert not any(v == "PASS" and "match the definition" in n for v, n, _ in results), results
     assert any(v == "WARN" for v, _, _ in results), results
+
+
+def _with_uncut_models(db):
+    """NOTRIM: sweeps with no cut only. SWEPT: last cut 900 days back, an uncut sweep yesterday."""
+    from datetime import timedelta
+    from test_model_activity import NEWEST, _file
+    _file(db, "NOTRIM", NEWEST, statuses=("UNTRIMMED",))
+    _file(db, "SWEPT", NEWEST - timedelta(days=900))
+    _file(db, "SWEPT", NEWEST - timedelta(days=1), statuses=("UNTRIMMED",))
+    return db
+
+
+def test_the_inactive_check_holds_a_sweep_with_no_cut_to_the_ruling(tmp_path):
+    """Controller ruling (2026-09-25): no cut, no trim. OLD, SWEPT (by its last cut) and NOTRIM
+    ("no trims on record") are inactive -- 3 of 5."""
+    results = _run_inactive_check(_with_uncut_models(_inactive_scratch(tmp_path)), tmp_path)
+    assert results and all(v == "PASS" for v, _, _ in results), results
+    assert any("3 of 5 models" in d for _, _, d in results), results
+
+
+def test_the_inactive_check_fails_when_the_app_counts_a_sweep_with_no_cut_as_a_trim(tmp_path):
+    results = _run_inactive_check(
+        _with_uncut_models(_inactive_scratch(tmp_path)), tmp_path,
+        patch="import laser_trim_analyzer.core.activity as _a; _a._NOT_A_TRIM = _a._FAILED_PROCESSING")
+    assert any(v == "FAIL" for v, _, _ in results), results
+    assert any("SWEPT" in d or "NOTRIM" in d for v, _, d in results if v == "FAIL"), results

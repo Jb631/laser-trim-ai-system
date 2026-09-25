@@ -39,8 +39,9 @@ def _fleet_latest(db) -> Optional[datetime]:
 
     One definition (F5, 2026-09-25): core/activity owns both rules and the query, so this "now"
     and the date the screens' "Inactive" label is measured from are the same date. (Until then
-    this read the FILE's status; a trim file is now one with a track that did not fail -- the
-    same date for every model on the work database, 326 of 326.)
+    this read the FILE's status; a trim file is now one with a track that was cut and did not
+    fail -- a sweep with no cut is not a trim, so the work database's "now" is 2026-09-22 16:51,
+    its newest cut, not 17:15, an uncut sweep 24 minutes later.)
     """
     return load_activity(db).fleet
 

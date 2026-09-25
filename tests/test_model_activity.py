@@ -130,19 +130,62 @@ def test_a_file_with_one_good_track_counts(tmp_path):
     assert _activity(db).last_trimmed("M") == NEWEST
 
 
-def test_an_untrimmed_sweep_counts_as_being_run(tmp_path):
-    """The brief's definition: a laser file whose track did not fail processing -- a sweep the
-    laser measured and did not cut is still the model on the laser (machine_compare's "graded or
-    not")."""
+# ---- a sweep with no cut is not a trim (controller ruling, 2026-09-25: James's "havnt been
+# trimmed") -- and a model never trimmed is certainly not trimmed in two years ------------------
+
+def test_a_model_whose_newest_file_is_a_sweep_with_no_cut_reads_by_its_last_cut(tmp_path):
     db = _db(tmp_path)
-    _file(db, "M", NEWEST, statuses=("UNTRIMMED",))
-    assert _activity(db).last_trimmed("M") == NEWEST
+    _file(db, "LIVE", NEWEST)
+    _file(db, "OLD", NEWEST - timedelta(days=900))                  # its last cut
+    _file(db, "OLD", NEWEST - timedelta(days=3), statuses=("UNTRIMMED",))
+    act = _activity(db)
+    assert act.last_trimmed("OLD") == NEWEST - timedelta(days=900)
+    assert act.is_inactive("OLD") and act.inactive()["OLD"] == NEWEST - timedelta(days=900)
+
+
+def test_a_model_never_trimmed_reads_no_trims_on_record(tmp_path):
+    """The six all-UNTRIMMED models on the work database (7534-1st, 7569, 7739-3, 8440-3, 8652,
+    8706) had a label under the first rule; they must keep one. A model whose every file failed
+    processing has no trim on record either."""
+    from laser_trim_analyzer.core.activity import inactive_caption, inactive_tag
+    db = _db(tmp_path)
+    _file(db, "LIVE", NEWEST)
+    _file(db, "SWEPT", NEWEST - timedelta(days=5), statuses=("UNTRIMMED",))
+    _file(db, "SWEPT", NEWEST - timedelta(days=50), statuses=("UNTRIMMED", "UNTRIMMED"))
+    _file(db, "BROKEN", NEWEST - timedelta(days=5), statuses=("ERROR",))
+    act = _activity(db)
+    for m in ("SWEPT", "BROKEN"):
+        assert act.is_inactive(m) and act.last_trimmed(m) is None, m
+        assert act.inactive()[m] is None
+    assert not act.is_inactive("LIVE")
+    assert inactive_tag(None) == "Inactive · no trims on record"
+    assert inactive_caption(None) == "Inactive — no trims on record"
+
+
+def test_a_model_whose_only_file_is_dated_in_the_future_gets_no_label(tmp_path):
+    """Nothing believable is on record for it -- no date to measure, and no reason to say it was
+    never cut."""
+    db = _db(tmp_path)
+    _file(db, "LIVE", NEWEST)
+    _file(db, "TYPO", datetime.now() + timedelta(days=400))
+    act = _activity(db)
+    assert not act.is_inactive("TYPO") and "TYPO" not in act.inactive()
+
+
+def test_the_fleet_date_ignores_a_sweep_with_no_cut(tmp_path):
+    db = _db(tmp_path)
+    _file(db, "LIVE", NEWEST - timedelta(days=100))
+    _file(db, "OTHER", NEWEST, statuses=("UNTRIMMED",))            # newer, but no cut
+    _file(db, "OLD", NEWEST - timedelta(days=800))
+    act = _activity(db)
+    assert act.fleet == NEWEST - timedelta(days=100)
+    assert not act.is_inactive("OLD")                                # 700 days behind the LAST CUT
 
 
 def test_the_index_only_query_is_the_plain_definition(tmp_path):
-    """load_activity asks "has a track, and not every track failed" -- the same set as "has a track
-    that did not fail", answered from the indexes. Checked here against the plain form, on files
-    of every shape."""
+    """load_activity asks "has a track, and not every track is a failure or a sweep with no cut" --
+    the same set as "has a track that was cut and did not fail", answered from the indexes. Checked
+    here against the plain form, on files of every shape -- the never-trimmed models too."""
     import sqlalchemy as sa
     db = _db(tmp_path)
     shapes = [("PASS",), ("ERROR",), ("ERROR", "PASS"), ("PROCESSING_FAILED", "ERROR"), (),
@@ -155,11 +198,17 @@ def test_the_index_only_query_is_the_plain_definition(tmp_path):
         plain = dict(s.execute(sa.text(
             "SELECT a.model, MAX(a.file_date) FROM analysis_results a "
             "WHERE a.system IN ('A','B','C') AND EXISTS (SELECT 1 FROM track_results t "
-            "WHERE t.analysis_id = a.id AND t.status NOT IN ('ERROR', 'PROCESSING_FAILED')) "
-            "GROUP BY a.model")).fetchall())
+            "WHERE t.analysis_id = a.id AND t.status NOT IN ('ERROR', 'PROCESSING_FAILED', "
+            "'UNTRIMMED')) GROUP BY a.model")).fetchall())
+        with_files = {m for (m,) in s.execute(sa.text(
+            "SELECT DISTINCT model FROM analysis_results WHERE system IN ('A','B','C')"))}
+    for m in range(6, 8):                   # models with files, none of them a cut
+        _file(db, f"M{m}", NEWEST - timedelta(days=9 * m), statuses=("UNTRIMMED", "ERROR"))
+        with_files.add(f"M{m}")
     act = _activity(db)
     assert {m: d.isoformat(" ") for m, d in act.newest.items()} == \
         {m: str(d)[:19] for m, d in plain.items()}
+    assert {m for m, d in act.inactive().items() if d is None} == with_files - set(plain)
 
 
 def test_newest_trim_file_applies_the_same_guard_to_dates_in_memory():

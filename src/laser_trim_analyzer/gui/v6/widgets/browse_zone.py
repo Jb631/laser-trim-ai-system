@@ -44,7 +44,8 @@ class BrowseZone(ctk.CTkFrame):
                 "— not a final test), so an inactive model's date can be later than its last "
                 "trim. 'Active' scope = models with recent data or pinned in Settings → Active "
                 "Models. A model not trimmed in the two years before the newest trim on record "
-                "reads Inactive instead — still listed, never hidden."),
+                "reads Inactive instead, and one with laser files but no cut reads 'Inactive · no "
+                "trims on record' — still listed, never hidden."),
                 font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w", justify="left")
         self._legend.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         # Bound ONCE: `self` (this zone) is never destroyed/rebuilt for its own lifetime, so this

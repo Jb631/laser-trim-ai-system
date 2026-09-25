@@ -496,13 +496,13 @@ class ModelPage(PageBase):
                 logger.exception("Model %s: process findings failed", model)
                 failed.append("process findings")
                 findings_error = f"{type(exc).__name__}: {exc}"
-            inactive_since = None
+            inactive = {}                  # {model: newest trim file, or None} when it is inactive
             try:
                 # Worked out on every load, never read from cached findings (F5, James 2026-09-25):
                 # a model turns inactive when OTHER models' newer files move the fleet forward.
                 activity = load_activity(self.app.db)
                 if activity.is_inactive(model):
-                    inactive_since = activity.last_trimmed(model)
+                    inactive = {model: activity.last_trimmed(model)}   # None: no trims on record
             except Exception:
                 logger.exception("Model %s: last-trimmed date failed", model)
                 failed.append("last-trimmed date")
@@ -551,11 +551,9 @@ class ModelPage(PageBase):
                 # real reason is a crashed query. The banner below says what happened.
                 shown = verdict if (verdict and "drift status" not in failed) else None
                 caption = shown[0] if shown else "—"
-                inactive = {}
-                if inactive_since is not None:
+                if inactive:
                     # Starts with it (James: labelled, never hidden) -- the verdict still follows.
-                    caption = inactive_caption(inactive_since) + (f"  ·  {shown[0]}" if shown else "")
-                    inactive = {model: inactive_since}
+                    caption = inactive_caption(inactive[model]) + (f"  ·  {shown[0]}" if shown else "")
                 _try("caption", lambda: self.set_caption(caption))
                 # Load banner first, spec banner second: both pack with
                 # before=self._worth_section (a fixed anchor, never each other -- see

@@ -244,3 +244,15 @@ def test_a_model_whose_every_file_is_dated_in_the_future_has_no_window():
     ahead = datetime.now() + timedelta(days=400)
     tracks = block(0, ahead, 200, "A", 0.95) + block(1000, ahead, 200, "B", 0.60)
     assert machine_compare.analyze("M", tracks, label) == ({}, [])
+
+
+def test_the_window_ends_at_the_last_cut_never_at_a_later_sweep_with_no_cut():
+    """Controller ruling (2026-09-25): a sweep the laser measured but did not cut is not a trim.
+    The anchor takes only tracks that were cut (`t.passes`, the analyzers' own "was this cut"), so
+    a stopped model's later uncut sweep never pushes its last comparison out of the window."""
+    tracks = (block(0, datetime(2015, 5, 1), 200, "A", 0.95)
+              + block(1000, datetime(2015, 5, 1), 200, "B", 0.60)
+              + [replace(t, passes=()) for t in newest(date=datetime(2026, 9, 22))])
+    facts, findings = machine_compare.analyze("M", tracks, label)
+    assert facts["window"]["anchored_to"] == "2015-05-10"
+    assert only(findings).title.endswith("same test, May 2015")

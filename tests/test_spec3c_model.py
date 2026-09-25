@@ -2328,3 +2328,20 @@ def test_when_the_last_trimmed_date_cannot_be_read_the_page_says_so(make_app, mo
     app, page = _inactive_model_app(make_app)
     assert "last-trimmed date" in page._load_banner.cget("text")
     assert not page._caption.cget("text").startswith("Inactive")
+
+
+def test_a_model_never_trimmed_says_so_first_in_its_caption(make_app):
+    from test_model_activity import NEWEST, _file
+    app = make_app()
+    _file(app.db, "LIVE", NEWEST)
+    _file(app.db, "SWEPT", NEWEST, statuses=("UNTRIMMED",))
+    app.db.replace_process_findings("SWEPT", {"tracks": 1, "errors": {}},
+                                    [dict(_WORTH_CHANGING_FINDING, model="SWEPT")])
+    app.set_model_route("SWEPT")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    assert page._caption.cget("text").startswith("Inactive — no trims on record")
+    assert "Inactive · no trims on record" in _worth_texts(page)

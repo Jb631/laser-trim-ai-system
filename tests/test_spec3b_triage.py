@@ -634,3 +634,16 @@ def test_an_inactive_rows_date_is_named_the_newest_file_of_any_kind(make_app):
     assert "newest file, any kind" in _labels(page._browse._header)      # the column's own heading
     legend = page._browse._legend.cget("text")
     assert "not a final test" in legend and "later than its last trim" in legend
+
+
+def test_a_model_never_trimmed_reads_no_trims_on_record(make_app):
+    from test_model_activity import NEWEST, _file
+    app = make_app()
+    _file(app.db, "LIVE", NEWEST)
+    _file(app.db, "SWEPT", NEWEST, statuses=("UNTRIMMED",))
+    page = app.page_container.get_page("triage")
+    page._on_scope_change("All models")
+    page.reload_now()
+    status = {r._summary.model: _statement(r) for r in page._browse._rows}
+    assert status["SWEPT"] == "Inactive · no trims on record"
+    assert status["LIVE"] == "Stable"
