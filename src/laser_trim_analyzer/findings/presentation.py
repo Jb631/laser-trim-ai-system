@@ -51,6 +51,7 @@ OTHER = GroupSpec("other", "Other findings",
 ANALYZER_GROUP: Dict[str, str] = {
     "cut_setting": "yield",
     "ink_target": "yield",
+    "machine_compare": "yield",
     "trim_effort": "laser_time",
     "pass_burden": "laser_time",
     "limit_tables": "check",
