@@ -949,7 +949,8 @@ def check_inactive_models_on_database(db, raw) -> None:
     dated more than a day ahead), "cut" read from its own tracks' statuses -- one that did not fail
     processing and is not a sweep with no cut (controller ruling, 2026-09-25) -- and the gap
     measured by SQLite's julianday arithmetic (whole gap, hours included): more than 730 days behind
-    the newest cut file, or laser files but no cut at all ("no trims on record"). Made to FAIL
+    the newest cut file, or measured (a track that did not fail) but never cut ("no trims on
+    record"); a model with nothing measured is left out, as the app leaves it. Made to FAIL
     first with the app's line at a year, with its future-date guard removed, and with an uncut
     sweep counted as a trim (tests/test_sweep_db_checks.py, and on the copy). No inactive model, or
     no active one, to compare is a WARN, never a PASS: a check that can pass on nothing proves
@@ -962,15 +963,20 @@ def check_inactive_models_on_database(db, raw) -> None:
     from laser_trim_analyzer.gui.v6.pages.home_page import HomePage
     not_a_trim = ", ".join([f"'{s.name}'" for s in failed_processing_statuses()] + ["'UNTRIMMED'"])
     horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    failed = ", ".join(f"'{s.name}'" for s in failed_processing_statuses())
     rows = raw.execute(
         "WITH files AS ("
         "  SELECT a.model AS model, a.file_date AS d, EXISTS (SELECT 1 FROM track_results t"
-        f"    WHERE t.analysis_id = a.id AND t.status NOT IN ({not_a_trim})) AS cut"
+        f"    WHERE t.analysis_id = a.id AND t.status NOT IN ({not_a_trim})) AS cut,"
+        "    EXISTS (SELECT 1 FROM track_results t"
+        f"    WHERE t.analysis_id = a.id AND t.status NOT IN ({failed})) AS measured"
         "  FROM analysis_results a WHERE a.system IN ('A','B','C') AND a.file_date <= ?),"
-        " newest AS (SELECT model, MAX(CASE WHEN cut THEN d END) AS last FROM files GROUP BY model),"
+        " newest AS (SELECT model, MAX(CASE WHEN cut THEN d END) AS last, MAX(measured) AS read"
+        "   FROM files GROUP BY model),"
         " fleet AS (SELECT MAX(last) AS f FROM newest)"
         " SELECT n.model, n.last, n.last IS NULL OR julianday(fleet.f) - julianday(n.last) > 730"
-        " FROM newest n, fleet", (horizon,)).fetchall()
+        " FROM newest n, fleet WHERE n.last IS NOT NULL OR n.read",       # nothing read: no word
+        (horizon,)).fetchall()
     truth = {m: (str(last)[:19] if last else "no trims on record") for m, last, gone in rows if gone}
     if not truth or len(truth) == len(rows):
         warn("inactive models: nothing to compare -- this database has no inactive model, or no "

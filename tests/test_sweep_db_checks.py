@@ -519,18 +519,21 @@ def test_the_inactive_check_never_passes_on_nothing_to_check(tmp_path):
 
 
 def _with_uncut_models(db):
-    """NOTRIM: sweeps with no cut only. SWEPT: last cut 900 days back, an uncut sweep yesterday."""
+    """NOTRIM: sweeps with no cut only. SWEPT: last cut 900 days back, an uncut sweep yesterday.
+    BROKEN: only a record that failed processing -- nothing measured, so no label."""
     from datetime import timedelta
     from test_model_activity import NEWEST, _file
     _file(db, "NOTRIM", NEWEST, statuses=("UNTRIMMED",))
     _file(db, "SWEPT", NEWEST - timedelta(days=900))
     _file(db, "SWEPT", NEWEST - timedelta(days=1), statuses=("UNTRIMMED",))
+    _file(db, "BROKEN", NEWEST, statuses=("ERROR",))
     return db
 
 
 def test_the_inactive_check_holds_a_sweep_with_no_cut_to_the_ruling(tmp_path):
     """Controller ruling (2026-09-25): no cut, no trim. OLD, SWEPT (by its last cut) and NOTRIM
-    ("no trims on record") are inactive -- 3 of 5."""
+    ("no trims on record") are inactive; BROKEN has nothing measured, so the rule says nothing
+    about it on either side -- 3 of the 5 models it speaks about."""
     results = _run_inactive_check(_with_uncut_models(_inactive_scratch(tmp_path)), tmp_path)
     assert results and all(v == "PASS" for v, _, _ in results), results
     assert any("3 of 5 models" in d for _, _, d in results), results

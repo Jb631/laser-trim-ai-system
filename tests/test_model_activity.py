@@ -145,21 +145,31 @@ def test_a_model_whose_newest_file_is_a_sweep_with_no_cut_reads_by_its_last_cut(
 
 def test_a_model_never_trimmed_reads_no_trims_on_record(tmp_path):
     """The six all-UNTRIMMED models on the work database (7534-1st, 7569, 7739-3, 8440-3, 8652,
-    8706) had a label under the first rule; they must keep one. A model whose every file failed
-    processing has no trim on record either."""
+    8706) had a label under the first rule; they must keep one: measured on the laser, never cut."""
     from laser_trim_analyzer.core.activity import inactive_caption, inactive_tag
     db = _db(tmp_path)
     _file(db, "LIVE", NEWEST)
     _file(db, "SWEPT", NEWEST - timedelta(days=5), statuses=("UNTRIMMED",))
-    _file(db, "SWEPT", NEWEST - timedelta(days=50), statuses=("UNTRIMMED", "UNTRIMMED"))
-    _file(db, "BROKEN", NEWEST - timedelta(days=5), statuses=("ERROR",))
+    _file(db, "SWEPT", NEWEST - timedelta(days=50), statuses=("UNTRIMMED", "ERROR"))
     act = _activity(db)
-    for m in ("SWEPT", "BROKEN"):
-        assert act.is_inactive(m) and act.last_trimmed(m) is None, m
-        assert act.inactive()[m] is None
+    assert act.is_inactive("SWEPT") and act.last_trimmed("SWEPT") is None
+    assert act.inactive()["SWEPT"] is None
     assert not act.is_inactive("LIVE")
     assert inactive_tag(None) == "Inactive · no trims on record"
     assert inactive_caption(None) == "Inactive — no trims on record"
+
+
+def test_a_model_whose_files_all_failed_or_hold_no_track_gets_no_label(tmp_path):
+    """A record that failed processing is not a measurement (CLAUDE.md): it cannot say a model was
+    never cut -- the file may hold a perfectly good trim the app could not read. "No trims on
+    record" needs a sweep that WAS read and was not cut; a failure must never look like a result."""
+    db = _db(tmp_path)
+    _file(db, "LIVE", NEWEST)
+    _file(db, "BROKEN", NEWEST - timedelta(days=5), statuses=("ERROR", "PROCESSING_FAILED"))
+    _file(db, "EMPTY", NEWEST - timedelta(days=5), statuses=())       # a record with no track at all
+    act = _activity(db)
+    for m in ("BROKEN", "EMPTY"):
+        assert not act.is_inactive(m) and m not in act.inactive(), m
 
 
 def test_a_model_whose_only_file_is_dated_in_the_future_gets_no_label(tmp_path):
@@ -200,15 +210,18 @@ def test_the_index_only_query_is_the_plain_definition(tmp_path):
             "WHERE a.system IN ('A','B','C') AND EXISTS (SELECT 1 FROM track_results t "
             "WHERE t.analysis_id = a.id AND t.status NOT IN ('ERROR', 'PROCESSING_FAILED', "
             "'UNTRIMMED')) GROUP BY a.model")).fetchall())
-        with_files = {m for (m,) in s.execute(sa.text(
-            "SELECT DISTINCT model FROM analysis_results WHERE system IN ('A','B','C')"))}
-    for m in range(6, 8):                   # models with files, none of them a cut
+    for m in range(6, 8):                   # read on the laser, never cut
         _file(db, f"M{m}", NEWEST - timedelta(days=9 * m), statuses=("UNTRIMMED", "ERROR"))
-        with_files.add(f"M{m}")
+    _file(db, "M8", NEWEST, statuses=("ERROR",))            # only a failure: nothing measured
+    with db.session() as s:
+        measured = {m for (m,) in s.execute(sa.text(
+            "SELECT DISTINCT a.model FROM analysis_results a WHERE a.system IN ('A','B','C') "
+            "AND EXISTS (SELECT 1 FROM track_results t WHERE t.analysis_id = a.id "
+            "AND t.status NOT IN ('ERROR', 'PROCESSING_FAILED'))"))}
     act = _activity(db)
     assert {m: d.isoformat(" ") for m, d in act.newest.items()} == \
         {m: str(d)[:19] for m, d in plain.items()}
-    assert {m for m, d in act.inactive().items() if d is None} == with_files - set(plain)
+    assert {m for m, d in act.inactive().items() if d is None} == measured - set(plain) == {"M6", "M7"}
 
 
 def test_newest_trim_file_applies_the_same_guard_to_dates_in_memory():
