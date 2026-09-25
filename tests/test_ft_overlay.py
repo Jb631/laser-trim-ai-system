@@ -455,3 +455,24 @@ def test_export_document_without_overlay_is_unchanged(tmp_path):
                                    data, fail_points=[], kind="trim")
     labels = [(l.get_label() or "").lower() for l in fig.axes[0].get_lines()]
     assert not [l for l in labels if l.startswith("final test")]
+
+
+def test_an_ungraded_run_whose_edge_position_is_missing_is_shaded_over_what_is_known():
+    """M7 (final review, 2026-09-25): the overlay keeps a missing position in place (so later
+    points never slide onto their neighbour), which handed axvspan a None bound -- a TypeError.
+    None of the stored sweeps carries one today; a run is now shaded over its known positions,
+    and a run with no known position is not shaded at all."""
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.figure import Figure
+    from laser_trim_analyzer.export.unit_chart import draw_ft_overlay
+
+    fig = Figure()
+    ax = fig.add_subplot()
+    ov = {"available": True, "label": "Final test", "station_flags": [],
+          "positions": [None, 0.5, 1.0, 2.0, 3.0, float("nan"), 4.0, 4.5, None, 6.0, 7.0, None],
+          "corrected": [0.0] * 12, "errors": [], "upper_limits": [], "lower_limits": [],
+          "ungraded_indices": [0, 1, 2, 5, 6, 7, 8, 10, 11]}
+    draw_ft_overlay(ax, ov)                                    # used to raise TypeError
+    spans = sorted((round(p.get_x(), 6), round(p.get_x() + p.get_width(), 6)) for p in ax.patches)
+    assert spans == [(0.5, 1.0), (4.0, 4.5)]          # the run ending at 7.0 knows one position only

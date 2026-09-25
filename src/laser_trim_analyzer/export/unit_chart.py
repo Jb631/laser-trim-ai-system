@@ -105,6 +105,12 @@ def classify_graded_points(errors, upper_limits, lower_limits,
     return out_of_band, unmeasured
 
 
+def _finite(v) -> bool:
+    """A real, finite position -- never None, NaN or a bool."""
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and v == v and v not in (float("inf"), float("-inf")))
+
+
 def _contiguous_runs(indices, n: int):
     """[(first, last)] for each run of consecutive indices, clipped to n.
 
@@ -166,7 +172,13 @@ def draw_ft_overlay(ax, ft_overlay: Optional[Dict[str, Any]],
     if ungraded and len(pos) > 1:
         first = True
         for lo_i, hi_i in _contiguous_runs(ungraded, len(pos)):
-            ax.axvspan(pos[lo_i], pos[hi_i], color=c, alpha=0.07, zorder=0,
+            # The overlay keeps a missing position IN PLACE (index-aligned with the errors and
+            # the window), so a run's end can be None: shade over the positions it does know,
+            # and not at all when it knows fewer than two (final review, 2026-09-25, M7).
+            known = [pos[i] for i in range(lo_i, hi_i + 1) if _finite(pos[i])]
+            if len(known) < 2:
+                continue
+            ax.axvspan(min(known), max(known), color=c, alpha=0.07, zorder=0,
                        label="Not graded by the station" if first else None)
             first = False
 
