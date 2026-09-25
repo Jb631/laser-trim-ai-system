@@ -494,6 +494,134 @@ def test_the_run_reports_where_its_time_goes_WITHOUT_finishing(tmp_path, monkeyp
     assert "save " in mid[0] and "everything else" in mid[0]
 
 
+# ---- Task 2 (ingest-speed spec 3.10, ruling 2): an honest batch line ------
+
+def test_the_batch_line_prints_save_cpu_beside_wall_time(monkeypatch):
+    """Wall time alone hides the GIL wait (F7: the thread loop's save is ~85%
+    waiting on other threads). The CPU figure belongs right beside the wall
+    figure it qualifies, not buried elsewhere in the line."""
+    line = _phase_line(monkeypatch,
+                        {"walk": 1.0, "process": 50.0, "save": 30.0, "save_cpu": 5.1},
+                        100)
+    assert "of which save 30.0s (60%, 300 ms/file)" in line
+    assert "save cpu 5.1s (17% of save wall, 51 ms/file)" in line
+    # beside, not after "rest": the wall and cpu clauses for the SAME phase stay adjacent
+    assert line.index("of which save") < line.index("save cpu") < line.index("rest ")
+
+
+def test_a_batch_with_no_cpu_measurement_prints_no_cpu_clause(monkeypatch):
+    """A caller that never populated save_cpu (old phases dict shape) must not
+    make log_phases crash or invent a number."""
+    line = _phase_line(monkeypatch, {"walk": 1.0, "process": 50.0, "save": 30.0}, 100)
+    assert "save cpu" not in line
+
+
+def test_a_sleeping_save_and_a_spinning_save_are_told_apart_by_cpu_time(tmp_path, monkeypatch):
+    """The brief's own test: a save stub that sleeps (real wall time, ~no CPU --
+    like a save mostly waiting on the GIL/write lock) and one that spins (wall
+    time IS cpu time -- like a save actually doing work) must be tell-apart-able
+    from the batch line's numbers. Wall time alone cannot do this -- both stubs
+    cost the same wall clock -- so this is red unless `save_cpu` really measures
+    time.thread_time(), not a copy of the wall figure.
+    """
+    import time as _time
+    from types import SimpleNamespace
+    from laser_trim_analyzer.core.models import AnalysisStatus
+
+    (tmp_path / "a.xls").write_bytes(b"junk")
+    SAVE_S = 0.03
+    N = 5
+
+    def _result(i):
+        return SimpleNamespace(
+            file_type="trim",
+            metadata=SimpleNamespace(model="8232-1", filename=f"f{i}.xls"),
+            overall_status=AnalysisStatus.PASS)
+
+    class _Proc:
+        last_scan_stats = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        def process_batch(self, *a, **k):
+            for i in range(N):
+                yield _result(i)
+            return SimpleNamespace(processed=N)
+
+    class _SleepDb:
+        """Wall clock passes; this thread does almost no work while it waits."""
+        def save_analysis(self, result):
+            _time.sleep(SAVE_S)
+
+    class _SpinDb:
+        """Wall clock passes BECAUSE this thread is burning CPU the whole time."""
+        def save_analysis(self, result):
+            end = _time.perf_counter() + SAVE_S
+            while _time.perf_counter() < end:
+                pass
+
+    monkeypatch.setattr(ingest_run, "Processor", _Proc)
+    monkeypatch.setattr(ingest_run, "_post_batch", lambda *a, **k: None)
+
+    sleepy = run_folder(str(tmp_path), db=_SleepDb(), config=None)
+    spinny = run_folder(str(tmp_path), db=_SpinDb(), config=None)
+
+    assert "save_cpu" in sleepy.phases, "the ingest did not measure save CPU at all"
+    assert "save_cpu" in spinny.phases
+    # both cost roughly the same WALL time...
+    assert sleepy.phases["save"] >= SAVE_S * N * 0.7
+    assert spinny.phases["save"] >= SAVE_S * N * 0.7
+    # ...but only the spinning save actually burned CPU. A broken measurement
+    # that just copies wall time (or always reports 0) fails one side of this.
+    assert sleepy.phases["save_cpu"] < sleepy.phases["save"] * 0.5, (
+        f"a sleeping save should burn little CPU: cpu={sleepy.phases['save_cpu']:.4f} "
+        f"wall={sleepy.phases['save']:.4f}")
+    assert spinny.phases["save_cpu"] > spinny.phases["save"] * 0.5, (
+        f"a spinning save should burn CPU close to its wall time: "
+        f"cpu={spinny.phases['save_cpu']:.4f} wall={spinny.phases['save']:.4f}")
+
+
+def test_ingest_so_far_line_also_carries_the_cpu_figure(tmp_path, monkeypatch):
+    """The periodic mid-run line gets the same honesty as the folder-end one."""
+    import time as _time
+    from types import SimpleNamespace
+    from laser_trim_analyzer.core.models import AnalysisStatus
+    from laser_trim_analyzer.core import ingest_run as ir
+
+    (tmp_path / "a.xls").write_bytes(b"junk")
+    monkeypatch.setattr(ir, "SAVE_REPORT_EVERY", 3)
+    N = 3
+
+    class _Proc:
+        last_scan_stats = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        def process_batch(self, *a, **k):
+            for i in range(N):
+                yield SimpleNamespace(
+                    file_type="trim",
+                    metadata=SimpleNamespace(model="8232-1", filename=f"f{i}.xls"),
+                    overall_status=AnalysisStatus.PASS)
+            return SimpleNamespace(processed=N)
+
+    class _Db:
+        def save_analysis(self, result):
+            _time.sleep(0.01)
+
+    said = []
+    monkeypatch.setattr(ir.logger, "info", lambda fmt, *a: said.append(fmt % a if a else fmt))
+    monkeypatch.setattr(ir, "Processor", _Proc)
+    monkeypatch.setattr(ir, "_post_batch", lambda *a, **k: None)
+    run_folder(str(tmp_path), db=_Db(), config=None)
+
+    mid = [m for m in said if m.startswith("Ingest so far")]
+    assert len(mid) == 1
+    assert "cpu" in mid[0]
+
+
 def test_the_progress_report_fires_often_enough_to_be_useful_on_a_slow_run():
     """The test above monkeypatches the interval, so it cannot catch a bad default.
 
