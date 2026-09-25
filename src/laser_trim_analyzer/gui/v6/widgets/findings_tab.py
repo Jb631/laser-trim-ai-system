@@ -335,6 +335,7 @@ class FindingsTab(ctk.CTkFrame):
         self._section("Two lasers on the same test", machine_lines, fresh("machine_compare"))
         self._section("Hand trim after a laser fail (last year)", rework_lines, fresh("rework_load"))
         loss = fresh("loss_origin") or {}
+        said = predictor_line(data or {})
         if loss:
             # Last: directly above the Model page's Predictor panel (spec ruling 2).
             lines = loss_origin_lines(loss)
@@ -342,9 +343,13 @@ class FindingsTab(ctk.CTkFrame):
             for line in lines:
                 self._line(line, muted=True)
             self._line(_loss_reading(), muted=True)
-            said = predictor_line(data or {})
             if said:
                 self._line(said, muted=True)
+        elif said and (data or {}).get("predictor_auc_error"):
+            # A failed read is named with no loss section too (re-review, 2026-09-25: it was only
+            # ever drawn inside it, so it vanished with the section). Same place, last. The AUC and
+            # "no predictor" lines stay with the section: they are a comparison with it.
+            self._line(said)
 
     # ---- pieces ----
     def _section(self, title: str, build, facts) -> None:

@@ -368,6 +368,26 @@ def test_no_trained_predictor_and_an_unreadable_one_are_told_apart(tk_root):
     assert "No final-test predictor is trained" not in text
 
 
+@pytest.mark.parametrize("loss", ({}, None, "crashed"))
+def test_a_failed_predictor_read_is_named_even_with_no_loss_section(tk_root, loss):
+    """Re-review of the fix round (2026-09-25): "could not be read" sat inside the loss section, so
+    a model with no loss section -- nothing comparable ({}), not worked out yet (None), or its
+    analyzer crashed -- lost the line, a failure with no trace. It is named on its own now, last,
+    where the section would be (directly above the Predictor panel). The comparison lines still
+    need the section they compare against."""
+    facts = dict(NEW, loss_origin=None if loss == "crashed" else loss,
+                 errors={"loss_origin": "RuntimeError: invented"} if loss == "crashed" else {})
+    tab = _tab(tk_root)
+    tab.set_data({"facts": facts, "findings": [], "predictor_auc_error": "OperationalError: locked"})
+    texts = _texts(tab)
+    assert "Where the loss is made (last year)" not in texts
+    assert "could not be read" in texts[-1] and "OperationalError: locked" in texts[-1], texts[-3:]
+    tab.set_data({"facts": facts, "findings": [], "predictor_auc": 0.78})
+    assert not any("predictor's own AUC" in x for x in _texts(tab))
+    tab.set_data({"facts": facts, "findings": [], "predictor_auc": None})
+    assert not any("No final-test predictor is trained" in x for x in _texts(tab))
+
+
 def test_rework_says_its_verdict_per_laser_with_both_sizes_p_and_the_effect(tk_root):
     tab = _tab(tk_root)
     tab.set_data({"facts": NEW, "findings": []})
