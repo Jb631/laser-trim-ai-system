@@ -3867,8 +3867,10 @@ def main() -> int:
          "historical lot medians", "drift tab explains σ in lot language (in full)"),
         ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
          "Gap = Trim − FT", "lowest-yield list explains Gap"),
+        # 2026-09-24 (facelift step 2, T7): the colour dot became a status WORD on each row
+        # (a colour-blind reader had nothing to read); the legend explains it in words.
         ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
-         "Dot = drift status", "browse list explains dots/date/Active"),
+         "Status = drift tier", "browse list explains status/date/Active"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
          '"Sigma gradient"', "units table headers are full words"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
@@ -3896,8 +3898,10 @@ def main() -> int:
          "How it's running", "model page marks the app's-read zone"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
          "What you're looking at", "model page marks the data zone"),
+        # 2026-09-24 (T7): Triage's app's-read zone is the "Needs a look" group (the focus list);
+        # the data zone is "All models" (the browse list).
         ("src/laser_trim_analyzer/gui/v6/pages/triage_page.py",
-         "What the app is telling you", "triage marks the app's-read zone"),
+         "Needs a look", "triage marks the app's-read zone"),
         ("src/laser_trim_analyzer/gui/v6/widgets/metric_pill_row.py",
          "Outcomes — trim linearity · final test", "pills grouped process vs outcomes"),
         ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
