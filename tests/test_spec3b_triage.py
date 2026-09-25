@@ -493,3 +493,38 @@ def test_the_failure_banner_never_squeezes_the_browse_list(make_app, monkeypatch
         assert triage._browse.winfo_height() >= tp._BROWSE_MIN_H - 2, triage._browse.winfo_height()
     finally:
         app.withdraw()
+
+
+# ---- facelift F4 (2026-09-25): an older load never overwrites a newer one -----------------------
+
+@pytest.mark.parametrize("newer", ("async", "sync"))
+def test_an_older_triage_load_never_overwrites_a_newer_one(make_app, monkeypatch, newer):
+    """Triage's on_show load runs on a thread and applies through safe_after, in whatever order the
+    loads FINISH. An older, slower load landing after a newer one put its state back over the newer
+    one -- here a healthy list over a crash the newer load had named. Dropped now unless newest."""
+    from test_spec3f_home import _older_then_newer, _pump_ui, _pump_until, _settle_workers
+    import laser_trim_analyzer.gui.v6.pages.triage_page as tp
+    from laser_trim_analyzer.gui.v6.focus_data import FocusLoadFailed
+    from laser_trim_analyzer.ml.spc import FocusResult
+    app = make_app()
+    _seed(app.db, "PLAIN-0", fails_last=2, base_fails=2)
+    triage = app.page_container.get_page("triage")
+    _settle_workers(app)
+    load = _older_then_newer(
+        lambda: (FocusResult(focus=[], chronic=[], anchor=None), D0),               # older: healthy
+        lambda: (FocusLoadFailed(focus=[], chronic=[], anchor=None,
+                                 error="RuntimeError: invented focus crash"), D0))  # newer: crashed
+    monkeypatch.setattr(tp, "load_focus", load)
+    triage.on_show()                           # the older load, still in its query...
+    load.started()
+    if newer == "async":
+        triage.on_show()                       # ...when a newer one starts and finishes first
+        assert _pump_until(app, lambda: triage._load_banner.winfo_manager() == "pack")
+    else:
+        triage.reload_now()
+    assert triage._load_banner.winfo_manager() == "pack"
+    load.release()                             # the older load finishes LAST
+    _pump_ui(app)
+    assert triage._load_banner.winfo_manager() == "pack", "an older load overwrote a newer one"
+    assert "invented focus crash" in triage._load_banner.cget("text")
+    assert _count_pills(triage._focus_header) == []          # still no count over a crash

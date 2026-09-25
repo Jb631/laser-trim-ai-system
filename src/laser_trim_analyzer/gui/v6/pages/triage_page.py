@@ -58,6 +58,10 @@ class TriagePage(PageBase):
         self._active = set()
         self._browse_failed = None     # "ExcType: message" when the model list failed to load
         self._focus_header = None      # blocks.group_header wrap; rebuilt in _apply() (needs the count)
+        # Reload generation (the Model page's _reload_gen pattern, facelift F4): a load's apply is
+        # dropped unless it is the newest -- workers finish in any order, and an older, slower
+        # load used to put its state back over a newer one's. Bumped and read on the Tk thread.
+        self._reload_gen = 0
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     def header_actions(self, parent):
@@ -126,14 +130,24 @@ class TriagePage(PageBase):
 
     # ---- data ----
     def reload_now(self):
-        """Synchronous reload + apply (the test path; also the main-thread apply)."""
+        """Synchronous reload + apply (the test path; also the main-thread apply). The newest
+        load: anything still in flight is dropped when it lands."""
+        self._reload_gen += 1
         self._apply(*self._query())
 
     def on_show(self):
-        """Reload on a background thread, apply on the Tk thread via safe_after."""
+        """Reload on a background thread, apply on the Tk thread via safe_after -- unless a newer
+        load has started since."""
+        self._reload_gen += 1
+        gen = self._reload_gen
+
         def work():
             data = self._query()
-            self.safe_after(lambda: self._apply(*data))
+
+            def apply():
+                if gen == self._reload_gen:         # else a newer load superseded this one
+                    self._apply(*data)
+            self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
 
     def _query(self):

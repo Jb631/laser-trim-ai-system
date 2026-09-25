@@ -78,6 +78,12 @@ class HomePage(PageBase):
         self._worth_count = None       # N -- yield-group rows; None while unknown (not yet
                                         # loaded, or the findings read failed)
         self._worth_view = None        # the "Worth changing" FindingsView, when there is one
+        # Reload generations, one per independent load (the Model page's _reload_gen pattern,
+        # facelift F4): a load's apply is dropped unless it is still the newest of its kind.
+        # Workers finish in any order, and the re-review watched the app's own start-up load land
+        # after a newer one and wipe it. Bumped and read on the Tk thread only.
+        self._focus_gen = 0
+        self._findings_gen = 0
         super().__init__(master, theme=theme, app=app, page_title=page_title)
         self.refresh_folders()
 
@@ -398,20 +404,31 @@ class HomePage(PageBase):
 
     # ---- FOCUS -------------------------------------------------------------
     def reload_now(self) -> None:
-        """Synchronous load + apply (test path, and the main-thread apply)."""
+        """Synchronous load + apply (test path, and the main-thread apply). The newest load of
+        both kinds: anything still in flight is dropped when it lands."""
+        self._focus_gen += 1
+        self._findings_gen += 1
         self._apply_focus(*load_focus(self.app.db))
         self._apply_legacy_ft(legacy_ft_count(self.app.db))
         self._apply_unreadable(unreadable_count(self.app.db))
         self._apply_findings(self._query_findings())
 
     def _reload_focus(self) -> None:
+        self._focus_gen += 1
+        gen = self._focus_gen
+
         def work():
             data = load_focus(self.app.db)
             legacy = legacy_ft_count(self.app.db)
             unreadable = unreadable_count(self.app.db)
-            self.safe_after(lambda: self._apply_focus(*data))
-            self.safe_after(lambda: self._apply_legacy_ft(legacy))
-            self.safe_after(lambda: self._apply_unreadable(unreadable))
+
+            def apply():
+                if gen != self._focus_gen:
+                    return              # a newer load superseded this one
+                self._apply_focus(*data)
+                self._apply_legacy_ft(legacy)
+                self._apply_unreadable(unreadable)
+            self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
 
     def _apply_legacy_ft(self, count: int) -> None:
@@ -488,9 +505,16 @@ class HomePage(PageBase):
         return out
 
     def _reload_findings(self) -> None:
+        self._findings_gen += 1
+        gen = self._findings_gen
+
         def work():
             data = self._query_findings()
-            self.safe_after(lambda: self._apply_findings(data))
+
+            def apply():
+                if gen == self._findings_gen:       # else a newer load superseded this one
+                    self._apply_findings(data)
+            self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
 
     def _apply_findings(self, data: dict) -> None:

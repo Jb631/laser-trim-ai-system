@@ -687,3 +687,120 @@ def test_a_good_focus_load_after_a_crash_clears_the_banner(make_app, monkeypatch
     page.reload_now()
     assert page._focus_banner.winfo_manager() == ""
     assert page._caption.cget("text").endswith("0 drifting now")
+
+
+# ---- facelift F4 (2026-09-25): an older load never overwrites a newer one -----------------------
+# Home's loads run on worker threads and apply through safe_after, in whatever order they FINISH.
+# The re-review watched the app's own start-up load land after a newer one and wipe it (both
+# banners gone, the caption blanked). The Model page has guarded against this with a reload
+# generation since I3; Home and Triage now do too.
+
+def _settle_workers(app, seconds=10.0):
+    """Let the workers the app started itself (Home's start-up loads) finish and apply, so the
+    loads a test starts are the only ones in flight."""
+    import threading
+    import time
+    main = threading.main_thread()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        app.update()
+        if not any(t is not main and t.daemon and t.is_alive() for t in threading.enumerate()):
+            break
+        time.sleep(0.01)
+    _pump_ui(app)
+
+
+def _pump_ui(app, seconds=0.3):
+    """Drain what workers posted (UiDispatcher empties its queue on an after() loop)."""
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.update()
+        time.sleep(0.01)
+
+
+def _pump_until(app, done, seconds=10.0):
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end and not done():
+        app.update()
+        time.sleep(0.01)
+    return done()
+
+
+def _older_then_newer(fake_older, fake_newer):
+    """A loader whose FIRST call is the older load -- it blocks until released -- and whose later
+    calls are the newer load, answered at once. Returns (loader, release) where release() lets the
+    older one finish and waits until its worker thread has posted its apply and exited."""
+    import threading
+    import time
+    gate, state = threading.Event(), {}
+
+    def loader(*a, **k):
+        if "older" not in state:
+            state["older"] = threading.current_thread()
+            gate.wait(10)
+            return fake_older()
+        return fake_newer()
+
+    def started():
+        end = time.monotonic() + 10
+        while "older" not in state and time.monotonic() < end:
+            time.sleep(0.005)
+        assert "older" in state, "the older load never started"
+
+    def release():
+        gate.set()
+        state["older"].join(10)
+        assert not state["older"].is_alive()
+
+    loader.started, loader.release = started, release
+    return loader
+
+
+@pytest.mark.parametrize("newer", ("async", "sync"))
+def test_an_older_focus_load_never_overwrites_a_newer_one(make_app, monkeypatch, newer):
+    import laser_trim_analyzer.gui.v6.pages.home_page as home_mod
+    from laser_trim_analyzer.gui.v6.focus_data import FocusLoadFailed
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    page = _home(app)
+    _settle_workers(app)
+    load = _older_then_newer(
+        lambda: (FocusResult(focus=[], chronic=[], anchor=None), D0),               # older: healthy
+        lambda: (FocusLoadFailed(focus=[], chronic=[], anchor=None,
+                                 error="RuntimeError: invented focus crash"), D0))  # newer: crashed
+    monkeypatch.setattr(home_mod, "load_focus", load)
+    page._reload_focus()                       # the older load, still in its query...
+    load.started()
+    if newer == "async":                       # ...when a newer one starts and finishes first
+        page._reload_focus()
+        assert _pump_until(app, lambda: page._focus_banner.winfo_manager() == "pack")
+    else:
+        page.reload_now()
+    assert page._focus_banner.winfo_manager() == "pack"
+    load.release()                             # the older load finishes LAST
+    _pump_ui(app)
+    assert page._focus_banner.winfo_manager() == "pack", "an older load overwrote a newer one"
+    assert "invented focus crash" in page._focus_banner.cget("text")
+    assert "drifting now" not in page._caption.cget("text")
+
+
+def test_an_older_findings_load_never_overwrites_a_newer_one(make_app, monkeypatch):
+    app = make_app()
+    _seed_one_file(app.db, "BIG")
+    page = _home(app)
+    _settle_workers(app)
+    load = _older_then_newer(
+        lambda: {"rows": [], "failed": "RuntimeError: invented findings crash", "errors": {},
+                 "errors_failed": None},                                            # older: crashed
+        lambda: {"rows": [], "failed": None, "errors": {}, "errors_failed": None})  # newer: healthy
+    monkeypatch.setattr(page, "_query_findings", load)
+    page._reload_findings()
+    load.started()
+    page._reload_findings()
+    assert _pump_until(app, lambda: "Nothing here yet" in " ".join(_labels(page._worth_section)))
+    load.release()
+    _pump_ui(app)
+    assert page._worth_banner.winfo_manager() == "", "an older failure came back over a newer load"
+    assert "Nothing here yet" in " ".join(_labels(page._worth_section))
