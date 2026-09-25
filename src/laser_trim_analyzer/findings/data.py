@@ -1,6 +1,7 @@
 """One read of a model's tracks, shaped for the analyzers. No analyzer writes SQL."""
 import hashlib
 import json
+from collections import Counter
 from dataclasses import dataclass
 from functools import cached_property
 from datetime import datetime
@@ -60,6 +61,14 @@ def limit_table_of(positions, upper, lower) -> Optional[LimitTable]:
 
 def _real(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x
+
+
+def tables_of(tracks) -> "Counter[str]":
+    """How many of `tracks` were graded against each limit table -- the TEST (key -> count);
+    a track with no usable table is left out. A pass rate is a verdict against ONE test
+    (CLAUDE.md), so every analyzer that compares verdicts reads its tables here: setup_change
+    needs exactly one on each side of a change, loss_origin scores a laser on its busiest."""
+    return Counter(t.limit_table.key for t in tracks if t.limit_table is not None)
 
 
 def _is_blank_template(errors) -> bool:

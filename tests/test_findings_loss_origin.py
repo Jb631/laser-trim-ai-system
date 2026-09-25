@@ -9,7 +9,7 @@ from datetime import timedelta
 import pytest
 
 from laser_trim_analyzer.findings.analyzers import loss_origin
-from findings_helpers import START, days, label, make_track
+from findings_helpers import START, days, label, make_track, on_table, table
 
 
 def scored_tracks(first_id, start, n, system, worst, outcome, n_days=10):
@@ -107,7 +107,9 @@ def test_facts_shape_is_exactly_documented():
     tracks = (scored_tracks(0, START, 200, "B", 2.0, False)
              + scored_tracks(1000, START, 200, "B", 2.0, True))
     facts, _ = loss_origin.analyze("M", tracks, label)
-    assert set(facts["Laser 1 (LTS)"]) == {"n", "fails", "auc_error", "auc_resistance"}
+    assert set(facts["Laser 1 (LTS)"]) == {"n", "fails", "auc_error", "auc_resistance",
+                                           "limit_table", "other_tables_n"}
+    assert set(facts["Laser 1 (LTS)"]["limit_table"]) == {"key", "graded_points", "tracks"}
 
 
 def test_a_weak_laser_is_facts_only_no_finding():
@@ -295,3 +297,52 @@ def test_finding_never_claims_a_gain():
     _, findings = loss_origin.analyze("M", tracks, label)
     f = only(findings)
     assert f.expected_gain_points is None and f.gain_definition == ""
+
+
+# ---- M2 (final review, 2026-09-25): a laser is scored on ONE test -- its busiest limit table ----
+# A pass rate is a verdict against a test, and this AUC is built from those verdicts. Four real
+# lasers cleared the finding floors with two to four tables in the year (6126, 8232-1, 8340 and
+# 8340-1 on laser 1).
+
+T1, T2 = table(12, 0.10), table(23, 0.10)
+
+
+def test_a_laser_is_scored_on_its_busiest_table_only():
+    busy = [on_table(t, T1) for t in mixed(0, START, 300, "B", hi=3.0, lo=1.0, hi_share=0.9)]
+    other = [on_table(t, T2) for t in scored_tracks(5000, START, 200, "B", 9.0, False)]
+    facts, findings = loss_origin.analyze("M", busy + other, label)
+    f = facts["Laser 1 (LTS)"]
+    assert f["n"] == 600 and f["fails"] == 300                  # T1 only: T2's 200 fails left out
+    assert f["auc_error"] == pytest.approx(0.90)
+    assert f["limit_table"] == {"key": busy[0].limit_table.key, "graded_points": 12, "tracks": 600}
+    assert f["other_tables_n"] == 200
+    assert only(findings).n_units == 600
+
+
+def test_a_separation_that_exists_only_across_two_tables_is_no_finding():
+    """Pooled, the second table's fails (all high incoming) and the first's passes (low) would
+    separate the outcomes -- a difference between two TESTS, not what incoming linearity does."""
+    weak = [on_table(t, T1) for t in (scored_tracks(0, START, 250, "B", 2.0, False)
+                                      + scored_tracks(1000, START, 250, "B", 2.0, True))]
+    across = [on_table(t, T2) for t in (scored_tracks(2000, START, 200, "B", 9.0, False)
+                                        + scored_tracks(3000, START, 200, "B", 0.5, True))]
+    facts, findings = loss_origin.analyze("M", weak + across, label)
+    assert findings == []
+    assert facts["Laser 1 (LTS)"]["auc_error"] == pytest.approx(0.5)
+    assert facts["Laser 1 (LTS)"]["other_tables_n"] == 400
+
+
+def test_a_graded_track_with_no_limit_table_is_not_scored():
+    strong = mixed(0, START, 500, "B", hi=3.0, lo=1.0, hi_share=0.9)
+    tableless = [replace(t, final_upper=None, final_lower=None)
+                 for t in scored_tracks(2000, START, 300, "B", 9.0, False)]
+    facts, _ = loss_origin.analyze("M", strong + tableless, label)
+    assert facts["Laser 1 (LTS)"]["n"] == 1000 and facts["Laser 1 (LTS)"]["other_tables_n"] == 0
+
+
+def test_the_one_test_helper_counts_tracks_per_limit_table():
+    from laser_trim_analyzer.findings.data import tables_of
+    a = [on_table(t, T1) for t in scored_tracks(0, START, 3, "B", 1.0, True)]
+    b = [on_table(t, T2) for t in scored_tracks(10, START, 2, "B", 1.0, True)]
+    none = [replace(make_track(20, date=START), final_upper=None)]
+    assert tables_of(a + b + none) == {a[0].limit_table.key: 3, b[0].limit_table.key: 2}

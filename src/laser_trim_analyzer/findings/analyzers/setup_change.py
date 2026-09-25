@@ -114,6 +114,7 @@ from statistics import median
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from ...core.trim_setup import normalise_key
+from ..data import tables_of
 from ..model import Finding
 from ..stats import pct, plausible_resistance
 from .recipe_change import RECIPE_PARAMETER_KEYS
@@ -309,8 +310,8 @@ def _span_days(tracks) -> int:
 def _single_table_key(tracks) -> Optional[str]:
     """The one limit-table key common to every track in `tracks`, or None when there is not
     exactly one (no table at all, or more than one in play) -- "held constant" means singular."""
-    keys = {t.limit_table.key for t in tracks if t.limit_table is not None}
-    return keys.pop() if len(keys) == 1 else None
+    keys = tables_of(tracks)
+    return next(iter(keys)) if len(keys) == 1 else None
 
 
 def _side(tracks) -> Dict[str, Any]:

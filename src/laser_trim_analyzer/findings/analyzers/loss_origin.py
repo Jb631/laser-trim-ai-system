@@ -15,8 +15,17 @@ untrimmed sweep's largest error magnitude, and the untrimmed resistance -- but o
 can ever produce a finding: resistance is `ink_target`'s question, with its own holdout and its
 own floor.
 
-`facts[laser]` = {"n", "fails", "auc_error", "auc_resistance"} for every laser with at least one
-graded track in the window -- unconditionally (fix, 2026-09-24: an earlier pass here copied
+**One test per laser** (final review, 2026-09-25, M2). The score separates PASS from FAIL, and a
+pass is a verdict against a test: pooling two limit tables would let a difference between the
+TESTS read as incoming linearity. So each laser is scored on its busiest limit table in the window
+(`findings.data.tables_of`) and nothing else; `other_tables_n` counts the graded tracks on its
+other tables, left out. On the copy of 2026-09-25 four lasers that clear the floors graded against
+two to four tables in the year (6126, 8232-1, 8340 and 8340-1 on laser 1); scoring the busiest
+table changes no call (6607 laser 1 remains the one finding).
+
+`facts[laser]` = {"n", "fails", "auc_error", "auc_resistance", "limit_table": {"key",
+"graded_points", "tracks"}, "other_tables_n"} for every laser with at least one graded track on a
+limit table in the window -- unconditionally (fix, 2026-09-24: an earlier pass here copied
 `machine_compare`'s "facts only for a comparable population" rule for consistency across this
 plan's analyzers, which was right for `machine_compare` -- its spec is silent on the point -- but
 wrong here, where Ruling 2 says "always" in as many words). "n"/"fails" count the error-scored
@@ -55,6 +64,7 @@ upstream of anything the laser or its settings can fix.
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..data import tables_of
 from ..model import Finding
 from ..stats import auc, plausible_resistance   # auc: the one AUC, shared with rework_load's rank test
 
@@ -106,9 +116,12 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
         by_laser.setdefault(t.system, []).append(t)
 
     for system, rows in sorted(by_laser.items()):
-        graded = [t for t in rows if t.linearity_pass is not None]
-        if not graded:
-            continue                                    # nothing scored at all -- not even a fact
+        tables = tables_of(t for t in rows if t.linearity_pass is not None)
+        if not tables:
+            continue                                    # nothing graded on a test -- not even a fact
+        busiest = max(tables, key=lambda k: (tables[k], k))
+        graded = [t for t in rows if t.linearity_pass is not None
+                  and t.limit_table is not None and t.limit_table.key == busiest]
         fails_e, passes_e = _split(graded, _score_error)
         n_fails, n_passes = len(fails_e), len(passes_e)
         n = n_fails + n_passes
@@ -119,8 +132,11 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
         # the thresholds below gate only whether it is ALSO a finding (fix, 2026-09-24: an
         # earlier pass wrongly excluded a sub-floor laser from facts too, copying machine_compare's
         # rule where this module's own spec says otherwise -- see the module docstring).
-        facts[laser_label(system)] = {"n": n, "fails": n_fails,
-                                      "auc_error": auc_error, "auc_resistance": auc_resistance}
+        facts[laser_label(system)] = {
+            "n": n, "fails": n_fails, "auc_error": auc_error, "auc_resistance": auc_resistance,
+            "limit_table": {"key": busiest, "graded_points": graded[0].limit_table.graded,
+                            "tracks": tables[busiest]},
+            "other_tables_n": sum(tables.values()) - tables[busiest]}
 
         if n < MIN_TRACKS or min(n_fails, n_passes) < MIN_PER_OUTCOME:
             continue                                    # not enough of one outcome to trust a CALL
@@ -141,6 +157,5 @@ def analyze(model: str, tracks, laser_label) -> Tuple[Dict[str, Any], List[Findi
             strength_name="AUC, incoming max|error| vs laser verdict",
             strength_value=round(auc_error, 3),
             expected_gain_points=None,          # routes the question; claims no yield gain
-            evidence={"facts": {"n": n, "fails": n_fails, "auc_error": auc_error,
-                                "auc_resistance": auc_resistance}}))
+            evidence={"facts": facts[laser_label(system)]}))
     return facts, findings
