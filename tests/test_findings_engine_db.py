@@ -132,7 +132,7 @@ def test_every_documented_key_exists_even_for_a_model_with_no_tracks(monkeypatch
     assert findings == [] and facts["tracks"] == 0
     assert set(facts) == {"model", "tracks", "annual_volume", "latest", "yardstick",
                           "recipe_history", "trim_effort", "limit_tables", "cut_setting", "pass_burden",
-                          "machine_compare", "loss_origin", "station_setup", "errors"}
+                          "machine_compare", "loss_origin", "station_setup", "rework_load", "errors"}
 
 
 def test_refresh_reports_what_did_not_get_done(tmp_path, monkeypatch):
@@ -253,6 +253,73 @@ def test_a_raising_sampler_is_named_by_the_engine_like_any_other_crash(tmp_path,
     assert facts["errors"] == {"station_setup": "RuntimeError: database is locked"}
     assert facts["station_setup"] is None
     assert [f.analyzer for f in findings] == ["ink_target"]                   # the rest still ran
+
+
+# ---- Task 4: rework_load is the second analyzer that reads the database itself (the unit-day
+# rework count, plus its own query for the ratio evidence -- see that module's own docstring for
+# why get_model_trim_ft_agreement alone is not enough). A crash there must reach the engine's
+# guard uncaught, exactly like station_setup's.
+
+def test_a_crash_in_rework_load_is_named_by_the_engine_like_any_other(tmp_path, monkeypatch):
+    from laser_trim_analyzer.findings import engine
+    hot = _hot()
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: hot)
+
+    def boom(*a, **k):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(engine.rework_load, "analyze", boom)
+    facts, findings = engine.compute_for_model(_db(tmp_path), "HOT", fleet_latest=START)
+    assert facts["errors"] == {"rework_load": "RuntimeError: database is locked"}
+    assert facts["rework_load"] is None
+    assert [f.analyzer for f in findings] == ["ink_target"]                   # the rest still ran
+
+
+def test_rework_load_runs_inside_the_engine_and_its_facts_are_cached(tmp_path, monkeypatch):
+    """A real, confirmed rework signature, seeded straight into the database (not through
+    load_model_tracks, which is mocked here to supply only the window/systems population --
+    exactly as rework_load's own tests keep the two samples independent)."""
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult, FinalTestResult, StatusType, SystemType, TrackResult)
+    from laser_trim_analyzer.findings import engine
+    from findings_helpers import days, make_track
+
+    db = _db(tmp_path)
+    d = days(START, 80)
+    for k in range(40):                                        # rework: trim FAIL, FT PASS, ratio 1/3
+        with db.session() as s:
+            a = AnalysisResult(model="REWORK", serial=f"REWORK-R{k}", system=SystemType.B,
+                               file_date=d[k], filename=f"REWORK_R{k}.xls",
+                               overall_status=StatusType.FAIL)
+            s.add(a)
+            s.flush()
+            s.add(TrackResult(analysis_id=a.id, track_id="TRK1", status=StatusType.FAIL,
+                              linearity_pass=False, final_linearity_error_shifted=0.30))
+            s.add(FinalTestResult(model="REWORK", serial=f"REWORK-R{k}",
+                                  filename=f"REWORK_R{k}_ft.xls", file_date=d[k],
+                                  overall_status=StatusType.PASS, linearity_pass=True,
+                                  linearity_error=0.10, linked_trim_id=a.id, match_confidence=1.0))
+    for k in range(40):                                         # pass/pass control: ratio 1.0
+        with db.session() as s:
+            a = AnalysisResult(model="REWORK", serial=f"REWORK-C{k}", system=SystemType.B,
+                               file_date=d[40 + k], filename=f"REWORK_C{k}.xls",
+                               overall_status=StatusType.PASS)
+            s.add(a)
+            s.flush()
+            s.add(TrackResult(analysis_id=a.id, track_id="TRK1", status=StatusType.PASS,
+                              linearity_pass=True, final_linearity_error_shifted=0.30))
+            s.add(FinalTestResult(model="REWORK", serial=f"REWORK-C{k}",
+                                  filename=f"REWORK_C{k}_ft.xls", file_date=d[40 + k],
+                                  overall_status=StatusType.PASS, linearity_pass=True,
+                                  linearity_error=0.30, linked_trim_id=a.id, match_confidence=1.0))
+    tracks = [make_track(9000 + k, date=dt, system="B") for k, dt in enumerate(d[:5])]
+    monkeypatch.setattr(engine, "load_model_tracks", lambda _db, m: tracks)
+    assert engine.refresh_findings(db, ["REWORK"]) == 1
+    (found,) = db.get_process_findings("REWORK")
+    assert found["analyzer"] == "rework_load" and found["lever"] == "laser_settings"
+    assert found["n_units"] == 40 and found["tracks_per_year"] is None       # no gain claimed
+    cached = db.get_process_facts("REWORK")["rework_load"]
+    assert cached["rework_unit_days"] == 40 and cached["confirmed"] is True
+    assert db.get_process_errors() == {}
 
 
 # ---- Task 5: _fleet_latest -- what "now" means, and what cannot be trusted to say so ----

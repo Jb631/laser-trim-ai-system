@@ -31,7 +31,8 @@ GROUPS: Tuple[GroupSpec, ...] = (
               "Nothing here yet. A finding appears when a model ran two cut settings, or two "
               "incoming-resistance windows, on the same test and one did clearly better."),
     GroupSpec("laser_time", "Laser time you could save",
-              "Units cut that didn't need it, or given more cuts than planned", "tracks", "act",
+              "Units cut that didn't need it, given more cuts than planned, or hand-trimmed "
+              "after failing at the laser", "tracks", "act",
               "Nothing here yet. A finding appears when units arrive already inside their limits, "
               "or take more cuts than their recipe asks for."),
     GroupSpec("check", "Check the test",
@@ -56,6 +57,7 @@ ANALYZER_GROUP: Dict[str, str] = {
     "loss_origin": "yield",
     "trim_effort": "laser_time",
     "pass_burden": "laser_time",
+    "rework_load": "laser_time",
     "limit_tables": "check",
     "station_setup": "check",
     "recipe_change": "history",
@@ -65,7 +67,7 @@ _GRADE_TAG = {"same_days": "same days", "side_by_side": "side by side",
               "two_periods": "two periods · test first"}
 _GRADE_ORDER = ("two_periods", "side_by_side", "same_days")        # weakest first
 _LASER_TIME_FIELD = {"Trim avoidance": "arrive_in_spec_n", "Pass effectiveness": "multi_cut_n",
-                     "Multi-pass burden": "tracks_over_recipe"}
+                     "Multi-pass burden": "tracks_over_recipe", "Rework load": "rework_unit_days"}
 _RECIPE = re.compile(r"^(?P<laser>[^:]+): recipe changed from (?P<a>.+) to (?P<b>.+)$")
 _CUTS = re.compile(r"^(?P<n>\d+) cuts?(?: \(cut length (?P<len>[^)]+)\))?$")
 

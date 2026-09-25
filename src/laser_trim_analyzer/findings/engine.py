@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from sqlalchemy import text
 
 from .analyzers import (cut_setting, ink_target, limit_tables, loss_origin, machine_compare,
-                        pass_burden, recipe_change, station_setup, trim_effort)
+                        pass_burden, recipe_change, rework_load, station_setup, trim_effort)
 from .data import load_model_tracks, yardstick_fidelity
 from .model import Finding, rank
 
@@ -65,7 +65,7 @@ def compute_for_model(db, model: str,
                              "yardstick": None, "recipe_history": None, "trim_effort": None,
                              "limit_tables": None, "cut_setting": None, "pass_burden": None,
                              "machine_compare": None, "loss_origin": None, "station_setup": None,
-                             "errors": {}}
+                             "rework_load": None, "errors": {}}
     if not tracks:
         return facts, []
     if fleet_latest is None:
@@ -125,7 +125,7 @@ def compute_for_model(db, model: str,
     except Exception as exc:
         failed("loss_origin", exc)
     try:
-        # The only analyzer that reads the database itself -- do the trim and final-test stations
+        # The first analyzer that reads the database itself -- do the trim and final-test stations
         # grade this model to the same limits? (core/spec_alignment, the census's method). Its own
         # read failure must reach facts["errors"] like any other analyzer's -- see that module's
         # sample_and_compare, which raises instead of degrading to "insufficient".
@@ -134,6 +134,16 @@ def compute_for_model(db, model: str,
         findings += station_findings
     except Exception as exc:
         failed("station_setup", exc)
+    try:
+        # Also reads the database itself -- get_model_trim_ft_agreement for the unit-day rework
+        # count, plus its own query for the ratio evidence that method does not return (see
+        # rework_load's own docstring). Either can raise; the engine's guard names it like any
+        # other analyzer's crash.
+        rework_facts, rework_findings = rework_load.analyze(model, db, tracks, _laser_label)
+        facts["rework_load"] = rework_facts
+        findings += rework_findings
+    except Exception as exc:
+        failed("rework_load", exc)
     if fidelity["faithful"]:
         try:
             effort_facts, effort_findings = trim_effort.analyze(model, tracks, _laser_label)
