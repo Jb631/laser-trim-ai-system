@@ -2089,3 +2089,24 @@ def test_a_scrolling_tab_is_drawn_again_when_you_come_back_to_it(make_app, how):
         assert not blank, "\n".join(f"{name}: {why}" for name, why in blank.items())
     finally:
         app.withdraw()
+
+
+@pytest.mark.parametrize("then", ("click", "set"))
+def test_a_tab_click_right_after_the_app_switches_tabs_still_shows_a_tab(make_app, then):
+    """CTkTabview.set() lays out the new tab at once but forgets the others 100 ms LATER, by the
+    name it switched to (ctk_tabview.py, set()). A click on another tab inside those 100 ms --
+    reachable right after a findings link (ModelPage._select_tab) -- was then forgotten too: the
+    selector read "Units" over an empty tab area. Once the deferral has run, exactly one tab is
+    laid out, and it is the one the selector shows. ("set": two switches by the app inside the
+    100 ms end the same way.)"""
+    app = make_app()
+    page = app.page_container.get_page("model")
+    page._select_tab("findings")                    # the app switches tabs itself...
+    if then == "click":
+        _click_tab(page, "Units")                   # ...and the user clicks inside the 100 ms
+    else:
+        page._tabs.set("Units")
+    _pump(app)                                      # well past the deferral
+    laid_out = [name for name in page._tabs._name_list if page._tabs.tab(name).winfo_manager()]
+    assert page._tabs.get() == page._tabs._segmented_button.get() == "Units"
+    assert laid_out == ["Units"], laid_out

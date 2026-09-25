@@ -9,6 +9,12 @@ scroll or a reload. (On Windows, re-showing a window paints it, which redraws th
 fine there, unverified.) So each scrolling frame in a tab gets a `<Configure>` whenever its canvas
 is mapped again -- CustomTkinter's own handler for that event resets the scroll region, and that
 redraws the canvas. See `_redraw_scrolled_content_on_map`.
+
+A TAB CLICK RIGHT AFTER THE APP SWITCHED TABS SHOWED NO TAB (F4, same day): CTkTabview.set() tidies
+up the other tabs 100 ms late, by name; see `_grid_forget_all_tabs` below.
+
+Both are fixed here, in the app's own subclass -- customtkinter itself (pinned at 5.2.2) is never
+patched, and only the Model page uses this class.
 """
 import tkinter
 
@@ -42,6 +48,21 @@ class ThemedTabView(ctk.CTkTabview):
         tkinter.Misc.bind(tab, "<Map>", lambda _event, tab=tab: _redraw_scrolled_content_on_map(tab),
                           "+")
         return tab
+
+    def _grid_forget_all_tabs(self, exclude_name=None):
+        """Keep the tab that is selected NOW, not the one set() was asked for.
+
+        CTkTabview.set() lays the new tab out at once and calls this 100 ms later with the name it
+        switched to (customtkinter 5.2.2, ctk_tabview.py set()). A click on another tab inside
+        those 100 ms -- right after a findings link switches to Findings (ModelPage._select_tab)
+        -- lays that tab out and selects it, and then the stale name forgot it along with the
+        rest: the selector read "Units" over an empty tab area (facelift F4). Excluding the
+        CURRENT selection instead leaves exactly the selected tab laid out once the deferral has
+        run. insert() and delete() pass no name -- forget them all, then lay out the current
+        one -- and that is left exactly as it was."""
+        if exclude_name is not None:
+            exclude_name = self.get()
+        super()._grid_forget_all_tabs(exclude_name=exclude_name)
 
 
 def _scrolling_frames(widget):
