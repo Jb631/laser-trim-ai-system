@@ -12,13 +12,19 @@ Captures per file/track:
   - linearity_pass
   - overall_status
 
-Avoids DB writes by stubbing save_final_test.
+Runs on a throwaway database of its own: the processor reaches one through
+get_database() (spec lookups, and it saves smoothness files and marks refused
+ones), and the app's default -- the production database -- is refused outside
+the app. So model_specs is empty here, and the snapshot no longer depends on
+which machine's database it ran beside. save_final_test is still stubbed, so
+nothing is written even there.
 
 Usage:
     python scripts/parser_audit/snapshot.py [output_path]
 """
 import sys
 import json
+import tempfile
 import warnings
 import logging
 from pathlib import Path
@@ -32,7 +38,7 @@ logging.getLogger().setLevel(logging.CRITICAL)
 
 from laser_trim_analyzer.core.processor import Processor
 from laser_trim_analyzer.core.parser import detect_file_type
-from laser_trim_analyzer.database import get_database
+from laser_trim_analyzer.database import manager as mgr
 
 
 PRECISION = 6  # decimal places for float comparison
@@ -61,7 +67,18 @@ def snapshot_track(track):
 
 
 def build_snapshot(work_root: Path) -> dict:
-    db = get_database()
+    injected = mgr._db_manager
+    with tempfile.TemporaryDirectory(prefix="parser_audit_") as scratch:
+        db = mgr.DatabaseManager(Path(scratch) / "snapshot.db")
+        mgr._db_manager = db
+        try:
+            return _snapshot(work_root, db)
+        finally:
+            mgr._db_manager = injected          # whatever was injected before, even None
+            db.close()
+
+
+def _snapshot(work_root: Path, db) -> dict:
     orig_save = db.save_final_test
     db.save_final_test = lambda **kw: None
     try:

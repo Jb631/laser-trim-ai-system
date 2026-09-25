@@ -9,11 +9,10 @@ SAFE: idempotent; only fills rows where untrimmed_sigma_gradient IS NULL and the
 untrimmed arrays are present. Never touches any other column. Back up the DB
 first anyway.
 
-Usage:
-    python3 scripts/backfill_untrimmed_sigma.py            # backfill default DB
-    python3 scripts/backfill_untrimmed_sigma.py --dry-run  # count only, no writes
-    python3 scripts/backfill_untrimmed_sigma.py --db /path/to/analysis.db
-    python3 scripts/backfill_untrimmed_sigma.py --limit 2000   # first N (rehearsal)
+Usage (--db is REQUIRED -- nothing but the app opens its default database):
+    python3 scripts/backfill_untrimmed_sigma.py --db data/analysis.db              # writes
+    python3 scripts/backfill_untrimmed_sigma.py --db data/analysis.db --dry-run    # count only
+    python3 scripts/backfill_untrimmed_sigma.py --db data/analysis.db --limit 2000 # rehearsal
 """
 import argparse
 import sys
@@ -54,13 +53,19 @@ def compute_untrimmed_sigma(analyzer, positions, errors, linearity_spec,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default=None, help="DB path (default: config)")
+    ap.add_argument("--db", required=True,
+                    help="the database to update (required), e.g. data/analysis.db")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--batch", type=int, default=500)
     args = ap.parse_args()
 
-    db = DatabaseManager(Path(args.db)) if args.db else DatabaseManager()
+    if not Path(args.db).exists():
+        # Checked BEFORE DatabaseManager, which CREATES the file it is handed:
+        # a fresh empty database would report "0 candidates" as if all was well.
+        print(f"FATAL | no database at {args.db}")
+        return 1
+    db = DatabaseManager(Path(args.db))
     analyzer = Analyzer(model_thresholds={})
 
     with db.session() as s:
@@ -102,7 +107,8 @@ def main():
     print(f"\nDone in {time.time() - t0:.0f}s: {updated} backfilled, "
           f"{skipped} skipped (too few points / bad arrays)."
           f"{' NO WRITES (dry run).' if args.dry_run else ''}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

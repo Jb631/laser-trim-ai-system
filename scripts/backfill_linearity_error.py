@@ -22,11 +22,10 @@ re-derived. Never touches a verdict column, never touches UNTRIMMED rows.
 Back up the DB first anyway:
     cp data/analysis.db data/analysis.db.bak-$(date +%F)-pre-linerror-fix
 
-Usage:
-    python3 scripts/backfill_linearity_error.py --dry-run     # count only
-    python3 scripts/backfill_linearity_error.py               # default DB
-    python3 scripts/backfill_linearity_error.py --db /path/to/analysis.db
-    python3 scripts/backfill_linearity_error.py --limit 500   # rehearsal
+Usage (--db is REQUIRED -- nothing but the app opens its default database):
+    python3 scripts/backfill_linearity_error.py --db data/analysis.db --dry-run    # count only
+    python3 scripts/backfill_linearity_error.py --db data/analysis.db              # writes
+    python3 scripts/backfill_linearity_error.py --db data/analysis.db --limit 500  # rehearsal
 """
 import argparse
 import sys
@@ -71,13 +70,19 @@ def recompute(track):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default=None, help="DB path (default: config)")
+    ap.add_argument("--db", required=True,
+                    help="the database to update (required), e.g. data/analysis.db")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--batch", type=int, default=500)
     args = ap.parse_args()
 
-    db = DatabaseManager(Path(args.db)) if args.db else DatabaseManager()
+    if not Path(args.db).exists():
+        # Checked BEFORE DatabaseManager, which CREATES the file it is handed:
+        # a fresh empty database would report "0 candidates" as if all was well.
+        print(f"FATAL | no database at {args.db}")
+        return 1
+    db = DatabaseManager(Path(args.db))
 
     with db.session() as s:
         ids = [r[0] for r in (
@@ -155,7 +160,8 @@ def main():
               f"model's exclude_points), not a backfill.\n"
               f"  Affected models: "
               + ", ".join(f"{m}={n}" for m, n in by_model.most_common(8)))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

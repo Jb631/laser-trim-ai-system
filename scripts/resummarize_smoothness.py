@@ -21,10 +21,10 @@ Strategy:
 Does NOT touch status (track-level status reflects more than smoothness; let the
 app/analyst re-derive when reviewed).
 
-Safe to run repeatedly. Usage:
-    python scripts/resummarize_smoothness.py            # default DB
-    python scripts/resummarize_smoothness.py --dry-run
-    python scripts/resummarize_smoothness.py --db /path/to/analysis.db
+Safe to run repeatedly. Usage (--db is REQUIRED -- nothing but the app opens its
+default database):
+    python scripts/resummarize_smoothness.py --db data/analysis.db --dry-run
+    python scripts/resummarize_smoothness.py --db data/analysis.db             # writes
 """
 import argparse
 import json
@@ -33,15 +33,18 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DEFAULT_DB = Path(__file__).resolve().parents[1] / "data" / "analysis.db"
-
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default=str(DEFAULT_DB))
+    ap.add_argument("--db", required=True,
+                    help="the database to update (required), e.g. data/analysis.db")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
+    if not Path(args.db).exists():
+        # sqlite3.connect CREATES a missing file; refuse instead of leaving one behind.
+        print(f"FATAL | no database at {args.db}")
+        return 1
     con = sqlite3.connect(args.db)
     cur = con.cursor()
 
@@ -104,7 +107,8 @@ def main():
     print(f"  fail -> pass flips: {flipped_f2p}")
     if args.dry_run:
         print("  (DRY RUN — no writes.)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

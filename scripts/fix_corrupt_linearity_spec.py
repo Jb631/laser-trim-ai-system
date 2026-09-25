@@ -23,7 +23,11 @@ Two remediation classes:
   marked with linearity_spec_warning and linearity_pass is set to NULL:
   indeterminate, not a manufactured PASS.
 
-Dry-run by default. Pass --apply to write.
+Dry-run by default. Pass --apply to write. The database is REQUIRED (--db):
+nothing but the app opens its default database without being told to.
+
+    python scripts/fix_corrupt_linearity_spec.py --db data/analysis.db            # dry run
+    python scripts/fix_corrupt_linearity_spec.py --db data/analysis.db --apply    # writes
 """
 import argparse
 import json
@@ -35,8 +39,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from laser_trim_analyzer.core.analyzer import Analyzer          # noqa: E402
 from laser_trim_analyzer.core.parser import ExcelParser         # noqa: E402
-
-DEFAULT_DB = Path(__file__).resolve().parents[1] / "data" / "analysis.db"
 
 
 def recover_fill_series_band(upper, lower):
@@ -85,7 +87,8 @@ def recover_fill_series_band(upper, lower):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", type=Path, default=DEFAULT_DB)
+    ap.add_argument("--db", type=Path, required=True,
+                    help="the database to fix (required), e.g. data/analysis.db")
     ap.add_argument("--apply", action="store_true",
                     help="write the corrections (default: dry run)")
     args = ap.parse_args()

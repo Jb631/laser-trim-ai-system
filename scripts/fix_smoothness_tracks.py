@@ -8,7 +8,11 @@ Symptom this fixes:
 - smoothness_tracks table has 0 rows even though smoothness_results has data.
 
 Usage (from a shell, with the project venv active):
-    python scripts/fix_smoothness_tracks.py
+    python scripts/fix_smoothness_tracks.py path/to/analysis.db
+
+The database path is REQUIRED. This writes to it -- take a backup first
+(scripts/snapshot_db.py) -- and it used to write to the app's default database
+when given nothing, which only the app may open.
 
 The script:
   1. Queries the DB for any SmoothnessResult that has 0 rows in smoothness_tracks.
@@ -20,6 +24,7 @@ just skips that record and reports it at the end.
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -28,12 +33,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from laser_trim_analyzer.database import get_database  # noqa: E402
+from laser_trim_analyzer.database.manager import DatabaseManager  # noqa: E402
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
 logger = logging.getLogger("fix_smoothness_tracks")
 
 
@@ -61,8 +62,24 @@ def _load_smoothness_parser():
     return _parse
 
 
-def main() -> int:
-    db = get_database()
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="fix_smoothness_tracks.py",
+        description="Re-import per-position smoothness data for records that have none.")
+    ap.add_argument("db_path", help="the database to repair (required), e.g. data/analysis.db")
+    args = ap.parse_args(sys.argv[1:] if argv is None else argv)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+    db_path = Path(args.db_path)
+    if not db_path.exists():
+        # Checked BEFORE DatabaseManager: constructing it CREATES an empty
+        # database, and repairing a fresh empty file reports "0 records" as if
+        # it had succeeded.
+        print(f"FATAL | no database at {db_path}")
+        return 1
+    db = DatabaseManager(db_path)
     parser = _load_smoothness_parser()
     if parser is None:
         logger.error(

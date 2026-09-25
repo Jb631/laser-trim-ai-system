@@ -30,11 +30,18 @@ def test_the_global_is_pre_seeded_so_nothing_falls_through():
     assert mgr._db_manager is not None
 
 
-def test_the_guard_survives_a_reset_by_the_code_under_test():
-    """`reset_database()` exists and production code may call it. If it does,
-    the NEXT `get_database()` must still not reach production — which is only
-    true while the test process's own config points somewhere safe."""
+def test_the_guard_survives_a_reset_by_the_code_under_test(monkeypatch):
+    """`reset_database()` exists and code may call it. If it does, the NEXT
+    `get_database()` must still not reach production. A test is not the app,
+    so it is refused outright; with the app's switch on (as `main()` turns
+    it on) it lands in the conftest's tmp redirect — which is only true while
+    the test process's own config points somewhere safe."""
+    import pytest
+
     mgr.reset_database()
+    with pytest.raises(RuntimeError, match="No database named"):
+        mgr.get_database()
+    monkeypatch.setattr(mgr, "_default_database_allowed", True)
     got = Path(mgr.get_database().get_database_path()).resolve()
     assert got != _production_db()
 

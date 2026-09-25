@@ -19,12 +19,17 @@ def _never_touch_the_real_database(tmp_path, monkeypatch):
     caught only because the row counts were checked afterwards.
 
     Autouse, so the guard cannot be forgotten. Pre-seeding the global alone is
-    NOT enough — production code may legitimately call `reset_database()`, and
-    the next `get_database()` would rebuild the default manager and land back
-    on real data. So the DEFAULT PATH itself is redirected: `__init__` resolves
-    an unset path through this module's `get_config()`, so patching that makes
-    every fall-through — including a bare `DatabaseManager()` — land in tmp.
-    A test that wants its own manager still just passes one.
+    NOT enough — code may call `reset_database()`, and the next
+    `get_database()` falls through to the default manager. Since 2026-09-24
+    that fall-through is refused in code unless the APP asked for it
+    (`manager.allow_default_database()`, called only by the entry point), and a
+    test is not the app: the switch is pinned OFF here, per test, so a test that
+    runs `main()` — which turns it on — cannot leave it on for the tests after
+    it. The DEFAULT PATH itself is still redirected, for a test that turns the
+    switch on as the app does: `__init__` resolves an unset path through this
+    module's `get_config()`, so patching that makes every allowed fall-through
+    — including a bare `DatabaseManager()` — land in tmp. A test that wants its
+    own manager still just passes one.
 
     Redirecting the default is still not the whole job. `__init__` only
     consults `get_config()` when `database_path is None`, so a path handed in
@@ -40,6 +45,9 @@ def _never_touch_the_real_database(tmp_path, monkeypatch):
     from laser_trim_analyzer import config as _cfg
     from laser_trim_analyzer.config import Config, get_app_directory
     from laser_trim_analyzer.database import manager as _mgr
+
+    # Every test runs as a script would: the implicit default is refused.
+    monkeypatch.setattr(_mgr, "_default_database_allowed", False)
 
     # Both roots: the tree the tests live in and the tree the package was
     # imported from. They differ when the suite runs from a git worktree.

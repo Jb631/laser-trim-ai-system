@@ -7,10 +7,17 @@ Fills NULL rows ONLY, from data already in the row:
   - resistance_change_percent = change / untrimmed_resistance * 100
 
 Does NOT touch trim_pass_count (not derivable -- needs a reprocess).
-Safe to run repeatedly. Usage:  python scripts/backfill_trim_effort.py [path/to/analysis.db]
+Safe to run repeatedly. It WRITES, with no dry run -- back up first.
+
+    python scripts/backfill_trim_effort.py path/to/analysis.db
+
+The database path is REQUIRED: this used to fall back to data/analysis.db, the
+production database, which only the app may open without being named.
 """
+import argparse
 import json
 import math
+import os
 import sqlite3
 import sys
 
@@ -73,8 +80,20 @@ def backfill_trim_effort(db_path: str) -> int:
     return updated
 
 
-if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "data/analysis.db"
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="backfill_trim_effort.py",
+                                 description="Fill derivable trim-effort metrics (writes).")
+    ap.add_argument("db_path", help="the database to update (required), e.g. data/analysis.db")
+    path = ap.parse_args(sys.argv[1:] if argv is None else argv).db_path
+    if not os.path.exists(path):
+        # sqlite3.connect CREATES a missing file; refuse instead of leaving one behind.
+        print(f"FATAL | no database at {path}")
+        return 1
     n = backfill_trim_effort(path)
     print(f"Backfilled trim-effort metrics in {path}: {n} array-derived row-updates "
           f"(resistance columns updated in bulk).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

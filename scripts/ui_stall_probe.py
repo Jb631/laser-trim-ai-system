@@ -50,11 +50,15 @@ def main(db_path: Path) -> int:
         return 1
 
     from laser_trim_analyzer.config import get_config
-    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database import manager as mgr
     from laser_trim_analyzer.gui.v6.app import V6App
 
     cfg = get_config()
-    db = DatabaseManager(db_path)
+    db = mgr.DatabaseManager(db_path)
+    # The global too, as render_pages.py does: whatever the app reaches through
+    # get_database() (the Processor, for one) must see this copy -- not the
+    # default database, which only the app itself may open.
+    mgr._db_manager = db
     app = V6App(cfg, db=db, auto_train_on_first_run=False)
     app.geometry("1440x900+60+60")
     app.deiconify()

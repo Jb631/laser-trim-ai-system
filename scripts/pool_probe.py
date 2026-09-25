@@ -1,11 +1,14 @@
-"""Would PROCESSES actually beat threads on this machine? Nothing is written.
+"""Would PROCESSES actually beat threads on this machine? Nothing real is written.
 
     python scripts/pool_probe.py "\\\\192.168.66.9\\...\\DLTS" 200
 
 Runs the same files four ways -- one at a time, a thread pool, and a process pool at
 two sizes -- and prints files/sec for each. It does what the ingest does to a file
-(`Processor.process_file`: parse AND analyse), which touches no database and writes
-nothing, so it is safe to run while an ingest is going.
+(`Processor.process_file`: parse AND analyse). That is not database-free: the processor
+looks up each model's spec, SAVES final-test and smoothness files and marks refused ones,
+all through `get_database()`. So every process -- this one and each pool worker -- gets
+its own throwaway database in a temporary folder, deleted at the end. Nothing touches the
+app's database, and it is safe to run while an ingest is going.
 
 Two mistakes the first version of this script made, both corrected here after the
 2026-09-21 run at work:
@@ -26,6 +29,7 @@ Use enough files that startup stops mattering: 200+ is a fair test, 48 is not.
 """
 import os
 import sys
+import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
@@ -34,6 +38,14 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
 _PROC = None
+_SCRATCH_DIR = None         # this process's throwaway-database folder; see _use_scratch_db
+
+
+def _use_scratch_db(folder: str) -> None:
+    """Where this process's throwaway database goes. main() calls it for itself and hands it
+    to every pool worker as the initializer, so each worker writes only there."""
+    global _SCRATCH_DIR
+    _SCRATCH_DIR = folder
 
 
 def _processor():
@@ -48,6 +60,11 @@ def _processor():
         import logging
         logging.disable(logging.WARNING)
         from laser_trim_analyzer.core.processor import Processor
+        from laser_trim_analyzer.database import manager as mgr
+        # Before the Processor: everything it does with a database goes through
+        # get_database(), and with nothing injected that is the app's default -- refused
+        # outside the app. One file per process: pool workers are separate processes.
+        mgr._db_manager = mgr.DatabaseManager(Path(_SCRATCH_DIR) / f"probe_{os.getpid()}.db")
         _PROC = Processor(use_ml=False)
     return _PROC
 
@@ -59,7 +76,7 @@ def warm(_ignored=None) -> bool:
 
 
 def work(path_str: str) -> bool:
-    """Exactly what the ingest does to one file. Touches no database."""
+    """Exactly what the ingest does to one file, on this process's throwaway database."""
     try:
         return _processor().process_file(Path(path_str)) is not None
     except Exception:
@@ -108,12 +125,23 @@ def main() -> int:
     print(f"{cpus} logical CPUs")
     if len(files) < 150:
         print("  NOTE: fewer than 150 files -- worker startup may still colour the result.")
-    print("\nparse AND analyse, nothing written (startup excluded from the rate):")
+    print("\nparse AND analyse, on throwaway databases (startup excluded from the rate):")
 
-    serial = _time_pool("1 at a time", None, files, 1)
-    _time_pool("4 threads (what runs now)", lambda: ThreadPoolExecutor(max_workers=4), files, 4)
-    p4 = _time_pool("4 processes", lambda: ProcessPoolExecutor(max_workers=4), files, 4)
-    p8 = _time_pool(f"{big} processes", lambda: ProcessPoolExecutor(max_workers=big), files, big)
+    with tempfile.TemporaryDirectory(prefix="pool_probe_", ignore_cleanup_errors=True) as scratch:
+        _use_scratch_db(scratch)
+
+        def processes(workers):
+            return lambda: ProcessPoolExecutor(max_workers=workers, initializer=_use_scratch_db,
+                                               initargs=(scratch,))
+        try:
+            serial = _time_pool("1 at a time", None, files, 1)
+            _time_pool("4 threads (what runs now)", lambda: ThreadPoolExecutor(max_workers=4),
+                       files, 4)
+            p4 = _time_pool("4 processes", processes(4), files, 4)
+            p8 = _time_pool(f"{big} processes", processes(big), files, big)
+        finally:
+            from laser_trim_analyzer.database import manager as mgr
+            mgr.reset_database()        # close this process's file before its folder goes
 
     best = max(p4, p8)
     remaining = 244_000

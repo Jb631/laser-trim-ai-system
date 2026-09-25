@@ -233,6 +233,44 @@ class DatabaseError(Exception):
     pass
 
 
+# ---------------------------------------------------------------------------
+# The implicit default database is the APP's alone (2026-09-24).
+#
+# `DatabaseManager()` with no path -- which is what `get_database()` builds
+# when no manager was injected -- falls back to `get_config().database.path`:
+# on the owner's machines, the production database. On 2026-09-24 two scratch
+# scripts built a `Processor`, whose spec lookup reached `get_database()`; it
+# opened James's production copy and ran every start-up migration on it.
+#
+# So that fall-through is refused unless the app asked for it: the entry point
+# the launchers run (`laser_trim_analyzer.__main__.main`) calls
+# `allow_default_database()` before it builds either UI. Everything else --
+# scripts, probes, tests -- names a path (`DatabaseManager(path)` is always
+# allowed, `data/analysis.db` included when it is named on purpose) or injects
+# a manager (`manager._db_manager = DatabaseManager(path)`) before anything
+# calls `get_database()`.
+# ---------------------------------------------------------------------------
+_default_database_allowed = False
+
+DEFAULT_DATABASE_REFUSED = (
+    "No database named: pass an explicit path or inject a manager (the implicit "
+    "default is the production database and only the app opens it). "
+    "DatabaseManager(path) opens the file you name; for code that reaches "
+    "get_database() -- the Processor does -- set "
+    "laser_trim_analyzer.database.manager._db_manager = DatabaseManager(path) first."
+)
+
+
+def allow_default_database() -> None:
+    """Let `DatabaseManager()` / `get_database()` open the configured default.
+
+    The app's entry point calls this before it builds the app. Nothing else
+    may: a script names its database instead.
+    """
+    global _default_database_allowed
+    _default_database_allowed = True
+
+
 class DatabaseManager:
     """
     Simplified database manager for v3.
@@ -249,8 +287,18 @@ class DatabaseManager:
         Initialize the database manager.
 
         Args:
-            database_path: Path to SQLite database. If None, uses config default.
+            database_path: Path to SQLite database. If None, the config default --
+                which only the app may open: anywhere else it raises
+                RuntimeError before any file is read, created or opened (see
+                `allow_default_database`).
         """
+        if database_path is None and not _default_database_allowed:
+            # Logged as well as raised: most of the Processor's lookups catch
+            # Exception and log it at DEBUG (a failed spec lookup reads as "no
+            # spec"), so a raise alone would let a script that forgot to name
+            # its database run on, quietly, on degraded results.
+            logger.error(DEFAULT_DATABASE_REFUSED)
+            raise RuntimeError(DEFAULT_DATABASE_REFUSED)
         config = get_config()
 
         if database_path is None:
@@ -9844,7 +9892,9 @@ _db_manager: Optional[DatabaseManager] = None
 
 
 def get_database() -> DatabaseManager:
-    """Get the global database manager instance."""
+    """The process-wide manager: the one injected (`_db_manager = ...`), else one
+    built on the configured default -- which only the app may open (see
+    `allow_default_database`); anywhere else this raises instead."""
     global _db_manager
     if _db_manager is None:
         _db_manager = DatabaseManager()

@@ -93,9 +93,14 @@ def main():
     logger.info(f"Starting Laser Trim Analyzer (UI: {'V6' if use_v6 else 'V5'})...")
     try:
         from laser_trim_analyzer.config import get_config
+        from laser_trim_analyzer.database.manager import allow_default_database
         config = get_config()
         logger.info(f"Config loaded - Database: {config.database.path}")
         config.database.ensure_directory()
+        # The app -- and only the app -- opens the configured database without
+        # naming it: its pages and the processor reach it through
+        # get_database(). Anything else that tries is refused (manager.py).
+        allow_default_database()
         if use_v6:
             from laser_trim_analyzer.gui.v6.app import V6App
             app = V6App(config)
