@@ -308,6 +308,53 @@ class TrimWrite:
     file_hash: Optional[str]
 
 
+@dataclass(frozen=True)
+class FinalTestWrite:
+    """One final test for `write_batch`: exactly what `save_final_test` takes -- the parsed and
+    graded payload, the SHA-256 of the bytes that were parsed and their (size, mtime datetime)."""
+    metadata: Dict[str, Any]
+    tracks: List[Dict[str, Any]]
+    test_results: Dict[str, Any]
+    file_hash: str
+    file_size: Optional[int] = None
+    file_modified_date: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class SmoothnessWrite:
+    """One Output Smoothness result for `write_batch`: exactly what `save_smoothness_result`
+    takes."""
+    metadata: Dict[str, Any]
+    tracks: List[Dict[str, Any]]
+    file_hash: str
+    file_size: Optional[int] = None
+    file_modified_date: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class SkipMarkerWrite:
+    """One per-path skip marker for `write_batch`: exactly what `mark_file_skipped` takes."""
+    filename: str
+    file_path: str
+    file_hash: str
+    file_size: Optional[int]
+    file_modified_date: Optional[datetime]
+    error_message: Optional[str] = None
+    failed_read: bool = False
+
+
+_BATCH_ITEMS = (TrimWrite, FinalTestWrite, SmoothnessWrite, SkipMarkerWrite)
+
+
+def _item_name(item) -> str:
+    """The file an item is about, for a log line or an outcome."""
+    if isinstance(item, TrimWrite):
+        return item.analysis.metadata.filename
+    if isinstance(item, SkipMarkerWrite):
+        return item.filename
+    return str(item.metadata.get("filename") or item.metadata.get("file_path") or "?")
+
+
 SAVED, DUPLICATE, FAILED = "saved", "duplicate", "failed"
 
 # The savepoint a write batch holds for its whole life, just inside BEGIN IMMEDIATE: if anything
@@ -1960,8 +2007,12 @@ class DatabaseManager:
     # Write batches (ingest-speed Task 6, spec 3.2-3.6)
     # =========================================================================
 
-    def write_batch(self, items: Sequence[TrimWrite]) -> List[WriteOutcome]:
+    def write_batch(self, items: Sequence[Any]) -> List[WriteOutcome]:
         """Write many files in ONE transaction, a savepoint per file; one outcome per item.
+
+        Items are TrimWrite, FinalTestWrite, SmoothnessWrite or SkipMarkerWrite -- each run by
+        its session-taking body, the one its public method (`save_analysis`, `save_final_test`,
+        `save_smoothness_result`, `mark_file_skipped`) wraps in a session of its own.
 
         * BEGIN IMMEDIATE is the transaction's first statement (ruling 4). The engine uses
           pysqlite's legacy transaction control, which emits no BEGIN before a SAVEPOINT: SQLite
@@ -1991,8 +2042,9 @@ class DatabaseManager:
         """
         items = list(items)
         for item in items:
-            if not isinstance(item, TrimWrite):
-                raise TypeError(f"write_batch takes TrimWrite items, not {type(item).__name__}")
+            if not isinstance(item, _BATCH_ITEMS):
+                raise TypeError("write_batch takes TrimWrite, FinalTestWrite, SmoothnessWrite or "
+                                f"SkipMarkerWrite items, not {type(item).__name__}")
         if not items:
             return []
         tl = self._thread_local
@@ -2013,7 +2065,7 @@ class DatabaseManager:
                     connection.exec_driver_sql(f"SAVEPOINT {_BATCH_GUARD}")
                     for item in items:
                         outcomes.append(self._write_one(session, item))
-                        self._batch_still_open(dbapi, item.analysis.metadata.filename)
+                        self._batch_still_open(dbapi, _item_name(item))
                     self._release_batch_guard(connection)
                 # session() has committed: the batch is stored.
             except Exception as exc:
@@ -2030,7 +2082,7 @@ class DatabaseManager:
             self._failed_batch_commits = 0
             return outcomes
 
-    def _write_one(self, session: Session, item: TrimWrite) -> WriteOutcome:
+    def _write_one(self, session: Session, item) -> WriteOutcome:
         """One file of a batch, in its own savepoint: its rows and its marker commit together
         with the batch, or roll back together, alone. A failure of the savepoint machinery
         itself (SAVEPOINT, ROLLBACK TO) is the batch's and propagates."""
@@ -2038,7 +2090,7 @@ class DatabaseManager:
         tl.batch_violation = None
         savepoint = session.begin_nested()
         try:
-            row_id = self._save_analysis_in(session, item.analysis, item.stat, item.file_hash)
+            status, row_id, why = self._write_item(session, item)
             if tl.batch_violation is not None:      # a refused session it swallowed
                 raise NestedSessionError(tl.batch_violation)
             savepoint.commit()                      # RELEASE: still inside the batch
@@ -2052,17 +2104,42 @@ class DatabaseManager:
             # delete in bulk and lean on ON DELETE CASCADE, and neither tells the session -- so an
             # earlier file's object can never stand in for a row a later file's body reads.
             session.expunge_all()
-        if item.stat is None:
+        if isinstance(item, TrimWrite) and item.stat is None:
             # Right for a file that could not be statted (an ERROR result for a file gone or
             # locked has always kept its row); otherwise a caller dropped the parse's own stat,
             # and the file would be re-parsed on every run without a word (review m-4).
             logger.warning(f"{item.analysis.metadata.filename}: saved WITHOUT a processed marker -- "
                            "no (size, mtime) came with it, so the next run offers it again")
-        return WriteOutcome(SAVED, row_id=row_id)
+        return WriteOutcome(status, row_id=row_id, reason=why)
+
+    def _write_item(self, session: Session, item) -> Tuple[str, Optional[int], Optional[str]]:
+        """Run ONE item's session-taking body: (status, row id, why). Nothing here commits."""
+        if isinstance(item, TrimWrite):
+            return SAVED, self._save_analysis_in(session, item.analysis, item.stat,
+                                                 item.file_hash), None
+        if isinstance(item, FinalTestWrite):
+            return SAVED, self._save_final_test_in(
+                session, item.metadata, item.tracks, item.test_results, item.file_hash,
+                item.file_size, item.file_modified_date), None
+        if isinstance(item, SmoothnessWrite):
+            row_id = self._save_smoothness_in(session, item.metadata, item.tracks, item.file_hash,
+                                              item.file_size, item.file_modified_date)
+            if row_id == -1:
+                # save_smoothness_result's -1: its insert hit the UNIQUE identity (filename,
+                # file_date, model, serial) of a row holding DIFFERENT content, and nothing was
+                # stored. Never a `saved` outcome for a file with no row.
+                return DUPLICATE, None, ("nothing stored: a smoothness row with another content "
+                                         "hash already holds this file's identity "
+                                         "(filename, file_date, model, serial)")
+            return SAVED, row_id, None
+        return SAVED, self._mark_file_skipped_in(
+            session, filename=item.filename, file_path=item.file_path, file_hash=item.file_hash,
+            file_size=item.file_size, file_modified_date=item.file_modified_date,
+            error_message=item.error_message, failed_read=item.failed_read), None
 
     @staticmethod
-    def _item_failure(item: TrimWrite, exc: Exception) -> WriteOutcome:
-        name = item.analysis.metadata.filename
+    def _item_failure(item, exc: Exception) -> WriteOutcome:
+        name = _item_name(item)
         why = f"{type(exc).__name__}: {exc}"[:500]
         if isinstance(exc, IntegrityError) and "UNIQUE constraint" in str(exc):
             logger.warning(f"{name}: not saved -- its own rows broke a UNIQUE constraint: {why}")
@@ -5763,6 +5840,39 @@ class DatabaseManager:
 
         Returns:
             ID of saved FinalTestResult
+
+        The body is `_save_final_test_in` (ingest-speed Task 7); this wraps it in a session of its
+        own, committed once, holding the write lock -- as `write_batch` runs the same body inside
+        its one transaction.
+        """
+        with self._write_lock:
+            with self.session() as session:
+                return self._save_final_test_in(session, metadata, tracks, test_results,
+                                                file_hash, file_size, file_modified_date)
+
+    def _save_final_test_in(
+        self,
+        session: Session,
+        metadata: Dict[str, Any],
+        tracks: List[Dict[str, Any]],
+        test_results: Dict[str, Any],
+        file_hash: str,
+        file_size: Optional[int] = None,
+        file_modified_date: Optional[datetime] = None,
+    ) -> int:
+        """Write one final test into the session it is GIVEN; return its row id.
+
+        What `save_final_test` always did -- a content duplicate refreshed in place, a new file
+        inserted and linked to its trim, a UNIQUE-identity collision recovered -- with NO commit,
+        NO transaction-level rollback and NO session of its own (a commit here would commit the
+        whole batch this runs in: spec F5; write_batch's guard turns one into BatchCommitError).
+        Until 2026-09-25 this was three sessions deep and committed in each. The parts that were
+        separate transactions because they must NEVER be fatal -- the other path's marker, the
+        re-grade of a duplicate, the identity refresh -- now run in savepoints of their own, so a
+        failure there rolls back only itself, exactly as a failed transaction of its own did. The
+        insert runs in one too, so a UNIQUE collision can be recovered in the same session.
+        `file_hash`, `file_size` and `file_modified_date` are the parsed bytes' own, recorded as
+        given: no file I/O here.
         """
         from sqlalchemy.exc import IntegrityError
         from laser_trim_analyzer.core.ft_regrade import (
@@ -5772,267 +5882,252 @@ class DatabaseManager:
             FinalTestTrack as DBFinalTestTrack,
         )
 
-        # Use lock to prevent race conditions with SQLite
-        with self._write_lock:
-            # Is this CONTENT already on record?  Resolved in a session of
-            # its own so the marker write below happens OUTSIDE a read
-            # transaction — same reason as the IntegrityError branch at the
-            # bottom of this method.
-            dup_id = None
-            dup_path_on_record = None
-            with self.session() as session:
+        # Is this CONTENT already on record?
+        existing = (
+            session.query(DBFinalTestResult)
+            .filter(DBFinalTestResult.file_hash == file_hash)
+            .first()
+        )
+        if existing is not None:
+            # Stamp the stat onto a legacy row while we're here — this file was
+            # fully read to get here, so record what it costs nothing to record.
+            if file_size is not None and existing.file_size is None:
+                existing.file_size = file_size
+                existing.file_modified_date = file_modified_date
+                session.flush()
+            dup_id = existing.id
+            dup_path_on_record = existing.file_path
+
+            this_path = str(metadata.get("file_path") or "")
+            if this_path and this_path != (dup_path_on_record or ""):
+                # THIS PATH holds content already stored under ANOTHER path —
+                # the same export dropped into a model folder and into a
+                # "Voltage Output" / "Final Sheets" subfolder. The identity
+                # lives on the other path's row, so until 2026-09-15 nothing on
+                # record said this path had ever been looked at: the scan called
+                # it new on every run, read it over the share, parsed it,
+                # produced a verdict and dropped it. ~370 files a day on the work
+                # share (1,371 processed, 442 verdicts, index +69). A per-path
+                # skip marker is what records it.
+                self._mark_ft_duplicate_path_in(
+                    session, metadata, this_path, file_hash, file_size,
+                    file_modified_date,
+                    f"same content as final_test_results id {dup_id}")
+            # Refresh the stored verdict and tracks from THIS parse. Trim rows
+            # have always updated in place on a re-read
+            # (_update_existing_analysis); this early return used to hand back
+            # the old id and touch nothing else, so a reprocess of the ~151k-row
+            # work database silently refreshed only half of what anyone would
+            # expect. `_write_final_test_regrade` is the SAME writer the
+            # re-grade repair pass uses, so a refreshed row is indistinguishable
+            # from a freshly graded one. Never fatal: this save path runs
+            # unattended, overnight, over ~151,000 files, and one malformed
+            # record must cost only its own refresh -- not this file's save (the
+            # row being refreshed already exists and is valid, just possibly
+            # stale) and not the run.
+            self._regrade_final_test_in(session, dup_id, tracks, test_results)
+            logger.debug(f"Final test already exists: {metadata.get('filename')}")
+            return dup_id
+
+        try:
+            with session.begin_nested():
+                # Determine overall status from corrected track-level linearity
+                # first. The raw FT header can be stale after analyzer
+                # correction; any corrected track failure wins.
+                linearity_pass = self._resolve_final_test_linearity_pass(test_results, tracks)
+                overall_status = (
+                    DBStatusType.FAIL if linearity_pass is False else DBStatusType.PASS
+                )
+
+                # Find matching trim result
+                linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
+                    session,
+                    metadata.get("model"),
+                    metadata.get("serial"),
+                    metadata.get("file_date") or metadata.get("test_date")
+                )
+
+                # Create FinalTestResult
+                db_result = DBFinalTestResult(
+                    filename=metadata.get("filename", "unknown"),
+                    file_path=str(metadata.get("file_path", "")),
+                    file_hash=file_hash,
+                    file_date=metadata.get("file_date"),
+                    file_size=file_size,
+                    file_modified_date=file_modified_date,
+                    model=metadata.get("model", "unknown"),
+                    serial=metadata.get("serial", "unknown"),
+                    test_date=metadata.get("test_date"),
+                    overall_status=overall_status,
+                    linearity_pass=linearity_pass,
+                    # Reference, never the disposition — see the column
+                    # comments on FinalTestResult.
+                    station_linearity_pass=self._coerce_optional_bool(
+                        test_results.get("station_linearity_pass")),
+                    station_cell_flag_conflict=self._coerce_optional_bool(
+                        test_results.get("station_cell_flag_conflict")),
+                    graded_window_source=graded_window_source(tracks),
+                    linearity_error=tracks[0].get("linearity_error") if tracks else None,
+                    resistance_pass=test_results.get("resistance_pass"),
+                    resistance_value=test_results.get("resistance_value"),
+                    resistance_tolerance=test_results.get("resistance_tolerance"),
+                    electrical_angle_pass=test_results.get("electrical_angle_pass"),
+                    hysteresis_pass=test_results.get("hysteresis_pass"),
+                    phasing_pass=test_results.get("phasing_pass"),
+                    linked_trim_id=linked_trim_id,
+                    match_confidence=match_confidence,
+                    days_since_trim=days_since_trim,
+                    match_method=match_method,
+                )
+
+                session.add(db_result)
+                session.flush()
+                result_id = db_result.id
+
+                # Add tracks
+                for track_data in tracks:
+                    # Use electrical_angles as position_data (X-axis for charts)
+                    # electrical_angles contains: inches for linear pots, degrees for rotary
+                    position_values = track_data.get("electrical_angles") or track_data.get("positions")
+
+                    db_track = DBFinalTestTrack(
+                        final_test_id=result_id,
+                        track_id=track_data.get("track_id", "default"),
+                        status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
+                        linearity_spec=track_data.get("linearity_spec"),
+                        linearity_error=track_data.get("linearity_error"),
+                        linearity_pass=track_data.get("linearity_pass"),
+                        linearity_fail_points=track_data.get("linearity_fail_points", 0),
+                        position_data=position_values,
+                        error_data=track_data.get("errors"),
+                        theory_data=track_data.get("theory_values"),
+                        electrical_angle_data=track_data.get("electrical_angles"),
+                        upper_limits=track_data.get("upper_limits"),
+                        lower_limits=track_data.get("lower_limits"),
+                        max_deviation=track_data.get("max_deviation"),
+                        max_deviation_position=track_data.get("max_deviation_angle"),
+                        optimal_offset=track_data.get("optimal_offset"),
+                        optimal_slope=track_data.get("optimal_slope"),
+                        linearity_type=track_data.get("linearity_type"),
+                        **ft_reference_fields(track_data),
+                    )
+                    session.add(db_track)
+                # (the savepoint's release flushes the tracks: a track that breaks a
+                # constraint rolls the whole insert back, as the old commit did)
+            logger.debug(f"Saved Final Test: {metadata.get('filename')} (ID: {result_id}, linked_trim: {linked_trim_id})")
+            return result_id
+
+        except IntegrityError:
+            # The unique constraint that can fire is on
+            # (filename, file_date, model, serial), not on file_hash.
+            # When the same file is reprocessed with edited content the
+            # hash differs but the tuple still matches, so the previous
+            # hash-only fallback couldn't find the existing row and the
+            # error propagated to the user as "Error processing Final
+            # Test ... UNIQUE constraint failed". Query by both keys.
+            logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
+            existing_id = None
+            existing_path = None
+            try:
                 existing = (
                     session.query(DBFinalTestResult)
                     .filter(DBFinalTestResult.file_hash == file_hash)
                     .first()
                 )
+                if existing is None:
+                    existing = (
+                        session.query(DBFinalTestResult)
+                        .filter(
+                            DBFinalTestResult.filename == metadata.get("filename"),
+                            DBFinalTestResult.file_date == metadata.get("file_date"),
+                            DBFinalTestResult.model == metadata.get("model"),
+                            DBFinalTestResult.serial == metadata.get("serial"),
+                        )
+                        .first()
+                    )
                 if existing:
-                    # Stamp the stat onto a legacy row while we're here —
-                    # this file was fully read to get here, so record what
-                    # it costs nothing to record.
-                    if file_size is not None and existing.file_size is None:
-                        existing.file_size = file_size
-                        existing.file_modified_date = file_modified_date
-                        session.commit()
-                    dup_id = existing.id
-                    dup_path_on_record = existing.file_path
+                    existing_id = existing.id
+                    existing_path = existing.file_path
+            except Exception:
+                logger.debug("FT duplicate-recovery query failed", exc_info=True)
 
-            if dup_id is not None:
-                this_path = str(metadata.get("file_path") or "")
-                if this_path and this_path != (dup_path_on_record or ""):
-                    # THIS PATH holds content already stored under ANOTHER
-                    # path — the same export dropped into a model folder and
-                    # into a "Voltage Output" / "Final Sheets" subfolder.
-                    # The identity lives on the other path's row, so until
-                    # 2026-09-15 nothing on record said this path had ever
-                    # been looked at: the scan called it new on every run,
-                    # read it over the share, parsed it, produced a verdict
-                    # and dropped it. ~370 files a day on the work share
-                    # (1,371 processed, 442 verdicts, index +69). A per-path
-                    # skip marker is what records it.
-                    self._mark_ft_duplicate_path(
-                        metadata, this_path, file_hash, file_size,
+            if existing_id is not None:
+                # `str` because that is how the row's own file_path was written —
+                # comparing a Path with the stored string would send every
+                # same-path case down the copy branch.
+                dup_path = str(metadata.get("file_path") or "")
+                if dup_path and dup_path == (existing_path or ""):
+                    # SAME PATH. Not a copy at all: this file's own row owns the
+                    # unique tuple, and the file was re-exported in place after
+                    # that row was written, so the row's recorded hash and (size,
+                    # mtime) describe content that is no longer there. A skip
+                    # marker cannot help here — `_load_processed_hashes` lets the
+                    # FT row's stat overwrite the marker's for the same path — so
+                    # the scan re-hashed, missed, and re-parsed these every single
+                    # run (the 23 Voltage Output files that came back morning AND
+                    # afternoon on 2026-09-15, re-saved on the share on 09-10).
+                    # Refresh the row's IDENTITY so the next scan recognises the file.
+                    self._refresh_final_test_identity_in(
+                        session, existing_id, file_hash, file_size,
                         file_modified_date,
-                        f"same content as final_test_results id {dup_id}")
-                # Refresh the stored verdict and tracks from THIS parse.
-                # Trim rows have always updated in place on a re-read
-                # (_update_existing_analysis); this early return used to
-                # hand back the old id and touch nothing else, so a
-                # reprocess of the ~151k-row work database silently
-                # refreshed only half of what anyone would expect.
-                # apply_final_test_regrade is the SAME writer the re-grade
-                # repair pass already uses, so a refreshed row is
-                # indistinguishable from a freshly graded one. It takes
-                # _write_lock itself, which is fine — the lock is an RLock
-                # specifically so nested acquisitions on this thread do not
-                # deadlock (see its declaration).
-                #
-                # Never fatal: this save path runs unattended, overnight,
-                # over ~151,000 files. apply_final_test_regrade already
-                # catches its own exceptions and reports failure by
-                # returning False rather than raising, so this try/except
-                # is belt-and-suspenders for anything that still escapes
-                # it. Either way, one malformed record must cost only its
-                # own refresh, not this file's save (the row being
-                # refreshed already exists and is valid, just possibly
-                # stale) and not the run. See the task report for the full
-                # reasoning.
-                try:
-                    self.apply_final_test_regrade(dup_id, tracks, test_results)
-                except Exception:
-                    logger.warning(
-                        "Could not refresh final test %s on reprocess "
-                        "(final_test_results id %s) — leaving the "
-                        "previously stored result in place",
-                        metadata.get("filename"), dup_id, exc_info=True)
-                logger.debug(f"Final test already exists: {metadata.get('filename')}")
-                return dup_id
+                        filename=metadata.get("filename") or Path(dup_path).name)
+                elif dup_path:
+                    # This PATH holds content already on record under another
+                    # path. Without a marker the scan re-parses it on every run
+                    # forever, because the identity lives on the other path's row.
+                    self._mark_ft_duplicate_path_in(
+                        session, metadata, dup_path, file_hash, file_size,
+                        file_modified_date,
+                        f"duplicate of final_test_results id {existing_id}")
+                return existing_id
+            raise
 
-            try:
-                with self.session() as session:
-                    # Determine overall status from corrected track-level
-                    # linearity first. The raw FT header can be stale after
-                    # analyzer correction; any corrected track failure wins.
-                    linearity_pass = self._resolve_final_test_linearity_pass(test_results, tracks)
-                    overall_status = (
-                        DBStatusType.FAIL if linearity_pass is False else DBStatusType.PASS
-                    )
-
-                    # Find matching trim result
-                    linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
-                        session,
-                        metadata.get("model"),
-                        metadata.get("serial"),
-                        metadata.get("file_date") or metadata.get("test_date")
-                    )
-
-                    # Create FinalTestResult
-                    db_result = DBFinalTestResult(
-                        filename=metadata.get("filename", "unknown"),
-                        file_path=str(metadata.get("file_path", "")),
-                        file_hash=file_hash,
-                        file_date=metadata.get("file_date"),
-                        file_size=file_size,
-                        file_modified_date=file_modified_date,
-                        model=metadata.get("model", "unknown"),
-                        serial=metadata.get("serial", "unknown"),
-                        test_date=metadata.get("test_date"),
-                        overall_status=overall_status,
-                        linearity_pass=linearity_pass,
-                        # Reference, never the disposition — see the column
-                        # comments on FinalTestResult.
-                        station_linearity_pass=self._coerce_optional_bool(
-                            test_results.get("station_linearity_pass")),
-                        station_cell_flag_conflict=self._coerce_optional_bool(
-                            test_results.get("station_cell_flag_conflict")),
-                        graded_window_source=graded_window_source(tracks),
-                        linearity_error=tracks[0].get("linearity_error") if tracks else None,
-                        resistance_pass=test_results.get("resistance_pass"),
-                        resistance_value=test_results.get("resistance_value"),
-                        resistance_tolerance=test_results.get("resistance_tolerance"),
-                        electrical_angle_pass=test_results.get("electrical_angle_pass"),
-                        hysteresis_pass=test_results.get("hysteresis_pass"),
-                        phasing_pass=test_results.get("phasing_pass"),
-                        linked_trim_id=linked_trim_id,
-                        match_confidence=match_confidence,
-                        days_since_trim=days_since_trim,
-                        match_method=match_method,
-                    )
-
-                    session.add(db_result)
-                    session.flush()
-                    result_id = db_result.id
-
-                    # Add tracks
-                    for track_data in tracks:
-                        # Use electrical_angles as position_data (X-axis for charts)
-                        # electrical_angles contains: inches for linear pots, degrees for rotary
-                        position_values = track_data.get("electrical_angles") or track_data.get("positions")
-
-                        db_track = DBFinalTestTrack(
-                            final_test_id=result_id,
-                            track_id=track_data.get("track_id", "default"),
-                            status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
-                            linearity_spec=track_data.get("linearity_spec"),
-                            linearity_error=track_data.get("linearity_error"),
-                            linearity_pass=track_data.get("linearity_pass"),
-                            linearity_fail_points=track_data.get("linearity_fail_points", 0),
-                            position_data=position_values,
-                            error_data=track_data.get("errors"),
-                            theory_data=track_data.get("theory_values"),
-                            electrical_angle_data=track_data.get("electrical_angles"),
-                            upper_limits=track_data.get("upper_limits"),
-                            lower_limits=track_data.get("lower_limits"),
-                            max_deviation=track_data.get("max_deviation"),
-                            max_deviation_position=track_data.get("max_deviation_angle"),
-                            optimal_offset=track_data.get("optimal_offset"),
-                            optimal_slope=track_data.get("optimal_slope"),
-                            linearity_type=track_data.get("linearity_type"),
-                            **ft_reference_fields(track_data),
-                        )
-                        session.add(db_track)
-
-                    session.commit()
-                    logger.debug(f"Saved Final Test: {metadata.get('filename')} (ID: {result_id}, linked_trim: {linked_trim_id})")
-                    return result_id
-
-            except IntegrityError as e:
-                # The unique constraint that can fire is on
-                # (filename, file_date, model, serial), not on file_hash.
-                # When the same file is reprocessed with edited content the
-                # hash differs but the tuple still matches, so the previous
-                # hash-only fallback couldn't find the existing row and the
-                # error propagated to the user as "Error processing Final
-                # Test ... UNIQUE constraint failed". Query by both keys.
-                logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
-                existing_id = None
-                existing_path = None
-                try:
-                    with self.session() as session:
-                        existing = (
-                            session.query(DBFinalTestResult)
-                            .filter(DBFinalTestResult.file_hash == file_hash)
-                            .first()
-                        )
-                        if existing is None:
-                            existing = (
-                                session.query(DBFinalTestResult)
-                                .filter(
-                                    DBFinalTestResult.filename == metadata.get("filename"),
-                                    DBFinalTestResult.file_date == metadata.get("file_date"),
-                                    DBFinalTestResult.model == metadata.get("model"),
-                                    DBFinalTestResult.serial == metadata.get("serial"),
-                                )
-                                .first()
-                            )
-                        if existing:
-                            existing_id = existing.id
-                            existing_path = existing.file_path
-                except Exception:
-                    logger.debug("FT duplicate-recovery query failed", exc_info=True)
-
-                if existing_id is not None:
-                    # Written outside the recovery session so no write nests
-                    # inside a read transaction. `str` because that is how the
-                    # row's own file_path was written — comparing a Path with
-                    # the stored string would send every same-path case down
-                    # the copy branch.
-                    dup_path = str(metadata.get("file_path") or "")
-                    if dup_path and dup_path == (existing_path or ""):
-                        # SAME PATH. Not a copy at all: this file's own row
-                        # owns the unique tuple, and the file was re-exported
-                        # in place after that row was written, so the row's
-                        # recorded hash and (size, mtime) describe content
-                        # that is no longer there. A skip marker cannot help
-                        # here — `_load_processed_hashes` lets the FT row's
-                        # stat overwrite the marker's for the same path — so
-                        # the scan re-hashed, missed, and re-parsed these
-                        # every single run (the 23 Voltage Output files that
-                        # came back morning AND afternoon on 2026-09-15,
-                        # re-saved on the share on 09-10). Refresh the row's
-                        # IDENTITY so the next scan recognises the file.
-                        self._refresh_final_test_identity(
-                            existing_id, file_hash, file_size,
-                            file_modified_date,
-                            filename=metadata.get("filename") or Path(dup_path).name)
-                    elif dup_path:
-                        # This PATH holds content already on record under
-                        # another path. Without a marker the scan re-parses
-                        # it on every run forever, because the identity lives
-                        # on the other path's row.
-                        self._mark_ft_duplicate_path(
-                            metadata, dup_path, file_hash, file_size,
-                            file_modified_date,
-                            f"duplicate of final_test_results id {existing_id}")
-                    return existing_id
-                raise
-
-    def _mark_ft_duplicate_path(self, metadata: Dict[str, Any], dup_path: str,
-                                file_hash: str, file_size: Optional[int],
-                                file_modified_date, reason: str) -> None:
+    def _mark_ft_duplicate_path_in(self, session: Session, metadata: Dict[str, Any],
+                                   dup_path: str, file_hash: str, file_size: Optional[int],
+                                   file_modified_date, reason: str) -> None:
         """Record THIS path as holding content already on record elsewhere.
 
-        The row it duplicates keeps the content identity; this path gets a
-        per-path skip marker so the incremental scan stops offering it. Never
-        fatal — a file that cannot be marked is merely offered again.
+        The row it duplicates keeps the content identity; this path gets a per-path skip marker so
+        the incremental scan stops offering it. Never fatal — a file that cannot be marked is
+        merely offered again — so the marker runs in a savepoint of its own (it was a transaction
+        of its own until 2026-09-25) and a failure rolls back only the marker.
         """
         try:
-            self.mark_file_skipped(
-                filename=(metadata.get("filename") or Path(dup_path).name),
-                file_path=dup_path,
-                file_hash=file_hash,
-                file_size=file_size,
-                file_modified_date=file_modified_date,
-                error_message=reason,
-            )
+            with session.begin_nested():
+                self._mark_file_skipped_in(
+                    session,
+                    filename=(metadata.get("filename") or Path(dup_path).name),
+                    file_path=dup_path,
+                    file_hash=file_hash,
+                    file_size=file_size,
+                    file_modified_date=file_modified_date,
+                    error_message=reason,
+                )
         except Exception:
             logger.debug("Could not mark FT duplicate path as skipped",
                          exc_info=True)
 
-    def _refresh_final_test_identity(self, result_id: int, file_hash: str,
-                                     file_size: Optional[int],
-                                     file_modified_date,
-                                     filename: str = "") -> None:
+    def _regrade_final_test_in(self, session: Session, final_test_id: int,
+                               tracks: List[Dict[str, Any]],
+                               test_results: Dict[str, Any]) -> bool:
+        """Re-grade a stored final test from THIS parse, never fatally, in a savepoint of its own.
+
+        The session-taking form of `apply_final_test_regrade` for the save path: the same writer
+        (`_write_final_test_regrade`) and the same log line on failure, but no session, no lock and
+        no commit of its own. A failure rolls back the re-grade alone and leaves the stored result.
+        """
+        try:
+            with session.begin_nested():
+                return self._write_final_test_regrade(session, final_test_id, tracks,
+                                                      test_results)
+        except Exception as e:
+            logger.error(f"Failed to apply re-grade to FT {final_test_id}: {e}")
+            return False
+
+    def _refresh_final_test_identity_in(self, session: Session, result_id: int, file_hash: str,
+                                        file_size: Optional[int],
+                                        file_modified_date,
+                                        filename: str = "") -> None:
         """Point an existing FT row at the content now sitting at its path.
 
         Only the identity columns move (file_hash, file_size,
@@ -6041,20 +6136,22 @@ class DatabaseManager:
         rewriting its tracks and its trim link, which this method is not.
         The log line says so, because a file whose content changed and whose
         verdict did not is something the user should be able to see.
+
+        Never fatal, in a savepoint of its own (it was a transaction of its own until
+        2026-09-25).
         """
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
         )
         try:
-            with self._write_lock:
-                with self.session() as session:
-                    row = session.get(DBFinalTestResult, result_id)
-                    if row is None:
-                        return
-                    row.file_hash = file_hash
-                    if file_size is not None:
-                        row.file_size = file_size
-                        row.file_modified_date = file_modified_date
+            with session.begin_nested():
+                row = session.get(DBFinalTestResult, result_id)
+                if row is None:
+                    return
+                row.file_hash = file_hash
+                if file_size is not None:
+                    row.file_size = file_size
+                    row.file_modified_date = file_modified_date
             logger.warning(
                 f"Final test {filename or result_id}: the file at this path has "
                 f"changed since it was recorded — identity refreshed on "
@@ -8304,6 +8401,25 @@ class DatabaseManager:
         the reason with `UNREADABLE_PREFIX`, which is what
         `count_failed_file_markers` / `reset_failed_file_markers` — and so
         Settings → "Retry unreadable files" — scope on.
+
+        The body is `_mark_file_skipped_in` (ingest-speed Task 7); this wraps it in a session of
+        its own, committed once, holding the write lock.
+        """
+        with self._write_lock:
+            with self.session() as session:
+                self._mark_file_skipped_in(
+                    session, filename=filename, file_path=file_path, file_hash=file_hash,
+                    file_size=file_size, file_modified_date=file_modified_date,
+                    error_message=error_message, failed_read=failed_read)
+
+    def _mark_file_skipped_in(self, session: Session, *, filename: str, file_path: str,
+                              file_hash: str, file_size: Optional[int], file_modified_date,
+                              error_message: Optional[str] = None,
+                              failed_read: bool = False) -> int:
+        """Write one per-path skip marker into the session it is GIVEN; return its row id.
+
+        What `mark_file_skipped` always did (see it for the why), with no commit, no session of its
+        own and no file I/O: the size, mtime and content hash are the caller's.
         """
         marker_hash = self.skip_marker_hash(file_path)
         reason = (error_message or "").strip()
@@ -8314,33 +8430,35 @@ class DatabaseManager:
                       if reason else f"content sha256={file_hash}")
         reason = reason[:2000] or None
 
-        with self._write_lock:
-            with self.session() as session:
-                existing = session.query(DBProcessedFile).filter(
-                    DBProcessedFile.file_path == file_path
-                ).first()
-                if existing is not None:
-                    # Refresh the stat so the scan's fast path stays exact,
-                    # and the reason so it reflects this run. `success` and
-                    # `analysis_id` are left alone on purpose: a real
-                    # analysis row keeps its analysis, and a trim ERROR row
-                    # (success=False) stays retryable.
-                    existing.file_size = file_size
-                    existing.file_modified_date = file_modified_date
-                    if reason is not None:
-                        existing.error_message = reason
-                    return
+        existing = session.query(DBProcessedFile).filter(
+            DBProcessedFile.file_path == file_path
+        ).first()
+        if existing is not None:
+            # Refresh the stat so the scan's fast path stays exact,
+            # and the reason so it reflects this run. `success` and
+            # `analysis_id` are left alone on purpose: a real
+            # analysis row keeps its analysis, and a trim ERROR row
+            # (success=False) stays retryable.
+            existing.file_size = file_size
+            existing.file_modified_date = file_modified_date
+            if reason is not None:
+                existing.error_message = reason
+            session.flush()
+            return existing.id
 
-                session.add(DBProcessedFile(
-                    filename=filename,
-                    file_path=file_path,
-                    file_hash=marker_hash,
-                    file_size=file_size,
-                    file_modified_date=file_modified_date,
-                    error_message=reason,
-                    analysis_id=None,
-                    success=True,
-                ))
+        marker = DBProcessedFile(
+            filename=filename,
+            file_path=file_path,
+            file_hash=marker_hash,
+            file_size=file_size,
+            file_modified_date=file_modified_date,
+            error_message=reason,
+            analysis_id=None,
+            success=True,
+        )
+        session.add(marker)
+        session.flush()
+        return marker.id
 
     def update_processed_file_stats(self, entries) -> Dict[str, int]:
         """Repair size/mtime on processed rows after a hash-confirm.
@@ -9164,6 +9282,27 @@ class DatabaseManager:
 
         file_size / file_modified_date feed the incremental scan's stat
         fast-path (see save_final_test).
+
+        The body is `_save_smoothness_in` (ingest-speed Task 7); this wraps it in a session of its
+        own, committed once, holding the write lock.
+        """
+        with self._write_lock:
+            with self.session() as session:
+                return self._save_smoothness_in(session, metadata, tracks, file_hash,
+                                                file_size, file_modified_date)
+
+    def _save_smoothness_in(
+        self, session: Session, metadata: Dict[str, Any], tracks: List[Dict[str, Any]],
+        file_hash: str, file_size: Optional[int] = None,
+        file_modified_date: Optional[datetime] = None,
+    ) -> int:
+        """Write one Output Smoothness result into the session it is GIVEN; return its id.
+
+        What `save_smoothness_result` always did -- an upsert of the same content, else an insert
+        linked to its trim -- with no commit and no session of its own. Its IntegrityError fallback
+        was a second session: the upsert or insert now runs in a savepoint, so a UNIQUE collision
+        rolls back only that and the fallback reads in the same session. -1 still means the
+        collision was with a row holding OTHER content, and nothing was stored.
         """
         from laser_trim_analyzer.database.models import (
             SmoothnessResult as DBSmoothnessResult,
@@ -9182,60 +9321,59 @@ class DatabaseManager:
         spec = metadata.get("smoothness_spec") or (tracks[0].get("smoothness_spec") if tracks else None)
         passes = all(t.get("smoothness_pass", True) for t in tracks) if tracks else None
 
-        with self._write_lock:
-            try:
-                with self.session() as session:
-                    existing = session.query(DBSmoothnessResult).filter(
-                        DBSmoothnessResult.file_hash == file_hash
-                    ).first()
-                    if existing:
-                        # UPSERT: the old code silently returned here without
-                        # updating anything. That meant records imported before
-                        # the parser fix kept their zeroed values forever, even
-                        # when reprocessed. Now we overwrite the parent row's
-                        # aggregate fields and replace the child tracks so a
-                        # reprocess actually refreshes the stored data.
-                        existing.overall_status = overall_status
-                        existing.smoothness_spec = spec
-                        existing.max_smoothness_value = max_smooth
-                        existing.avg_smoothness_value = avg_smooth
-                        existing.smoothness_pass = passes
-                        if file_size is not None:
-                            existing.file_size = file_size
-                            existing.file_modified_date = file_modified_date
-                        if metadata.get("file_date"):
-                            existing.file_date = metadata.get("file_date")
-                        if metadata.get("test_date"):
-                            existing.test_date = metadata.get("test_date")
-                        if metadata.get("element_label"):
-                            existing.element_label = metadata.get("element_label")
+        try:
+            with session.begin_nested():
+                existing = session.query(DBSmoothnessResult).filter(
+                    DBSmoothnessResult.file_hash == file_hash
+                ).first()
+                if existing:
+                    # UPSERT: the old code silently returned here without
+                    # updating anything. That meant records imported before
+                    # the parser fix kept their zeroed values forever, even
+                    # when reprocessed. Now we overwrite the parent row's
+                    # aggregate fields and replace the child tracks so a
+                    # reprocess actually refreshes the stored data.
+                    existing.overall_status = overall_status
+                    existing.smoothness_spec = spec
+                    existing.max_smoothness_value = max_smooth
+                    existing.avg_smoothness_value = avg_smooth
+                    existing.smoothness_pass = passes
+                    if file_size is not None:
+                        existing.file_size = file_size
+                        existing.file_modified_date = file_modified_date
+                    if metadata.get("file_date"):
+                        existing.file_date = metadata.get("file_date")
+                    if metadata.get("test_date"):
+                        existing.test_date = metadata.get("test_date")
+                    if metadata.get("element_label"):
+                        existing.element_label = metadata.get("element_label")
 
-                        # Replace the per-track rows
-                        session.query(DBSmoothnessTrack).filter(
-                            DBSmoothnessTrack.smoothness_id == existing.id
-                        ).delete(synchronize_session=False)
+                    # Replace the per-track rows
+                    session.query(DBSmoothnessTrack).filter(
+                        DBSmoothnessTrack.smoothness_id == existing.id
+                    ).delete(synchronize_session=False)
 
-                        for track_data in tracks:
-                            db_track = DBSmoothnessTrack(
-                                smoothness_id=existing.id,
-                                track_id=track_data.get("track_id", "default"),
-                                status=DBStatusType.PASS if track_data.get("smoothness_pass", True) else DBStatusType.FAIL,
-                                smoothness_spec=track_data.get("smoothness_spec"),
-                                max_smoothness=track_data.get("max_smoothness"),
-                                avg_smoothness=track_data.get("avg_smoothness"),
-                                smoothness_pass=track_data.get("smoothness_pass"),
-                                position_data=track_data.get("positions"),
-                                smoothness_data=track_data.get("smoothness_values"),
-                            )
-                            session.add(db_track)
-
-                        logger.debug(
-                            f"Updated Smoothness: {metadata.get('filename')} "
-                            f"(ID: {existing.id}, max={max_smooth:.4f}, spec={spec}, "
-                            f"tracks={len(tracks)})"
+                    for track_data in tracks:
+                        db_track = DBSmoothnessTrack(
+                            smoothness_id=existing.id,
+                            track_id=track_data.get("track_id", "default"),
+                            status=DBStatusType.PASS if track_data.get("smoothness_pass", True) else DBStatusType.FAIL,
+                            smoothness_spec=track_data.get("smoothness_spec"),
+                            max_smoothness=track_data.get("max_smoothness"),
+                            avg_smoothness=track_data.get("avg_smoothness"),
+                            smoothness_pass=track_data.get("smoothness_pass"),
+                            position_data=track_data.get("positions"),
+                            smoothness_data=track_data.get("smoothness_values"),
                         )
-                        return existing.id
+                        session.add(db_track)
 
+                    logger.debug(
+                        f"Updated Smoothness: {metadata.get('filename')} "
+                        f"(ID: {existing.id}, max={max_smooth:.4f}, spec={spec}, "
+                        f"tracks={len(tracks)})"
+                    )
+                    result_id = existing.id
+                else:
                     linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
                         session, metadata.get("model"), metadata.get("serial"),
                         metadata.get("file_date") or metadata.get("test_date")
@@ -9281,15 +9419,14 @@ class DatabaseManager:
                         session.add(db_track)
 
                     logger.debug(f"Saved Smoothness: {metadata.get('filename')} (ID: {result_id})")
-                    return result_id
+            return result_id
 
-            except IntegrityError:
-                logger.warning(f"Smoothness duplicate: {metadata.get('filename')}")
-                with self.session() as session:
-                    existing = session.query(DBSmoothnessResult).filter(
-                        DBSmoothnessResult.file_hash == file_hash
-                    ).first()
-                    return existing.id if existing else -1
+        except IntegrityError:
+            logger.warning(f"Smoothness duplicate: {metadata.get('filename')}")
+            existing = session.query(DBSmoothnessResult).filter(
+                DBSmoothnessResult.file_hash == file_hash
+            ).first()
+            return existing.id if existing else -1
 
     def get_smoothness_files_missing_tracks(self) -> List[Dict[str, Any]]:
         """

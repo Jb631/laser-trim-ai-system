@@ -169,7 +169,10 @@ def test_refresh_failure_is_logged_and_swallowed_not_propagated(tmp_path, monkey
     def boom(self, *a, **k):
         raise RuntimeError("malformed record")
 
-    monkeypatch.setattr(DatabaseManager, "apply_final_test_regrade", boom)
+    # The re-grade WRITER, shared by apply_final_test_regrade and (since ingest-speed Task 7)
+    # the save path's own session-taking body -- the save no longer goes through
+    # apply_final_test_regrade, whose own session a write batch would refuse.
+    monkeypatch.setattr(DatabaseManager, "_write_final_test_regrade", boom)
 
     tracks[0].update(linearity_pass=True, linearity_fail_points=0, linearity_error=0.004)
     with caplog.at_level(logging.WARNING):

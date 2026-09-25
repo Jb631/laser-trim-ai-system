@@ -3093,12 +3093,12 @@ _SAVE_CLOCK_COLUMNS = {"timestamp", "processing_time", "created_date", "processe
 _SAVE_TABLES = ("analysis_results", "track_results", "trim_passes", "trim_setup", "processed_files")
 
 
-def _saved_rows(path: Path) -> dict:
-    """Every row of the five tables a trim save writes, minus the clock columns."""
+def _saved_rows(path: Path, tables=_SAVE_TABLES) -> dict:
+    """Every row of `tables` (the five a trim save writes), minus the clock columns."""
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         out = {}
-        for table in _SAVE_TABLES:
+        for table in tables:
             cur = con.execute(f"SELECT * FROM {table} ORDER BY id")
             cols = [d[0] for d in cur.description]
             out[table] = [{c: v for c, v in zip(cols, row) if c not in _SAVE_CLOCK_COLUMNS}
@@ -3244,6 +3244,41 @@ def check_write_batch_fixtures() -> None:
               raised == [NestedSessionError.__name__] and outcomes[0].status == "failed"
               and _saved_rows(tmp / "refusal.db")["analysis_results"] == [],
               f"raised={raised}; outcome={outcomes[0]}")
+
+        # Task 7: the final-test body inside a batch stores exactly what save_final_test does.
+        # The processor saves each fixture through the PUBLIC method (recorded as it goes);
+        # the same payloads then go through write_batch into a database of their own.
+        import copy as _copy
+        from laser_trim_analyzer.database.manager import FinalTestWrite
+        station = tmp / "Test Station"            # the Format 4 file is routed by this folder
+        station.mkdir()
+        for f in sorted((REPO / "tests" / "fixtures" / "final_test").glob("*.xls")):
+            shutil.copyfile(f, station / f.name)
+        ft_public = manager("ft_public.db")
+        _mgr._db_manager = _dbpkg._db_manager = ft_public
+        payloads, real_save = [], ft_public.save_final_test
+
+        def recording(**kw):
+            payloads.append(_copy.deepcopy(kw))
+            return real_save(**kw)
+        ft_public.save_final_test = recording
+        ft_proc = Processor(use_ml=False)
+        for f in sorted(station.glob("*.xls")):
+            ft_proc.process_file(f)
+        del ft_public.save_final_test
+        ft_batched = manager("ft_batched.db")
+        outcomes = ft_batched.write_batch([FinalTestWrite(**kw) for kw in payloads])
+        ft_tables = ("final_test_results", "final_test_tracks")
+        want = _saved_rows(tmp / "ft_public.db", ft_tables)
+        got = _saved_rows(tmp / "ft_batched.db", ft_tables)
+        check("write batch: the final-test fixtures (formats 1, 3 and 4) store exactly what "
+              "save_final_test stores -- every column but the clock; Format 4 without a serial "
+              "refused on both paths",
+              len(payloads) == 6 and want == got and len(want["final_test_results"]) == 5
+              and sorted(o.status for o in outcomes) == ["failed"] + ["saved"] * 5,
+              f"{len(payloads)} payloads; outcomes={[o.status for o in outcomes]}; "
+              f"rows {sum(len(v) for v in want.values())} public vs "
+              f"{sum(len(v) for v in got.values())} batched; identical={want == got}")
     except Exception as e:                      # an exception is a FAIL, never a skip
         check("write batch: the fixtures run through it", False, f"{type(e).__name__}: {e}")
     finally:

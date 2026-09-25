@@ -70,6 +70,8 @@ VOLATILE = {
     "trim_passes": {"created_date"},
     "trim_setup": {"created_date"},
     "processed_files": {"processed_date"},
+    "final_test_results": {"timestamp"},
+    "smoothness_results": {"timestamp"},
 }
 _SQLITE_DT = "%Y-%m-%d %H:%M:%S.%f"
 
@@ -205,12 +207,13 @@ def _relative(path_text: str, root: Path) -> str:
         return path_text
 
 
-def dump_rows(db_path: Path, root: Path) -> Dict[str, List[Dict[str, Any]]]:
-    """Every row of the five tables, normalised as the module docstring says."""
+def dump_rows(db_path: Path, root: Path, tables=TABLES) -> Dict[str, List[Dict[str, Any]]]:
+    """Every row of `tables` (the trim save's five by default), normalised as the module
+    docstring says."""
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         out = {}
-        for table in TABLES:
+        for table in tables:
             cur = con.execute(f"SELECT * FROM {table} ORDER BY id")
             cols = [d[0] for d in cur.description]
             rows = []
@@ -229,16 +232,24 @@ def dump_rows(db_path: Path, root: Path) -> Dict[str, List[Dict[str, Any]]]:
                     norm[col] = val
                 if row.get("file_path"):
                     norm["file_path"] = _relative(row["file_path"], root)
-                if facts and table == "processed_files":
-                    if norm["file_size"] == facts["size"]:
-                        norm["file_size"] = "<size of file>"
-                    if norm["file_modified_date"] == facts["mtime"]:
-                        norm["file_modified_date"] = "<mtime of file>"
-                    if norm["file_hash"] == facts["sha256"]:
-                        norm["file_hash"] = "<sha256 of file>"
-                    elif norm["file_hash"] == facts["skip"]:
+                    # A skip marker's hash comes from its PATH alone: checked whether or not a
+                    # file is there (an invented marker path has none).
+                    from laser_trim_analyzer.database.manager import DatabaseManager
+                    if norm.get("file_hash") == DatabaseManager.skip_marker_hash(row["file_path"]):
                         norm["file_hash"] = "<skip marker of this path>"
-                    if isinstance(norm["error_message"], str):
+                if facts:
+                    # processed_files, final_test_results and smoothness_results all record the
+                    # file's (size, mtime, hash); analysis_results only a (NULL) file_hash.
+                    if "file_size" in norm and norm["file_size"] == facts["size"]:
+                        norm["file_size"] = "<size of file>"
+                    if ("file_modified_date" in norm
+                            and norm["file_modified_date"] == facts["mtime"]):
+                        norm["file_modified_date"] = "<mtime of file>"
+                    if norm.get("file_hash") == facts["sha256"]:
+                        norm["file_hash"] = "<sha256 of file>"
+                    elif norm.get("file_hash") == facts["skip"]:
+                        norm["file_hash"] = "<skip marker of this path>"
+                    if isinstance(norm.get("error_message"), str):
                         norm["error_message"] = norm["error_message"].replace(
                             facts["sha256"], "<sha256 of file>")
                 if facts and table == "analysis_results" and norm["file_date"] == facts["mtime"]:
@@ -252,8 +263,9 @@ def dump_rows(db_path: Path, root: Path) -> Dict[str, List[Dict[str, Any]]]:
         con.close()
 
 
-def snapshot(db_path: Path, root: Path, ids) -> Dict[str, Any]:
-    return {"ids": [[label, rid] for label, rid in ids], "tables": dump_rows(db_path, root)}
+def snapshot(db_path: Path, root: Path, ids, tables=TABLES) -> Dict[str, Any]:
+    return {"ids": [[label, rid] for label, rid in ids],
+            "tables": dump_rows(db_path, root, tables)}
 
 
 def differences(got, want, where: str = "", out=None, limit: int = 40,
@@ -302,26 +314,27 @@ def reference_snapshot(steps, root: Path) -> Dict[str, Any]:
     return snapshot(path, root, ids)
 
 
-def assert_same_rows(snap: Dict[str, Any], reference: Dict[str, Any], what: str) -> None:
+def assert_same_rows(snap: Dict[str, Any], reference: Dict[str, Any], what: str,
+                     reference_is: str = "save_analysis") -> None:
     diffs = differences(snap, reference, exact=True)
-    assert not diffs, (f"{what} stored different rows than save_analysis did in the same process "
+    assert not diffs, (f"{what} stored different rows than {reference_is} did in the same process "
                        "(compared exactly):\n  " + "\n  ".join(diffs))
 
 
-def load_golden() -> Dict[str, Any]:
-    return json.loads(GOLDEN.read_text())
+def load_golden(golden: Path = GOLDEN) -> Dict[str, Any]:
+    return json.loads(golden.read_text())
 
 
-def write_golden(snap: Dict[str, Any]) -> None:
+def write_golden(snap: Dict[str, Any], golden: Path = GOLDEN) -> None:
     # One value per line (indent=1): a model name and a number never share a line, which is what
     # scripts/check_no_customer_values.py reads as "a model beside its price".
-    GOLDEN.write_text(json.dumps(snap, indent=1, sort_keys=True) + "\n")
+    golden.write_text(json.dumps(snap, indent=1, sort_keys=True) + "\n")
 
 
-def assert_matches_golden(snap: Dict[str, Any]) -> None:
-    diffs = differences(snap, load_golden())
-    assert not diffs, ("the save path stored different rows than today's save_analysis did "
-                       "(tests/fixtures/save_rows_golden.json):\n  " + "\n  ".join(diffs))
+def assert_matches_golden(snap: Dict[str, Any], golden: Path = GOLDEN) -> None:
+    diffs = differences(snap, load_golden(golden))
+    assert not diffs, (f"the save path stored different rows than today's code did "
+                       f"({golden.relative_to(REPO).as_posix()}):\n  " + "\n  ".join(diffs))
 
 
 # ---------------------------------------------------------------------------------------------
