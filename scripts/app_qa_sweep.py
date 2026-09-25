@@ -3088,6 +3088,171 @@ def check_track2_setup_fixtures() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# Columns a save stamps with the clock: equal by construction nowhere, compared nowhere.
+_SAVE_CLOCK_COLUMNS = {"timestamp", "processing_time", "created_date", "processed_date"}
+_SAVE_TABLES = ("analysis_results", "track_results", "trim_passes", "trim_setup", "processed_files")
+
+
+def _saved_rows(path: Path) -> dict:
+    """Every row of the five tables a trim save writes, minus the clock columns."""
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        out = {}
+        for table in _SAVE_TABLES:
+            cur = con.execute(f"SELECT * FROM {table} ORDER BY id")
+            cols = [d[0] for d in cur.description]
+            out[table] = [{c: v for c, v in zip(cols, row) if c not in _SAVE_CLOCK_COLUMNS}
+                          for row in cur.fetchall()]
+        return out
+    finally:
+        con.close()
+
+
+def check_write_batch_fixtures() -> None:
+    """The batch writer (ingest-speed Task 6, spec 3.2-3.6) on the four trim fixtures, into
+    throwaway databases (--only write-batch). Nothing calls it in the app yet (the ingest moves
+    onto it in Task 10); these are the four promises it has to keep when something does:
+    the rows it stores are save_analysis's, every column of every row; the batch is ONE
+    transaction that a second connection can neither see into nor write past (spec F4); a file
+    that fails rolls back alone, its processed marker with it (ruling 7); and a session opened
+    mid-batch is refused instead of committing the batch (spec F5, ruling 6).
+
+    Falsify before trusting (2026-09-25): delete write_batch's BEGIN IMMEDIATE line and its
+    tripwire -- the one-transaction check goes FAIL; run a file's body without its savepoint --
+    the rolls-back-alone check goes FAIL; stop `session()` refusing mid-batch -- the refusal
+    check goes FAIL.
+    """
+    import shutil
+    import tempfile
+    from sqlalchemy import event
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.database.manager import NestedSessionError, TrimWrite
+
+    fixtures = [f for f in (REPO / "tests" / "fixtures" / "trim" / n for n in _FOUR_8232_FIXTURES)
+                if f.is_file()]
+    check("write batch: the four trim fixtures are present", len(fixtures) == 4,
+          f"{[f.name for f in fixtures]}")
+    if len(fixtures) != 4:
+        return
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None))
+    tmp = Path(tempfile.mkdtemp(prefix="write_batch_sweep_"))
+    opened = []
+
+    def manager(name):
+        m = _mgr.DatabaseManager(tmp / name)
+        opened.append(m)
+        return m
+
+    try:
+        one_by_one = manager("one_by_one.db")
+        _mgr._db_manager = one_by_one              # BOTH globals: a Processor must never
+        _dbpkg._db_manager = one_by_one            # reach the configured database.
+        proc = Processor(use_ml=False)
+        results = [proc.process_file(f) for f in fixtures]
+        for r in results:
+            one_by_one.save_analysis(r)
+
+        batched = manager("batched.db")
+        other = sqlite3.connect(str(tmp / "batched.db"), timeout=0)
+        seen, commits = [], [0]
+
+        def at_savepoint(conn, name):
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                other.execute("ROLLBACK")
+                could = "could write"
+            except sqlite3.OperationalError as e:
+                could = str(e)
+            seen.append((could, other.execute("SELECT COUNT(*) FROM analysis_results").fetchone()[0]))
+
+        def at_commit(conn):
+            commits[0] += 1
+        event.listen(batched._engine, "savepoint", at_savepoint)
+        event.listen(batched._engine, "commit", at_commit)
+        try:
+            outcomes = batched.write_batch(
+                [TrimWrite(r, *batched._file_identity(r.metadata.file_path)) for r in results])
+        finally:
+            event.remove(batched._engine, "savepoint", at_savepoint)
+            event.remove(batched._engine, "commit", at_commit)
+            other.close()
+        check("write batch: all four fixtures saved in one batch",
+              [o.status for o in outcomes] == ["saved"] * 4, f"{outcomes}")
+        check("write batch: ONE transaction -- at every savepoint a second connection could not "
+              "write and saw no row; one COMMIT",
+              seen == [("database is locked", 0)] * 4 and commits[0] == 1,
+              f"seen={seen}; commits={commits[0]}")
+        want, got = _saved_rows(tmp / "one_by_one.db"), _saved_rows(tmp / "batched.db")
+        moved = []
+        for t in _SAVE_TABLES:
+            if len(want[t]) != len(got[t]):
+                moved.append(f"{t}: {len(want[t])} rows -> {len(got[t])}")
+            else:
+                moved += [f"{t}[{i}]" for i, (w, g) in enumerate(zip(want[t], got[t])) if w != g]
+        check("write batch: stores exactly what save_analysis stores (5 tables, every column "
+              "but the clock)", not moved,
+              f"differ: {moved[:5]}" if moved else
+              f"{sum(len(v) for v in got.values())} rows identical")
+
+        fails = manager("one_fails.db")
+        doomed = results[2].metadata.filename
+        real_setup = fails._write_trim_setup
+
+        def fails_after_its_rows(session, analysis_id, setup):
+            from laser_trim_analyzer.database.models import AnalysisResult as _A
+            if session.get(_A, analysis_id).filename == doomed:
+                raise RuntimeError("invented failure after the file's rows were flushed")
+            return real_setup(session, analysis_id, setup)
+        fails._write_trim_setup = fails_after_its_rows
+        outcomes = fails.write_batch(
+            [TrimWrite(r, *fails._file_identity(r.metadata.file_path)) for r in results])
+        con = sqlite3.connect(f"file:{tmp / 'one_fails.db'}?mode=ro", uri=True)
+        try:
+            left = [con.execute(f"SELECT COUNT(*) FROM {t} WHERE filename = ?", (doomed,)).fetchone()[0]
+                    for t in ("analysis_results", "processed_files")]
+            orphans = con.execute("SELECT COUNT(*) FROM track_results WHERE analysis_id NOT IN "
+                                  "(SELECT id FROM analysis_results)").fetchone()[0]
+            others = con.execute("SELECT COUNT(*) FROM processed_files").fetchone()[0]
+        finally:
+            con.close()
+        check("write batch: a file that fails rolls back alone -- no rows, no marker -- and the "
+              "other three commit with theirs",
+              [o.status for o in outcomes] == ["saved", "saved", "failed", "saved"]
+              and left == [0, 0] and orphans == 0 and others == 3,
+              f"outcomes={[o.status for o in outcomes]}; left={left}; orphans={orphans}; "
+              f"markers={others}")
+
+        refusal = manager("refusal.db")
+        raised = []
+        real_setup2 = refusal._write_trim_setup
+
+        def opens_its_own(session, analysis_id, setup):
+            try:
+                with refusal.session() as s:
+                    s.execute(sqlalchemy_text("SELECT 1"))
+            except Exception as e:
+                raised.append(type(e).__name__)
+                raise
+            return real_setup2(session, analysis_id, setup)
+        refusal._write_trim_setup = opens_its_own
+        outcomes = refusal.write_batch(
+            [TrimWrite(r, *refusal._file_identity(r.metadata.file_path)) for r in results[:1]])
+        check("write batch: a session opened mid-batch is refused (NestedSessionError) and its "
+              "file fails, never commits the batch",
+              raised == [NestedSessionError.__name__] and outcomes[0].status == "failed"
+              and _saved_rows(tmp / "refusal.db")["analysis_results"] == [],
+              f"raised={raised}; outcome={outcomes[0]}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("write batch: the fixtures run through it", False, f"{type(e).__name__}: {e}")
+    finally:
+        _mgr._db_manager, _dbpkg._db_manager = saved
+        for m in opened:
+            m.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def check_track2_setup_on_database(raw) -> None:
     """On the copy: how many two-track System A/C analyses have (not yet) been
     reprocessed under this feature, and every one that HAS carries a Track 2 block
@@ -4352,6 +4517,8 @@ def main() -> int:
         check_track2_setup_fixtures()
     with _guard("track 2 setup: on the database"):
         check_track2_setup_on_database(raw)
+    with _guard("write batch: fixtures"):
+        check_write_batch_fixtures()
 
     # Ingest guard fires on a synthetic corrupt track.
     with _guard("ingest guard: a synthetic corrupt track"):
@@ -4968,7 +5135,8 @@ STANDALONE = {"glosses": check_usability_glosses,
               "increment-volts": lambda: (check_increment_volts_fixtures(),
                                           check_increment_volts_corpus()),
               "initial-trim-value": check_initial_trim_value_fixtures,
-              "track2-setup": check_track2_setup_fixtures}
+              "track2-setup": check_track2_setup_fixtures,
+              "write-batch": check_write_batch_fixtures}
 
 
 if __name__ == "__main__":

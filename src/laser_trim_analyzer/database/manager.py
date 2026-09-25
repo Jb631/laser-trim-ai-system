@@ -17,9 +17,10 @@ import json
 import logging
 import re
 import threading
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
+from typing import Dict, List, Optional, Any, Union, Iterator, Sequence, Tuple
 from contextlib import contextmanager
 
 from sqlalchemy import (create_engine, exists, func, and_, or_, desc, text, case, select,
@@ -256,6 +257,68 @@ class DatabaseError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# The batch writer's vocabulary (ingest-speed Task 6, spec 3.2-3.6).
+# ---------------------------------------------------------------------------
+
+class NestedSessionError(DatabaseError):
+    """A session was opened on a thread that has a `write_batch` open (ruling 6).
+
+    The app has ONE SQLite connection (StaticPool), so that session's commit would commit the
+    batch mid-way and its rollback would roll it back (spec F5, measured). Every write a batch
+    runs takes the batch's session instead.
+    """
+
+
+class BatchCommitError(DatabaseError):
+    """A `write_batch` transaction could not be opened or committed: NOTHING of it is stored.
+
+    (One exception, which its cause says in words: the transaction was found to have ENDED
+    mid-batch -- the tripwire in `write_batch`. Files before that point may then have been stored
+    one by one; each has its marker or not, so the next scan decides which are new.)
+
+    `outcomes` holds one `failed` outcome per item -- never `saved`. `cause` is the underlying
+    error. `consecutive` is how many batch commits in a row have now failed on this database
+    (reset by the next one that commits): ruling 22's "two consecutive failed batch commits stop
+    the folder with the error named" is the CALLER's to act on, and this is what it reads. One
+    failure alone is survivable: its files are new again next run.
+    """
+
+    def __init__(self, cause: BaseException, outcomes: List["WriteOutcome"], consecutive: int):
+        self.cause = cause
+        self.outcomes = outcomes
+        self.consecutive = consecutive
+        super().__init__(
+            f"a batch of {len(outcomes)} file(s) could not be committed "
+            f"({consecutive} failed batch commit(s) in a row): {type(cause).__name__}: {cause}")
+
+
+@dataclass(frozen=True)
+class TrimWrite:
+    """One trim result for `write_batch`, with the (size, mtime) and SHA-256 of the bytes that
+    were PARSED -- recorded on its processed-files marker as given (ruling 10). (None, None):
+    the file could not be statted; its rows are written, no marker is."""
+    analysis: AnalysisResult
+    stat: Optional[Tuple[int, float]]
+    file_hash: Optional[str]
+
+
+SAVED, DUPLICATE, FAILED = "saved", "duplicate", "failed"
+
+
+@dataclass(frozen=True)
+class WriteOutcome:
+    """What `write_batch` did with one item, once the batch COMMITTED.
+
+    `saved` carries the row id. `duplicate` is a UNIQUE constraint -- the unit is already stored
+    (the bucket the ingest has always called "skipped"). `failed` carries why. A duplicate or a
+    failed item left nothing behind: its savepoint was rolled back, rows and marker together.
+    """
+    status: str
+    row_id: Optional[int] = None
+    reason: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # The implicit default database is the APP's alone (2026-09-24).
 #
 # `DatabaseManager()` with no path -- which is what `get_database()` builds
@@ -410,11 +473,17 @@ class DatabaseManager:
             conn.execute(text("PRAGMA foreign_keys=ON"))
             conn.commit()
 
-        # Create session factory
-        self._SessionFactory = sessionmaker(bind=self._engine)
+        # Create session factory. Every Session is made by `_new_session()`, which refuses one
+        # on a thread that has a write batch open (ruling 6) -- through `session()` or directly.
+        self._session_maker = sessionmaker(bind=self._engine)
 
-        # Thread-local session storage
+        # Thread-local state. `batch_open`: this thread is inside `write_batch`.
+        # `batch_violation`: a session was refused inside the current batch item (kept even if
+        # the refusal was swallowed, so the item fails anyway).
         self._thread_local = threading.local()
+
+        # Batch commits that failed in a row (ruling 22); reset by one that commits.
+        self._failed_batch_commits = 0
 
         # Re-entrant DB lock. With StaticPool every thread shares one
         # underlying SQLite connection, so all session() / cursor.execute
@@ -1827,9 +1896,15 @@ class DatabaseManager:
         ("bad parameter or other API misuse"). Serialising at the session
         boundary eliminates that race; reentrant so nested session() blocks
         and the explicit _write_lock acquisitions still work.
+
+        Raises NestedSessionError on a thread that has a `write_batch` open:
+        the RLock would let it in, and on the one shared connection its
+        commit would commit the batch (spec F5, ruling 6). Checked BEFORE the
+        lock, so another thread is never refused -- it waits for the batch.
         """
+        self._refuse_inside_batch()
         with self._write_lock:
-            session = self._SessionFactory()
+            session = self._new_session()
             try:
                 yield session
                 session.commit()
@@ -1839,6 +1914,128 @@ class DatabaseManager:
                 raise
             finally:
                 session.close()
+
+    def _refuse_inside_batch(self) -> None:
+        """Raise NestedSessionError if THIS thread has a write batch open -- and remember it, so a
+        caller that swallows the exception still fails its batch item."""
+        tl = self._thread_local
+        if getattr(tl, "batch_open", False):
+            tl.batch_violation = (
+                "a database session was opened inside a write batch: on the app's one SQLite "
+                "connection its commit would commit the batch (spec F5) -- write through the "
+                "batch's session instead")
+            raise NestedSessionError(tl.batch_violation)
+
+    def _new_session(self) -> Session:
+        """The one place a Session is made: refused mid-batch, as above."""
+        self._refuse_inside_batch()
+        return self._session_maker()
+
+    # =========================================================================
+    # Write batches (ingest-speed Task 6, spec 3.2-3.6)
+    # =========================================================================
+
+    def write_batch(self, items: Sequence[TrimWrite]) -> List[WriteOutcome]:
+        """Write many files in ONE transaction, a savepoint per file; one outcome per item.
+
+        * BEGIN IMMEDIATE is the transaction's first statement (ruling 4). The engine uses
+          pysqlite's legacy transaction control, which emits no BEGIN before a SAVEPOINT: SQLite
+          then starts the transaction AT the first savepoint and RELEASE of it is a COMMIT, so
+          without this line a "batch" commits once per file, silently (spec F4). IMMEDIATE also
+          takes the write lock up front: another process holding it makes BEGIN wait
+          busy_timeout and fail loudly, never half-way through the batch.
+        * A SAVEPOINT per file, holding the file's rows AND its processed-files marker (ruling
+          7): one bad file rolls back alone, and "processed" is exactly "committed" -- a crash
+          before the COMMIT leaves every file of the batch new, since the ingest's scan reads
+          only committed markers (spec 3.4, F6).
+        * No other session on this thread until the batch is done (ruling 6): `session()`
+          raises NestedSessionError, and a refusal a caller swallowed still fails its file.
+        * The whole batch holds `_write_lock` (through `session()`): other threads wait for it,
+          they are never refused.
+
+        Returns one WriteOutcome per item, in order, once the batch has COMMITTED. If the
+        transaction cannot be opened or committed, NOTHING is stored and BatchCommitError is
+        raised carrying every item as `failed` and how many batch commits in a row have failed.
+        The flush policy -- how many files, how often -- is the caller's (spec 3.1, ruling 5).
+        """
+        items = list(items)
+        for item in items:
+            if not isinstance(item, TrimWrite):
+                raise TypeError(f"write_batch takes TrimWrite items, not {type(item).__name__}")
+        if not items:
+            return []
+        tl = self._thread_local
+        with self._write_lock:
+            outcomes: List[WriteOutcome] = []
+            opened = False
+            try:
+                with self.session() as session:       # NestedSessionError if a batch is open
+                    tl.batch_open = opened = True
+                    connection = session.connection()
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                    dbapi = connection.connection.dbapi_connection
+                    self._batch_still_open(dbapi, "BEGIN IMMEDIATE")
+                    for item in items:
+                        outcomes.append(self._write_one(session, item))
+                        self._batch_still_open(dbapi, item.analysis.metadata.filename)
+                # session() has committed: the batch is stored.
+            except Exception as exc:
+                if not opened and isinstance(exc, NestedSessionError):
+                    raise                            # write_batch inside a batch: a bug, not a commit
+                self._failed_batch_commits += 1
+                why = f"the batch was not committed: {type(exc).__name__}: {exc}"
+                raise BatchCommitError(exc, [WriteOutcome(FAILED, reason=why[:500]) for _ in items],
+                                       self._failed_batch_commits) from exc
+            finally:
+                if opened:
+                    tl.batch_open = False
+                    tl.batch_violation = None
+            self._failed_batch_commits = 0
+            return outcomes
+
+    def _write_one(self, session: Session, item: TrimWrite) -> WriteOutcome:
+        """One file of a batch, in its own savepoint: its rows and its marker commit together
+        with the batch, or roll back together, alone. A failure of the savepoint machinery
+        itself (SAVEPOINT, ROLLBACK TO) is the batch's and propagates."""
+        tl = self._thread_local
+        tl.batch_violation = None
+        savepoint = session.begin_nested()
+        try:
+            row_id = self._save_analysis_in(session, item.analysis, item.stat, item.file_hash)
+            if tl.batch_violation is not None:      # a refused session it swallowed
+                raise NestedSessionError(tl.batch_violation)
+            savepoint.commit()                      # RELEASE: still inside the batch
+        except Exception as exc:
+            savepoint.rollback()                    # ROLLBACK TO: this file's rows AND marker
+            return self._item_failure(item, exc)
+        finally:
+            # Each file's body starts from an empty identity map, as it did in a session of its
+            # own. Defensive, not load-bearing today (removing it changes no stored row: the
+            # identity map holds clean objects weakly and nothing here keeps them), but the bodies
+            # delete in bulk and lean on ON DELETE CASCADE, and neither tells the session -- so an
+            # earlier file's object can never stand in for a row a later file's body reads.
+            session.expunge_all()
+        return WriteOutcome(SAVED, row_id=row_id)
+
+    @staticmethod
+    def _item_failure(item: TrimWrite, exc: Exception) -> WriteOutcome:
+        name = item.analysis.metadata.filename
+        why = f"{type(exc).__name__}: {exc}"[:500]
+        if isinstance(exc, IntegrityError) and "UNIQUE constraint" in str(exc):
+            logger.warning(f"{name}: not saved, a UNIQUE constraint says it is already stored: {why}")
+            return WriteOutcome(DUPLICATE, reason=why)
+        logger.error(f"Save failed for {name}: {why}")
+        return WriteOutcome(FAILED, reason=why)
+
+    @staticmethod
+    def _batch_still_open(dbapi_connection, after: str) -> None:
+        """Tripwire: the batch's transaction must stand from BEGIN IMMEDIATE to its COMMIT. If it
+        has ended -- a commit through another route, or pysqlite's transaction handling changed
+        under us (spec F4) -- files may have been stored one by one: say so, and stop."""
+        if not dbapi_connection.in_transaction:
+            raise DatabaseError(
+                f"the batch's transaction ended before its commit (after {after}): files of this "
+                "batch may have been stored one by one; the next scan decides which")
 
     # =========================================================================
     # Analysis Results
@@ -1977,64 +2174,54 @@ class DatabaseManager:
 
     def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
         """
-        Save multiple analysis results efficiently.
+        Save multiple analysis results in ONE transaction.
+
+        A wrapper over `write_batch` (ruling 8, 2026-09-25): one BEGIN IMMEDIATE transaction,
+        a savepoint per file, so each file is written exactly as `save_analysis` writes it --
+        trim_passes and trim_setup included, which the old commit-per-file body here never
+        wrote for a new file (the parked C2 finding). It has no callers; its signature and
+        its contract are kept: a final-test or smoothness result passes through as
+        `save_analysis` returns it, and a file that fails is logged and left out.
 
         Args:
             analyses: List of AnalysisResult objects
 
         Returns:
-            List of database IDs
+            List of database IDs, in input order, of what was saved
         """
-        saved_ids = []
+        ids: List[Optional[int]] = []
+        items: List[TrimWrite] = []
+        slots: List[int] = []
+        for analysis in analyses:
+            file_type = getattr(analysis, 'file_type', 'trim')
+            if file_type == 'final_test':
+                ids.append(getattr(analysis, 'final_test_id', -1) or -1)
+                continue
+            if file_type == 'smoothness':
+                ids.append(getattr(analysis, 'smoothness_id', -1) or -1)
+                continue
+            try:
+                # Taken before the transaction, as save_analysis does (ruling 10).
+                stat, file_hash = self._file_identity(analysis.metadata.file_path)
+            except Exception as e:
+                logger.error(f"Failed to save analysis {getattr(analysis.metadata, 'filename', '?')}: {e}")
+                continue
+            slots.append(len(ids))
+            ids.append(None)
+            items.append(TrimWrite(analysis, stat, file_hash))
 
-        with self._write_lock:
-            for analysis in analyses:
-                try:
-                    # Skip Final Test files - they're already saved in processor
-                    if getattr(analysis, 'file_type', 'trim') == 'final_test':
-                        saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
-                        continue
-                    # Taken before the session, as save_analysis does (ruling 10).
-                    stat, file_hash = self._file_identity(analysis.metadata.file_path)
-                    with self.session() as session:
-                        # Check for existing record by the DB UNIQUE key
-                        # (filename, file_date, model, serial).  Must match
-                        # save_analysis; see comment there for rationale.
-                        existing = session.query(DBAnalysisResult).filter(
-                            DBAnalysisResult.filename == analysis.metadata.filename,
-                            DBAnalysisResult.file_date == analysis.metadata.file_date,
-                            DBAnalysisResult.model == analysis.metadata.model,
-                            DBAnalysisResult.serial == analysis.metadata.serial,
-                        ).first()
+        try:
+            outcomes = self.write_batch(items)
+        except BatchCommitError as e:
+            logger.error(f"Failed to save a batch of {len(items)} analyses: {e}")
+            outcomes = e.outcomes
+        for slot, item, outcome in zip(slots, items, outcomes):
+            if outcome.status == SAVED:
+                ids[slot] = outcome.row_id
+            else:
+                logger.error(f"Failed to save analysis {item.analysis.metadata.filename}: {outcome.reason}")
 
-                        if existing:
-                            # Update existing record
-                            updated_id = self._update_existing_analysis(
-                                session, analysis, stat, file_hash)
-                            saved_ids.append(updated_id)
-                        else:
-                            # Create new record
-                            db_analysis = self._map_analysis_to_db(analysis)
-                            session.add(db_analysis)
-                            session.flush()
-
-                            is_success = analysis.overall_status != AnalysisStatus.ERROR
-                            self._record_processed_file(
-                                session,
-                                analysis.metadata.file_path,
-                                db_analysis.id,
-                                success=is_success,
-                                # See save_analysis for why reason/marker_reason differ.
-                                reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
-                                marker_reason=_error_reason(analysis),
-                                stat=stat,
-                                file_hash=file_hash,
-                            )
-
-                            saved_ids.append(db_analysis.id)
-                except Exception as e:
-                    logger.error(f"Failed to save analysis {getattr(analysis.metadata, 'filename', '?')}: {e}")
-
+        saved_ids = [i for i in ids if i is not None]
         logger.info(f"Saved batch of {len(saved_ids)} analyses")
         return saved_ids
 
@@ -8251,7 +8438,7 @@ class DatabaseManager:
 
         updated = 0
         with self._write_lock:
-            session = self._SessionFactory()
+            session = self._new_session()
             try:
                 # Get total count first
                 total = session.execute(text(
