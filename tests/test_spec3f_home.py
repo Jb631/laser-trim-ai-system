@@ -730,8 +730,9 @@ def _pump_until(app, done, seconds=10.0):
 
 def _older_then_newer(fake_older, fake_newer):
     """A loader whose FIRST call is the older load -- it blocks until released -- and whose later
-    calls are the newer load, answered at once. Returns (loader, release) where release() lets the
-    older one finish and waits until its worker thread has posted its apply and exited."""
+    calls are the newer load, answered at once. It carries two helpers: `.started()` waits until
+    the older call is inside it, and `.release()` lets that call finish and waits until its worker
+    thread has posted its apply and exited."""
     import threading
     import time
     gate, state = threading.Event(), {}

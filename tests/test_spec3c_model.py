@@ -897,7 +897,9 @@ def test_the_drift_tabs_columns_follow_a_live_change_of_scaling(tk_root):
         want = [int(dm._COL_MINSIZE.get(i, 0) * 1.5 + 0.5) for i in range(len(dm._COLUMNS))]
         header = _drift_header(tab)
         assert minimums(header) == want, "the header kept the old scaling's column widths"
-        assert all(minimums(row) == want for row in tab._rows.values())
+        for row in tab._rows.values():                 # the rows built at 100%
+            assert minimums(row) == want
+            assert columns(row) == columns(header), (row.metric, columns(row), columns(header))
         tab.set_status(_status())                      # rows rebuilt at 150%
         settle()
         for row in tab._rows.values():
