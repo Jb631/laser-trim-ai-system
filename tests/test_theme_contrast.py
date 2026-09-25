@@ -289,8 +289,8 @@ def test_no_v6_dropdown_or_switch_is_built_with_the_defective_colour():
     measures 7.47:1, so an unstyled site is still SAFE, just inconsistent with the rest of the
     app's teal. `widgets/history_tab.py`'s menu used to be exactly that -- the one dropdown left
     unstyled after step 1's review fixed the other seven -- until facelift step 2 Task 3 themed
-    it too (controller ruling); the `themed` count below pins that all seven-now-eight
-    CTkOptionMenu sites carry the token outright, not merely "not wrong".
+    it too (controller ruling); the `themed` count below pins that all 7 CTkOptionMenu sites
+    carry the token outright, not merely "not wrong".
     CTkSwitch: the one construction site must carry the token outright -- there is no already-safe
     default to fall back on here (ctk_switch.py's own default button_color measured 1.27:1 against
     progress_color=ACCENT).
@@ -332,7 +332,6 @@ def test_no_v6_dropdown_or_switch_is_built_with_the_defective_colour():
     # safe" holdout (history_tab.py was the last one; this fails again the day a new dropdown
     # is added unstyled, the same way the old permissive-only check let history_tab.py through).
     assert themed["CTkOptionMenu"] == seen["CTkOptionMenu"], (themed, seen)
-    assert not bad, "\n".join(bad)
     assert not bad, "\n".join(bad)
 
 
