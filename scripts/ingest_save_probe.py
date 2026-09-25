@@ -35,13 +35,24 @@ checkpoint); p99 is over single saves at batch 1 and over whole batches otherwis
 what the app does today; `1 OFF` is only the floor -- no flush at all, never a proposal.
 
 THE LOOP LINES. `rest` is what the ingest's own loop costs per file beyond parsing on 4 threads and
-the save's own CPU: batch barriers, GC, bookkeeping -- and whatever the unexplained part is.
+the save's own CPU: batch barriers, GC, bookkeeping -- and whatever the unexplained part is. The LOOP
+runs under the app's OWN pragmas (read from the copy's connection as the app opens it), never under
+whichever SAVE setting happened to run last.
+
+POINT IT AT A LASER FOLDER (DLTS or LTS). Final-test and smoothness files are saved by the processor
+itself the moment they are parsed, so in another folder they would land in the copy untimed and
+un-forgotten; the SAVE block times trim saves only.
+
+WHEN SOMETHING GOES WRONG the last line says so in words -- `FAILED: <step>: <error> -- ...` --
+with the copy and temp files already deleted (or it says which could not be), and the Python
+detail above it for Claude. Exit codes: 0 done, 1 failed, 2 refused, 130 interrupted.
 """
 import argparse
 import gc
 import hashlib
 import logging
 import multiprocessing as mp
+import ntpath
 import os
 import platform
 import re
@@ -51,6 +62,7 @@ import statistics
 import sys
 import tempfile
 import time
+import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -64,8 +76,11 @@ from _db_guard import is_production_db  # noqa: E402
 BATCHES = (1, 10, 50)
 SYNCS = ("FULL", "NORMAL")
 CACHES_MB = (2, 64)
+# PRAGMA cache_size values, in KiB when negative. "2MB" is SQLite's own default (-2000) -- what the
+# app runs today, having never set it; "64MB" is ruling 12's value.
+CACHE_PRAGMA = {2: -2000, 64: -65536}
+SYNC_CODE = {"OFF": 0, "NORMAL": 1, "FULL": 2}
 SETTINGS = [(b, s, c) for b in BATCHES for s in SYNCS for c in CACHES_MB]
-TODAY = (1, "FULL", 2)
 FLOOR = (1, "OFF", 2)
 ROUNDS = 2
 HEADER = "batch  sync    cache   total  python   sql  commit    p99"
@@ -80,8 +95,21 @@ LOOP_WIDTH = len(LOOP_LABELS[0])
 # ---------------------------------------------------------------------------------------------
 # refusals -- every one of them decided before a single byte is written
 
-def _inside_a_data_folder(path: Path) -> bool:
-    return any(part.casefold() == "data" for part in path.resolve().parent.parts)
+def _inside_a_data_folder(path) -> bool:
+    """True when any folder above `path` is named `data` -- in any case and any spelling Windows
+    accepts: back- or forward slashes, a drive or UNC root, relative, with `..` in it.
+
+    Resolved first (relative -> absolute, `..` folded away, symlinks followed); a path written
+    with backslashes is then normalised the Windows way whatever machine this runs on, so the
+    rule means the same thing on the Mac that tests it as on the laptop that runs it."""
+    try:
+        text = str(Path(path).resolve())
+    except OSError:
+        text = os.path.abspath(str(path))
+    if "\\" in text:
+        text = ntpath.normpath(text)
+    parts = [p for p in re.split(r"[\\/]+", text) if p]
+    return any(p.casefold() == "data" for p in parts[:-1])
 
 
 def _refusal(source: Path, copy: Path, files_dir: Path, folder: Path, n: int):
@@ -142,6 +170,29 @@ def _raw(db) -> sqlite3.Connection:
     """The one DBAPI connection behind the manager's StaticPool."""
     with db._engine.connect() as c:
         return c.connection.dbapi_connection
+
+
+def _app_pragmas(db):
+    """(synchronous, cache_size) as the APP's own connection has them -- read before any setting
+    runs, so it is whatever the app's connect listener sets today plus SQLite's defaults."""
+    rc = _raw(db)
+    return (rc.execute("PRAGMA synchronous").fetchone()[0],
+            rc.execute("PRAGMA cache_size").fetchone()[0])
+
+
+def _set_pragmas(db, synchronous, cache_size) -> None:
+    rc = _raw(db)
+    rc.execute(f"PRAGMA synchronous={int(synchronous)}")
+    rc.execute(f"PRAGMA cache_size={int(cache_size)}")
+
+
+def _today(app):
+    """The SAVE setting that IS the app today (batch 1, its own pragmas), or None."""
+    sync, cache = app
+    for b, s, c in SETTINGS:
+        if b == 1 and SYNC_CODE[s] == sync and CACHE_PRAGMA[c] == cache:
+            return (b, s, c)
+    return None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -317,9 +368,7 @@ def _p99(samples):
 
 def _run_setting(db, results, setting, tag, timer, hashes):
     batch, sync, cache_mb = setting
-    rc = _raw(db)
-    rc.execute(f"PRAGMA synchronous={sync}")
-    rc.execute(f"PRAGMA cache_size={-cache_mb * 1024}")
+    _set_pragmas(db, SYNC_CODE[sync], CACHE_PRAGMA[cache_mb])
     items = []
     for r in results:
         a = r.model_copy(deep=True)
@@ -352,11 +401,11 @@ def _run_setting(db, results, setting, tag, timer, hashes):
             "p99": _p99(samples) * 1e3, "failed": failed}
 
 
-def _row(setting, m) -> str:
+def _row(setting, m, today=None) -> str:
     b, s, c = setting
     line = (f"{b:>5}  {s:<7}{c:>3}MB{m['total']:>9.1f}{m['python']:>8.1f}{m['sql']:>6.1f}"
             f"{m['commit']:>8.1f}{m['p99']:>7.1f}")
-    if setting == TODAY:
+    if setting == today:
         line += "   <- today"
     elif setting == FLOOR:
         line += "   <- reference only: no flush at all"
@@ -365,7 +414,7 @@ def _row(setting, m) -> str:
     return line
 
 
-def _run_save_block(db, results) -> None:
+def _run_save_block(db, results, today=None) -> None:
     n = len(results)
     print(f"SAVE  {n} new results per setting, median of {ROUNDS} rounds, ms per file")
     print(HEADER)
@@ -386,7 +435,7 @@ def _run_save_block(db, results) -> None:
         m = {k: statistics.median(r[k] for r in rs)
              for k in ("total", "python", "sql", "commit", "p99")}
         m["failed"] = [f for r in rs for f in r["failed"]]
-        print(_row(setting, m))
+        print(_row(setting, m, today))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -473,14 +522,31 @@ def _time_threads(proc, paths, n) -> float:
     return (time.perf_counter() - t) / len(paths) * 1e3
 
 
-def _time_processes(db, proc, paths, n):
-    """(ms/file, seconds until every worker was up). Start-up is NOT charged to throughput."""
+def _sendable_predictors(predictors):
+    """(what can be sent to a worker, None) -- or ({}, the reason) when the ML predictors cannot
+    be pickled. Then the process line runs WITHOUT them and must say so: next to lines that ran
+    with them it would otherwise read as the same analysis, and it is not."""
     import pickle
-    predictors = dict(proc._model_predictors)
+    predictors = dict(predictors)
+    if not predictors:
+        return {}, None
     try:
         pickle.dumps(predictors)
-    except Exception:
-        predictors = {}
+    except Exception as e:
+        return {}, (f"<- WITHOUT the {len(predictors)} ML predictors: they could not be sent to a "
+                    f"worker ({type(e).__name__}: {e})")[:240]
+    return predictors, None
+
+
+def _process_line(n, ready, value, note) -> str:
+    line = _loop_line(LOOP_LABELS[3].format(n=n, ready=ready), value)
+    return f"{line}   {note}" if note else line
+
+
+def _time_processes(db, proc, paths, n):
+    """(ms/file, seconds until every worker was up, a note if the predictors stayed behind).
+    Start-up is NOT charged to throughput."""
+    predictors, note = _sendable_predictors(proc._model_predictors)
     ctx = mp.get_context("spawn")                     # what Windows does, on every platform
     t0 = time.perf_counter()
     with ProcessPoolExecutor(max_workers=n, mp_context=ctx, initializer=_pool_init,
@@ -495,7 +561,7 @@ def _time_processes(db, proc, paths, n):
         t = time.perf_counter()
         list(ex.map(_pool_work, [str(p) for p in paths], chunksize=1))
         wall = time.perf_counter() - t
-    return wall / len(paths) * 1e3, ready
+    return wall / len(paths) * 1e3, ready, note
 
 
 def _time_run_folder(db, files_dir: Path, paths):
@@ -585,8 +651,8 @@ def _run_loop_block(db, paths, files_dir: Path, procs: int) -> None:
     print(_loop_line(LOOP_LABELS[2], threads), flush=True)
 
     _status(f"LOOP  parsing on {procs} processes")
-    per, ready = _time_processes(db, real, paths, procs)
-    print(_loop_line(LOOP_LABELS[3].format(n=procs, ready=ready), per), flush=True)
+    per, ready, note = _time_processes(db, real, paths, procs)
+    print(_process_line(procs, ready, per, note), flush=True)
 
     _status("LOOP  today's loop")
     loop, save_wall, save_cpu, gc_ms = _time_run_folder(db, files_dir, paths)
@@ -630,8 +696,28 @@ def _parse_args(argv):
     return ap.parse_args(argv)
 
 
+FAILED_TAIL = "send Claude this output"
+
+
+def _robust_stdout() -> None:
+    """A console that cannot show a character must never turn the report into a crash."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
+def _failed(step: str, error: BaseException, detail: str, what_happened: str) -> None:
+    """The Python detail first, for Claude -- then ONE plain line, always the last one printed."""
+    if detail:
+        print(detail.rstrip())
+    print(f"FAILED: {step}: {type(error).__name__}: {error} — {what_happened}; {FAILED_TAIL}")
+
+
 def main(argv=None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
+    _robust_stdout()
     source = Path(args.db) if args.db else REPO / "data" / "analysis.db"
     source_label = str(source) if args.db else str(Path("data") / "analysis.db")
     tmp_root = Path(args.tmp) if args.tmp else Path(tempfile.gettempdir())
@@ -639,7 +725,13 @@ def main(argv=None) -> int:
     copy = tmp_root / f"ingest_save_probe_{os.getpid()}.db"
     files_dir = tmp_root / f"ingest_save_probe_{os.getpid()}_files"
 
-    problem = _refusal(source, copy, files_dir, folder, args.n)
+    # Outside the clean-up below on purpose: a refusal names files that are NOT ours to delete
+    # (a leftover from another run, say), and before this passes nothing has been written.
+    try:
+        problem = _refusal(source, copy, files_dir, folder, args.n)
+    except Exception as e:
+        _failed("checking the paths", e, traceback.format_exc(), "nothing was written")
+        return 1
     if problem:
         print(f"REFUSED: {problem}")
         return 2
@@ -649,37 +741,54 @@ def main(argv=None) -> int:
     before = (mgr._db_manager, getattr(dbpkg, "_db_manager", None))
     quiet = logging.root.manager.disable
     logging.disable(logging.WARNING)       # per-file parser warnings would bury the numbers
-    db, interrupted = None, False
+    db, interrupted, failure, step = None, False, None, "starting"
     try:
         print(_machine_line(tmp_root), flush=True)
+        step = "copying the database"
         _status("copying the database (read-only) ...")
         t = time.perf_counter()
         _backup(source, copy)
         made = time.perf_counter() - t
         print(f"copy   {copy}  {copy.stat().st_size / 1e9:.2f} GB  made in {made:.0f} s from "
               f"{source_label} (read-only)", flush=True)
+        step = "opening the copy"
         from laser_trim_analyzer.ml import invalidate_shared_ml_manager
         invalidate_shared_ml_manager()     # a cached ML manager could belong to another database
         db = _open_copy(copy)
+        app = _app_pragmas(db)             # the app's own, before any setting touches them
+        step = "walking the folder"
         _status("walking the folder ...")
         files, found = _pick(folder, args.n)
+        step = "copying the files"
         paths = _copy_locally(files, folder, files_dir)
         print(f"files  {len(paths)} of {found:,} from {folder}, first in discovery order, "
               "copied locally", flush=True)
+        step = "parsing the files"
         _status(f"parsing {len(paths)} files once ...")
         results = _parse_once(paths)
+        step = "clearing their rows from the copy"
         _forget(db, results)
         print()
-        _run_save_block(db, results)
+        step = "saving the results"
+        _run_save_block(db, results, _today(app))
         if not args.no_loop and paths:
             print()
+            step = "timing the loop"
+            # Explicitly the app's own pragmas: the SAVE block leaves whichever setting ran last.
+            _set_pragmas(db, *app)
             _run_loop_block(db, paths, files_dir, max(1, args.procs))
     except KeyboardInterrupt:
         interrupted = True
+    except Exception as e:
+        failure = (step, e, traceback.format_exc())
     finally:
         _status("")
-        if db is not None:
-            db.close()
+        closing = []
+        try:
+            if db is not None:
+                db.close()
+        except Exception as e:             # never allowed to hide what went wrong first
+            closing.append(f"the copy would not close ({type(e).__name__}: {e})")
         mgr._db_manager, dbpkg._db_manager = before
         try:
             from laser_trim_analyzer.ml import invalidate_shared_ml_manager
@@ -687,15 +796,29 @@ def main(argv=None) -> int:
         except Exception:
             pass
         logging.disable(quiet)
-        left = _cleanup(copy, files_dir, keep=args.keep)
-        if interrupted:
-            print("interrupted")
+        try:
+            left = closing + _cleanup(copy, files_dir, keep=args.keep)
+        except Exception as e:
+            left = closing + [f"the clean-up itself failed ({type(e).__name__}: {e})"]
+
+    if failure:
         if left:
-            print("could NOT delete: " + "; ".join(left) + " -- delete by hand")
+            what = (f"the copy and temp files could NOT all be deleted ({'; '.join(left)}) — "
+                    "delete them by hand")
         elif args.keep and copy.exists():
-            print(f"copy kept at {copy} -- delete it when done; temp files deleted.")
+            what = f"the copy was kept at {copy}; the temp files were deleted"
         else:
-            print("copy and temp files deleted.")
+            what = "the copy and temp files were deleted"
+        _failed(failure[0], failure[1], failure[2], what)
+        return 1
+    if interrupted:
+        print("interrupted")
+    if left:
+        print("could NOT delete: " + "; ".join(left) + " -- delete by hand")
+    elif args.keep and copy.exists():
+        print(f"copy kept at {copy} -- delete it when done; temp files deleted.")
+    else:
+        print("copy and temp files deleted.")
     return 130 if interrupted else 0
 
 

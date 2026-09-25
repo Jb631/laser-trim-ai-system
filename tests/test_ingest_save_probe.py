@@ -104,6 +104,45 @@ def test_a_copy_inside_a_data_folder_is_refused(probe, work, capsys):
     assert list(data.iterdir()) == []            # refused BEFORE anything was written
 
 
+@pytest.mark.parametrize("spelling", [
+    r"C:\dev\laser-trim-ai-system\data\ingest_save_probe_1.db",    # backslashes
+    r"C:\dev\laser-trim-ai-system\DATA\Analysis.DB",               # another case
+    r"\\192.168.66.9\share\Data\ingest_save_probe_1.db",           # a UNC path
+    "/Users/someone/work/Data/ingest_save_probe_1.db",             # absolute, forward slashes
+    r"sub\..\DATA\Analysis.DB",                                    # relative, with ..
+    "sub/../data/ingest_save_probe_1.db",
+])
+def test_every_spelling_of_a_data_folder_is_refused(probe, spelling, tmp_path, monkeypatch):
+    """Windows spells the same folder many ways; the refusal must not depend on which."""
+    monkeypatch.chdir(tmp_path)
+    assert probe._inside_a_data_folder(spelling)
+
+
+@pytest.mark.parametrize("spelling", [
+    r"C:\Users\james\AppData\Local\Temp\ingest_save_probe_1.db",  # AppData is not data
+    r"C:\database\ingest_save_probe_1.db",
+    r"C:\mydata\ingest_save_probe_1.db",
+    r"DATA\..\safe\ingest_save_probe_1.db",                        # .. climbs back out of it
+    "data.db",
+])
+def test_a_folder_that_only_looks_like_data_is_not_refused(probe, spelling, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert not probe._inside_a_data_folder(spelling)
+
+
+@pytest.mark.parametrize("where", ["DATA", "Data/nested", "x/../data"])
+def test_the_probe_refuses_a_temp_folder_inside_any_data_folder(probe, work, capsys, monkeypatch,
+                                                                where):
+    monkeypatch.chdir(work["tmp"])
+    (work["tmp"] / "x").mkdir()
+    resolved = (work["tmp"] / where).resolve()
+    resolved.mkdir(parents=True, exist_ok=True)
+    rc = probe.main([str(work["folder"]), "3", "--no-loop", "--db", str(work["src"]),
+                     "--tmp", where])
+    assert rc == 2 and "REFUSED" in capsys.readouterr().out
+    assert list(resolved.iterdir()) == []
+
+
 def test_a_drive_without_twice_the_database_free_is_refused(probe, work, capsys, monkeypatch):
     need = work["src"].stat().st_size * 2
     usage = namedtuple("usage", "total used free")
@@ -220,6 +259,124 @@ def test_ctrl_c_still_deletes_the_copy_and_the_temp_files(probe, work, capsys, m
     assert rc == 130
     assert "interrupted" in out
     assert list(work["tmp"].iterdir()) == []
+
+
+FAILED_TAIL = "send Claude this output"
+
+
+def _last(capsys) -> str:
+    return capsys.readouterr().out.rstrip("\n").splitlines()[-1]
+
+
+def test_a_failure_prints_one_line_in_words_and_still_cleans_up(probe, work, capsys, monkeypatch):
+    """Anything that goes wrong ends in ONE plain line naming the step -- never a raw traceback
+    as the last thing James sees. The traceback may sit above it, for Claude."""
+    def broken(*a, **k):
+        raise RuntimeError("the disk said no")
+    monkeypatch.setattr(probe, "_run_save_block", broken)
+    rc = _run(probe, work, "--no-loop")
+    lines = capsys.readouterr().out.rstrip("\n").splitlines()
+    assert rc == 1
+    assert lines[-1] == ("FAILED: saving the results: RuntimeError: the disk said no — the copy "
+                         f"and temp files were deleted; {FAILED_TAIL}")
+    assert any(ln.startswith("Traceback") for ln in lines[:-1])
+    assert list(work["tmp"].iterdir()) == []
+
+
+def test_a_failure_while_copying_names_that_step_and_removes_the_half_copy(probe, work, capsys,
+                                                                            monkeypatch):
+    def broken(source, copy):
+        copy.write_bytes(b"half a copy")
+        raise sqlite3.OperationalError("disk I/O error")
+    monkeypatch.setattr(probe, "_backup", broken)
+    rc = _run(probe, work, "--no-loop")
+    last = _last(capsys)
+    assert rc == 1
+    assert last == ("FAILED: copying the database: OperationalError: disk I/O error — the copy "
+                    f"and temp files were deleted; {FAILED_TAIL}")
+    assert list(work["tmp"].iterdir()) == []
+
+
+def test_a_failure_whose_cleanup_also_fails_says_so(probe, work, capsys, monkeypatch):
+    def broken(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(probe, "_run_save_block", broken)
+    monkeypatch.setattr(probe, "_cleanup",
+                        lambda copy, files_dir, keep: [f"{copy} (PermissionError: in use)"])
+    rc = _run(probe, work, "--no-loop")
+    last = _last(capsys)
+    assert rc == 1
+    assert last.startswith("FAILED: saving the results: RuntimeError: boom — ")
+    assert "could NOT all be deleted" in last and "(PermissionError: in use)" in last
+    assert "were deleted;" not in last and last.endswith(FAILED_TAIL)
+
+
+def test_a_failure_with_keep_says_the_copy_was_kept(probe, work, capsys, monkeypatch):
+    def broken(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(probe, "_run_save_block", broken)
+    rc = _run(probe, work, "--no-loop", "--keep")
+    last = _last(capsys)
+    assert rc == 1
+    assert last == (f"FAILED: saving the results: RuntimeError: boom — the copy was kept at "
+                    f"{_copy_path(work)}; the temp files were deleted; {FAILED_TAIL}")
+
+
+def test_a_failure_before_anything_is_written_says_nothing_was(probe, work, capsys, monkeypatch):
+    def broken(path):
+        raise PermissionError("access denied")
+    monkeypatch.setattr(probe.shutil, "disk_usage", broken)
+    rc = _run(probe, work, "--no-loop")
+    assert rc == 1
+    assert _last(capsys) == ("FAILED: checking the paths: PermissionError: access denied — "
+                             f"nothing was written; {FAILED_TAIL}")
+    assert list(work["tmp"].iterdir()) == []
+
+
+def _pragmas(db_or_path):
+    """(synchronous, cache_size) of a connection -- or, given a path, of a fresh manager's own."""
+    from laser_trim_analyzer.database import manager as mgr
+    if isinstance(db_or_path, Path):
+        db = mgr.DatabaseManager(db_or_path)
+        try:
+            return _pragmas(db)
+        finally:
+            db.close()
+    with db_or_path._engine.connect() as c:
+        raw = c.connection.dbapi_connection
+        return (raw.execute("PRAGMA synchronous").fetchone()[0],
+                raw.execute("PRAGMA cache_size").fetchone()[0])
+
+
+def test_the_loop_block_runs_under_the_apps_own_pragmas(probe, work, monkeypatch, tmp_path):
+    """The SAVE block leaves the connection on whichever setting ran LAST. With one round that is
+    the synchronous=OFF floor -- the LOOP block must not inherit it."""
+    monkeypatch.setattr(probe, "ROUNDS", 1)
+    seen = []
+    monkeypatch.setattr(probe, "_run_loop_block", lambda db, *a, **k: seen.append(_pragmas(db)))
+    apps_own = _pragmas(tmp_path / "fresh.db")
+    assert _run(probe, work) == 0
+    assert seen == [apps_own]
+
+
+def test_today_is_the_row_that_matches_the_apps_own_pragmas(probe, work, capsys, monkeypatch):
+    """`<- today` marks what the app really does. When its defaults move (spec Task 4: NORMAL and
+    64 MB), the marker must move with them rather than keep pointing at FULL / 2MB."""
+    monkeypatch.setattr(probe, "_app_pragmas", lambda db: (1, -65536))
+    assert _run(probe, work, "--no-loop") == 0
+    today = [ln for ln in capsys.readouterr().out.splitlines() if ln.endswith("<- today")]
+    assert len(today) == 1 and today[0].split()[:3] == ["1", "NORMAL", "64MB"]
+
+
+def test_predictors_that_cannot_reach_a_worker_are_named_on_the_line(probe):
+    """The process-pool line must never read as the same analysis as its neighbours when it is not."""
+    sendable, note = probe._sendable_predictors({"8074": lambda features: 0.5})
+    assert sendable == {} and note and "predictor" in note
+    assert probe._sendable_predictors({}) == ({}, None)
+    plain = probe._process_line(8, 1.2, 18.1, None)
+    assert plain == probe._loop_line("parse+analyse, 8 processes, with specs (pool ready in 1.2 s)", 18.1)
+    noted = probe._process_line(8, 1.2, 18.1, note)
+    assert noted.startswith(plain) and noted.endswith(note)
 
 
 def test_keep_keeps_the_copy_and_says_where(probe, work, capsys):
