@@ -2161,6 +2161,42 @@ def test_a_scrolling_tab_is_drawn_again_when_you_come_back_to_it(make_app, how):
         app.withdraw()
 
 
+@pytest.mark.parametrize("how", ("click", "set"))
+def test_each_showing_of_a_scrolling_tab_nudges_each_of_its_frames_exactly_once(
+        make_app, monkeypatch, how):
+    """The redraw hook is bound ONCE per canvas (a marker on it, tab_view.py). F4's review (Minor 1)
+    removed the marker and both tests above still passed, while every showing added one more <Map>
+    handler: 2, then 3 nudges per show, 175 over 20 switches where 19 was right. Counted here: each
+    time a tab comes back it nudges each of its scroll frames once, and nothing else."""
+    from laser_trim_analyzer.gui.v6.widgets import tab_view
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {}})
+    show = (lambda name: _click_tab(page, name)) if how == "click" else page._tabs.set
+    nudged = []
+    monkeypatch.setattr(tab_view, "_nudge", nudged.append)
+    _mapped_offscreen(app)
+    try:
+        names = list(page._tabs._name_list)
+        counted = {}
+        for name in names:
+            frames = list(_scroll_frames(page._tabs.tab(name)))
+            if not frames:
+                continue
+            away = names[0] if name != names[0] else names[1]
+            per_show = []
+            for _ in range(3):
+                show(away)
+                _pump(app)
+                nudged.clear()
+                show(name)
+                _pump(app)
+                per_show.append(sorted(map(id, nudged)) == sorted(map(id, frames)))
+            counted[name] = per_show
+        assert counted, "no tab has a scroll frame -- this test would check nothing"
+        assert all(all(v) for v in counted.values()), counted
+    finally:
+        app.withdraw()
+
+
 @pytest.mark.parametrize("then", ("click", "set"))
 def test_a_tab_click_right_after_the_app_switches_tabs_still_shows_a_tab(make_app, then):
     """CTkTabview.set() lays out the new tab at once but forgets the others 100 ms LATER, by the
