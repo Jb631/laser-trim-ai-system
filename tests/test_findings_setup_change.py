@@ -251,3 +251,17 @@ def test_group_and_readout_through_presentation():
 
 def test_setup_change_has_a_group_and_is_never_shown_under_other():
     assert P.ANALYZER_GROUP["setup_change"] == "history"
+
+
+# ---- fix round 1, Minor #3: median_incoming_r ignores the tester's open-circuit rail -----------
+
+def test_median_incoming_resistance_ignores_the_open_circuit_junk_reading():
+    """1e12 ohm is the tester's open-circuit rail (CLAUDE.md), not a real reading. Most of the
+    before side here is corrupted with it -- an unfiltered median would land on 1e12 too (the
+    corrupted rows outnumber the genuine ones), not the real ~4500."""
+    before = setup_era(0, START, 200, {"laser_power": 50}, 0.80, r_in=4500.0)
+    before = [replace(t, untrimmed_resistance=1e12) if k < 150 else t
+             for k, t in enumerate(before)]
+    after = setup_era(1000, datetime(2024, 9, 1), 200, {"laser_power": 62}, 0.50, r_in=4300.0)
+    (f,) = setup_change.analyze("M", before + after, label)[1]
+    assert f.evidence["before"]["median_incoming_r"] == pytest.approx(4500.0)

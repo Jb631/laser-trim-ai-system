@@ -56,6 +56,7 @@ from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..model import Finding
+from ..stats import plausible_resistance
 
 MIN_TRACKS = 300            # scored tracks for a laser, below this an AUC is a taste, not a rate
 MIN_PER_OUTCOME = 50         # each outcome (fail, pass) must clear this or the rarer one is noise
@@ -102,9 +103,7 @@ def _score_error(t) -> Optional[float]:
 
 def _score_resistance(t) -> Optional[float]:
     r = t.untrimmed_resistance
-    if not isinstance(r, (int, float)) or isinstance(r, bool):
-        return None
-    return r if 0 < r < 1e9 else None
+    return r if plausible_resistance(r) else None
 
 
 def _split(rows, score_fn) -> Tuple[List[float], List[float]]:

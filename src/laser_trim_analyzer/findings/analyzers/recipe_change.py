@@ -26,7 +26,7 @@ from statistics import median
 from typing import Any, Dict, FrozenSet, List, Tuple
 
 from ..model import Finding
-from ..stats import pct
+from ..stats import pct, plausible_resistance
 
 MIN_BUCKET = 30        # tracks in a quarter before its recipe counts as known
 DOMINANT = 0.80        # share one recipe needs for the quarter to count as stable
@@ -67,7 +67,7 @@ def _table_key(t):
 
 def _side(tracks) -> dict:
     graded = [t.linearity_pass for t in tracks if t.linearity_pass is not None]
-    rs = [t.untrimmed_resistance for t in tracks if t.untrimmed_resistance]
+    rs = [t.untrimmed_resistance for t in tracks if plausible_resistance(t.untrimmed_resistance)]
     tables = Counter(_table_key(t) for t in tracks if t.limit_table is not None)
     with_table = sum(tables.values())
     busiest = None

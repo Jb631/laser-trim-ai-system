@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -99,3 +100,17 @@ def test_a_change_in_the_MIX_of_limit_tables_is_disclosed_even_when_the_busiest_
 
 def test_recipe_parameter_keys_is_the_cut_length_keys_each_laser_names():
     assert recipe_change.RECIPE_PARAMETER_KEYS == frozenset({"laser_cut_length", "laser_cut_length_mm"})
+
+
+# ---- fix round 1, Minor #3: median_incoming_r ignores the tester's open-circuit rail -----------
+
+def test_median_incoming_resistance_ignores_the_open_circuit_junk_reading():
+    """1e12 ohm is the tester's open-circuit rail (CLAUDE.md), not a real reading. Most of the
+    before side here is corrupted with it -- an unfiltered median would land on 1e12 too (the
+    corrupted rows outnumber the genuine ones), not the real ~4500."""
+    before = era(0, START, 240, (1.0,), 0.25, r_in=4500.0)
+    before = [replace(t, untrimmed_resistance=1e12) if k < 180 else t
+             for k, t in enumerate(before)]
+    after = era(1000, datetime(2024, 7, 1), 240, (1.0, 2.0), 0.55, r_in=4300.0)
+    (f,) = recipe_change.analyze("M", before + after, label)[1]
+    assert f.evidence["before"]["median_incoming_r"] == pytest.approx(4500.0)

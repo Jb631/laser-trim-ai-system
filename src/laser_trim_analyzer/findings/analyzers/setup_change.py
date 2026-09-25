@@ -80,7 +80,7 @@ from statistics import median
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from ..model import Finding
-from ..stats import pct
+from ..stats import pct, plausible_resistance
 from .recipe_change import RECIPE_PARAMETER_KEYS
 
 MIN_RUN_DAYS = 60          # each side of a change must span at least this many days
@@ -141,7 +141,7 @@ def _single_table_key(tracks) -> Optional[str]:
 
 def _side(tracks) -> Dict[str, Any]:
     graded = [t.linearity_pass for t in tracks if t.linearity_pass is not None]
-    rs = [t.untrimmed_resistance for t in tracks if t.untrimmed_resistance]
+    rs = [t.untrimmed_resistance for t in tracks if plausible_resistance(t.untrimmed_resistance)]
     return {"n": len(tracks), "trim_pass_pct": pct(graded), "graded_n": len(graded),
             "median_incoming_r": median(rs) if rs else None,
             "first": min(t.file_date for t in tracks).date().isoformat(),

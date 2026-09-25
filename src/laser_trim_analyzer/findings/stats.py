@@ -1,11 +1,28 @@
 """Small, dependency-free statistics the analyzers share."""
 from statistics import mean
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 
 def pct(flags: Sequence[bool]) -> Optional[float]:
     flags = list(flags)
     return (100.0 * sum(1 for f in flags if f) / len(flags)) if flags else None
+
+
+def plausible_resistance(r: Any) -> bool:
+    """Is `r` a plausible ohms reading, not the tester's open-circuit rail?
+
+    The work database holds 1e12-ohm (and other 1e9+) readings from the open-circuit rail
+    (CLAUDE.md, "What must never be stored"; `core/model_stats.py`'s own docstring names the same
+    corruption). `core/model_stats.py` has a richer plausibility system (`_plausible`/`_band`), but
+    it is model-median-relative and needs the whole population computed first -- a heavier tool
+    than a single-value guard on one side of one comparison needs, and its `_plausible` is private.
+    This is the ONE definition of the simple bound (`0 < r < 1e9`, originally `loss_origin`'s
+    `_score_resistance`), shared by every analyzer that filters `untrimmed_resistance` before
+    taking a median or scoring an AUC over it -- lifted out on fix round 1, 2026-09-25
+    (task-6-review.md, Minor #3), after `recipe_change`'s and `setup_change`'s own `_side()`
+    helpers were found using a bare truthy filter that let a 1e12 reading through.
+    """
+    return isinstance(r, (int, float)) and not isinstance(r, bool) and 0 < r < 1e9
 
 
 def _ranks(xs: Sequence[float]) -> List[float]:
