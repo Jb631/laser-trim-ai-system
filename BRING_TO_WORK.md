@@ -6,8 +6,9 @@ No schema change, nothing to retrain, nothing to click first.
 
 1. **`git pull`.**
 2. **The ingest now saves 20 files per transaction** instead of one at a time, so a save no longer pays
-   a disk flush per file. Every stored number is unchanged — checked row by row on 200 real files and
-   again on 112 of every kind. On the Mac the saving fell from 5.4 s to 0.6 s per 200 files; on the
+   a disk flush per file. Every stored number is unchanged — checked row by row on 200 real files,
+   again on 112 of every kind, and again on 100 with the trained models loaded (the composite-risk
+   score and the final-test predictor included). On the Mac the saving fell from 5.4 s to 0.6 s per 200 files; on the
    laptop's slower disk it should gain more, and the save probe (the step below) measures it.
 3. **What you may notice on the Process page and Home:** the counts come from what was actually saved
    (a file whose save was refused counts as an error, not a pass or fail); a malformed file counts as

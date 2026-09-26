@@ -168,8 +168,11 @@ problem — per-file conversations with the share were. Same code, same laptop:
       never had). **Tasks 5–10 — A4, the batched saves — shipped the same evening:** the ingest saves
       20 files per transaction (a savepoint per file, "processed" exactly when committed), the
       worker returns what it found and one writer saves it, and the counts come from what committed.
-      Proven on 200 real files, then independently on 112 of every kind: every stored row identical
-      to the old per-file path (27,419 and 33,093 values). On the Mac the save fell 5.4 s → 0.6 s
+      Proven on 200 real files, then independently on 112 of every kind, then on 100 with the
+      trained models loaded (composite-risk score and predictors): every stored row identical to the
+      old per-file path (27,419, 33,093 and 35,003 values). (That last check exists because the tests
+      had been reading the trained models from wherever they ran — they now never read a checkout's
+      real models, and the app finds its models under its own folder.) On the Mac the save fell 5.4 s → 0.6 s
       per 200 files while the total barely moved — parsing dominates here, as the design said; the
       laptop's slower disk should gain more (A6 will show). Two rules came with it: **a database
       error during a save never marks a file unreadable** (only a problem in the file itself does,
