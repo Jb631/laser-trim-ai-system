@@ -977,8 +977,8 @@ class BatchWriter:
     A `duplicate` is a malformed file -- its own rows broke a UNIQUE constraint -- and counts as
     failed; a smoothness file whose identity another content hash already holds stored nothing
     and counts as skipped, not as a pass or a fail (review of Tasks 5-8, m-3). A final test or
-    smoothness file whose save failed gets the rule its failure always got
-    (`Processor._final_test_failure` / `_smoothness_failure`): an ERROR, and -- only when the
+    smoothness file whose save failed gets the rule its failure always got (the processor's
+    public `failed_save`, which `apply_outcome` uses too): an ERROR, and -- only when the
     file's own content caused the failure -- the skip marker the rule asks for, committed right
     after its batch, in a transaction of its own within the same flush.
 

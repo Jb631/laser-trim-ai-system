@@ -77,6 +77,10 @@ class PoolFailed(RuntimeError):
     """Worker processes could not be started or warmed; the message says why."""
 
 
+class PoolStopped(PoolFailed):
+    """The run was stopped (Stop, or the window closing) while its worker processes started."""
+
+
 @dataclass(frozen=True)
 class WorkerContext:
     """Everything a worker process needs, sent to each worker once (pickled once, in the parent).
@@ -177,7 +181,7 @@ def _install_trap() -> None:
     _dbpkg.get_database = _refused("get_database()")
     _mgr.DatabaseManager.__init__ = _refused("DatabaseManager(...)")
     sqlite3.connect = _refused("sqlite3.connect")
-    sqlite3.dbapi2.connect = _refused("sqlite3.connect")
+    sqlite3.dbapi2.connect = _refused("sqlite3.dbapi2.connect")    # what SQLAlchemy calls
 
 
 def _guard_models(folders) -> None:
@@ -221,12 +225,29 @@ def _install_logging(log_queue, log_setup) -> None:
     logging.disable(disabled)
 
 
+def _exit_with_parent() -> None:
+    """A worker's own watch on its parent: when the parent process is gone -- killed outright,
+    crashed, "End task" at work -- so is the worker (review of Tasks 11-12, I-1). Nothing of the
+    parent's own runs then, not close and not its exit hook, and an idle worker waits on its task
+    queue for ever: it holds that pipe's write end itself, so no EOF ever comes. Measured: two
+    workers alive 2 min after their parent was SIGKILLed, ~190 MB each -- 7-8 hidden python
+    processes per folder at work, until a reboot. `parent_process()` (3.8+) is the parent's own
+    sentinel: a pipe on POSIX, the process handle on Windows."""
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        return
+    parent.join()
+    os._exit(0)
+
+
 def _init_worker(blob: bytes, log_queue, log_setup, barrier, errors) -> None:
-    """Run once in each worker, before it takes a file. Logging first, so a failure below reaches
-    the parent's log; then the trap, BEFORE anything is built; then the processor, exactly as the
+    """Run once in each worker, before it takes a file. The watch on the parent first (a worker
+    must not outlive it even while starting); then logging, so a failure below reaches the
+    parent's log; then the trap, BEFORE anything is built; then the processor, exactly as the
     parent's -- and a worker whose processor reached for a database while it was built refuses to
     start rather than analyse anything in that state."""
     global _PROCESSOR, _BARRIER
+    threading.Thread(target=_exit_with_parent, name="exit-with-parent", daemon=True).start()
     try:
         _install_logging(log_queue, log_setup)
         _install_trap()
@@ -281,7 +302,7 @@ def analyse(path: str, disk_stat=None):
     if _REACHES:
         reach = _REACHES[0]
         del _REACHES[:]
-        return Outcome(path=str(path), internal=(
+        return Outcome(path=str(path), reached_database=True, internal=(
             f"it reached for {reach} inside a worker process -- a worker never opens a database, "
             f"so nothing it found was kept"))
     return outcome
@@ -353,22 +374,27 @@ class WorkerPool:
     lookahead = 2
     in_process = False
 
-    def __init__(self, executor, listener, n: int, pids, ready_seconds: float):
+    def __init__(self, executor, listener, n: int):
         self._executor = executor
         self._listener = listener
         self._lock = threading.Lock()
+        self._closed_done = threading.Event()
         self.size = n
-        self.pids = sorted(pids)
-        self.ready_seconds = ready_seconds
+        self.pids: List[int] = []
+        self.ready_seconds = 0.0
         self.closed = False
-        self.mode = f"{n} process{'es' if n != 1 else ''} (ready in {ready_seconds:.1f} s)"
+        self.mode = f"{n} process{'es' if n != 1 else ''} (starting)"
 
     @classmethod
-    def start(cls, ctx: WorkerContext, n: int, *, timeout: float = START_TIMEOUT) -> "WorkerPool":
+    def start(cls, ctx: WorkerContext, n: int, *, timeout: float = START_TIMEOUT,
+              cancel: Optional[threading.Event] = None) -> "WorkerPool":
         """Spawn `n` workers with `ctx` and warm every one of them, within `timeout` seconds.
         Raises PoolFailed with the cause -- the context could not be pickled, a worker's own
         initializer refused (its words), a worker died, or the time ran out -- and leaves no
-        process behind."""
+        process behind. Raises PoolStopped when `cancel` is set, or the pool is closed (the
+        window's close), while the workers start: the pool is registered for closing BEFORE the
+        warm-up, and the wait asks both a few times a second (review m-1: a start an endpoint
+        scanner makes slow must not hold Stop, or the window, for up to `timeout`)."""
         t0 = time.monotonic()
         try:
             blob = pickle.dumps(ctx, protocol=pickle.HIGHEST_PROTOCOL)
@@ -380,33 +406,48 @@ class WorkerPool:
         errors = mp.SimpleQueue()
         listener = _LogListener(log_queue)
         listener.start()
-        executor = None
+        executor = pool = None
         try:
             executor = ProcessPoolExecutor(
                 max_workers=n, mp_context=mp, initializer=_init_worker,
                 initargs=(blob, log_queue, _parent_log_setup(), mp.Barrier(n), errors))
+            pool = cls(executor, listener, n)
+            _LIVE.add(pool)                  # closable from now on -- the window's close too
             futures = [executor.submit(_warm, timeout) for _ in range(n)]
-            done, not_done = wait(futures, timeout=timeout)
-            if not_done:
-                raise PoolFailed(f"the {n} worker processes were not all up within {timeout:.0f} s")
+            deadline = t0 + timeout
+            while True:
+                done, not_done = wait(futures, timeout=0.2)
+                if pool.closed:
+                    raise PoolStopped("closed while the worker processes were starting")
+                if cancel is not None and cancel.is_set():
+                    raise PoolStopped("stopped while the worker processes were starting")
+                if not not_done:
+                    break
+                if time.monotonic() > deadline:
+                    raise PoolFailed(f"the {n} worker processes were not all up within "
+                                     f"{timeout:.0f} s")
             pids = [f.result() for f in futures]
         except BaseException as e:
             why = None
             try:
-                if not errors.empty():
+                if not isinstance(e, PoolStopped) and not errors.empty():
                     why = errors.get()
             except Exception:
                 pass
-            if executor is not None:
-                _stop_executor(executor, grace=0.0)
-            listener.stop()
+            if pool is not None:
+                pool.close(grace=0.0)
+            else:
+                if executor is not None:
+                    _stop_executor(executor, grace=0.0)
+                listener.stop()
             if isinstance(e, PoolFailed) and why is None:
                 raise
             if not isinstance(e, Exception):
                 raise
             raise PoolFailed(why or f"{type(e).__name__}: {e}") from e
-        pool = cls(executor, listener, n, pids, time.monotonic() - t0)
-        _LIVE.add(pool)
+        pool.pids = sorted(pids)
+        pool.ready_seconds = time.monotonic() - t0
+        pool.mode = f"{n} process{'es' if n != 1 else ''} (ready in {pool.ready_seconds:.1f} s)"
         return pool
 
     def submit(self, path, disk_stat=None):
@@ -417,18 +458,25 @@ class WorkerPool:
         """Any module-level function, in one worker (for the tests and the probe)."""
         return self._executor.submit(fn, *args)
 
-    def close(self, grace: float = CLOSE_GRACE) -> int:
-        """Stop the pool: nothing new starts, a busy worker gets `grace` seconds to finish its
-        file, then it is terminated. Returns how many were terminated. Idempotent."""
+    def close(self, grace: Optional[float] = None) -> int:
+        """Stop the pool: nothing new starts, a busy worker gets `grace` seconds (CLOSE_GRACE by
+        default) to finish its file, then it is terminated. Returns how many were terminated.
+        Idempotent -- and a second call, from another thread, returns only once the first has
+        finished: whoever sees a pool closed sees it gone (the window closing while a start
+        waits, review m-1)."""
+        grace = CLOSE_GRACE if grace is None else grace
         with self._lock:
-            if self.closed:
-                return 0
+            already = self.closed
             self.closed = True
+        if already:
+            self._closed_done.wait(max(grace, CLOSE_GRACE) + 10.0)
+            return 0
         try:
             return _stop_executor(self._executor, grace)
         finally:
             self._listener.stop()
             _LIVE.discard(self)
+            self._closed_done.set()
 
 
 def _stop_executor(executor, grace: float) -> int:
@@ -458,9 +506,10 @@ def _stop_executor(executor, grace: float) -> int:
     return terminated
 
 
-def close_worker_pools(grace: float = CLOSE_GRACE) -> int:
-    """Close every live pool (the window's close, ruling 20; and the exit safety net below).
-    Returns how many busy workers had to be terminated."""
+def close_worker_pools(grace: Optional[float] = None) -> int:
+    """Close every live pool -- a starting one too (the window's close, ruling 20; and the exit
+    safety net below), each busy worker given `grace` seconds (CLOSE_GRACE, read now, by
+    default). Returns how many busy workers had to be terminated."""
     terminated = 0
     for pool in list(_LIVE):
         try:

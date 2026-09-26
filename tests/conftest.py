@@ -6,6 +6,25 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
+def _checkout_data_dirs():
+    """A checkout's real data/ folders: this tree's, and the one the package was imported from
+    (they differ in a worktree) -- computed from files, never from the app directory the
+    fixtures below redirect."""
+    from laser_trim_analyzer import config as _cfg
+    return {(Path(__file__).resolve().parents[1] / "data").resolve(),
+            (Path(_cfg.__file__).resolve().parents[2] / "data").resolve()}
+
+
+# Every worker PROCESS a test starts refuses to load trained models from those folders
+# (core/ingest_worker.py): the fixtures below cannot reach a spawned child. Set here, when
+# conftest is IMPORTED, as well as per test: a module-scoped fixture runs before any test's own
+# fixtures, and a pool it built would otherwise carry no refusal at all (review of Tasks 11-12,
+# m-7).
+from laser_trim_analyzer.core import ingest_worker as _ingest_worker  # noqa: E402
+
+_ingest_worker.REFUSE_MODELS_UNDER = tuple(sorted(str(d) for d in _checkout_data_dirs()))
+
+
 @pytest.fixture(autouse=True)
 def _never_touch_the_real_database(tmp_path, monkeypatch):
     """No test may reach ./data/analysis.db — James's production data.
@@ -139,10 +158,7 @@ def _never_read_the_real_ml_models(monkeypatch):
 
     # Both roots, computed from files -- NOT from get_app_directory(), which the fixture above
     # patches (in either order this set is the real one).
-    protected = {
-        (Path(__file__).resolve().parents[1] / "data").resolve(),
-        (Path(_cfg.__file__).resolve().parents[2] / "data").resolve(),
-    }
+    protected = _checkout_data_dirs()
     refused = []
 
     def refuse_the_real_models(path):

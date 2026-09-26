@@ -237,8 +237,10 @@ def test_a_worker_runs_the_parents_own_source_tree_and_logs_through_one_queue(re
 # ---- the database trap (ruling 15, spec 4.3) --------------------------------------------------
 
 @pytest.mark.parametrize("reach, named", [("reach_get_database", "get_database"),
+                                          ("reach_manager_get_database", "get_database()"),
                                           ("reach_manager", "DatabaseManager"),
-                                          ("reach_sqlite", "sqlite3.connect")])
+                                          ("reach_sqlite", "sqlite3.connect"),
+                                          ("reach_dbapi2", "sqlite3.dbapi2.connect")])
 def test_a_worker_that_reaches_for_a_database_returns_internal_never_a_verdict(
         stub_pool, tmp_path, reach, named):
     """The stub reaches for a database and SWALLOWS the refusal, as the real analysis's `except
@@ -279,6 +281,28 @@ def test_a_processor_that_reaches_for_a_database_while_it_is_built_never_starts(
     with pytest.raises(PoolFailed) as refused:
         _start(worker_stubs.LoudInitProcessor(config=Config(), snapshot=SpecSnapshot()), 1)
     assert "get_database" in str(refused.value), refused.value
+
+
+# ---- the refusal of the real models is in place before any fixture runs (review m-7) ---------
+
+@pytest.fixture(scope="module")
+def refusal_at_module_scope():
+    """What a module-scoped fixture -- built BEFORE any test's own fixtures run -- would hand a
+    worker: the folders to refuse models from, and a context's copy of them."""
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.core import ingest_worker
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    ctx = ingest_worker.context_for(Processor(config=Config(), use_ml=False, snapshot=SpecSnapshot(),
+                                              ml_storage_path=REPO / "no_models_here"))
+    return tuple(ingest_worker.REFUSE_MODELS_UNDER), tuple(ctx.refuse_models_under)
+
+
+def test_a_module_scoped_pool_carries_the_refusal_of_the_real_models(refusal_at_module_scope):
+    """conftest sets it when it is IMPORTED, not only per test: a module-scoped fixture runs before
+    the per-test ones, and a pool it built would otherwise carry no refusal at all."""
+    module_level, in_a_context = refusal_at_module_scope
+    assert set(module_level) == set(in_a_context) == set(worker_stubs.checkout_data_dirs())
 
 
 # ---- logging (ruling 18) ---------------------------------------------------------------------
@@ -552,6 +576,193 @@ def test_close_terminates_a_stuck_worker_and_leaves_the_committed_rows_intact(
         assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     finally:
         con.close()
+
+
+# ---- a parent that dies, a start that is stopped, and the interpreter's exit ------------------
+
+_PARENT_SCRIPT = """
+import json, sys, time
+from pathlib import Path
+
+if __name__ == "__main__":
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.core import ingest_worker
+    from laser_trim_analyzer.core.ingest_worker import WorkerPool, context_for
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    import worker_stubs
+    ingest_worker.CLOSE_GRACE = 0.5
+    proc = worker_stubs.StubProcessor(config=Config(), snapshot=SpecSnapshot(),
+                                      ml_storage_path=Path({models!r}))
+    pool = WorkerPool.start(context_for(proc), {n})
+    files = worker_stubs.make_files(Path({folder!r}), {names!r})
+    pool.submit(files[0]).result(timeout=60)          # a file analysed: the workers are working
+    for f in files[1:]:
+        pool.submit(f)                                # (the stuck one never finishes)
+    time.sleep(1.0)
+    print(json.dumps(pool.pids), flush=True)
+    {then}
+"""
+
+
+def _parent(tmp_path, *, n, names, then):
+    """A parent process of its own with a pool of `n` workers that analysed a file; returns it
+    and the worker pids it printed."""
+    import json
+    import subprocess
+    import sys
+    script = tmp_path / "parent.py"
+    script.write_text(_PARENT_SCRIPT.format(models=str(tmp_path / "no_models"), n=n,
+                                            folder=str(tmp_path / "files"), names=names,
+                                            then=then))
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1",
+               PYTHONPATH=os.pathsep.join([str(REPO / "src"), str(REPO / "tests")]))
+    parent = subprocess.Popen([sys.executable, "-B", str(script)], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env, cwd=tmp_path)
+    got = []
+    reader = threading.Thread(target=lambda: got.append(parent.stdout.readline()), daemon=True)
+    reader.start()
+    reader.join(120)
+    if not got or not got[0].strip():
+        parent.kill()
+        raise AssertionError(f"the parent printed no worker pids: {parent.stderr.read()[-2000:]}")
+    return parent, json.loads(got[0])
+
+
+def _alive(pids):
+    import psutil
+    out = []
+    for pid in pids:
+        try:
+            if psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+                out.append(pid)
+        except psutil.Error:
+            pass
+    return out
+
+
+def _gone_within(pids, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and _alive(pids):
+        time.sleep(0.2)
+    return _alive(pids)
+
+
+def _kill(parent, pids):
+    import psutil
+    if parent.poll() is None:
+        parent.kill()
+    for pid in _alive(pids):
+        try:
+            psutil.Process(pid).kill()
+        except psutil.Error:
+            pass
+
+
+def test_worker_processes_die_with_a_parent_that_is_killed(tmp_path):
+    """Review I-1: the parent is killed outright -- SIGKILL here, "End task" or a crash at work --
+    so nothing of its own runs: no close, no exit hook. Its idle workers must not live on
+    (7-8 hidden python processes per folder, ~0.3-0.5 GB each, until a reboot): each worker
+    watches its parent and exits with it."""
+    parent, pids = _parent(tmp_path, n=2, names=["plain_1.xls"], then="time.sleep(600)")
+    try:
+        assert len(pids) == 2 and len(_alive(pids)) == 2
+        parent.kill()
+        parent.wait(10)
+        left = _gone_within(pids, 15)
+        assert not left, f"worker processes outlived their killed parent: {left}"
+    finally:
+        _kill(parent, pids)
+
+
+def test_the_interpreter_exits_promptly_with_a_busy_worker(tmp_path):
+    """Review m-3: the parent's main code returns while a worker is busy on a file and nothing
+    closed the pool. concurrent.futures joins every worker process at interpreter exit, so without
+    ingest_worker's own exit hook -- which closes live pools first, a grace and then terminate --
+    the process would wait for that file however long it takes."""
+    parent, pids = _parent(tmp_path, n=1, names=["plain_1.xls", "stuck_1.xls"], then="pass")
+    try:
+        t0 = time.monotonic()
+        parent.wait(30)
+        assert time.monotonic() - t0 < 30
+        assert not _gone_within(pids, 10), "the busy worker outlived the exit"
+    finally:
+        _kill(parent, pids)
+
+
+def _slow_start_context(tmp_path):
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.core.ingest_worker import context_for
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    proc = worker_stubs.SlowStartProcessor(config=Config(), snapshot=SpecSnapshot(),
+                                          ml_storage_path=tmp_path / "no_models")
+    return context_for(proc)
+
+
+def test_stop_while_the_worker_processes_start_is_honoured_at_once(tmp_path, processes):
+    """Review m-1: Stop pressed while the workers are still starting (20 s here, as an endpoint
+    scanner can make it at work) ends the start then, not when it would have finished -- and no
+    worker is left behind."""
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    t0 = time.monotonic()
+    with pytest.raises(processes.PoolFailed, match="stopped") as stopped:
+        processes.WorkerPool.start(_slow_start_context(tmp_path), 2, cancel=cancel)
+    assert time.monotonic() - t0 < 8, "the start ran on after Stop"
+    assert isinstance(stopped.value, processes.PoolStopped)
+
+
+def test_closing_the_window_while_the_worker_processes_start_is_honoured_at_once(
+        tmp_path, processes, monkeypatch):
+    """Review m-1: the window closes while the workers are still starting -- the pool is already
+    registered for closing, so the close reaches it and the start ends then."""
+    import weakref
+    monkeypatch.setattr(processes, "_LIVE", weakref.WeakSet())
+    threading.Timer(0.5, lambda: processes.close_worker_pools(grace=0.2)).start()
+    t0 = time.monotonic()
+    with pytest.raises(processes.PoolFailed, match="closed"):
+        processes.WorkerPool.start(_slow_start_context(tmp_path), 2)
+    assert time.monotonic() - t0 < 8, "the start ran on after the window closed"
+    assert len(processes._LIVE) == 0
+
+
+def test_a_folder_stopped_while_its_worker_processes_start_analyses_nothing(tmp_path, processes):
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    proc = worker_stubs.SlowStartProcessor(config=_parallel_config(), snapshot=SpecSnapshot(),
+                                          ml_storage_path=tmp_path / "no_models")
+    files = worker_stubs.make_files(tmp_path / "in", [f"f{i:03d}.xls" for i in range(30)])
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    t0 = time.monotonic()
+    got = list(proc.process_batch(files, incremental=False, cancel=cancel, writer=_Collect()))
+    assert got == [] and time.monotonic() - t0 < 10
+    assert "stopped while the worker processes were starting" in proc.last_workers, \
+        proc.last_workers
+
+
+# ---- a worker pool that keeps reaching for a database (review m-6) ----------------------------
+
+def test_worker_processes_that_keep_reaching_for_a_database_hand_the_folder_to_threads(
+        tmp_path, processes, db, caplog):
+    """A regression that makes the analysis reach for a database would turn every file of a
+    170,000-file run into an `internal` error in worker processes -- the folder parsed into
+    nothing. After one chunk's worth of such files in a row the rest of the folder goes to
+    threads, where the analysis may open the database, and the batch line says why."""
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    files = worker_stubs.make_files(tmp_path / "in", [f"reach_get_database_{i:03d}.xls"
+                                                     for i in range(60)])
+    proc = worker_stubs.StubProcessor(config=_parallel_config(), snapshot=SpecSnapshot(),
+                                      ml_storage_path=tmp_path / "no_models")
+    writer = _Collect()
+    with caplog.at_level(logging.WARNING):
+        got = list(proc.process_batch(files, incremental=False, writer=writer))
+    internal = [o for o in writer.outcomes if o.internal]
+    assert len(internal) == 20, len(internal)
+    assert len(writer.outcomes) == 60 and len(got) == 40
+    assert proc.last_workers.startswith("2 processes"), proc.last_workers
+    assert "then" in proc.last_workers and "reached for a database" in proc.last_workers, \
+        proc.last_workers
+    assert any(r.levelno == logging.WARNING and "reached for a database" in r.getMessage()
+               for r in caplog.records)
 
 
 def _rows(db):

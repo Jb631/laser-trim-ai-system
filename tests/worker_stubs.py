@@ -11,10 +11,13 @@ monkeypatched from the test:
     die_*     kills its worker process with os._exit (the pool breaks mid-run); in the PARENT --
               the thread fallback -- it analyses normally
     warn_*    logs a WARNING carrying the file name and the process id
-    reach_get_database_*, reach_manager_*, reach_sqlite_*
-              reaches for a database the way a careless analysis would -- and SWALLOWS the
-              refusal, as the real analysis's `except Exception` would -- then returns a verdict
-              anyway: the worker must return `internal`, never that verdict
+    reach_get_database_*, reach_manager_get_database_*, reach_manager_*, reach_sqlite_*,
+    reach_dbapi2_*
+              reaches for a database the way a careless analysis would -- the package's
+              get_database, the manager module's own, a manager of its own, sqlite3.connect,
+              sqlite3.dbapi2.connect (what SQLAlchemy calls) -- and SWALLOWS the refusal, as the
+              real analysis's `except Exception` would, then returns a verdict anyway: the worker
+              must return `internal`, never that verdict
 
 Every other file gets an ERROR result from minimal metadata, with the file's own (size, mtime)
 and sha256, as `analyse_path` gives. Values are invented; no file is ever parsed.
@@ -111,6 +114,14 @@ class StubProcessor(Processor):
             if name.startswith("reach_get_database"):
                 from laser_trim_analyzer.database import get_database
                 get_database()
+            elif name.startswith("reach_manager_get_database"):
+                from laser_trim_analyzer.database import manager
+                manager.get_database()
+            elif name.startswith("reach_dbapi2"):
+                # `as`: a bare `import sqlite3.dbapi2` would make `sqlite3` a local name of this
+                # whole function, and the reach_sqlite branch below would never reach anything
+                import sqlite3.dbapi2 as dbapi2
+                dbapi2.connect(str(path.with_suffix(".dbapi2.db"))).close()
             elif name.startswith("reach_manager"):
                 from laser_trim_analyzer.database.manager import DatabaseManager
                 DatabaseManager(path.with_suffix(".manager.db"))
@@ -118,6 +129,16 @@ class StubProcessor(Processor):
                 sqlite3.connect(str(path.with_suffix(".raw.db"))).close()
         except Exception:
             pass
+
+
+class SlowStartProcessor(StubProcessor):
+    """A processor that takes 20 s to build in a worker process -- a worker start as slow as an
+    endpoint scanner can make it at work."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        if in_a_worker_process():
+            time.sleep(20)
 
 
 class LoudInitProcessor(StubProcessor):

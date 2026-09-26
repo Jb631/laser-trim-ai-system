@@ -424,9 +424,10 @@ def test_the_full_run_prints_the_loop_block(probe, work, capsys, monkeypatch):
     assert lines[i + 7].startswith("the same loop on worker processes, headless (run_folder)")
     assert re.search(r"\d+\.\d$", lines[i + 7]) and float(lines[i + 7].split()[-1]) > 0, \
         lines[i + 7]
-    saved = re.match(r"^   of which save: wall (\d+\.\d), cpu \d+\.\d \| workers 2 processes "
-                     r"\(ready in \d+\.\d s\)$", lines[i + 8])
-    assert saved and float(saved.group(1)) > 0, lines[i + 8]
+    saved = re.match(r"^   of which save: wall (\d+\.\d), cpu \d+\.\d \| pool start (\d+\.\d) s "
+                     r"\(not in the ms/file\) \| workers 2 processes \(ready in \d+\.\d s\)$",
+                     lines[i + 8])
+    assert saved and float(saved.group(1)) > 0 and float(saved.group(2)) > 0, lines[i + 8]
     assert started == [(2, ["8074"]), (2, ["8074"])], started
     assert lines[-1] == "copy and temp files deleted."
     assert list(work["tmp"].iterdir()) == []
@@ -536,3 +537,26 @@ def test_pool_probe_workers_get_the_specs_too(tmp_path, work, monkeypatch):
             mgr._db_manager.close()
         mgr._db_manager, dbpkg._db_manager = before
         logging.disable(quiet)
+
+
+def test_the_worker_process_loop_leaves_the_pool_start_out_of_its_ms_per_file(
+        probe, work, capsys, monkeypatch):
+    """Review m-4: a slow start of the worker processes -- 3 s here; an endpoint scanner can make
+    it so at work -- is reported beside the loop, never inside its ms/file: 3 files would read
+    1,000 ms/file with it, as if processes were slower."""
+    import time as _time
+    from laser_trim_analyzer.core import ingest_worker
+    real_start = ingest_worker.WorkerPool.start.__func__
+
+    def slow(cls, ctx, n, **k):
+        _time.sleep(3.0)
+        return real_start(cls, ctx, n, **k)
+
+    monkeypatch.setattr(ingest_worker.WorkerPool, "start", classmethod(slow))
+    assert _run(probe, work, "--procs", "2") == 0
+    lines = capsys.readouterr().out.splitlines()
+    i = next(k for k, ln in enumerate(lines)
+             if ln.startswith("the same loop on worker processes, headless (run_folder)"))
+    assert float(lines[i].split()[-1]) < 1000, lines[i]
+    start = re.search(r"pool start (\d+\.\d) s", lines[i + 1])
+    assert start and float(start.group(1)) >= 3.0, lines[i + 1]

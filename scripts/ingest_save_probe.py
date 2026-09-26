@@ -42,7 +42,9 @@ the save's own CPU: batch barriers, GC, bookkeeping -- and whatever the unexplai
 process line runs the ingest's OWN worker processes (core/ingest_worker.py, spec section 4: spawn,
 the database trap, the model specs as a SpecSnapshot); the last line is the same loop again with
 those worker processes parsing while this process saves (A3) -- the app does that for a folder
-with 200 or more new files. The LOOP runs under the app's OWN pragmas (read from the copy's
+with 200 or more new files. Its ms/file leaves out the time the worker processes took to start,
+which the line under it gives apart: with 120 files and a start that an endpoint scanner can make
+slow, it would otherwise read as "processes are slower" when the loop itself is not. The LOOP runs under the app's OWN pragmas (read from the copy's
 connection as the app opens it), never under whichever SAVE setting happened to run last.
 
 POINT IT AT A LASER FOLDER (DLTS or LTS). Final-test and smoothness files are saved by the processor
@@ -510,7 +512,8 @@ def _time_run_folder(db, files_dir: Path, paths, processes: int = 0):
     files (the app starts them from 200). The post-batch work (re-link, drift, findings) is not the
     per-file loop and is skipped. Returns (loop ms/file, save wall, save cpu, gc pauses) per file --
     the save figures the batch writer's own (every save is in its `write_batch` since Task 10) --
-    and which workers ran."""
+    which workers ran, and the seconds its worker processes took to start, which the loop's
+    ms/file leaves out (0 on threads)."""
     from sqlalchemy import text
     from laser_trim_analyzer.config import Config
     from laser_trim_analyzer.core import ingest_run, ingest_worker
@@ -549,10 +552,12 @@ def _time_run_folder(db, files_dir: Path, paths, processes: int = 0):
     if not res.ok:
         raise RuntimeError(f"run_folder failed: {res.error}")
     done = int(getattr(res.summary, "processed", 0) or 0) or len(paths)
-    loop_s = _BUILT[-1].last_scan_stats.get("process_seconds", 0.0)   # the consumer: built
-    #                                          after the run's own planning processor
+    consumer = _BUILT[-1]          # built after the run's own planning processor
+    start = consumer.last_pool_start
+    loop_s = consumer.last_scan_stats.get("process_seconds", 0.0) - start
     return (loop_s / done * 1e3, res.phases.get("save", 0.0) / done * 1e3,
-            res.phases.get("save_cpu", 0.0) / done * 1e3, pauses["t"] / done * 1e3, res.workers)
+            res.phases.get("save_cpu", 0.0) / done * 1e3, pauses["t"] / done * 1e3, res.workers,
+            start)
 
 
 def _loop_line(label: str, value: float) -> str:
@@ -582,17 +587,18 @@ def _run_loop_block(db, paths, files_dir: Path, procs: int, results=()) -> None:
     print(_process_line(procs, ready, per, note), flush=True)
 
     _status("LOOP  today's loop")
-    loop, save_wall, save_cpu, gc_ms, _ = _time_run_folder(db, files_dir, paths)
+    loop, save_wall, save_cpu, gc_ms, _, _ = _time_run_folder(db, files_dir, paths)
     print(_loop_line(LOOP_LABELS[4], loop))
     print(f"   of which save: wall {save_wall:.1f}, cpu {save_cpu:.1f} | GC pauses {gc_ms:.1f} | "
           f"rest {loop - threads - save_cpu:.1f}", flush=True)
 
     _status(f"LOOP  the loop on {procs} worker processes")
     _forget(db, results)            # the loop above stored them: this one must meet them new too
-    loop, save_wall, save_cpu, _, workers = _time_run_folder(db, files_dir, paths, procs)
+    loop, save_wall, save_cpu, _, workers, start = _time_run_folder(db, files_dir, paths, procs)
     _status("")
     print(_loop_line(LOOP_LABELS[5], loop))          # how many ran: the `workers` detail below
-    print(f"   of which save: wall {save_wall:.1f}, cpu {save_cpu:.1f} | workers {workers}")
+    print(f"   of which save: wall {save_wall:.1f}, cpu {save_cpu:.1f} | pool start {start:.1f} s "
+          f"(not in the ms/file) | workers {workers}")
 
 
 # ---------------------------------------------------------------------------------------------

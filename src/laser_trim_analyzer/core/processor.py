@@ -250,7 +250,9 @@ class Outcome:
     began (`time.time()`), for the ERROR result a failed save becomes. `identity_error`: why a
     trim file that stats could not be hashed -- its save must fail, as `save_analysis`'s did.
     `internal`: the analysis itself raised (in the pool) -- nothing to save; the file is an error,
-    and new again next run.
+    and new again next run. `reached_database`: that `internal` is a worker process's database
+    trap (core/ingest_worker.py) -- the analysis reached for a database, which a worker never
+    opens; enough of them in a row send the rest of the folder to threads (review m-6).
     """
     path: str
     result: Optional[AnalysisResult] = None
@@ -260,6 +262,7 @@ class Outcome:
     started: float = 0.0
     identity_error: Optional[str] = None
     internal: Optional[str] = None
+    reached_database: bool = False
 
 
 class WriterStop(Exception):
@@ -308,11 +311,14 @@ def next_cap(k: int, percent: float, calm_checks: int, size: int) -> Tuple[int, 
 
 
 class _PoolBroke(Exception):
-    """A worker process died (BrokenExecutor): the dispatch hands the rest to threads."""
+    """The worker processes cannot go on -- one died (BrokenExecutor), or the analysis keeps
+    reaching for a database there: the dispatch hands the rest to threads, `why` for the batch
+    line (default: that they broke)."""
 
-    def __init__(self, cause: BaseException):
+    def __init__(self, cause: BaseException, why: Optional[str] = None):
         super().__init__(str(cause))
         self.cause = cause
+        self.why = why
 
 
 def _broken(future) -> bool:
@@ -392,8 +398,11 @@ class Processor:
         self._snapshot = snapshot
         self._use_ml = use_ml
         # Which pool the last batch was analysed in, and why ("8 processes (ready in 1.3 s)",
-        # "4 threads (37 files; worker processes start at 200)"): the batch line prints it.
+        # "4 threads (37 files; worker processes start at 200)"): the batch line prints it. And
+        # how long its worker processes took to start (0 on threads): the work probe reports
+        # that apart from the per-file time.
         self.last_workers = ""
+        self.last_pool_start = 0.0
         self.parser = ExcelParser()
         self.final_test_parser = FinalTestParser()  # For Final Test files
         self.smoothness_parser = SmoothnessParser()  # For Output Smoothness files
@@ -1372,18 +1381,22 @@ class Processor:
 
         # Worker PROCESSES when they can run this analysis, else threads (ingest-speed A3, spec
         # 4.5-4.6); one pool for the whole folder either way.
-        pool = self._open_pool(len(files_to_process), progress_callback)
+        pool = self._open_pool(len(files_to_process), progress_callback, cancel)
         logger.info(f"Analysing {len(files_to_process):,} files on {pool.mode}")
         yield from self._dispatch(pool, files_to_process, progress_callback, summary, cancel,
                                   writer)
 
-    def _open_pool(self, n_files: int, progress_callback: Optional[Callable] = None):
+    def _open_pool(self, n_files: int, progress_callback: Optional[Callable] = None,
+                   cancel: Optional["threading.Event"] = None):
         """The pool this folder's files are analysed in: worker PROCESSES (spec 4.5, rulings
         13-14) when there are enough files left and this Processor carries its snapshot -- its
         analysis then asks the database nothing, and a worker may never open one -- else threads.
         A pool that cannot start hands the folder to threads, saying why (ruling 19). While the
         workers start the progress line says so: at work an endpoint scanner can make that take
-        a while (spec 4.5), and silence reads as a lockup."""
+        a while (spec 4.5), and silence reads as a lockup. Stop pressed while they start -- or
+        the window closing -- ends the start at once (review m-1); the thread pool then handed
+        back takes no chunk, since Stop is set."""
+        self.last_pool_start = 0.0
         threads = self._get_safe_worker_count(n_files)
         why = self._why_not_processes(n_files)
         if why is None:
@@ -1394,8 +1407,16 @@ class Processor:
                     progress_callback(ProcessingStatus(
                         filename="", status="scanning", progress_percent=0,
                         message=f"Starting {n} worker processes for {n_files:,} files…"))
+                t0 = time.monotonic()
                 try:
-                    return ingest_worker.WorkerPool.start(ingest_worker.context_for(self), n)
+                    pool = ingest_worker.WorkerPool.start(ingest_worker.context_for(self), n,
+                                                          cancel=cancel)
+                    self.last_pool_start = time.monotonic() - t0
+                    return pool
+                except ingest_worker.PoolStopped as e:
+                    logger.info("The folder was stopped while its worker processes started (%s)",
+                                e)
+                    why = str(e)
                 except ingest_worker.PoolFailed as e:
                     why = f"processes could not start: {e}"
                     logger.warning("Worker processes could not start (%s): this folder is "
@@ -1427,7 +1448,7 @@ class Processor:
         total = len(files)
         queue: deque = deque()
         inflight: Dict[Any, Path] = {}          # submission order (as_completed's input)
-        taken = completed = 0
+        taken = completed = reached = 0
         stopped = False
         cap, calm = pool.size, 0
         tick = getattr(writer, "tick", None)
@@ -1482,9 +1503,19 @@ class Processor:
                                     queue.appendleft(path)
                                     raise _PoolBroke(future.exception())
                                 completed += 1
-                                yield from self._one_completed(
+                                kind = yield from self._one_completed(
                                     future, path, writer, summary, progress_callback,
                                     completed, total)
+                                reached = reached + 1 if kind == "reached" else 0
+                                if reached >= CHUNK and not pool.in_process:
+                                    # Review m-6: the analysis keeps reaching for a database --
+                                    # a regression would turn a whole 170,000-file run into
+                                    # `internal` errors here. On threads it may open it.
+                                    raise _PoolBroke(RuntimeError(
+                                        f"{reached} files in a row reached for a database inside "
+                                        f"worker processes"), why=(
+                                        f"worker processes reached for a database {reached} "
+                                        f"times in a row"))
                                 break
                         except FuturesTimeout:
                             if pool.closed:
@@ -1496,8 +1527,9 @@ class Processor:
                         return
                     queue.extendleft(reversed(list(inflight.values())))
                     inflight.clear()
-                    pool = self._pool_broke(pool, broke.cause, completed, total)
+                    pool = self._pool_broke(pool, broke.cause, completed, total, broke.why)
                     cap, calm = pool.size, 0
+                    reached = 0
         finally:
             pool.close()
 
@@ -1519,16 +1551,19 @@ class Processor:
                            + (" (critical)" if percent > MEMORY_CRITICAL_PERCENT else ""))
         return new, calm
 
-    def _pool_broke(self, pool, cause: BaseException, completed: int, total: int):
-        """A worker process died mid-run: its files in flight, and the rest of the folder, go to
-        threads (spec 4.6) -- a worker holds no database handle, so nothing is half-written."""
+    def _pool_broke(self, pool, cause: BaseException, completed: int, total: int,
+                    why: Optional[str] = None):
+        """The worker processes cannot go on -- one died mid-run, or the analysis keeps reaching
+        for a database there: their files in flight, and the rest of the folder, go to threads
+        (spec 4.6) -- a worker holds no database handle, so nothing is half-written."""
         pool.close(grace=0.0)
         threads = self._get_safe_worker_count(max(1, total - completed))
-        why = (f"worker processes broke after {completed:,} files: "
+        why = (f"{why} after {completed:,} files" if why else
+               f"worker processes broke after {completed:,} files: "
                f"{type(cause).__name__}: {cause}")
-        logger.warning("The ingest's %s broke after %d of %d files (%s: %s): the files in "
+        logger.warning("The ingest's %s cannot go on after %d of %d files (%s): the files in "
                        "flight and the rest of this folder are analysed on %d threads",
-                       pool.mode, completed, total, type(cause).__name__, cause, threads)
+                       pool.mode, completed, total, why, threads)
         fallback = _ThreadPool(self, threads, why)
         self.last_workers = f"{pool.mode}, then {fallback.mode}"
         return fallback
@@ -1543,7 +1578,9 @@ class Processor:
         An `internal` Outcome -- the analysis raised, or (in a worker process) reached for a
         database, spec 4.3 -- has nothing to save or yield: it is logged at ERROR, HERE, by the
         parent, handed to the writer (which counts it: an error, new again next run) and counted
-        as a processed error."""
+        as a processed error. Returns (as the generator's value) "reached" for a worker's
+        database reach, "internal" for another internal outcome, None otherwise -- the dispatch
+        counts reaches in a row (review m-6)."""
         try:
             try:
                 outcome = future.result()
@@ -1563,7 +1600,7 @@ class Processor:
                         message=outcome.internal,
                         progress_percent=completed / total * 100,
                     ))
-                return
+                return "reached" if outcome.reached_database else "internal"
             result = self._hand_over(outcome, writer)
 
             # Skip non-trim files (process_file returns None)
