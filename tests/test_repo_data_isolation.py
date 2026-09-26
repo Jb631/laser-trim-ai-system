@@ -72,3 +72,68 @@ def test_repo_data_dir_is_untouched():
     raise AssertionError(
         f"phantom database created at {db}: it exists but holds no rows"
     )
+
+
+def test_the_trained_model_folder_does_not_live_in_the_repo():
+    """The folder the composite-risk models and the ML predictors load from -- for every consumer
+    that does not name one -- is redirected like the database (2026-09-25: it was resolved against
+    the working directory, so a run from the main checkout scored with its real models)."""
+    from laser_trim_analyzer.config import ml_models_directory
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.ml.manager import MLManager
+
+    repo = REPO_DATA.resolve()
+    for folder in (ml_models_directory(), Processor(use_ml=False).ml_storage_path,
+                   MLManager(None).storage_path):
+        resolved = Path(folder).resolve()
+        assert resolved != repo and repo not in resolved.parents, (
+            f"the trained-model folder resolved into the repo: {resolved}")
+
+
+def test_loading_a_checkouts_real_trained_models_is_refused_loudly(
+        _never_read_the_real_ml_models):
+    """The guard behind that redirect (conftest `_never_read_the_real_ml_models`): a load from
+    the repo's real data/ml_models -- a path built by hand, or one resolved against the working
+    directory in the main checkout -- is refused, and recorded so that a caller that swallows the
+    refusal still fails the test at teardown. Checked here, then acknowledged."""
+    import pytest
+    from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel
+    from laser_trim_analyzer.ml.predictor import ModelPredictor
+
+    real = REPO_DATA / "ml_models"
+    refused = _never_read_the_real_ml_models
+    with pytest.raises(RuntimeError, match="refusing to load"):
+        CompositeRiskModel.load(real / "composite_risk" / "8232-1.pkl")
+    with pytest.raises(RuntimeError, match="refusing to load"):
+        ModelPredictor("8232-1").load(real / "predictors" / "8232-1.pkl")
+    assert len(refused) == 2 and all("ml_models" in p for p in refused), refused
+    refused.clear()          # acknowledged: the guard did its job, and nothing real was read
+
+
+def test_a_refusal_a_caller_swallowed_still_fails_the_test(tmp_path):
+    """The loud half of the guard: the scoring code swallows a loader's error (a score is never
+    fatal), so a refusal alone would pass in silence. The guard records it and fails the test at
+    teardown -- proved on an inner test, run in a subprocess with this suite's conftest loaded as a
+    plugin, that swallows the refusal exactly as the scorer does."""
+    import os
+    import subprocess
+    import sys
+
+    repo = REPO_DATA.parent
+    inner = tmp_path / "test_inner_swallows.py"
+    inner.write_text(
+        "from pathlib import Path\n"
+        "def test_swallows_the_refusal():\n"
+        "    from laser_trim_analyzer.ml.predictor import ModelPredictor\n"
+        "    try:\n"
+        f"        ModelPredictor('x').load(Path({str(REPO_DATA)!r}) / 'ml_models' / 'predictors' / 'x.pkl')\n"
+        "    except Exception:\n"
+        "        pass            # as the scoring code swallows it\n")
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(repo / "src"), str(repo / "tests")]))
+    run = subprocess.run(
+        [sys.executable, "-B", "-m", "pytest", str(inner), "-p", "conftest", "-q",
+         "-p", "no:cacheprovider", "--rootdir", str(tmp_path)],
+        capture_output=True, text=True, timeout=300, env=env, cwd=str(tmp_path))
+    out = run.stdout + run.stderr
+    assert run.returncode != 0, out[-2000:]
+    assert "read a checkout's real trained ML models" in out, out[-2000:]

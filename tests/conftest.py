@@ -117,6 +117,64 @@ def _never_touch_the_real_database(tmp_path, monkeypatch):
     _mgr._db_manager = previous
 
 
+@pytest.fixture(autouse=True)
+def _never_read_the_real_ml_models(monkeypatch):
+    """No test may score with a checkout's REAL trained models -- data/ml_models.
+
+    2026-09-25: the composite-risk loader resolved `data/ml_models` against the WORKING
+    directory, so a golden recorded in a worktree (no models) failed in the main checkout, where
+    the trained models are: `composite_trim_risk_score: None -> 0.341`. A test's numbers must
+    never depend on what happens to sit in the repo's data/ folder. The loaders now resolve
+    through `get_app_directory()`, which the fixture above redirects to tmp; this is the guard
+    behind that redirect. Any load of a composite-risk model or a predictor from inside a
+    checkout's real data/ directory is REFUSED -- and, because the callers swallow a loader's
+    error (scoring is never fatal), each refusal is also recorded and fails the test at teardown.
+
+    Yields the list of refusals: the one test that proves the refusal acknowledges it by
+    clearing the list.
+    """
+    from laser_trim_analyzer import config as _cfg
+    from laser_trim_analyzer.ml import composite_risk as _cr
+    from laser_trim_analyzer.ml import predictor as _pred
+
+    # Both roots, computed from files -- NOT from get_app_directory(), which the fixture above
+    # patches (in either order this set is the real one).
+    protected = {
+        (Path(__file__).resolve().parents[1] / "data").resolve(),
+        (Path(_cfg.__file__).resolve().parents[2] / "data").resolve(),
+    }
+    refused = []
+
+    def refuse_the_real_models(path):
+        target = Path(path).resolve()
+        for directory in protected:
+            if target == directory or directory in target.parents:
+                refused.append(str(target))
+                raise RuntimeError(
+                    f"refusing to load {target}: it is inside {directory}, which holds a "
+                    "checkout's REAL trained ML models -- a test's numbers must not depend on "
+                    "them. Point the loader at tmp_path instead.")
+
+    real_composite_load = _cr.CompositeRiskModel.load.__func__
+
+    def guarded_composite_load(cls, path):
+        refuse_the_real_models(path)
+        return real_composite_load(cls, path)
+
+    real_predictor_load = _pred.ModelPredictor.load
+
+    def guarded_predictor_load(self, path):
+        refuse_the_real_models(path)
+        return real_predictor_load(self, path)
+
+    monkeypatch.setattr(_cr.CompositeRiskModel, "load", classmethod(guarded_composite_load))
+    monkeypatch.setattr(_pred.ModelPredictor, "load", guarded_predictor_load)
+    yield refused
+    if refused:
+        pytest.fail("this test read a checkout's real trained ML models (refused, but a caller "
+                    f"swallowed the refusal): {refused[:3]}", pytrace=False)
+
+
 @pytest.fixture
 def tk_root():
     """One headless CTk root for THIS test only (no mainloop).

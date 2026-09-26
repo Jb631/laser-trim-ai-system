@@ -75,6 +75,10 @@ def _invented_ml():
                       for i in range(60)])
     trained.train(X, pd.Series([1 if i % 3 == 0 else 0 for i in range(60)]))
     assert trained.is_trained
+    # The trainer builds its forest with n_jobs=-1, and predict_proba then sums the trees across
+    # threads in a varying order: the last bit of a probability varies call to call (2026-09-25,
+    # measured on the real predictors). One thread, so the exact comparisons here are exact.
+    trained.classifier.n_jobs = 1
     return {"8232-1": 0.0042}, {"8232-1": trained}
 
 

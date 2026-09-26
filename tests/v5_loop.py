@@ -157,7 +157,7 @@ def v5_loop(db, paths, root: Path, *, parallel: bool, writer=None) -> List[Tuple
     config = Config()
     config.processing.turbo_mode_threshold = 1 if parallel else 10 ** 9
     proc = Processor(config=config, use_ml=False)
-    proc.ml_storage_path = root / "no_ml_models"      # never the CWD's data/ml_models
+    proc.ml_storage_path = root / "no_ml_models"      # never a checkout's trained models
     seen = []
     kwargs = {} if writer is None else {"writer": writer}
     for result in proc.process_batch([Path(p) for p in paths], incremental=False, **kwargs):

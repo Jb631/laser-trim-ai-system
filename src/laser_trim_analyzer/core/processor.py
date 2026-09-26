@@ -340,8 +340,10 @@ class Processor:
         # False sentinel means "checked and absent/non-deployed", to avoid repeated
         # filesystem lookups for models that don't have a deployed model yet.
         self._composite_models: Dict = {}
-        # Storage path for composite risk pickle files (mirrors MLManager convention).
-        self.ml_storage_path = Path("data/ml_models")
+        # Storage path for composite risk pickle files (mirrors MLManager convention): the app
+        # directory's data/ml_models, never the working directory's (config.ml_models_directory).
+        from laser_trim_analyzer.config import ml_models_directory
+        self.ml_storage_path = ml_models_directory()
         if use_ml:
             if snapshot is not None:
                 self._model_thresholds = dict(snapshot.ml_thresholds)

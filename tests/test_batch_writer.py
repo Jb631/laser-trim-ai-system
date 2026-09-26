@@ -660,3 +660,100 @@ def test_content_refusals_are_the_files_own_and_never_stop_the_folder(db, tmp_pa
     assert res.ok, res.error
     assert res.buckets == {"errors": 45} and res.unsaved == 0
     assert _count(db, "processed_files", "WHERE error_message LIKE 'unreadable: ValueError%'") == 45
+
+
+# ---- trained models present (2026-09-25: the path no golden had covered) -----------------------
+
+def _invented_trained_models_for_8232_1(db) -> None:
+    """A deployed composite trim-risk model, a trained failure predictor and a sigma threshold for
+    8232-1 -- all invented, trained on invented data -- where the app keeps them: the app
+    directory's data/ml_models (tests/conftest.py redirects the app directory to tmp)."""
+    import random
+    import numpy as np
+    import pandas as pd
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    from laser_trim_analyzer.config import ml_models_directory
+    from laser_trim_analyzer.database.models import ModelMLState
+    from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel, CompositeTrainingResult
+    from laser_trim_analyzer.ml.predictor import FEATURE_COLUMNS, ModelPredictor
+    folder = ml_models_directory()
+    random.seed(11)
+    crm = CompositeRiskModel("8232-1")
+    crm.features_used = ["untrimmed_error_max", "trim_pass_count"]
+    X = np.array([[random.random(), random.randint(1, 6)] for _ in range(80)])
+    y = np.array([1 if a + 0.1 * b > 0.9 else 0 for a, b in X])
+    crm._pipe = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(),
+                              LogisticRegression(max_iter=1000)).fit(X, y)
+    crm._feat_median = {"untrimmed_error_max": 0.5, "trim_pass_count": 3.0}
+    crm.is_trained = True
+    crm.result = CompositeTrainingResult("8232-1", 80, int(y.sum()), crm.features_used, 0.8, 0.7,
+                                         0.5, deployed=True, reason="invented")
+    crm.save(folder / "composite_risk" / "8232-1.pkl")
+    predictor = ModelPredictor("8232-1")
+    Xp = pd.DataFrame([{c: random.random() + (0.4 if i % 3 == 0 else 0.0) for c in FEATURE_COLUMNS}
+                       for i in range(60)])
+    predictor.train(Xp, pd.Series([1 if i % 3 == 0 else 0 for i in range(60)]))
+    predictor.classifier.n_jobs = 1      # one thread: n_jobs=-1 varies a probability's last bit
+    assert predictor.save(folder / "predictors" / "8232-1.pkl")
+    with db.session() as s:
+        s.add(ModelMLState(model="8232-1", is_trained=True, sigma_threshold=0.0042))
+
+
+def test_with_trained_models_present_the_batch_stores_what_the_per_file_way_stores(
+        tmp_path, monkeypatch):
+    """Trained models PRESENT: a composite trim-risk model, a failure predictor and a sigma
+    threshold. run_folder -- the snapshot's ML state, every write batched -- stores exactly what
+    the old per-file way stores (process_file + save_analysis, the ML state from the database), the
+    composite_trim_risk_score, failure_probability and sigma_threshold of every track included, and
+    the models were in force."""
+    from laser_trim_analyzer.core.ingest_run import run_folder
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.ml import invalidate_shared_ml_manager
+    from laser_trim_analyzer.ml.predictor import ModelPredictor
+    predicted = {"batched": 0, "per_file": 0}
+    side = {"now": None}
+    real_predict = ModelPredictor.predict_failure_probability
+
+    def counted(self, features):          # the formula also fills failure_probability, so COUNT
+        predicted[side["now"]] += 1
+        return real_predict(self, features)
+
+    monkeypatch.setattr(ModelPredictor, "predict_failure_probability", counted)
+    folder = tmp_path / "laser"
+    for n in ("dlts_8232-1_242.xls", "dlts_8232-1_243.xls", "lts_8232-1_193.xls",
+              "lts_8232-1_194.xls", "dlts_8074_18.xls"):
+        save_rows._pinned_copy(save_rows.FIXTURES / "trim" / n, folder / n)
+    batched, per_file = (DatabaseManager(tmp_path / f"{n}.db") for n in ("batched", "per_file"))
+    try:
+        _invented_trained_models_for_8232_1(batched)
+        with per_file.session() as s:
+            from laser_trim_analyzer.database.models import ModelMLState
+            s.add(ModelMLState(model="8232-1", is_trained=True, sigma_threshold=0.0042))
+        invalidate_shared_ml_manager()
+        save_rows.inject(batched, monkeypatch)
+        side["now"] = "batched"
+        res = run_folder(str(folder), db=batched, config=None, incremental=True)
+        assert res.ok, res.error
+        invalidate_shared_ml_manager()
+        save_rows.inject(per_file, monkeypatch)
+        side["now"] = "per_file"
+        proc = Processor(use_ml=True)
+        for f in sorted(folder.iterdir()):
+            per_file.save_analysis(proc.process_file(f))
+    finally:
+        invalidate_shared_ml_manager()
+        batched.close()
+        per_file.close()
+    got = save_rows.dump_rows(tmp_path / "batched.db", tmp_path)
+    want = save_rows.dump_rows(tmp_path / "per_file.db", tmp_path)
+    diffs = save_rows.differences(v5_loop.order_free(got), v5_loop.order_free(want), exact=True)
+    assert not diffs, "\n".join(diffs)
+    tracks = [t for t in got["track_results"]]
+    scored = [t for t in tracks if t["composite_trim_risk_score"] is not None]
+    assert len(scored) == 4, "the composite model scored every 8232-1 track, and no other"
+    assert predicted == {"batched": 4, "per_file": 4}, predicted   # the predictor ran, on both
+    assert sum(t["sigma_threshold"] == 0.0042 for t in tracks) == 4, "the ML threshold ruled"
