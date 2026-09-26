@@ -3636,20 +3636,26 @@ def check_process_mode_ingest(raw=None) -> None:
       1. the two runs store exactly the same rows -- every column but the clocks, in any order
          (a pool completes files in any order);
       2. the process run really ran on worker processes (its mode says so), no file came back
-         `internal` (no worker reached for a database), and its buckets are the thread run's.
+         `internal` (no worker reached for a database), and its buckets are the thread run's;
+      3. (A5, Task 12) a third process run under scripted memory pressure -- the in-flight cap
+         drops to one and comes back, each change logged -- stores exactly the same rows too:
+         the cap moves WHEN files run, never what is stored. Its chunks are 5 files, so 48 files
+         give the cap enough boundaries to fall and recover.
     `_post_batch` is off (this compares what the ingest SAVES), and so is the 2-second flush.
 
-    Falsify before trusting (2026-09-26): build the worker's processor without its snapshot --
+    Falsify before trusting (2026-09-26): the cap never coming back -- check 3 goes FAIL;
+    build the worker's processor without its snapshot --
     check 2 goes FAIL (it asks get_database() for its ML state as it is built: the trap refuses
     the worker, and the folder runs on threads); without its snapshot AND with ML off -- both go
     FAIL (every spec lookup hits the trap: 40 files internal, none stored); with ML off alone --
     both go FAIL on the copy (its sigma thresholds move the verdicts).
     """
+    import logging
     import shutil
     import tempfile
     from collections import Counter
     from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.core import ingest_run, ingest_worker
+    from laser_trim_analyzer.core import ingest_run, ingest_worker, processor as _processor
     from laser_trim_analyzer.database import manager as _mgr
     import laser_trim_analyzer.database as _dbpkg
     from laser_trim_analyzer.ml import invalidate_shared_ml_manager
@@ -3662,8 +3668,15 @@ def check_process_mode_ingest(raw=None) -> None:
                              "smoothness_tracks")
     saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None), ingest_run._post_batch,
              ingest_run.BatchWriter.FLUSH_SECONDS, ingest_worker.PROCESS_MIN_FILES,
-             ingest_worker.MAX_WORKERS)
+             ingest_worker.MAX_WORKERS, _processor.CHUNK, _processor.memory_percent)
     tmp = Path(tempfile.mkdtemp(prefix="process_mode_sweep_"))
+    said = []
+
+    class _Said(logging.Handler):
+        def emit(self, record):
+            said.append(record.getMessage())
+
+    heard = _Said(level=logging.INFO)
     opened = []
     try:
         root = tmp / "in"
@@ -3679,17 +3692,32 @@ def check_process_mode_ingest(raw=None) -> None:
         ingest_worker.MAX_WORKERS = 2
         config = Config()
         config.processing.turbo_mode_threshold = 1            # both runs take the pool path
-        for label, min_files in (("threads", 10 ** 9), ("processes", 1)):
+        # memory: the start check, then one reading per chunk boundary -- pressure, then calm
+        readings = [50.0, 91.0, 92.0, 79.0, 79.0] + [50.0] * 20
+        for label, min_files in (("threads", 10 ** 9), ("processes", 1), ("throttled", 1)):
             path = tmp / f"{label}.db"
             db = _mgr.DatabaseManager(path)
             opened.append(db)
             if raw is not None:
                 seeded = _seed_specs_and_ml_state(raw, path)
             ingest_worker.PROCESS_MIN_FILES = min_files
+            proc_log = logging.getLogger(_processor.__name__)
+            level = proc_log.level
+            if label == "throttled":
+                _processor.CHUNK = 5
+                _processor.memory_percent = lambda: readings.pop(0) if len(readings) > 1 \
+                    else readings[0]
+                proc_log.addHandler(heard)
+                proc_log.setLevel(logging.INFO)          # a recovery is logged at INFO
             invalidate_shared_ml_manager()
             _mgr._db_manager = _dbpkg._db_manager = db
-            runs[label] = ingest_run.run_folder(str(root), db=db, config=config,
-                                                incremental=True)
+            try:
+                runs[label] = ingest_run.run_folder(str(root), db=db, config=config,
+                                                    incremental=True)
+            finally:
+                proc_log.removeHandler(heard)
+                proc_log.setLevel(level)
+                _processor.CHUNK, _processor.memory_percent = saved[6], saved[7]
             invalidate_shared_ml_manager()
 
         def rows(label):
@@ -3715,13 +3743,22 @@ def check_process_mode_ingest(raw=None) -> None:
               and Counter(res_p.buckets) == Counter(res_t.buckets),
               f"workers '{res_p.workers}' vs '{res_t.workers}'; internal "
               f"{res_p.phases.get('internal', 0)}; buckets {res_p.buckets} vs {res_t.buckets}")
+        throttled = rows("throttled")
+        changes = [m for m in said if m.startswith("workers ")]
+        check("process mode: under memory pressure the in-flight cap drops and comes back, each "
+              "change logged -- and what it stores does not move (A5)",
+              runs["throttled"].ok and throttled == want
+              and runs["throttled"].workers.startswith("2 processes")
+              and changes == ["workers 2 → 1: memory at 91%", "workers 1 → 2: memory back to 79%"],
+              f"changes {changes}; identical rows={throttled == want}; "
+              f"workers '{runs['throttled'].workers}'")
     except Exception as e:                      # an exception is a FAIL, never a skip
         check("process mode: the corpus runs through run_folder", False,
               f"{type(e).__name__}: {e}")
     finally:
         (_mgr._db_manager, _dbpkg._db_manager, ingest_run._post_batch,
          ingest_run.BatchWriter.FLUSH_SECONDS, ingest_worker.PROCESS_MIN_FILES,
-         ingest_worker.MAX_WORKERS) = saved
+         ingest_worker.MAX_WORKERS, _processor.CHUNK, _processor.memory_percent) = saved
         for m in opened:
             m.close()
         invalidate_shared_ml_manager()

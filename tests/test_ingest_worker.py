@@ -461,6 +461,23 @@ def test_worker_processes_get_the_next_chunk_before_the_last_one_is_back(tmp_pat
     assert outs[20] > ins[19] and most == 20, (outs[20], ins[19], most)
 
 
+def test_while_the_worker_processes_start_the_progress_line_says_so(tmp_path, processes):
+    """Starting the workers can take a while at work (an endpoint scanner reads every imported
+    module, spec 4.5): the progress line says what is happening instead of going quiet."""
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    files = worker_stubs.make_files(tmp_path, [f"f{i:03d}.xls" for i in range(30)])
+    proc = worker_stubs.StubProcessor(config=_parallel_config(), snapshot=SpecSnapshot())
+    said = []
+    got = list(proc.process_batch(files, progress_callback=lambda st: said.append(st),
+                                  incremental=False, writer=_Collect()))
+    assert len(got) == 30 and proc.last_workers.startswith("2 processes")
+    starting = [st.message for st in said if st.status == "scanning"
+                and "worker processes" in (st.message or "")]
+    assert starting == ["Starting 2 worker processes for 30 files…"], starting
+    first_done = next(i for i, st in enumerate(said) if st.status == "completed")
+    assert said.index(next(st for st in said if st.message in starting)) < first_done
+
+
 # ---- Stop and close (ruling 20) --------------------------------------------------------------
 
 def test_stop_in_process_mode_lands_on_a_whole_chunk_and_every_file_handed_out_arrives(

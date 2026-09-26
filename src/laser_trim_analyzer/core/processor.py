@@ -272,6 +272,40 @@ class WriterStop(Exception):
 # about -- so a Stop lands on a whole chunk (test_ingest_cancel) -- and the batch writer's K.
 CHUNK = 20
 
+# The in-flight cap's hysteresis (ingest-speed A5, spec section 5, ruling 21): above 90% memory one
+# fewer file in flight, above 95% one at a time, and below 80% on CAP_CALM_CHECKS checks running one
+# more, up to the pool's size. The 10-point gap and the two-check wait keep one reading from making
+# it oscillate.
+CAP_UP_BELOW_PERCENT = 80
+CAP_CALM_CHECKS = 2
+
+
+def memory_percent() -> Optional[float]:
+    """How full memory is, in percent -- or None when it cannot be read (no psutil). The ONE
+    probe the ingest's throttle asks (tests script it)."""
+    if not HAS_PSUTIL:
+        return None
+    try:
+        return float(psutil.virtual_memory().percent)
+    except Exception:
+        return None
+
+
+def next_cap(k: int, percent: float, calm_checks: int, size: int) -> Tuple[int, int]:
+    """(the next in-flight cap, the calm checks so far), after one memory reading at a chunk
+    boundary (ruling 21). `k` is the cap now, `size` the pool's -- the cap never goes above it,
+    nor below one. Pure."""
+    if percent > MEMORY_CRITICAL_PERCENT:
+        return 1, 0
+    if percent > MEMORY_WARNING_PERCENT:
+        return max(1, k - 1), 0
+    if percent < CAP_UP_BELOW_PERCENT:
+        calm = calm_checks + 1
+        if calm >= CAP_CALM_CHECKS and k < size:
+            return k + 1, 0
+        return k, min(calm, CAP_CALM_CHECKS)
+    return k, 0
+
 
 class _PoolBroke(Exception):
     """A worker process died (BrokenExecutor): the dispatch hands the rest to threads."""
@@ -1332,28 +1366,34 @@ class Processor:
             self.last_workers = "sequential (memory was critical)"
             yield from self._process_sequential(
                 [Path(f) for f in files_to_process],
-                progress_callback, False, summary, writer=writer
+                progress_callback, False, summary, cancel=cancel, writer=writer
             )
             return
 
         # Worker PROCESSES when they can run this analysis, else threads (ingest-speed A3, spec
         # 4.5-4.6); one pool for the whole folder either way.
-        pool = self._open_pool(len(files_to_process))
+        pool = self._open_pool(len(files_to_process), progress_callback)
         logger.info(f"Analysing {len(files_to_process):,} files on {pool.mode}")
         yield from self._dispatch(pool, files_to_process, progress_callback, summary, cancel,
                                   writer)
 
-    def _open_pool(self, n_files: int):
+    def _open_pool(self, n_files: int, progress_callback: Optional[Callable] = None):
         """The pool this folder's files are analysed in: worker PROCESSES (spec 4.5, rulings
         13-14) when there are enough files left and this Processor carries its snapshot -- its
         analysis then asks the database nothing, and a worker may never open one -- else threads.
-        A pool that cannot start hands the folder to threads, saying why (ruling 19)."""
+        A pool that cannot start hands the folder to threads, saying why (ruling 19). While the
+        workers start the progress line says so: at work an endpoint scanner can make that take
+        a while (spec 4.5), and silence reads as a lockup."""
         threads = self._get_safe_worker_count(n_files)
         why = self._why_not_processes(n_files)
         if why is None:
             from laser_trim_analyzer.core import ingest_worker
             n, why = ingest_worker.worker_count()
             if n >= 1:
+                if progress_callback:
+                    progress_callback(ProcessingStatus(
+                        filename="", status="scanning", progress_percent=0,
+                        message=f"Starting {n} worker processes for {n_files:,} files…"))
                 try:
                     return ingest_worker.WorkerPool.start(ingest_worker.context_for(self), n)
                 except ingest_worker.PoolFailed as e:
@@ -1389,7 +1429,7 @@ class Processor:
         inflight: Dict[Any, Path] = {}          # submission order (as_completed's input)
         taken = completed = 0
         stopped = False
-        cap = pool.size
+        cap, calm = pool.size, 0
         tick = getattr(writer, "tick", None)
         self.last_workers = pool.mode
         try:
@@ -1423,7 +1463,7 @@ class Processor:
                                                 taken, total)
                                 else:
                                     if taken:
-                                        cap = self._between_chunks(pool, cap)
+                                        cap, calm = self._between_chunks(pool, cap, calm)
                                     chunk = [Path(f) for f in files[taken:taken + CHUNK]]
                                     queue.extend(chunk)
                                     taken += len(chunk)
@@ -1457,19 +1497,27 @@ class Processor:
                     queue.extendleft(reversed(list(inflight.values())))
                     inflight.clear()
                     pool = self._pool_broke(pool, broke.cause, completed, total)
-                    cap = pool.size
+                    cap, calm = pool.size, 0
         finally:
             pool.close()
 
-    def _between_chunks(self, pool, cap: int) -> int:
+    def _between_chunks(self, pool, cap: int, calm: int) -> Tuple[int, int]:
         """Before every chunk after the first: garbage collection when the parent parses (as
-        between batches before A3), and the in-flight cap for the memory there is."""
+        between batches before A3), and the in-flight cap for the memory there is now (A5,
+        `next_cap`) -- down under pressure, and BACK once memory has been calm for two checks
+        running, which the old throttle never did. Each change is logged once."""
         if pool.in_process:
             gc.collect()
-        if self._check_memory_warning():
-            logger.warning("Memory warning - reducing workers")
-            cap = max(1, cap - 1)
-        return cap
+        percent = memory_percent()
+        if percent is None:
+            return cap, calm
+        new, calm = next_cap(cap, percent, calm, pool.size)
+        if new > cap:
+            logger.info(f"workers {cap} → {new}: memory back to {percent:.0f}%")
+        elif new < cap:
+            logger.warning(f"workers {cap} → {new}: memory at {percent:.0f}%"
+                           + (" (critical)" if percent > MEMORY_CRITICAL_PERCENT else ""))
+        return new, calm
 
     def _pool_broke(self, pool, cause: BaseException, completed: int, total: int):
         """A worker process died mid-run: its files in flight, and the rest of the folder, go to
@@ -1591,22 +1639,9 @@ class Processor:
             return 2  # Safe default
 
     def _check_memory_critical(self) -> bool:
-        """Check if memory usage is critical (>85%)."""
-        if not HAS_PSUTIL:
-            return False
-        try:
-            return psutil.virtual_memory().percent > MEMORY_CRITICAL_PERCENT
-        except Exception:
-            return False
-
-    def _check_memory_warning(self) -> bool:
-        """Check if memory usage is high (>75%)."""
-        if not HAS_PSUTIL:
-            return False
-        try:
-            return psutil.virtual_memory().percent > MEMORY_WARNING_PERCENT
-        except Exception:
-            return False
+        """Is memory critical (above MEMORY_CRITICAL_PERCENT)? Through the one probe."""
+        percent = memory_percent()
+        return percent is not None and percent > MEMORY_CRITICAL_PERCENT
 
     @staticmethod
     def _validate_track_data(tracks: List[TrackData]) -> List[str]:
