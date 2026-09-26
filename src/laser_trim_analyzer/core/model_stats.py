@@ -651,7 +651,10 @@ def disclosure_text(cell: Cell) -> str:
     return " · ".join(parts)
 
 
-def lot_line(row: StatRow, cell: Cell, verdict: Optional[LotVerdict]) -> str:
+# "LotVerdict" in quotes: the class is defined further down, and Python before 3.14 evaluates a
+# signature's annotations when the function is defined -- a bare name here raised NameError on
+# import under 3.11-3.13 (review of Tasks 11-12), and this module is imported by every page.
+def lot_line(row: StatRow, cell: Cell, verdict: Optional["LotVerdict"]) -> str:
     """The "this lot" line under a metric: its numbers, then what they mean.
 
     Rate rows get one too, and deliberately: "% of the lot that didn't trim" is

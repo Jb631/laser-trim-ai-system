@@ -1,8 +1,12 @@
 @echo off
 REM Laser Trim Analyzer V6 — Windows launcher (work machine).
 REM No hardcoded paths: runs from wherever this folder lives.
-REM First run: creates .venv and installs dependencies (needs Python 3.12+ (numpy 2.5 needs 3.11+; this set was proven on 3.14)
-REM on PATH and one-time internet/proxy access for pip).
+REM First run: creates .venv and installs dependencies. Needs Python 3.12 or newer on PATH:
+REM the pinned numpy 2.5.2 and scipy 1.18.1 require 3.12. Tested 2026-09-26: the whole test
+REM gate on 3.14 with this pinned set; the code on 3.11 with 3.11's own libraries: every module
+REM imports, and the gate's only reds were a last-bit float from 3.11's older numpy/scipy and
+REM a test that fakes Windows paths on a Mac. 3.12 and 3.13 were not run. Needs one-time
+REM internet/proxy access for pip.
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
