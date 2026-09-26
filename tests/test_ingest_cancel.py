@@ -518,9 +518,11 @@ def test_closing_with_no_run_in_flight_just_closes(make_app):
 
 def test_closing_also_closes_the_ingests_worker_processes_after_the_wait(make_app, monkeypatch):
     """Ruling 20: after the bounded wait, closing the window closes the ingest's worker PROCESSES
-    -- a busy one gets its grace, then it is terminated (a worker holds no database handle, so
-    nothing can be torn). Without this, a worker stuck on one file kept the app from exiting:
-    concurrent.futures joins every worker process at interpreter exit."""
+    -- terminated at once (a worker holds no database handle, so nothing can be torn). Without
+    this, a worker stuck on one file kept the app from exiting: concurrent.futures joins every
+    worker process at interpreter exit. At once, not after a grace (final review, m-1): what a
+    worker finishes in a grace is thrown away -- the closed pool hands nothing over -- and the
+    grace would hold the Tk thread past Windows' 5 s "Not Responding"."""
     import threading
     from laser_trim_analyzer.core import ingest_worker
     closed = []
@@ -533,7 +535,7 @@ def test_closing_also_closes_the_ingests_worker_processes_after_the_wait(make_ap
     app.register_ingest(Event(), t)
     app.stop_ingests(timeout=0.2)
     stuck.set()
-    assert closed == [ingest_worker.CLOSE_GRACE] and ingest_worker.CLOSE_GRACE == 5.0
+    assert closed == [0.0], closed
 
 
 def test_closing_does_not_wait_forever_on_a_stuck_worker(make_app,

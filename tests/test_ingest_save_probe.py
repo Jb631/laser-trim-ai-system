@@ -560,3 +560,29 @@ def test_the_worker_process_loop_leaves_the_pool_start_out_of_its_ms_per_file(
     assert float(lines[i].split()[-1]) < 1000, lines[i]
     start = re.search(r"pool start (\d+\.\d) s", lines[i + 1])
     assert start and float(start.group(1)) >= 3.0, lines[i + 1]
+
+
+def test_a_failed_start_of_the_worker_processes_is_left_out_of_the_ms_per_file_too(
+        probe, work, capsys, monkeypatch):
+    """Final review, m-5: a start that FAILS after 3 s -- the folder then runs on threads -- is
+    reported beside the loop like a start that succeeded, never inside its ms/file while the
+    line reads "pool start 0.0 s"."""
+    import time as _time
+    from laser_trim_analyzer.core import ingest_worker
+    real_start = ingest_worker.WorkerPool.start.__func__
+
+    def slow_then_failed(cls, ctx, n, **k):
+        if ctx.processor_class is not probe._Seen:     # the "parsing on processes" line's pool
+            return real_start(cls, ctx, n, **k)
+        _time.sleep(3.0)                              # run_folder's: slow, and then it fails
+        raise ingest_worker.PoolFailed("an invented refusal")
+
+    monkeypatch.setattr(ingest_worker.WorkerPool, "start", classmethod(slow_then_failed))
+    assert _run(probe, work, "--procs", "2") == 0
+    lines = capsys.readouterr().out.splitlines()
+    i = next(k for k, ln in enumerate(lines)
+             if ln.startswith("the same loop on worker processes, headless (run_folder)"))
+    assert float(lines[i].split()[-1]) < 1000, lines[i]
+    start = re.search(r"pool start (\d+\.\d) s", lines[i + 1])
+    assert start and float(start.group(1)) >= 3.0, lines[i + 1]
+    assert "processes could not start: an invented refusal" in lines[i + 1], lines[i + 1]

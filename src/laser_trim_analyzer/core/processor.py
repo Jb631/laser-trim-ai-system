@@ -1409,10 +1409,8 @@ class Processor:
                         message=f"Starting {n} worker processes for {n_files:,} files…"))
                 t0 = time.monotonic()
                 try:
-                    pool = ingest_worker.WorkerPool.start(ingest_worker.context_for(self), n,
+                    return ingest_worker.WorkerPool.start(ingest_worker.context_for(self), n,
                                                           cancel=cancel)
-                    self.last_pool_start = time.monotonic() - t0
-                    return pool
                 except ingest_worker.PoolStopped as e:
                     logger.info("The folder was stopped while its worker processes started (%s)",
                                 e)
@@ -1421,6 +1419,11 @@ class Processor:
                     why = f"processes could not start: {e}"
                     logger.warning("Worker processes could not start (%s): this folder is "
                                    "analysed on %d threads instead", e, threads)
+                finally:
+                    # the start's seconds, whether it started, failed or was stopped: the probe
+                    # leaves them out of the loop's ms/file (final review, m-5 -- a failed start
+                    # was charged to it while its line read "pool start 0.0 s")
+                    self.last_pool_start = time.monotonic() - t0
         return _ThreadPool(self, threads, why)
 
     def _why_not_processes(self, n_files: int) -> Optional[str]:
