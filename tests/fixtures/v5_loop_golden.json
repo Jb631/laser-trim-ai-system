@@ -3982,7 +3982,7 @@
    },
    {
     "analysis_id": null,
-    "error_message": "unreadable: ValueError: Serial cannot be empty (content sha256=<sha256 of file>)",
+    "error_message": "ValueError: Serial cannot be empty (content sha256=<sha256 of file>)",
     "file_hash": "<skip marker of this path>",
     "file_modified_date": "<mtime of file>",
     "file_path": "<root>/in/Test Station/ft/8434ct-1118D.xls",
@@ -3996,7 +3996,7 @@
    },
    {
     "analysis_id": null,
-    "error_message": "unreadable: ValueError: Excel file format cannot be determined, you must specify an engine manually. (content sha256=<sha256 of file>)",
+    "error_message": "ValueError: Excel file format cannot be determined, you must specify an engine manually. (content sha256=<sha256 of file>)",
     "file_hash": "<skip marker of this path>",
     "file_modified_date": "<mtime of file>",
     "file_path": "<root>/in/Test Station/ft/9996-sn1_1-2-2026_9-00 AM.xls",

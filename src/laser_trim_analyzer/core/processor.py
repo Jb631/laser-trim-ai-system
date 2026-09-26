@@ -958,12 +958,15 @@ class Processor:
                          f"recorded as unreadable, and is new again next run", exc_info=exc)
         elif self._is_permanent_failure(exc):
             # Permanently unprocessable (or already saved): record as skipped -- WITH why, so
-            # the next scan doesn't re-attempt it forever AND the marker itself says what was
-            # wrong, instead of nothing at all (closeout item 1, 2026-09-26: V5's own old
-            # behaviour left this one branch's marker silent, unlike the branch just below it).
+            # the marker itself says what was wrong instead of nothing at all (closeout item 1,
+            # 2026-09-26: V5's own old behaviour left this one branch's marker silent, unlike the
+            # branch just below it) -- but NOT failed_read: this is never a file a parser upgrade
+            # could rescue (a duplicate, a format that can never parse), and Settings -> "Retry
+            # unreadable files" must never re-offer it (app_qa_sweep's ingest re-offer check).
             logger.warning(f"Final Test {file_path.name} permanently "
                            f"unprocessable — recorded as skipped: {exc}")
-            marker = self._skip_marker(file_path, reason=f"{type(exc).__name__}: {exc}"[:200])
+            marker = self._skip_marker(file_path, reason=f"{type(exc).__name__}: {exc}"[:200],
+                                       failed_read=False)
         else:
             # exc_info=exc: the traceback of THIS exception, whether or not it is the one being
             # handled (the ingest's writer applies this rule to a save that failed in a batch).
@@ -2251,11 +2254,20 @@ class Processor:
         if marker is not None:
             self._write_marker(marker)
 
-    def _skip_marker(self, file_path: Path,
-                     reason: Optional[str] = None) -> Optional[SkipMarkerWrite]:
+    def _skip_marker(self, file_path: Path, reason: Optional[str] = None,
+                     failed_read: Optional[bool] = None) -> Optional[SkipMarkerWrite]:
         """The marker `_mark_file_skipped` writes, as a VALUE: the file's hash and (size, mtime)
         taken here, exactly as they were, and nothing written. None if they cannot be taken --
-        never fatal, as the write never was (the file is merely offered again)."""
+        never fatal, as the write never was (the file is merely offered again).
+
+        `failed_read`: is this a genuine READ failure -- one a parser upgrade could fix, so
+        Settings -> "Retry unreadable files" should re-offer it? None (every caller but one)
+        derives it from whether a reason was given. A PERMANENT failure -- a duplicate, a format
+        that can never parse -- can carry a reason (closeout item 1: every failure says why)
+        WITHOUT being retry-eligible: retrying it can never succeed, and counting it would let
+        one press of that button re-offer files the markers exist to keep quiet
+        (`count_failed_file_markers`'s own rule: the UNREADABLE_PREFIX tag, never "has a
+        reason", is the discriminator -- every marker gets one, duplicates included)."""
         try:
             file_hash = calculate_file_hash(file_path)
             stat = file_path.stat()
@@ -2266,7 +2278,7 @@ class Processor:
                 file_size=stat.st_size,
                 file_modified_date=datetime.fromtimestamp(stat.st_mtime),
                 error_message=reason,
-                failed_read=reason is not None,
+                failed_read=(reason is not None) if failed_read is None else failed_read,
             )
         except Exception as e:
             logger.debug(f"Could not record skipped file {file_path.name}: {e}")

@@ -245,40 +245,47 @@ def _operational(msg):
     return OperationalError("INSERT INTO final_test_results (invented)", {}, Exception(msg))
 
 
-# (what failed, the exception, the marker it earns: its reason / "no marker"). Every value is
-# invented. Closeout item 1 (2026-09-26): a permanent refusal and a malformed unit used to earn a
-# marker with NO reason at all (V5's own old behaviour) -- fixed, so both now name the exception
-# like every other marked branch; only "no marker" (a database/system error, never the file's
-# own) still marks nothing.
+# (what failed, the exception, its marker's reason / "no marker", is it RETRY-eligible). Every
+# value is invented. Closeout item 1 (2026-09-26): a permanent refusal and a malformed unit used
+# to earn a marker with NO reason at all (V5's own old behaviour) -- fixed, so both now name the
+# exception like every other marked branch. Neither is retry-eligible, though (app_qa_sweep's
+# ingest re-offer check pinned this): retrying a duplicate or a format that can never parse can
+# never succeed, so they must not carry UNREADABLE_PREFIX -- only a content refusal (an unknown,
+# maybe-a-parser-bug failure) does. "no marker" rows have no reason and no retry question.
 SAVE_FAILURES = [
     ("a content refusal", ValueError("invented: the tracks disagree"),
-     "ValueError: invented: the tracks disagree"),
+     "ValueError: invented: the tracks disagree", True),
     ("a permanent refusal", ValueError("Serial cannot be empty"),
-     "ValueError: Serial cannot be empty"),
+     "ValueError: Serial cannot be empty", False),
     ("a malformed unit", _integrity("UNIQUE constraint failed: final_test_tracks.track_id"),
-     "IntegrityError: (builtins.Exception) UNIQUE constraint failed: final_test_tracks.track_id"),
-    ("a database error", _operational("no such column: invented_column"), "no marker"),
-    ("a bug in the save", RuntimeError("invented: the save's own bug"), "no marker"),
-    ("a locked file", PermissionError("invented: the file is locked"), "no marker"),
+     "IntegrityError: (builtins.Exception) UNIQUE constraint failed: final_test_tracks.track_id",
+     False),
+    ("a database error", _operational("no such column: invented_column"), "no marker", None),
+    ("a bug in the save", RuntimeError("invented: the save's own bug"), "no marker", None),
+    ("a locked file", PermissionError("invented: the file is locked"), "no marker", None),
 ]
 
 
-@pytest.mark.parametrize("what,failure,marker_reason", SAVE_FAILURES,
+@pytest.mark.parametrize("what,failure,marker_reason,retryable", SAVE_FAILURES,
                          ids=[c[0] for c in SAVE_FAILURES])
 @pytest.mark.parametrize("via", ["process_file", "the ingest's batch writer"])
 def test_a_final_test_save_that_fails_marks_the_file_only_for_its_own_content(
-        db, tmp_path, monkeypatch, what, failure, marker_reason, via):
+        db, tmp_path, monkeypatch, what, failure, marker_reason, retryable, via):
     """A final-test save that raises -- on the consumer's thread, after the analysis, and in the
     ingest inside a batch -- is an ERROR result ("Final Test error: ..."). It records the file as
     unreadable ONLY when the file's own content caused it (ruling of 2026-09-25), and names why
     every time it does (closeout item 1, 2026-09-26: a permanent refusal or a malformed unit used
     to earn a marker with no reason at all); a database or system error -- or anything else the
-    save cannot attribute to the file -- marks NOTHING: the file stays new. In a batch it counts
-    as an error (a malformed unit as failed), and its marker commits right after the batch."""
+    save cannot attribute to the file -- marks NOTHING: the file stays new. Only a CONTENT
+    refusal is retry-eligible (UNREADABLE_PREFIX): a permanent refusal or a malformed unit gets a
+    reason but never that tag, since Settings -> "Retry unreadable files" re-offering a duplicate
+    or an unparseable format could never succeed. In a batch it counts as an error (a malformed
+    unit as failed), and its marker commits right after the batch."""
     import sqlite3
     from laser_trim_analyzer.core.ingest_run import BatchWriter
     from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
     from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import UNREADABLE_PREFIX
     ft = save_rows._pinned_copy(
         save_rows.FIXTURES / "final_test" / "7458-sn7_4-2-2026_3-19 PM.xls",
         tmp_path / "Test Station" / "7458-sn7_4-2-2026_3-19 PM.xls")
@@ -311,7 +318,11 @@ def test_a_final_test_save_that_fails_marks_the_file_only_for_its_own_content(
     if marker_reason == "no marker":
         assert rows == [], f"{what} must never mark the file unreadable: {rows}"
     else:
-        assert len(rows) == 1 and rows[0][0].startswith(f"unreadable: {marker_reason}"), rows
+        prefix = UNREADABLE_PREFIX + marker_reason if retryable else marker_reason
+        assert len(rows) == 1 and rows[0][0].startswith(prefix), rows
+        assert rows[0][0].startswith(UNREADABLE_PREFIX) == retryable, (
+            f"{what}: retry-eligibility (UNREADABLE_PREFIX) was {rows[0][0].startswith(UNREADABLE_PREFIX)}, "
+            f"want {retryable}: {rows}")
 
 
 @pytest.mark.parametrize("failure,marked", [
