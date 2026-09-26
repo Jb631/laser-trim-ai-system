@@ -696,7 +696,7 @@ def _invented_trained_models_for_8232_1(db) -> None:
     Xp = pd.DataFrame([{c: random.random() + (0.4 if i % 3 == 0 else 0.0) for c in FEATURE_COLUMNS}
                        for i in range(60)])
     predictor.train(Xp, pd.Series([1 if i % 3 == 0 else 0 for i in range(60)]))
-    predictor.classifier.n_jobs = 1      # one thread: n_jobs=-1 varies a probability's last bit
+    predictor.classifier.n_jobs = 1      # one thread (the trainer's own default since Task 11)
     assert predictor.save(folder / "predictors" / "8232-1.pkl")
     with db.session() as s:
         s.add(ModelMLState(model="8232-1", is_trained=True, sigma_threshold=0.0042))

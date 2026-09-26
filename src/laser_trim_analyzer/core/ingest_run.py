@@ -600,6 +600,9 @@ class FolderResult:
     # Of those, files whose save did not commit and that nothing records (a refused save, a
     # batch that did not commit, a malformed file): they are new again next run, and Home says so.
     unsaved: int = 0
+    # Which pool analysed the folder, and why ("8 processes (ready in 1.3 s)", "4 threads
+    # (processes could not start: ...)") -- ingest-speed Task 11, ruling 19. The batch line says it.
+    workers: str = ""
 
 
 @dataclass
@@ -793,6 +796,11 @@ def log_phases(phases: dict, total: int, processor, summary) -> None:
              f"{s.get('verify_seconds', 0):.1f}s",
              f"process {getattr(summary, 'processed', 0):,} files "
              f"{phases.get('process', 0):.1f}s"]
+    # Which pool, and why (ingest-speed ruling 19): "workers 8 processes (ready in 1.3 s)", or
+    # "workers 4 threads (processes could not start: ...)" -- the one place a run says which ran.
+    workers = getattr(processor, "last_workers", "")
+    if workers:
+        parts.append(f"workers {workers}")
     # Saving is inside `process` and is the part a worker pool cannot speed up,
     # so name it separately and as a share -- "process 520s" alone sent one
     # investigation looking at the parser when most of it was the database.
@@ -818,6 +826,11 @@ def log_phases(phases: dict, total: int, processor, summary) -> None:
         # UNIQUE constraint) -- counted as failed, and said so here.
         parts.append(f"{int(phases['malformed']):,} malformed file(s) not saved (their own rows "
                      f"broke a UNIQUE constraint)")
+    if phases.get("internal"):
+        # Spec 4.3: a file whose analysis raised, or reached for a database inside a worker
+        # process -- each named at ERROR above; counted here, never saved, new again next run.
+        parts.append(f"{int(phases['internal']):,} file(s) not analysed (internal errors, named "
+                     f"above; new again next run)")
     parts.append(f"rematch {phases['rematch']:.1f}s" if "rematch" in phases
                  else "rematch skipped (no new trims)")
     if "retrain" in phases:
@@ -1001,6 +1014,10 @@ class BatchWriter:
         self.all_failed_batches = 0              # consecutive, this folder (m-5)
         self.batches = 0
         self.malformed = 0
+        # Files with nothing to save: the analysis raised, or reached for a database inside a
+        # worker process (spec 4.3). Errors, never saved, new again next run -- the batch line
+        # counts them.
+        self.internal = 0
         self.save_seconds = 0.0                  # wall, inside write_batch
         self.save_cpu_seconds = 0.0              # time.thread_time(), this thread (spec 3.10)
 
@@ -1124,6 +1141,7 @@ class BatchWriter:
                 if isinstance(item, SkipMarkerWrite) and status.status == "saved":
                     self._remember(item)
         if outcome.internal is not None:
+            self.internal += 1
             return Committed(outcome.path, None, "errors",
                              f"{name}: the analysis failed: {outcome.internal}", unsaved=True)
         if result is None:
@@ -1160,10 +1178,8 @@ class BatchWriter:
                 # A malformed final test or smoothness file gets the rule its failure always
                 # got -- a content refusal, so a marker (with no reason: a UNIQUE break is
                 # permanent) -- and still counts as failed. A malformed trim never had a marker.
-                rule = (self.processor._final_test_failure if isinstance(item, FinalTestWrite)
-                        else self.processor._smoothness_failure)
-                result, marker = rule(Path(outcome.path), status.error, outcome.started,
-                                      saving=True)
+                result, marker = self.processor.failed_save(item, outcome.path, status.error,
+                                                            outcome.started)
                 if marker is not None:
                     self._fallback.append(marker)
                     marked = True
@@ -1175,9 +1191,8 @@ class BatchWriter:
         refused = not is_content_refusal(status.error)
         marked = False
         if isinstance(item, (FinalTestWrite, SmoothnessWrite)) and status.error is not None:
-            rule = (self.processor._final_test_failure if isinstance(item, FinalTestWrite)
-                    else self.processor._smoothness_failure)
-            result, marker = rule(Path(outcome.path), status.error, outcome.started, saving=True)
+            result, marker = self.processor.failed_save(item, outcome.path, status.error,
+                                                        outcome.started)
             if marker is not None:
                 self._fallback.append(marker)
                 marked = True
@@ -1350,6 +1365,8 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
         #                                             wall at ~85% GIL wait (spec 3.10, ruling 2)
         if writer.malformed:
             phases["malformed"] = writer.malformed
+        if writer.internal:
+            phases["internal"] = writer.internal
 
     try:
         try:
@@ -1376,7 +1393,8 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
         return FolderResult(folder=folder, ok=False, error=str(exc), files_found=total,
                             new_files=sum(buckets.values()), new_trims=counts["trims"],
                             models=models_in_batch, phases=phases, buckets=buckets,
-                            unsaved=counts["unsaved"], seconds=time.monotonic() - started)
+                            unsaved=counts["unsaved"], workers=_workers(processor),
+                            seconds=time.monotonic() - started)
     except Exception as exc:
         # 2026-07-09: an exception here previously killed the worker thread
         # silently — Start stayed disabled, the app looked locked, and the
@@ -1392,7 +1410,7 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                             files_found=total, new_files=sum(buckets.values()),
                             new_trims=counts["trims"], models=models_in_batch, phases=phases,
                             buckets=buckets, unsaved=counts["unsaved"],
-                            seconds=time.monotonic() - started)
+                            workers=_workers(processor), seconds=time.monotonic() - started)
     new_trims = counts["trims"]
     new_final_tests = counts["final_tests"]
 
@@ -1406,7 +1424,13 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                         new_files=int(getattr(summary, "processed", 0) or 0),
                         new_trims=new_trims, models=models_in_batch,
                         summary=summary, phases=phases, buckets=buckets,
-                        unsaved=counts["unsaved"], seconds=time.monotonic() - started)
+                        unsaved=counts["unsaved"], workers=_workers(processor),
+                        seconds=time.monotonic() - started)
+
+
+def _workers(processor) -> str:
+    """The pool the processor last analysed in (a stand-in processor may not say)."""
+    return str(getattr(processor, "last_workers", "") or "")
 
 
 def _plan_work(files_by_folder: Dict[str, Sequence[str]],

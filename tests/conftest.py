@@ -169,6 +169,12 @@ def _never_read_the_real_ml_models(monkeypatch):
 
     monkeypatch.setattr(_cr.CompositeRiskModel, "load", classmethod(guarded_composite_load))
     monkeypatch.setattr(_pred.ModelPredictor, "load", guarded_predictor_load)
+    # None of the above reaches a spawned worker PROCESS (ingest-speed Task 11): a child imports
+    # everything afresh. So every worker a test starts is told these folders too, and refuses a
+    # load from them itself -- the file then comes back `internal`, loud (core/ingest_worker.py).
+    from laser_trim_analyzer.core import ingest_worker as _worker
+    monkeypatch.setattr(_worker, "REFUSE_MODELS_UNDER",
+                        tuple(sorted(str(d) for d in protected)))
     yield refused
     if refused:
         pytest.fail("this test read a checkout's real trained ML models (refused, but a caller "

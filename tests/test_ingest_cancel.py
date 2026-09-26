@@ -516,6 +516,26 @@ def test_closing_with_no_run_in_flight_just_closes(make_app):
     app._on_closing()          # must not hang or raise
 
 
+def test_closing_also_closes_the_ingests_worker_processes_after_the_wait(make_app, monkeypatch):
+    """Ruling 20: after the bounded wait, closing the window closes the ingest's worker PROCESSES
+    -- a busy one gets its grace, then it is terminated (a worker holds no database handle, so
+    nothing can be torn). Without this, a worker stuck on one file kept the app from exiting:
+    concurrent.futures joins every worker process at interpreter exit."""
+    import threading
+    from laser_trim_analyzer.core import ingest_worker
+    closed = []
+    monkeypatch.setattr(ingest_worker, "close_worker_pools",
+                        lambda grace=ingest_worker.CLOSE_GRACE: closed.append(grace) or 0)
+    app = make_app()
+    stuck = Event()
+    t = threading.Thread(target=lambda: stuck.wait(30), daemon=True)
+    t.start()
+    app.register_ingest(Event(), t)
+    app.stop_ingests(timeout=0.2)
+    stuck.set()
+    assert closed == [ingest_worker.CLOSE_GRACE] and ingest_worker.CLOSE_GRACE == 5.0
+
+
 def test_closing_does_not_wait_forever_on_a_stuck_worker(make_app,
                                                          monkeypatch):
     """The grace period is a grace period, not a hostage situation."""

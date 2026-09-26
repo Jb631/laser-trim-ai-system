@@ -300,6 +300,15 @@ class V6App(ctk.CTk):
                 thread.join(max(0.0, deadline - time.monotonic()))
             except Exception:
                 logger.exception("Could not wait for a run's thread")
+        # Then the ingest's worker PROCESSES (ingest-speed ruling 20): a busy one gets its grace
+        # (5 s) and is then terminated -- a worker holds no database handle, so nothing can be
+        # torn. Without this a worker stuck on one file keeps the app from ever exiting:
+        # concurrent.futures joins every worker process at interpreter exit.
+        try:
+            from laser_trim_analyzer.core import ingest_worker
+            ingest_worker.close_worker_pools()
+        except Exception:
+            logger.exception("Could not close the ingest's worker processes")
 
     def _on_closing(self) -> None:
         self.stop_ingests()

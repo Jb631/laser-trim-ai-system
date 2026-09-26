@@ -18,12 +18,13 @@ ML Integration:
 import gc
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable, Generator, Tuple
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import BrokenExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout   # builtin only from 3.11
 
 try:
@@ -267,6 +268,56 @@ class WriterStop(Exception):
     error handling never swallows it), and the folder fails with this message."""
 
 
+# Files per chunk (spec 4.8): the unit the pool is fed in, the one place Stop and memory are asked
+# about -- so a Stop lands on a whole chunk (test_ingest_cancel) -- and the batch writer's K.
+CHUNK = 20
+
+
+class _PoolBroke(Exception):
+    """A worker process died (BrokenExecutor): the dispatch hands the rest to threads."""
+
+    def __init__(self, cause: BaseException):
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+def _broken(future) -> bool:
+    """Did this future fail because its POOL broke (a worker died), not because of its file?"""
+    return (future.done() and not future.cancelled()
+            and isinstance(future.exception(), BrokenExecutor))
+
+
+class _ThreadPool:
+    """The in-process pool: threads running the processor's own `analyse_path` -- the fallback
+    when worker processes cannot run, and every small run (spec 4.5-4.6).
+
+    `lookahead = 1`: the next chunk goes out only once the last one is done -- the batch
+    boundary this path has always had; `in_process`: the parent parses, so the dispatch collects
+    garbage between chunks, as it did between batches. One pool for the whole folder: memory
+    throttles how many files are in flight (the cap), not the pool's size."""
+
+    lookahead = 1
+    in_process = True
+
+    def __init__(self, processor, size: int, why: Optional[str] = None):
+        self.size = max(1, int(size))
+        self.closed = False
+        self._analyse = processor.analyse_path
+        self._executor = ThreadPoolExecutor(max_workers=self.size)
+        self.mode = (f"{self.size} thread{'s' if self.size != 1 else ''}"
+                     + (f" ({why})" if why else ""))
+
+    def submit(self, path, disk_stat=None):
+        return self._executor.submit(self._analyse, Path(path), disk_stat)
+
+    def close(self, grace: Optional[float] = None) -> int:
+        """Threads cannot be terminated: a running file finishes, the queued ones are dropped."""
+        if not self.closed:
+            self.closed = True
+            self._executor.shutdown(wait=True, cancel_futures=True)
+        return 0
+
+
 class Processor:
     """
     Unified processor for laser trim files.
@@ -284,6 +335,7 @@ class Processor:
         config: Optional[Config] = None,
         use_ml: bool = True,
         snapshot: Optional[SpecSnapshot] = None,
+        ml_storage_path: Optional[Path] = None,
     ):
         """
         Initialize processor.
@@ -295,9 +347,19 @@ class Processor:
                 (`take_spec_snapshot`). Given one, every spec question and the ML thresholds and
                 predictors come from it and the analysis never asks the database; without one,
                 they come from `get_database()` as they always have (the V5 loop, scripts).
+                Only a Processor with a snapshot can be run in worker processes (ingest_worker).
+            ml_storage_path: Where the composite trim-risk models load from. Default: the app
+                directory's data/ml_models (config.ml_models_directory). A worker process is
+                handed its PARENT's resolved folder here, never resolving its own (ingest-speed
+                Task 11: a spawned child's app directory is the real install, whatever the
+                parent -- a test, say -- was pointed at).
         """
         self.config = config or get_config()
         self._snapshot = snapshot
+        self._use_ml = use_ml
+        # Which pool the last batch was analysed in, and why ("8 processes (ready in 1.3 s)",
+        # "4 threads (37 files; worker processes start at 200)"): the batch line prints it.
+        self.last_workers = ""
         self.parser = ExcelParser()
         self.final_test_parser = FinalTestParser()  # For Final Test files
         self.smoothness_parser = SmoothnessParser()  # For Output Smoothness files
@@ -342,8 +404,10 @@ class Processor:
         self._composite_models: Dict = {}
         # Storage path for composite risk pickle files (mirrors MLManager convention): the app
         # directory's data/ml_models, never the working directory's (config.ml_models_directory).
-        from laser_trim_analyzer.config import ml_models_directory
-        self.ml_storage_path = ml_models_directory()
+        if ml_storage_path is None:
+            from laser_trim_analyzer.config import ml_models_directory
+            ml_storage_path = ml_models_directory()
+        self.ml_storage_path = Path(ml_storage_path)
         if use_ml:
             if snapshot is not None:
                 self._model_thresholds = dict(snapshot.ml_thresholds)
@@ -951,6 +1015,7 @@ class Processor:
             )
         else:
             logger.info(f"Using sequential processing ({total_files} < {turbo_threshold})")
+            self.last_workers = f"sequential ({total_files:,} files, under {turbo_threshold:,})"
             yield from self._process_sequential(
                 file_paths, progress_callback, incremental, summary, cancel, writer
             )
@@ -1258,86 +1323,199 @@ class Processor:
 
         if not files_to_process:
             logger.info("No new files to process")
+            self.last_workers = "none (nothing new to analyse)"
             return
-
-        # Determine worker count based on available memory
-        max_workers = self._get_safe_worker_count(len(files_to_process))
-        logger.info(f"Using {max_workers} workers for parallel processing")
 
         # If memory is already critical, fall back to sequential
         if self._check_memory_critical():
             logger.warning("Memory critical - falling back to sequential processing")
+            self.last_workers = "sequential (memory was critical)"
             yield from self._process_sequential(
                 [Path(f) for f in files_to_process],
                 progress_callback, False, summary, writer=writer
             )
             return
 
-        completed = 0
-        batch_size = 20  # Process in batches to control memory
+        # Worker PROCESSES when they can run this analysis, else threads (ingest-speed A3, spec
+        # 4.5-4.6); one pool for the whole folder either way.
+        pool = self._open_pool(len(files_to_process))
+        logger.info(f"Analysing {len(files_to_process):,} files on {pool.mode}")
+        yield from self._dispatch(pool, files_to_process, progress_callback, summary, cancel,
+                                  writer)
 
-        for batch_start in range(0, len(files_to_process), batch_size):
-            # Cooperative stop, checked HERE and nowhere deeper: the previous
-            # batch's futures have all completed and been yielded (the
-            # ThreadPoolExecutor block above joins them), so stopping at the
-            # top of the next iteration can never leave a file half-saved.
-            # Killing the pool's threads instead would.
-            if cancel is not None and cancel.is_set():
-                logger.info("Batch cancelled after %d of %d files — the "
-                            "in-flight batch finished and was saved",
-                            completed, len(files_to_process))
-                break
-            batch = files_to_process[batch_start:batch_start + batch_size]
+    def _open_pool(self, n_files: int):
+        """The pool this folder's files are analysed in: worker PROCESSES (spec 4.5, rulings
+        13-14) when there are enough files left and this Processor carries its snapshot -- its
+        analysis then asks the database nothing, and a worker may never open one -- else threads.
+        A pool that cannot start hands the folder to threads, saying why (ruling 19)."""
+        threads = self._get_safe_worker_count(n_files)
+        why = self._why_not_processes(n_files)
+        if why is None:
+            from laser_trim_analyzer.core import ingest_worker
+            n, why = ingest_worker.worker_count()
+            if n >= 1:
+                try:
+                    return ingest_worker.WorkerPool.start(ingest_worker.context_for(self), n)
+                except ingest_worker.PoolFailed as e:
+                    why = f"processes could not start: {e}"
+                    logger.warning("Worker processes could not start (%s): this folder is "
+                                   "analysed on %d threads instead", e, threads)
+        return _ThreadPool(self, threads, why)
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit batch tasks
-                future_to_file = {
-                    executor.submit(self.analyse_path, Path(f),
-                                    self._disk_stats.get(str(Path(f)))): f
-                    for f in batch
-                }
+    def _why_not_processes(self, n_files: int) -> Optional[str]:
+        """Why this folder cannot use worker processes -- or None when it can."""
+        from laser_trim_analyzer.core import ingest_worker
+        if n_files < ingest_worker.PROCESS_MIN_FILES:
+            return (f"{n_files:,} files; worker processes start at "
+                    f"{ingest_worker.PROCESS_MIN_FILES:,}")
+        if getattr(self, "_snapshot", None) is None:
+            return "no spec snapshot: this analysis reads the database, which a worker never opens"
+        return None
 
-                # Process as completed. The consumer waits on the pool at most 1 s at a time
-                # (spec 3.1): a writer holding files flushes 2 s after the first of them even
-                # while the share stalls. `pending` keeps submission order, for as_completed.
-                pending = dict.fromkeys(future_to_file)
-                tick = getattr(writer, "tick", None)
-                while pending:
-                    try:
-                        for future in as_completed(list(pending), timeout=1.0):
-                            del pending[future]
-                            completed += 1
-                            yield from self._one_completed(
-                                future, future_to_file[future], writer, summary,
-                                progress_callback, completed, len(files_to_process))
-                    except FuturesTimeout:
-                        if tick is not None:
-                            tick()
+    def _dispatch(self, pool, files, progress_callback, summary: BatchSummary, cancel, writer):
+        """Every file to `pool` in CHUNK-file chunks, and every Outcome handed over on THIS
+        thread, in the order the files finish (spec 4.8).
 
-            # GC between batches
+        A chunk is taken only when the pool can take it -- up to `pool.lookahead` chunks in flight
+        (processes: two, so the workers never wait while the consumer saves; threads: one, the
+        batch boundary this path always had) -- and that is the one place Stop is asked: every
+        file handed out finishes and is handed over, so a stopped run lands on a whole chunk.
+        Memory is asked there too (`_between_chunks`): the in-flight cap. A pool that breaks
+        mid-run hands its in-flight files, and the rest, to threads (ruling 19); one closed from
+        outside (the window closing) ends the dispatch there -- what was not handed over is new
+        next run. The consumer waits at most 1 s at a time, ticking the writer (spec 3.1)."""
+        total = len(files)
+        queue: deque = deque()
+        inflight: Dict[Any, Path] = {}          # submission order (as_completed's input)
+        taken = completed = 0
+        stopped = False
+        cap = pool.size
+        tick = getattr(writer, "tick", None)
+        self.last_workers = pool.mode
+        try:
+            while True:
+                try:
+                    while True:
+                        # Out: the taken chunks' files as the window allows; a new chunk when the
+                        # pool can take one.
+                        while True:
+                            window = pool.lookahead * CHUNK if cap >= pool.size else cap
+                            if queue and len(inflight) < window:
+                                path = queue.popleft()
+                                try:
+                                    future = pool.submit(path, self._disk_stats.get(str(path)))
+                                except BrokenExecutor as e:
+                                    queue.appendleft(path)
+                                    raise _PoolBroke(e) from e
+                                except RuntimeError:
+                                    if pool.closed:     # closed from outside (the window)
+                                        return
+                                    raise
+                                inflight[future] = path
+                            elif (not queue and not stopped and taken < total
+                                  and len(inflight) <= (pool.lookahead - 1) * CHUNK):
+                                # Cooperative stop, asked HERE and nowhere deeper: never a file
+                                # half-saved, and a whole chunk.
+                                if cancel is not None and cancel.is_set():
+                                    stopped = True
+                                    logger.info("Batch cancelled after %d of %d files -- the "
+                                                "files already handed out finish and are saved",
+                                                taken, total)
+                                else:
+                                    if taken:
+                                        cap = self._between_chunks(pool, cap)
+                                    chunk = [Path(f) for f in files[taken:taken + CHUNK]]
+                                    queue.extend(chunk)
+                                    taken += len(chunk)
+                            else:
+                                break
+                        if not inflight:
+                            return
+                        # In: one finished file, handed over -- then out again, to keep the
+                        # window full.
+                        try:
+                            for future in as_completed(list(inflight), timeout=1.0):
+                                if pool.closed:
+                                    return
+                                path = inflight.pop(future)
+                                if _broken(future):
+                                    queue.appendleft(path)
+                                    raise _PoolBroke(future.exception())
+                                completed += 1
+                                yield from self._one_completed(
+                                    future, path, writer, summary, progress_callback,
+                                    completed, total)
+                                break
+                        except FuturesTimeout:
+                            if pool.closed:
+                                return
+                            if tick is not None:
+                                tick()
+                except _PoolBroke as broke:
+                    if pool.closed:
+                        return
+                    queue.extendleft(reversed(list(inflight.values())))
+                    inflight.clear()
+                    pool = self._pool_broke(pool, broke.cause, completed, total)
+                    cap = pool.size
+        finally:
+            pool.close()
+
+    def _between_chunks(self, pool, cap: int) -> int:
+        """Before every chunk after the first: garbage collection when the parent parses (as
+        between batches before A3), and the in-flight cap for the memory there is."""
+        if pool.in_process:
             gc.collect()
+        if self._check_memory_warning():
+            logger.warning("Memory warning - reducing workers")
+            cap = max(1, cap - 1)
+        return cap
 
-            # Check memory and reduce workers if needed
-            if self._check_memory_warning():
-                logger.warning("Memory warning - reducing workers")
-                max_workers = max(1, max_workers - 1)
+    def _pool_broke(self, pool, cause: BaseException, completed: int, total: int):
+        """A worker process died mid-run: its files in flight, and the rest of the folder, go to
+        threads (spec 4.6) -- a worker holds no database handle, so nothing is half-written."""
+        pool.close(grace=0.0)
+        threads = self._get_safe_worker_count(max(1, total - completed))
+        why = (f"worker processes broke after {completed:,} files: "
+               f"{type(cause).__name__}: {cause}")
+        logger.warning("The ingest's %s broke after %d of %d files (%s: %s): the files in "
+                       "flight and the rest of this folder are analysed on %d threads",
+                       pool.mode, completed, total, type(cause).__name__, cause, threads)
+        fallback = _ThreadPool(self, threads, why)
+        self.last_workers = f"{pool.mode}, then {fallback.mode}"
+        return fallback
 
     def _one_completed(self, future, file_path, writer, summary: BatchSummary,
                        progress_callback, completed: int, total: int):
         """One finished future of the pool, on the consumer's thread: its Outcome handed over,
         the summary and progress updated, the result yielded (a generator: nothing is yielded for
         a file that is not test data, or one that failed). A writer's WriterStop propagates; any
-        other failure is this file's error, as it always was."""
+        other failure is this file's error, as it always was.
+
+        An `internal` Outcome -- the analysis raised, or (in a worker process) reached for a
+        database, spec 4.3 -- has nothing to save or yield: it is logged at ERROR, HERE, by the
+        parent, handed to the writer (which counts it: an error, new again next run) and counted
+        as a processed error."""
         try:
             try:
                 outcome = future.result()
             except Exception as e:
+                # The analysis itself raised: nothing to save.
+                outcome = Outcome(path=str(file_path), internal=f"{type(e).__name__}: {e}")
+            if outcome.internal is not None:
+                logger.error(f"Error processing {file_path}: {outcome.internal}")
                 if writer is not None:
-                    # The analysis itself raised: nothing to save. The writer counts it (an
-                    # error), so the buckets still sum to what was processed.
-                    writer.add(Outcome(path=str(file_path),
-                                       internal=f"{type(e).__name__}: {e}"))
-                raise
+                    writer.add(outcome)
+                summary.processed += 1
+                summary.errors += 1
+                if progress_callback:
+                    progress_callback(ProcessingStatus(
+                        filename=Path(file_path).name,
+                        status="failed",
+                        message=outcome.internal,
+                        progress_percent=completed / total * 100,
+                    ))
+                return
             result = self._hand_over(outcome, writer)
 
             # Skip non-trim files (process_file returns None)
@@ -2078,14 +2256,23 @@ class Processor:
                         metadata=write.metadata, tracks=write.tracks, file_hash=write.file_hash,
                         file_size=write.file_size, file_modified_date=write.file_modified_date)
             except Exception as e:
-                failed = (self._final_test_failure if isinstance(write, FinalTestWrite)
-                          else self._smoothness_failure)
-                result, marker = failed(Path(outcome.path), e, outcome.started, saving=True)
+                result, marker = self.failed_save(write, outcome.path, e, outcome.started)
                 if marker is not None:
                     self._write_marker(marker, db)
                 return result
             record_row_id(result, write, row_id)
         return result
+
+    def failed_save(self, write: Any, file_path, exc: Optional[BaseException],
+                    started: float) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
+        """What a final-test or smoothness file whose SAVE failed becomes: its ERROR result, and
+        the skip marker to write, if any -- the rule its failure always got
+        (`_final_test_failure` / `_smoothness_failure`, `saving=True`: only a content refusal may
+        mark the file). ONE public rule, for `apply_outcome` and for the ingest's batch writer
+        alike (ingest-speed Task 11: the writer no longer reaches into the private helpers)."""
+        rule = (self._final_test_failure if isinstance(write, FinalTestWrite)
+                else self._smoothness_failure)
+        return rule(Path(file_path), exc, started, saving=True)
 
 
     def _load_processed_hashes(self) -> None:
