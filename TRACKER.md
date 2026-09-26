@@ -14,20 +14,21 @@ database guard (only the app opens its default database — every script now nam
 small fixes. Before it, `422da7a` (2026-09-24): facelift step 1 and every parse fix. At work:
 `git pull`, then the top section of `BRING_TO_WORK.md` (and the two 2026-09-24 sections if you have
 not pulled them yet). Nothing needs running except the optional TrimVolts back-fill. **Being built
-now:** the rest of the ingest-speed work (A4/A3/A5, Tasks 5–12: the batched writer, worker
-processes, workers that come back) — the save probe you run at work (A6) tunes it. Pushed on
-2026-09-25: the facelift follow-ups (F4) in the morning; the rest of the findings catalogue (B6) at
-midday (after pulling it, refresh the findings once: Settings → Database → Refresh process findings);
-the save probe; and in the afternoon F5 ("Inactive" models) with the first three speed steps.
+now:** worker processes (A3, Task 11) and workers that come back (A5, Task 12) — the save probe
+you run at work (A6) tunes them. Pushed on 2026-09-25: the facelift follow-ups (F4) in the morning;
+the rest of the findings catalogue (B6) at midday (after pulling it, refresh the findings once:
+Settings → Database → Refresh process findings); the save probe; F5 ("Inactive" models) with the
+first three speed steps in the afternoon; and in the evening the batched saves (A4) with the
+`manager.py` split (C2 steps 2–6).
 
 **The rebuild is done** (B2: 168,501 files in 21.8 hours, finished 2026-09-22) and every number
 that rested on a final-test verdict has been re-derived on it (B3).
 
 | Workstream | State | Next move |
 |---|---|---|
-| **A. Processing speed** | designed 2026-09-25: the save is NOT the bottleneck; worker processes overlap parse and save | run the save probe at work (A6, yours); then Tasks 2–12 — Claude |
+| **A. Processing speed** | A4 shipped 2026-09-25 (batched saves, every stored row identical); A3/A5 next | run the save probe at work (A6, yours); worker processes (Task 11) — Claude |
 | **B. More useful information** | rebuild done; the findings catalogue complete — 11 analyzers (B6, 2026-09-25); laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
-| **C. Review and refactor** | the review is done (C1); C2 step 1, the database guard and three parked fixes shipped | C2 step 2 (`database/migrations.py`) — Claude |
+| **C. Review and refactor** | C1 done; C2 steps 1–6 done 2026-09-25 (`manager.py` 10,000 → 6,900 lines, moved not changed) | — (§7 says stop there; small candidates below) |
 | **D. Checks at the shop** | D1, D3, D4, D5, D6, D7 open | James |
 | **E. Backlog upload** | shipped (E1) | — |
 | **F. Facelift** | steps 1 and 2 shipped; F4 follow-ups shipped | F5 "Inactive" models (+ F4's review gaps) — Claude |
@@ -164,8 +165,17 @@ problem — per-file conversations with the share were. Same code, same laptop:
       Tasks 1–4 are shipped (the probe; the batch line's save CPU beside its wall time; the
       `file_hash` indexes — 0.085 s to add on the 6 GB database; WAL's safe flush setting and a 64 MB
       page cache — which also made the connection hook that enforces foreign keys actually run, as it
-      never had); Tasks 5–12 (the batched writer, worker
-      processes, workers that come back) are next — Claude.
+      never had). **Tasks 5–10 — A4, the batched saves — shipped the same evening:** the ingest saves
+      20 files per transaction (a savepoint per file, "processed" exactly when committed), the
+      worker returns what it found and one writer saves it, and the counts come from what committed.
+      Proven on 200 real files, then independently on 112 of every kind: every stored row identical
+      to the old per-file path (27,419 and 33,093 values). On the Mac the save fell 5.4 s → 0.6 s
+      per 200 files while the total barely moved — parsing dominates here, as the design said; the
+      laptop's slower disk should gain more (A6 will show). Two rules came with it: **a database
+      error during a save never marks a file unreadable** (only a problem in the file itself does,
+      with its reason; the file stays new and is retried), and **a folder stops, named, when whole
+      batches fail to save** instead of marking thousands of files. Tasks 11–12 (worker processes;
+      workers that come back) are next — Claude.
 - [ ] **A0 · WHERE THE INGEST'S TIME ACTUALLY GOES — measured at work, 2026-09-21.**
       From the app's own batch line: `load 0.0s | check 0.3s (62,323 new) | verify 0
       files 0.0s | process 674 files 520.1s`. **The pre-pass is free** — 0.3 s to
@@ -559,7 +569,15 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
       to look like results, and safety nets that could not fail.
       Nine of the findings were fixed the same night (see "Done recently"); the rest are in §6 and
       §9 of that document, including the four that need your decision.
-- [ ] **C2… · Refactors**, from the top of that list. *Not started — the sequencing above
+- [x] **C2 · Refactors — DONE 2026-09-25** (the review's §7 plan, steps 1–6): the dead definitions
+      deleted (step 1); then the start-up migrations, model specs, final-test matching, maintenance
+      utilities and smoothness readers moved out of `database/manager.py` into their own modules
+      (`migrations.py`, `specs.py`, `ft_matching.py`, `maintenance.py`, `smoothness.py`) — every one
+      of the 47 moved methods byte-identical by syntax tree, each step gated. `manager.py` 10,064 →
+      6,899 lines. The moves' review caught one import left behind (`backfill_max_deviation` would
+      have failed silently — fixed, and a test now checks every moved method's names resolve). §7
+      says stop there: what remains is where the numbers are made.
+      Was: **C2… · Refactors**, from the top of that list. *Not started — the sequencing above
       (after B2) is deliberate: the rebuild runs through this exact code.*
       **Two things measured 2026-09-20, before anyone starts step 1 ("delete the dead lines"):**
       - The honest count is **14 definitions / 669 lines** never named anywhere outside their own
@@ -575,7 +593,10 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
         it because SQLAlchemy calls it. Deleting it turns **foreign-key enforcement off on every
         connection**, silently. Any "unreferenced" scan must skip decorated definitions.
 
-- [ ] **C2 candidates parked by the parse-fixes reviews (2026-09-23/24)** — real, small, none urgent:
+- [ ] **C2 candidates parked by the parse-fixes reviews (2026-09-23/24)** — real, small, none urgent
+      (**added 2026-09-25:** `DatabaseManager.backfill_max_deviation` has no caller anywhere — delete it
+      or give it a button?; a malformed final-test file's failure marker carries no reason; a stale
+      section header and an unused `timezone` import in `manager.py`):
       - ~~`_update_existing_analysis` never calls `_record_processed_file`~~ — **FIXED 2026-09-25
         (`a6f2085`)**: a reprocess records what THIS run found.
       - ~~Three chart exports default a track's `linearity_pass` to True when it has no error data~~

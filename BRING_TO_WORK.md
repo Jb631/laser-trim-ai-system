@@ -1,5 +1,25 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-25 evening — batched saves, and `manager.py` split in six
+
+No schema change, nothing to retrain, nothing to click first.
+
+1. **`git pull`.**
+2. **The ingest now saves 20 files per transaction** instead of one at a time, so a save no longer pays
+   a disk flush per file. Every stored number is unchanged — checked row by row on 200 real files and
+   again on 112 of every kind. On the Mac the saving fell from 5.4 s to 0.6 s per 200 files; on the
+   laptop's slower disk it should gain more, and the save probe (the step below) measures it.
+3. **What you may notice on the Process page and Home:** the counts come from what was actually saved
+   (a file whose save was refused counts as an error, not a pass or fail); a malformed file counts as
+   failed and is named; if a batch cannot be saved, Home says "N files not saved — new again next run";
+   and a file the DATABASE refused is never marked unreadable — it is simply taken again next run. If
+   every file of a folder fails to save (a database problem), the folder stops with the error named,
+   instead of marking thousands of files unreadable. A folder whose model specs cannot be read is
+   skipped by name (its files stay new); before, it was analysed without specs.
+4. **Under the hood:** `database/manager.py` (10,000 lines) is split — the start-up migrations, model
+   specs, final-test matching, maintenance tools and smoothness readers now live in their own files
+   beside it, moved without a single change (checked method by method).
+
 ## ⚡ 2026-09-25 afternoon — "Inactive" models, and the first three speed steps
 
 No schema change beyond two new indexes, which the first launch adds by itself (well under a second).
