@@ -60,6 +60,21 @@ def get_app_directory() -> Path:
         return Path(__file__).parent.parent.parent
 
 
+def ml_models_directory() -> Path:
+    """Where the trained ML state lives: data/ml_models under the APP directory -- the predictors
+    and the composite trim-risk models, which load from files.
+
+    Anchored like the database and config.yaml (self-contained deployment), never to the working
+    directory. It used to be `Path("data/ml_models")`, resolved against the CWD: the launchers cd
+    to the app directory, so for the app the two are the same folder -- but a test run from a
+    checkout that holds trained models then scored with them, and one run from a worktree did
+    not (2026-09-25: a golden recorded in a worktree failed in the main checkout, and no
+    stored-numbers comparison had ever run with those models). Through `get_app_directory()`,
+    the test suite's own redirect (tests/conftest.py) covers it too.
+    """
+    return get_app_directory() / "data" / "ml_models"
+
+
 @dataclass
 class DatabaseConfig:
     """

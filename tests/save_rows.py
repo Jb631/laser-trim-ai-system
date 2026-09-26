@@ -109,9 +109,9 @@ def build_scenario(root: Path) -> List[Tuple[str, Any]]:
     os.utime(nocut, (MTIME, MTIME))
 
     proc = Processor(use_ml=False)
-    # The composite-risk models load from a CWD-relative data/ml_models (spec 4.4): in the main
-    # checkout they exist, in a worktree they do not. Point it at nothing, so the rows never
-    # depend on where the suite was started.
+    # The composite-risk models load from the app directory's data/ml_models (in the main
+    # checkout they exist, in a worktree they do not; the conftest redirects the app directory to
+    # tmp). Point it at nothing anyway, so the rows never depend on where the suite was started.
     proc.ml_storage_path = root / "no_ml_models"
     r = {k: proc.process_file(p) for k, p in
          (("dlts", dlts), ("lts", lts), ("lts3", lts3), ("two", two), ("nocut", nocut))}

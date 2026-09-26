@@ -3687,6 +3687,13 @@ def check_spec_snapshot_on_database(db, raw) -> None:
     finally:
         invalidate_shared_ml_manager()
     back = pickle.loads(pickle.dumps(snap))   # the sweep's own object, made above
+    # The trained forests carry n_jobs=-1: predict_proba sums the trees across threads in a
+    # varying order, so a probability's last bit varies call to call (2026-09-25; 3 distinct
+    # values in 300 calls on one input). Pinned to one thread on every predictor compared here,
+    # or check 4 would fail at random wherever predictors load.
+    for predictor in list(manager.predictors.values()) + list(back.ml_predictors.values()):
+        if getattr(getattr(predictor, "classifier", None), "n_jobs", None) not in (None, 1):
+            predictor.classifier.n_jobs = 1
 
     ids = [r for (r,) in raw.execute("SELECT id FROM model_specs ORDER BY id")]
     thresholds = dict(raw.execute(
@@ -3708,7 +3715,7 @@ def check_spec_snapshot_on_database(db, raw) -> None:
           and not unlike,
           f"{len(snap.specs)} of {len(ids)} specs; {len(snap.ml_thresholds)} thresholds vs "
           f"{len(thresholds)} trained in model_ml_state; {len(snap.ml_predictors)} predictors vs "
-          f"{len(trained)} trained in the ML manager (from data/ml_models under {Path.cwd()}), "
+          f"{len(trained)} trained in the ML manager (from {manager.storage_path}), "
           f"unlike after pickling={unlike[:3]}")
 
     models = {r["model"] for r in snap.specs}

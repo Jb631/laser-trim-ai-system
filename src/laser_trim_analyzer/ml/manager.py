@@ -110,7 +110,11 @@ class MLManager:
             ml_storage_path: Path for storing ML model files (pickles)
         """
         self.db = db_manager
-        self.storage_path = ml_storage_path or Path("data/ml_models")
+        if ml_storage_path is None:
+            # The app directory's data/ml_models, never the working directory's.
+            from laser_trim_analyzer.config import ml_models_directory
+            ml_storage_path = ml_models_directory()
+        self.storage_path = ml_storage_path
 
         # Per-model components (lazy loaded)
         # Protected by _components_lock for thread-safe access — training
