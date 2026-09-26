@@ -120,7 +120,7 @@ No external config files required — self-contained for easy deployment.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12 or newer (the pinned numpy 2.5.2 and scipy 1.18.1 require it; the test gate runs on 3.14)
 - See `pyproject.toml` for full dependency list
 
 ## Version History

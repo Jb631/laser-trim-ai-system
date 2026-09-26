@@ -14,8 +14,8 @@ database guard (only the app opens its default database — every script now nam
 small fixes. Before it, `422da7a` (2026-09-24): facelift step 1 and every parse fix. At work:
 `git pull`, then the top section of `BRING_TO_WORK.md` (and the two 2026-09-24 sections if you have
 not pulled them yet). Nothing needs running except the optional TrimVolts back-fill. **Being built
-now:** worker processes (A3, Task 11) and workers that come back (A5, Task 12) — the save probe
-you run at work (A6) tunes them. Pushed on 2026-09-25: the facelift follow-ups (F4) in the morning;
+now:** nothing of mine is in flight — the speed plan is complete (A3/A4/A5 shipped 2026-09-26). What
+is left is yours: the save probe and a two-minute app run at work (A6), and the decisions below. Pushed on 2026-09-25: the facelift follow-ups (F4) in the morning;
 the rest of the findings catalogue (B6) at midday (after pulling it, refresh the findings once:
 Settings → Database → Refresh process findings); the save probe; F5 ("Inactive" models) with the
 first three speed steps in the afternoon; and in the evening the batched saves (A4) with the
@@ -26,7 +26,7 @@ that rested on a final-test verdict has been re-derived on it (B3).
 
 | Workstream | State | Next move |
 |---|---|---|
-| **A. Processing speed** | A4 shipped 2026-09-25 (batched saves, every stored row identical); A3/A5 next | run the save probe at work (A6, yours); worker processes (Task 11) — Claude |
+| **A. Processing speed** | A3/A4/A5 shipped 2026-09-25/26 (batched saves; worker processes; workers that come back) — every stored row identical | your two-minute run and the save probe at work (A6) say what the laptop gains |
 | **B. More useful information** | rebuild done; the findings catalogue complete — 11 analyzers (B6, 2026-09-25); laser 1's TrimVolts captured | the back-fill (James, optional) → B7 cut-length model |
 | **C. Review and refactor** | C1 done; C2 steps 1–6 done 2026-09-25 (`manager.py` 10,000 → 6,900 lines, moved not changed) | — (§7 says stop there; small candidates below) |
 | **D. Checks at the shop** | D1, D3, D4, D5, D6, D7 open | James |
@@ -186,6 +186,8 @@ problem — per-file conversations with the share were. Same code, same laptop:
       **771.7 ms/file**. `pool_probe` on the same machine puts parse+analyse through
       the SAME 4-thread pool at **339.2 ms/file**. So **56% of the ingest, 432 ms a
       file, is spent outside parsing** — and a process pool cannot touch any of it.
+      *(Superseded 2026-09-25 by the design: the save is 4–5 ms, not the 432 ms, and processes overlap
+      parse and save, so this cap does not hold — see A3 / A4 / A5 above.)*
       By Amdahl that caps A3 alone at `1/(0.57 + 0.43/2.5)` = **1.35x**: 70 hours
       would become 52. **A3 is therefore NOT the first move; it was until this
       measurement.** The prime suspect is the save, which is serial by construction:
@@ -195,7 +197,19 @@ problem — per-file conversations with the share were. Same code, same laptop:
       `cache_size` at SQLite's 2 MB default against a file heading past 5 GB.
       The batch line now prints `of which save Xs (N%, N ms/file)` and `rest`, so the
       next two-minute run says whether the save is the 432 ms or only part of it.
-- [ ] **A3 · Processes instead of threads.** *Now gated on A0.* *After the rebuild.* Measured on 96
+- [x] **A3 · DONE 2026-09-26** — worker processes parse while one writer saves (≥ 200 files; up to 8,
+      fewer on low memory; spawn on every platform; they never open a database — a worker that tries
+      is refused and named; they exit with the app, even if it is killed; Stop and closing reach them
+      while they start). 150 real files with the trained models: old code = threads = processes in
+      37,916 values. On the Mac (local copies) parsing ran ~3.6× faster for DLTS, the whole loop ~2.9×;
+      at work the share and the laptop's disk set the ceiling — A6 measures it. Parked, not needed now:
+      send each worker only its folder's predictors (48 MB → less, a faster start); a one-worker retry
+      for a file that kills a worker (today it is re-run in the app, which dies if the file is the
+      cause — as before A3); a gate run on Python 3.12 (needs downloads — your permission); a worker
+      that dies DURING the pool's start, after the executor last checked, is noticed only at the 120 s
+      start limit (CPython's own behaviour; Stop and closing still work, and the folder then runs on
+      threads) — the start's wait loop could check for dead workers.
+      Was: **A3 · Processes instead of threads.** *Now gated on A0.* *After the rebuild.* Measured on 96
       real files: threads give **1.0×** at 1, 4, 8 or 16; processes give 3.6× at
       4 and **6.8× at 8**. The thread pool and its cap of 4 were built for the
       old 8 GB PC; the new laptop has 48 GB. Needs a design, not a patch:
@@ -203,7 +217,7 @@ problem — per-file conversations with the share were. Same code, same laptop:
       worker (six places); under tests each worker process would open the REAL
       database; and Windows starts processes differently from the Mac. No gain
       over the VPN (bandwidth-bound) — it pays on local files or a fast LAN.
-- [ ] **A4 · Batch the saves** — **promoted above A3** by A0: saving is the SERIAL
+- [x] **A4 · DONE 2026-09-25** (see A3 / A4 / A5 above). Was: **A4 · Batch the saves** — **promoted above A3** by A0: saving is the SERIAL
       half of the loop, so it is the half a worker pool cannot help. The "~24 ms on
       the laptop" in the old note is stale — the speed probe measured 28.9 ms into an
       empty scratch database and **109 ms under the rebuild's own write load**, and
@@ -212,8 +226,9 @@ problem — per-file conversations with the share were. Same code, same laptop:
       of the 3.7 GB work database on the Mac: **3.9 ms/save either way** — a null
       result about THIS disk, not an answer about the laptop's, where a save costs
       7-28x more.
-- [ ] **A5 · Worker count only ever goes down.** A memory warning drops a worker
-      and nothing restores it for the rest of the run. Small; fold into A3.
+- [x] **A5 · DONE 2026-09-26** — a worker dropped for memory comes back after two calm checks below
+      80% (one fewer above 90%, one at a time above 95%), each change logged; Stop now works on the
+      memory-critical path too (it was ignored there). Was: **A5 · Worker count only ever goes down.**
 
 ## B. More useful information — the original goal
 
@@ -597,6 +612,10 @@ one at a time, each proven against the 645-file baseline. *Starts after B2.*
         connection**, silently. Any "unreferenced" scan must skip decorated definitions.
 
 - [ ] **C2 candidates parked by the parse-fixes reviews (2026-09-23/24)** — real, small, none urgent
+      (**added 2026-09-26:** station_setup compares only 5 units a side — its status flipped on 20 models
+      when the sample moved from database order to test dates; a larger sample of the current limit table
+      would steady it. A final test whose content is already stored keeps the first-saved file's NAME
+      (11,500 duplicates, 316 named differently, e.g. "X - Copy.xls") — the numbers never depend on it.)
       (**added 2026-09-25:** `DatabaseManager.backfill_max_deviation` has no caller anywhere — delete it
       or give it a button?; a malformed final-test file's failure marker carries no reason; a stale
       section header and an unused `timezone` import in `manager.py`):

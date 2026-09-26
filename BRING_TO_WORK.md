@@ -1,5 +1,41 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-26 — worker processes (the big speed step), and station limits that hold still
+
+No schema change. After pulling, refresh the findings once (Settings → Database → Refresh process
+findings) — item 3 is why.
+
+1. **`git pull`.**
+2. **Worker processes.** A folder with 200 or more new files is now parsed in worker processes (up to
+   8, fewer if memory is short) while one writer saves; smaller runs stay on threads. The batch line
+   says which ran — `workers 7 processes (ready in 2.1 s)`, or `4 threads (…why…)` — and the Process
+   page says "Starting N worker processes…" while they start (a few seconds per folder). Stop and
+   closing the window reach them, even while they start; if the app is killed, they exit with it; if
+   memory runs high, one is dropped and comes back when it recovers (the log says both). **Every stored
+   number is unchanged** — checked on 150 real files with the trained models: old code, threads and
+   processes identical in 37,916 values. **What to expect at work, honestly:** on the Mac, with files
+   copied locally, parsing on processes ran ~3.6× faster for DLTS (the whole loop ~2.9×). At work the
+   share's own speed and the laptop's disk set the ceiling (over the VPN about 2.4 files/s whatever
+   runs), so the real test is yours: a two-minute run in the app on a DLTS folder and on Final Test —
+   read `ms/file` and `workers` on the batch line. If DLTS falls below a third of what it was, the
+   processes are working; tell Claude either way. The save probe below measures the same thing headless.
+3. **Station-limits findings move once, to numbers that hold still.** The station-limits comparison
+   samples each model's newest units. It used to take "newest" by database order, which on the rebuilt
+   database follows the folder walk, not time — 6601 was judged on 2014 units though 2020 units exist.
+   It now takes them by their own test dates, so the same data always gives the same answer. On the home
+   copy of your database that changes 41 of 471 models at the next findings refresh:
+   - **new station-limits findings** (the stations now look different): 6601, 6871, 6952, 7458, 8506,
+     8508, 8817;
+   - **findings that go** (the stations now look alike): 7764, 7845, 8277 (55% → 1%), 8278, 8415-1,
+     8877-4;
+   - **still different, by another amount:** 8340-1 32% → 23%, 7478 29% → 92%, 8397-2 17% → 49%,
+     8877 53% → 22% (and 21 smaller moves).
+   The comparison looks at only 5 units a side, which is why the choice of units mattered this much —
+   TRACKER notes a larger sample as a next step.
+4. **Smaller changes:** the final-test predictor's `failure_probability` is now computed on one thread,
+   so it gives the same value every run (it could differ in its last digit before); the app imports on
+   Python 3.11 again, and `run_v6.bat` says what it needs (3.12 or newer) and what was tested.
+
 ## ⚡ 2026-09-25 evening — batched saves, and `manager.py` split in six
 
 No schema change, nothing to retrain, nothing to click first.
@@ -38,11 +74,12 @@ No schema change beyond two new indexes, which the first launch adds by itself (
    long it took. The bigger steps — batched saves and worker processes — come next; the save probe
    (below) tunes them.
 
-## ⚡ 2026-09-25 — one measurement for the speed work (about 6 minutes, safe with the app open)
+## ⚡ 2026-09-25 — one measurement for the speed work (about 8–10 minutes, safe with the app open)
 
-This pull adds `scripts\ingest_save_probe.py`; nothing in the app changes. It measures, on YOUR
-laptop's disk, what a save really costs and where the ingest loop's time goes — the numbers the
-speed work (TRACKER A4/A3) is tuned from. From PowerShell:
+`scripts\ingest_save_probe.py` measures, on YOUR laptop's disk, what a save really costs and where the
+ingest loop's time goes — including, since 2026-09-26, the same loop on worker processes (its last two
+lines: the ms/file on processes, and the pool's start time printed beside it, not inside it). From
+PowerShell:
 
 ```powershell
 cd C:\dev\laser-trim-ai-system
@@ -52,7 +89,8 @@ cd C:\dev\laser-trim-ai-system
 - It copies `data\analysis.db` READ-ONLY (the app can stay open) to your TEMP folder, measures on the
   copy, and deletes it at the end — on Ctrl-C or an error too. It needs about twice the database's
   size free on the TEMP drive (~13 GB) and refuses otherwise.
-- About 6 minutes; add `--no-loop` to stop after the save timings (~3 minutes).
+- About 8–10 minutes (a second pass on worker processes, plus their start); add `--no-loop` to stop
+  after the save timings (~3 minutes).
 - **Paste the whole output back to Claude.** If the last line starts with `FAILED:` or `REFUSED:`,
   that line says what happened, and the copy is already gone.
 - Three quick questions while you are there: did the 09-22 rebuild run at work or over the VPN
@@ -787,9 +825,9 @@ trim/FT links are right from the start, corrupt limit columns caught at
 ingest, fail-point counts computed correctly. Skip those sections unless
 you decide to keep an old database after all.
 
-1. **Install Python 3.12 or newer** (3.13 is fine; this Mac runs 3.14). The
-   pinned libraries — the exact set that passed 1,386 tests tonight — need
-   3.11+, so the old "3.10+" note in the launcher was wrong and is fixed.
+1. **Install Python 3.12 or newer** — the pinned numpy 2.5.2 and scipy 1.18.1 require 3.12. The
+   whole test gate runs on 3.14 (this Mac, and almost certainly your laptop — the app needed 3.14 to
+   import until 2026-09-26, and it ran there on 09-22); 3.12 and 3.13 have not been run.
 2. **Clone / pull `main`** — it is identical to `V6` now. Run `run_v6.bat`.
    First run builds `.venv` from `requirements-pinned.txt` (a few minutes,
    needs proxy/internet once).
