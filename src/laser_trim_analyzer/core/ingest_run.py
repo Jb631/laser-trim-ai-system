@@ -48,7 +48,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 from laser_trim_analyzer.config import ingest_folder_problem
 from laser_trim_analyzer.core.models import AnalysisStatus, ProcessingStatus
 from laser_trim_analyzer.core.processor import (
-    Processor, WriterStop, record_row_id, take_spec_snapshot)
+    Processor, WriterStop, is_content_refusal, record_row_id, take_spec_snapshot)
 
 logger = logging.getLogger(__name__)
 
@@ -595,8 +595,11 @@ class FolderResult:
     seconds: float = 0.0
     phases: Dict[str, float] = field(default_factory=dict)
     # Files per bucket, counted once their batch COMMITTED (spec 3.9): a failed save is an
-    # error, never a pass. They sum to `new_files`.
+    # error, never a pass. They sum to `new_files` -- on every path, a stopped folder's too.
     buckets: Dict[str, int] = field(default_factory=dict)
+    # Of those, files whose save did not commit and that nothing records (a refused save, a
+    # batch that did not commit, a malformed file): they are new again next run, and Home says so.
+    unsaved: int = 0
 
 
 @dataclass
@@ -632,6 +635,11 @@ class IngestReport:
     @property
     def new_trims(self) -> int:
         return sum(r.new_trims for r in self.results)
+
+    @property
+    def unsaved(self) -> int:
+        """Files analysed whose save did not commit: new again next run (see FolderResult)."""
+        return sum(getattr(r, "unsaved", 0) or 0 for r in self.results)
 
     @property
     def failed(self) -> List[FolderResult]:
@@ -677,6 +685,20 @@ def _unreadable_clause(report: IngestReport) -> str:
             + " recorded as unreadable (skipped from now on)")
 
 
+def _unsaved_clause(report: IngestReport) -> str:
+    """The " · N files not saved — new again next run" half-sentence, or nothing.
+
+    A file the run analysed but could not save -- the database refused it, a batch did not
+    commit -- is counted in "new files" (it was processed) and stored nothing; without this the
+    line would read as if it had been imported (review of Tasks 9-10, m-1). Its reason is in the
+    run's error list.
+    """
+    n = getattr(report, "unsaved", 0) or 0
+    if n <= 0:
+        return ""
+    return (f" · {n:,} file" + ("" if n == 1 else "s") + " not saved — new again next run")
+
+
 def format_ingest_summary(report: IngestReport) -> str:
     """The one line Home shows after a run. Spec: "3 folders · 214 new files ·
     2 min 40 s" — and, when a share was down, which one and why.
@@ -704,6 +726,7 @@ def format_ingest_summary(report: IngestReport) -> str:
                 " — press Process everything new again to continue; it resumes "
                 "where this left off (everything already saved is skipped).")
         line += _unreadable_clause(report)
+        line += _unsaved_clause(report)
         bad = report.failed
         if bad:
             detail = "; ".join(f"{r.folder} ({r.error})" for r in bad)
@@ -715,6 +738,7 @@ def format_ingest_summary(report: IngestReport) -> str:
     line = (f"{n} folder" + ("" if n == 1 else "s") + f" · {files}"
             f" · {format_elapsed(report.seconds)}")
     line += _unreadable_clause(report)
+    line += _unsaved_clause(report)
     bad = report.failed
     if bad:
         # Named, not counted: "1 folder failed" sends someone hunting through
@@ -917,6 +941,11 @@ class Committed:
     saved: bool = False
     kind: str = ""                      # "trim" | "final_test" | "smoothness" | "" (no row)
     malformed: bool = False
+    # Nothing of the file is stored and nothing records it: it is new again next run.
+    unsaved: bool = False
+    # Its save was refused for a reason that is not the file's own (a database or system error,
+    # or a batch that did not commit): never recorded as unreadable, and fed to the stop rule.
+    refused: bool = False
 
 
 class BatchWriter:
@@ -926,7 +955,9 @@ class BatchWriter:
     save, a final-test or smoothness save, skip markers -- are made in batches: one `write_batch`
     transaction (a savepoint per file) every FLUSH_FILES files, or FLUSH_SECONDS after the first
     file of a batch arrived, whichever comes first (`add`; `tick` while the pool is quiet), and
-    always at the generator's end, on Stop and at the folder's end (`flush`).
+    always at the generator's end, on Stop and at the folder's end (`flush`). The counts
+    therefore trail the progress bar by up to 20 files, or 2 s plus up to one 1 s tick of the
+    pool's wait (review of Tasks 9-10, m-3).
 
     A file is COUNTED only once its batch has committed, from what `write_batch` did with its
     writes (`on_committed` gets a Committed per file): a failed save is an error, never a pass.
@@ -934,14 +965,23 @@ class BatchWriter:
     failed; a smoothness file whose identity another content hash already holds stored nothing
     and counts as skipped, not as a pass or a fail (review of Tasks 5-8, m-3). A final test or
     smoothness file whose save failed gets the rule its failure always got
-    (`Processor._final_test_failure` / `_smoothness_failure`): an ERROR, and the skip marker the
-    rule asks for, written with the next batch.
+    (`Processor._final_test_failure` / `_smoothness_failure`): an ERROR, and -- only when the
+    file's own content caused the failure -- the skip marker the rule asks for, committed right
+    after its batch, in a transaction of its own within the same flush.
+
+    A DATABASE error during a save never marks a file unreadable (ruling of 2026-09-25): only a
+    content refusal may (`processor.is_content_refusal` -- a ValueError such as "Serial cannot
+    be empty", an IntegrityError for a malformed or duplicate unit). A save the database refused
+    for any other reason -- OperationalError, schema drift, disk I/O, anything the save cannot
+    attribute to the file -- leaves the file NEW, counts as an error, and feeds the stop rule.
 
     It STOPS the folder (raises WriterStop, naming the error) after STOP_AFTER consecutive batch
-    commits failed (ruling 22), or STOP_AFTER consecutive batches committed with every write in
-    them failed -- a systemic per-file failure must not parse 60,000 files into nothing (m-5).
-    Both are counted for THIS folder, not for the database manager. Files of a batch that did not
-    commit are new again next run.
+    commits failed (ruling 22), or STOP_AFTER consecutive batches in which the database refused
+    every save of test data it was offered -- a systemic failure must not parse 60,000 files into
+    nothing (m-5). That rule counts the files' own SAVES -- trims, final tests, smoothness --
+    never a marker write: a batch with no save to judge neither counts nor resets. Both rules are
+    counted for THIS folder, not for the database manager. Files of a batch that did not commit
+    are new again next run.
     """
 
     FLUSH_FILES = 20
@@ -999,7 +1039,8 @@ class BatchWriter:
             self._flush_once()
 
     def _flush_once(self) -> None:
-        from laser_trim_analyzer.database.manager import BatchCommitError
+        from laser_trim_analyzer.database.manager import (
+            BatchCommitError, FinalTestWrite, SmoothnessWrite, TrimWrite)
         batch, self._pending, self._first_at = self._pending, [], None
         fallback, self._fallback = self._fallback, []
         items = [it for _, its, _ in batch for it in its] + fallback
@@ -1018,35 +1059,52 @@ class BatchWriter:
                 self.save_cpu_seconds += time.thread_time() - c0
             self.batches += 1
         by_item = iter(statuses)
-        settled = [self._settle(outcome, its, [next(by_item) for _ in its], pre_failed, cause)
-                   for outcome, its, pre_failed in batch]
+        per_file = [[next(by_item) for _ in its] for _, its, _ in batch]
+        settled = [self._settle(outcome, its, sts, pre_failed, cause)
+                   for (outcome, its, pre_failed), sts in zip(batch, per_file)]
         for marker, status in zip(fallback, by_item):
             if cause is None and status.status == "saved":
                 self._remember(marker)
         for committed in settled:
             self.on_committed(committed)
         if cause is not None:
-            logger.error("A batch of %d file(s) was not committed (%d in a row for this "
-                         "folder): %s -- its files are new again next run",
-                         len(batch), self.failed_commits, cause.cause)
+            if batch:
+                logger.error("A batch of %d file(s) was not committed (%d in a row for this "
+                             "folder): %s -- its files are new again next run",
+                             len(batch), self.failed_commits, cause.cause)
+            else:
+                logger.error("The skip markers of %d earlier failed save(s) were not committed "
+                             "(%d batch commit(s) in a row failed for this folder): %s -- those "
+                             "files are new again next run",
+                             len(fallback), self.failed_commits, cause.cause)
             if self.failed_commits >= self.STOP_AFTER:
                 raise WriterStop(
                     f"{self.failed_commits} batch commits in a row failed, so this folder was "
                     f"stopped (its files are new again next run): "
                     f"{type(cause.cause).__name__}: {cause.cause}")
             return
-        if items and all(s.status == "failed" for s in statuses):
+        # m-5, on the files' OWN saves -- the trim, final-test and smoothness writes; never a
+        # marker (review of Tasks 9-10, I-2). A batch in which the database stored none of the
+        # saves it was offered, refusing them for reasons not the files' own, counts toward the
+        # stop; one that stored any save resets it. A batch with no such save to judge -- markers
+        # only (not test data, the fallback markers), or only content refusals and malformed
+        # files, which are the files' own outcomes -- neither counts nor resets.
+        saves = [status for (_, its, _), sts in zip(batch, per_file)
+                 for item, status in zip(its, sts)
+                 if isinstance(item, (TrimWrite, FinalTestWrite, SmoothnessWrite))]
+        refused = [s for s in saves if s.status == "failed" and not is_content_refusal(s.error)]
+        if any(s.status == "saved" for s in saves):
+            self.all_failed_batches = 0
+        elif refused:
             self.all_failed_batches += 1
-            why = next((s.reason for s in statuses if s.reason), "no reason given")
-            logger.error("A batch committed with every write in it failed (%d in a row for "
-                         "this folder): %s", self.all_failed_batches, why)
+            why = next((s.reason for s in refused if s.reason), "no reason given")
+            logger.error("A batch committed with every save in it refused by the database (%d "
+                         "in a row for this folder): %s", self.all_failed_batches, why)
             if self.all_failed_batches >= self.STOP_AFTER:
                 raise WriterStop(
-                    f"{self.all_failed_batches} batches in a row stored nothing -- every save in "
-                    f"them failed -- so this folder was stopped (its files are new again next "
-                    f"run): {why}")
-        elif items:
-            self.all_failed_batches = 0
+                    f"{self.all_failed_batches} batches in a row stored nothing -- the database "
+                    f"refused every save in them -- so this folder was stopped (its files are new "
+                    f"again next run): {why}")
 
     def _remember(self, marker) -> None:
         """A committed marker, into the run's in-memory caches (a Processor's; a stand-in
@@ -1067,13 +1125,13 @@ class BatchWriter:
                     self._remember(item)
         if outcome.internal is not None:
             return Committed(outcome.path, None, "errors",
-                             f"{name}: the analysis failed: {outcome.internal}")
+                             f"{name}: the analysis failed: {outcome.internal}", unsaved=True)
         if result is None:
             return Committed(outcome.path, None, None)           # not test data
         kind = getattr(result, "file_type", "trim")
         if pre_failed is not None:
             return Committed(outcome.path, result, "errors",
-                             f"{name}: save failed: {pre_failed}", kind=kind)
+                             f"{name}: save failed: {pre_failed}", kind=kind, unsaved=True)
         main = [(i, s) for i, s in zip(items, statuses)
                 if isinstance(i, (TrimWrite, FinalTestWrite, SmoothnessWrite))]
         status_bucket = bucket_for_status(result.overall_status)
@@ -1087,7 +1145,7 @@ class BatchWriter:
         if cause is not None:
             return Committed(outcome.path, result, "errors",
                              f"{name}: save failed: the batch was not committed: {cause.cause}",
-                             kind=kind)
+                             kind=kind, unsaved=True, refused=True)
         if status.status == "saved":
             record_row_id(result, item, status.row_id)
             return Committed(outcome.path, result, status_bucket, status_reason, saved=True,
@@ -1097,18 +1155,39 @@ class BatchWriter:
                 # Another content hash already holds this file's identity: nothing stored.
                 return Committed(outcome.path, result, "skipped", kind=kind)
             self.malformed += 1
+            marked = False
+            if isinstance(item, (FinalTestWrite, SmoothnessWrite)):
+                # A malformed final test or smoothness file gets the rule its failure always
+                # got -- a content refusal, so a marker (with no reason: a UNIQUE break is
+                # permanent) -- and still counts as failed. A malformed trim never had a marker.
+                rule = (self.processor._final_test_failure if isinstance(item, FinalTestWrite)
+                        else self.processor._smoothness_failure)
+                result, marker = rule(Path(outcome.path), status.error, outcome.started,
+                                      saving=True)
+                if marker is not None:
+                    self._fallback.append(marker)
+                    marked = True
             return Committed(outcome.path, result, "failed",
                              f"{name}: malformed, not saved -- its own rows broke a UNIQUE "
-                             f"constraint: {status.reason}", kind=kind, malformed=True)
-        # failed
+                             f"constraint: {status.reason}", kind=kind, malformed=True,
+                             unsaved=not marked)
+        # failed: the file's own content, or the database's refusal (ruling of 2026-09-25)
+        refused = not is_content_refusal(status.error)
+        marked = False
         if isinstance(item, (FinalTestWrite, SmoothnessWrite)) and status.error is not None:
             rule = (self.processor._final_test_failure if isinstance(item, FinalTestWrite)
                     else self.processor._smoothness_failure)
-            result, marker = rule(Path(outcome.path), status.error, outcome.started)
+            result, marker = rule(Path(outcome.path), status.error, outcome.started, saving=True)
             if marker is not None:
                 self._fallback.append(marker)
+                marked = True
+        if refused:
+            return Committed(outcome.path, result, "errors",
+                             f"{name}: not saved -- the database refused it, not the file "
+                             f"({status.reason}); new again next run", kind=kind,
+                             unsaved=True, refused=True)
         return Committed(outcome.path, result, "errors", f"{name}: save failed: {status.reason}",
-                         kind=kind)
+                         kind=kind, unsaved=not marked)
 
 
 @_with_ingest_switch_interval
@@ -1215,7 +1294,10 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     summary = None
     models_in_batch: Set[str] = set()
     buckets: Dict[str, int] = {}     # COMMITTED files per bucket (spec 3.9): they sum to processed
-    counts = {"trims": 0, "final_tests": 0}
+    counts = {"trims": 0, "final_tests": 0, "unsaved": 0}
+    # The finished run's tally in BatchSummary's own terms -- UNTRIMMED apart from passed -- from
+    # what COMMITTED (review of Tasks 9-10, I-1): the Process page paints it at the end.
+    tally = {"passed": 0, "warnings": 0, "failed": 0, "errors": 0, "untrimmed": 0, "skipped": 0}
     t = time.monotonic()
 
     def committed(c: Committed) -> None:
@@ -1223,6 +1305,11 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
         if c.bucket is not None:
             note_bucket(c.bucket, c.reason)
             buckets[c.bucket] = buckets.get(c.bucket, 0) + 1
+            untrimmed = (c.bucket == "passed" and getattr(c.result, "overall_status", None)
+                         == AnalysisStatus.UNTRIMMED)
+            tally["untrimmed" if untrimmed else c.bucket] += 1
+        if c.unsaved:
+            counts["unsaved"] += 1
         if not c.saved:
             return
         model = getattr(getattr(c.result, "metadata", None), "model", None)
@@ -1272,6 +1359,14 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
             summary = stop.value
         writer.flush()               # the folder's end: whatever the processor left unflushed
         phase_times()
+        if summary is not None and hasattr(summary, "record_status"):
+            # The finished run's tally from what COMMITTED (spec 3.9; review I-1): a refused
+            # save is an error there too, never the verdict its analysis reached.
+            for key in ("passed", "warnings", "failed", "errors", "untrimmed"):
+                setattr(summary, key, tally[key])
+            summary.skipped += tally["skipped"]   # a smoothness identity held by another hash
+            gradeable = summary.gradeable_count
+            summary.pass_rate = (summary.passed / gradeable * 100) if gradeable > 0 else 0.0
     except WriterStop as exc:
         # Ruling 22 / m-5: the database took no batch twice in a row, or stored nothing twice in
         # a row. Named, never a wall of "errors" over 60,000 files.
@@ -1279,8 +1374,9 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
         logger.error("Ingest of %s stopped: %s", folder, exc)
         _say(on_phase, f"Stopped: {exc}")
         return FolderResult(folder=folder, ok=False, error=str(exc), files_found=total,
-                            new_trims=counts["trims"], models=models_in_batch, phases=phases,
-                            buckets=buckets, seconds=time.monotonic() - started)
+                            new_files=sum(buckets.values()), new_trims=counts["trims"],
+                            models=models_in_batch, phases=phases, buckets=buckets,
+                            unsaved=counts["unsaved"], seconds=time.monotonic() - started)
     except Exception as exc:
         # 2026-07-09: an exception here previously killed the worker thread
         # silently — Start stayed disabled, the app looked locked, and the
@@ -1293,8 +1389,9 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
         phase_times()
         _say(on_phase, f"Stopped: {exc}")
         return FolderResult(folder=folder, ok=False, error=str(exc),
-                            files_found=total, new_trims=counts["trims"],
-                            models=models_in_batch, phases=phases, buckets=buckets,
+                            files_found=total, new_files=sum(buckets.values()),
+                            new_trims=counts["trims"], models=models_in_batch, phases=phases,
+                            buckets=buckets, unsaved=counts["unsaved"],
                             seconds=time.monotonic() - started)
     new_trims = counts["trims"]
     new_final_tests = counts["final_tests"]
@@ -1309,7 +1406,7 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                         new_files=int(getattr(summary, "processed", 0) or 0),
                         new_trims=new_trims, models=models_in_batch,
                         summary=summary, phases=phases, buckets=buckets,
-                        seconds=time.monotonic() - started)
+                        unsaved=counts["unsaved"], seconds=time.monotonic() - started)
 
 
 def _plan_work(files_by_folder: Dict[str, Sequence[str]],

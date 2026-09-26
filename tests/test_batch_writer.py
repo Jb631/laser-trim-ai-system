@@ -83,8 +83,10 @@ def test_a_failed_save_counts_as_an_error_never_a_pass(db, tmp_path, monkeypatch
     res = run_folder(str(folder), db=db, config=None, incremental=True, progress=progress)
     assert res.ok, res.error
     assert res.buckets.get("errors") == 1 and sum(res.buckets.values()) == 3, res.buckets
-    assert any("dlts_8232-1_243.xls: save failed: RuntimeError: invented: the save failed" in r
+    assert any("dlts_8232-1_243.xls: not saved -- the database refused it, not the file "
+               "(RuntimeError: invented: the save failed); new again next run" in r
                for r in progress.reasons), progress.reasons
+    assert res.unsaved == 1
     assert res.new_trims == 2
     assert _count(db, "analysis_results", "WHERE filename = 'dlts_8232-1_243.xls'") == 0
     assert _count(db, "processed_files", "WHERE filename = 'dlts_8232-1_243.xls'") == 0
@@ -488,3 +490,173 @@ def test_a_writer_stop_ends_the_batch_in_either_path(pool):
         list(Stub(config=config, use_ml=False).process_batch(paths, incremental=False,
                                                               writer=writer))
     assert len(settled) == 40 and len(analysed) <= 60, (len(settled), len(analysed))
+
+
+# ---- the review of Tasks 9-10: I-1 (the finished run's tally) --------------------------------
+
+def test_the_process_pages_finished_tally_counts_what_committed(tk_root, db, tmp_path):
+    """Review I-1 (spec 3.9). When a run finishes, the V6 Process page repaints its counters from
+    `result.summary`. That tally now counts what COMMITTED, exactly as the live counters do: the
+    refused save of 8434ct-1118D.xls ("Serial cannot be empty") is an error, not the fail its
+    analysis reached. Driven through the real widget, over the V5 scenario."""
+    from laser_trim_analyzer.core.ingest_run import ProgressCoalescer, run_folder
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.process_progress_section import (
+        ProcessProgressSection)
+    v5_loop.build_v5_scenario(tmp_path)
+    progress = ProgressCoalescer()
+    res = run_folder(str(tmp_path / "in"), db=db, config=None, incremental=True,
+                     progress=progress)
+    assert res.ok, res.error
+    section = ProcessProgressSection(tk_root, theme=ThemeManager())
+    snap = progress.drain()                                   # what the page's _paint hands it
+    section.add_counts(snap["counts"], snap["reasons"])
+    live = {k: lbl.cget("text") for k, lbl in section._labels.items()}
+    section.set_final(res.summary)                            # the page's finished-run path
+    final = {k: lbl.cget("text") for k, lbl in section._labels.items()}
+    assert section._status.cget("text") == (
+        "Complete: 5 passed, 3 warnings, 5 failed, 3 skipped, 8 errors."), section._status.cget(
+        "text")
+    assert (final["failed"], final["errors"]) == (live["failed"], live["errors"]) == (
+        "Failed: 5", "Errors: 8"), (live, final)
+    s = res.summary                                           # BatchSummary keeps UNTRIMMED apart
+    assert (s.passed + s.untrimmed, s.warnings, s.failed, s.errors) == (
+        res.buckets["passed"], res.buckets["warnings"], res.buckets["failed"],
+        res.buckets["errors"]), (s, res.buckets)
+
+
+# ---- the review of Tasks 9-10: I-2 (m-5 and the ruling of 2026-09-25) --------------------------
+
+def _rout_files(folder: Path, n: int) -> None:
+    """n synthetic Format 2 final tests (Rout_), each its own unit and its own bytes (invented)."""
+    from test_ft_polyfit_degenerate import clean_series, write_format2
+    folder.mkdir(parents=True, exist_ok=True)
+    measured, positions = clean_series()
+    for i in range(n):
+        write_format2(folder / f"Rout_9990_sn{100 + i}_vo.xlsx",
+                      [m + i * 1e-6 for m in measured], positions)
+
+
+def _refused_by_the_database(*a, **k):
+    from sqlalchemy.exc import OperationalError
+    raise OperationalError("INSERT INTO invented", {}, Exception("no such column: invented_column"))
+
+
+@pytest.fixture
+def by_count(monkeypatch):
+    """Batches by count alone: the 2-second rule pinned elsewhere cannot split them here."""
+    from laser_trim_analyzer.core.ingest_run import BatchWriter
+    monkeypatch.setattr(BatchWriter, "FLUSH_SECONDS", 10 ** 9)
+
+
+def test_a_final_test_folder_the_database_refuses_stops_and_marks_nothing(db, tmp_path,
+                                                                         monkeypatch, by_count):
+    """Review I-2, the ruling of 2026-09-25: 60 final tests whose saves fail on a schema error.
+    The folder STOPS after two batches, the error named; NOT ONE file is recorded as unreadable
+    -- the database's error is not the files' -- Home says they were not saved, and the next
+    healthy run processes all 60."""
+    from laser_trim_analyzer.core.ingest_run import IngestReport, format_ingest_summary, run_folder
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    folder = tmp_path / "Test Station"
+    _rout_files(folder, 60)
+    real = DatabaseManager._save_final_test_in
+    monkeypatch.setattr(DatabaseManager, "_save_final_test_in", _refused_by_the_database)
+    res = run_folder(str(folder), db=db, config=None, incremental=True)
+    assert res.ok is False and "2 batches in a row stored nothing" in res.error, res.error
+    assert "no such column: invented_column" in res.error
+    assert _count(db, "processed_files") == 0, "a database error marked files unreadable"
+    assert _count(db, "final_test_results") == 0
+    assert res.buckets == {"errors": 40} and res.new_files == 40 == res.unsaved, res
+    assert "40 files not saved — new again next run" in format_ingest_summary(
+        IngestReport(results=[res]))
+    monkeypatch.setattr(DatabaseManager, "_save_final_test_in", real)
+    again = run_folder(str(folder), db=db, config=None, incremental=True)
+    assert again.ok and again.new_files == 60 and _count(db, "final_test_results") == 60, again
+
+
+def test_a_trim_folder_with_non_test_files_in_every_batch_stops_on_a_database_refusal(
+        db, tmp_path, monkeypatch, by_count):
+    """Review I-2: a marker is not a save. A trim folder in which one file in three is not test
+    data (their markers commit fine) and whose trim saves the database refuses still stops after
+    two batches -- the markers neither count toward the rule nor reset it."""
+    from laser_trim_analyzer.core.ingest_run import run_folder
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    folder = tmp_path / "laser"
+    for i in range(40):
+        save_rows._pinned_copy(save_rows.FIXTURES / "trim" / "dlts_8232-1_242.xls",
+                               folder / f"dlts_8232-1_{900 + i}.xls")
+    for i in range(20):
+        (folder / f"9993_noise_capture_{i}.xls").write_bytes(
+            f"invented: an oscilloscope capture {i}".encode())
+    monkeypatch.setattr(DatabaseManager, "_save_analysis_in", _refused_by_the_database)
+    res = run_folder(str(folder), db=db, config=None, incremental=True)
+    assert res.ok is False and "2 batches in a row stored nothing" in res.error, res.error
+    assert _count(db, "analysis_results") == 0
+    assert res.new_files == sum(res.buckets.values()) == res.buckets["errors"] == res.unsaved
+
+
+def test_a_trim_folder_the_database_refuses_stops_as_before(db, tmp_path, monkeypatch, by_count):
+    """The control: trims alone, refused by the database -- stopped after two batches, nothing
+    stored, and the next healthy run takes every file."""
+    from laser_trim_analyzer.core.ingest_run import run_folder
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    folder = tmp_path / "laser"
+    for i in range(60):
+        save_rows._pinned_copy(save_rows.FIXTURES / "trim" / "dlts_8232-1_242.xls",
+                               folder / f"dlts_8232-1_{900 + i}.xls")
+    real = DatabaseManager._save_analysis_in
+    monkeypatch.setattr(DatabaseManager, "_save_analysis_in", _refused_by_the_database)
+    res = run_folder(str(folder), db=db, config=None, incremental=True)
+    assert res.ok is False and "2 batches in a row stored nothing" in res.error, res.error
+    assert _count(db, "analysis_results") == 0 and _count(db, "processed_files") == 0
+    assert res.buckets == {"errors": 40} and res.new_files == 40 == res.unsaved
+    monkeypatch.setattr(DatabaseManager, "_save_analysis_in", real)
+    again = run_folder(str(folder), db=db, config=None, incremental=True)
+    assert again.ok and again.new_files == 60 and _count(db, "analysis_results") == 60
+
+
+def test_one_content_refusal_is_marked_with_its_reason(db, tmp_path, monkeypatch):
+    """The ruling's other half: a save the file's OWN content refuses records it as unreadable,
+    with its reason; the files around it are saved as ever."""
+    from laser_trim_analyzer.core.ingest_run import run_folder
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    folder = tmp_path / "Test Station"
+    _rout_files(folder, 5)
+    real = DatabaseManager._save_final_test_in
+
+    def refuses_sn102(self, session, metadata, *a, **k):
+        if metadata.get("serial") == "102":
+            raise ValueError("invented: the tracks disagree")
+        return real(self, session, metadata, *a, **k)
+
+    monkeypatch.setattr(DatabaseManager, "_save_final_test_in", refuses_sn102)
+    res = run_folder(str(folder), db=db, config=None, incremental=True)
+    assert res.ok and res.buckets.get("errors") == 1 and res.unsaved == 0, res
+    con = sqlite3.connect(f"file:{db.database_path}?mode=ro", uri=True)
+    try:
+        markers = con.execute("SELECT filename, error_message FROM processed_files").fetchall()
+    finally:
+        con.close()
+    assert len(markers) == 1 and markers[0][0] == "Rout_9990_sn102_vo.xlsx", markers
+    assert markers[0][1].startswith("unreadable: ValueError: invented: the tracks disagree")
+    assert _count(db, "final_test_results") == 4
+
+
+def test_content_refusals_are_the_files_own_and_never_stop_the_folder(db, tmp_path, monkeypatch,
+                                                                     by_count):
+    """A folder whose every save its files' content refuses (a folder of old files with no
+    serial, say) is not a failing database: each file is recorded with its reason, and the folder
+    runs to its end instead of stopping every 40 files, run after run."""
+    from laser_trim_analyzer.core.ingest_run import run_folder
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    folder = tmp_path / "Test Station"
+    _rout_files(folder, 45)
+
+    def refuses_all(self, *a, **k):
+        raise ValueError("invented: the tracks disagree")
+
+    monkeypatch.setattr(DatabaseManager, "_save_final_test_in", refuses_all)
+    res = run_folder(str(folder), db=db, config=None, incremental=True)
+    assert res.ok, res.error
+    assert res.buckets == {"errors": 45} and res.unsaved == 0
+    assert _count(db, "processed_files", "WHERE error_message LIKE 'unreadable: ValueError%'") == 45

@@ -3454,7 +3454,9 @@ def check_batched_ingest() -> None:
       1. it stores exactly what the per-file way stores (process_file + save_analysis, one file
          after another, into a database of its own) -- every column of every row but the clocks,
          in whatever order its batches wrote them;
-      2. its buckets are counted from what COMMITTED, and sum to the files it processed;
+      2. its buckets are counted from what COMMITTED: over the corpus trims, with one save made
+         to fail, they equal the verdicts of the rows actually stored plus one error for every
+         processed file that stored no row -- the failed save among them, never its verdict;
       3. it wrote in batches of 20 files -- never a transaction per file. The 2-second rule is
          switched off here (tests/test_batch_writer.py pins it), so the count does not depend on
          how fast this machine is.
@@ -3462,7 +3464,8 @@ def check_batched_ingest() -> None:
     the SAVE paths, and the per-file way has no post-batch work.
 
     Falsify before trusting (2026-09-25): write the trims without their stat -- check 1 goes
-    FAIL; flush after every file -- check 3 goes FAIL.
+    FAIL; count a failed save by its verdict -- check 2 goes FAIL; flush after every file --
+    check 3 goes FAIL.
     """
     import shutil
     import tempfile
@@ -3548,10 +3551,57 @@ def check_batched_ingest() -> None:
                   "analysis_results", "final_test_results", "smoothness_results")),
               f"{len(files)} files; ok={res.ok} {res.error or ''}; rows {counts}; "
               f"identical={got == want}")
-        check("batched ingest: its buckets were counted from what committed and sum to the files "
-              "it processed",
-              sum(res.buckets.values()) == res.new_files > 0,
-              f"buckets {res.buckets} vs {res.new_files} processed")
+        # 2. The trims again, into a database of their own, one save made to fail: the buckets
+        #    must be the stored rows' own verdicts, plus an error per processed file with no row.
+        from collections import Counter
+        trims_root = tmp / "trims_only"
+        for f in picks["laser"]:
+            dst = trims_root / f.parent.name / f.name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dst)
+        refused_name = sorted(f.name for f in picks["laser"])[0]
+        trims_db = _mgr.DatabaseManager(tmp / "trims_only.db")
+        opened.append(trims_db)
+        real_save_in = _mgr.DatabaseManager._save_analysis_in
+
+        def one_refused(self, session, analysis, *a, **k):
+            if analysis.metadata.filename == refused_name:
+                raise RuntimeError("sweep: an invented save failure")
+            return real_save_in(self, session, analysis, *a, **k)
+
+        reasons = []
+
+        class _Reasons(ingest_run.ProgressCoalescer):
+            def bucket(self, name, reason=""):
+                if reason:
+                    reasons.append(reason)
+                super().bucket(name, reason)
+
+        _mgr.DatabaseManager._save_analysis_in = one_refused
+        _mgr._db_manager = _dbpkg._db_manager = trims_db
+        try:
+            res2 = ingest_run.run_folder(str(trims_root), db=trims_db, config=None,
+                                         incremental=True, progress=_Reasons())
+        finally:
+            _mgr.DatabaseManager._save_analysis_in = real_save_in
+        con = sqlite3.connect(f"file:{tmp / 'trims_only.db'}?mode=ro", uri=True)
+        try:
+            stored = [s for (s,) in con.execute("SELECT overall_status FROM analysis_results")]
+            refused_rows = con.execute("SELECT COUNT(*) FROM analysis_results WHERE filename = ?",
+                                       (refused_name,)).fetchone()[0]
+        finally:
+            con.close()
+        verdict = {"PASS": "passed", "UNTRIMMED": "passed", "WARNING": "warnings",
+                   "FAIL": "failed", "ERROR": "errors"}
+        want_buckets = Counter(verdict[s] for s in stored)
+        want_buckets["errors"] += res2.new_files - len(stored)
+        check("batched ingest: its buckets were counted from what committed -- the stored rows' "
+              "own verdicts, and a save made to fail counted as the error it is, never its verdict",
+              res2.ok and dict(+want_buckets) == res2.buckets and refused_rows == 0
+              and res2.unsaved >= 1 and any(refused_name in r and "not saved" in r
+                                            for r in reasons),
+              f"buckets {res2.buckets} vs stored verdicts + errors {dict(+want_buckets)}; the "
+              f"refused save stored {refused_rows} rows; unsaved {res2.unsaved}")
         most = -(-len(files) // ingest_run.BatchWriter.FLUSH_FILES) + 1   # + a fallback flush
         check("batched ingest: it wrote in batches of 20 files, never a transaction per file",
               calls and len(calls) <= most < len(files) and res.phases.get("save", 0) > 0,

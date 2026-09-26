@@ -197,6 +197,24 @@ def take_spec_snapshot(*, use_ml: bool = True, db=None) -> SpecSnapshot:
                         ml_thresholds=thresholds, ml_predictors=predictors)
 
 
+def is_content_refusal(exc: Optional[BaseException]) -> bool:
+    """Did the FILE's own content cause this save error? (Ruling of 2026-09-25.)
+
+    Only such an error -- a validation refusal (a ValueError, such as "Serial cannot be empty"),
+    or a malformed or duplicate unit (an IntegrityError) -- may record a file as unreadable.
+    Anything else a save raises -- OperationalError, any other database or driver error, disk
+    I/O, schema drift, a bug -- the save cannot attribute to the file: the database refused it,
+    not the file. Such a file is NEVER marked; it stays new, is counted as an error, and feeds the
+    ingest's stop rule. None (a batch-level failure, no exception of the file's) is not the
+    file's either.
+    """
+    if exc is None:
+        return False
+    from sqlalchemy.exc import IntegrityError as _SAIntegrityError
+    import sqlite3 as _sqlite3
+    return isinstance(exc, (ValueError, _SAIntegrityError, _sqlite3.IntegrityError))
+
+
 def record_row_id(result: Optional[AnalysisResult], write: Any, row_id: Optional[int]) -> None:
     """The saved row's id onto the result, as the analysis did when it saved: a final test's (not
     a header-only row's: that result is its ERROR), a smoothness file's. For every writer."""
@@ -813,14 +831,23 @@ class Processor:
             return Outcome(path=str(file_path), result=error_result,
                            writes=(marker,) if marker is not None else (), started=start_time)
 
-    def _final_test_failure(self, file_path: Path, exc: Exception,
-                            start_time: float) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
+    def _final_test_failure(self, file_path: Path, exc: Exception, start_time: float,
+                            saving: bool = False
+                            ) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
         """The final-test failure rule, ONE place: for an exception while the file was analysed
         (`_final_test_outcome`) and for one while its row was saved (`apply_outcome`, the
         ingest's writer) -- what the old single try/except did for both. It logs the traceback of
-        the exception it is given. Returns the ERROR result and the skip marker to write, if any."""
+        the exception it is given. Returns the ERROR result and the skip marker to write, if any.
+
+        `saving`: the exception came from the SAVE. Then only a content refusal may mark the file
+        (`is_content_refusal`): a database or system error leaves it new, never unreadable.
+        """
         marker = None
-        if self._is_permanent_failure(exc):
+        if saving and not is_content_refusal(exc):
+            logger.error(f"Final Test {file_path.name}: the save failed with a database or system "
+                         f"error, not the file's ({type(exc).__name__}: {exc}) -- it is NOT "
+                         f"recorded as unreadable, and is new again next run", exc_info=exc)
+        elif self._is_permanent_failure(exc):
             # Permanently unprocessable (or already saved): record as
             # skipped so the next scan doesn't re-attempt it forever.
             logger.warning(f"Final Test {file_path.name} permanently "
@@ -1528,10 +1555,16 @@ class Processor:
             return Outcome(path=str(file_path), result=error_result,
                            writes=(marker,) if marker is not None else (), started=start_time)
 
-    def _smoothness_failure(self, file_path: Path, exc: Exception,
-                            start_time: float) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
-        """The smoothness failure rule, ONE place (see `_final_test_failure`)."""
-        logger.error(f"Error processing Smoothness {file_path.name}: {exc}", exc_info=exc)
+    def _smoothness_failure(self, file_path: Path, exc: Exception, start_time: float,
+                            saving: bool = False
+                            ) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
+        """The smoothness failure rule, ONE place (see `_final_test_failure`, `saving` included)."""
+        if saving and not is_content_refusal(exc):
+            logger.error(f"Smoothness {file_path.name}: the save failed with a database or system "
+                         f"error, not the file's ({type(exc).__name__}: {exc}) -- it is NOT "
+                         f"recorded as unreadable, and is new again next run", exc_info=exc)
+        else:
+            logger.error(f"Error processing Smoothness {file_path.name}: {exc}", exc_info=exc)
         error_result = self._create_error_result(
             self._create_minimal_metadata(file_path),
             f"Smoothness error: {exc}", start_time
@@ -1542,7 +1575,7 @@ class Processor:
         # the scan offered these files again every single run. 67 of them
         # on 2026-09-17 — opened, refused, forgotten, repeat.
         marker = None
-        if not self._is_transient_failure(exc):
+        if not self._is_transient_failure(exc) and not (saving and not is_content_refusal(exc)):
             marker = self._skip_marker(
                 file_path, reason=f"{type(exc).__name__}: {exc}"[:200])
         return error_result, marker
@@ -2045,7 +2078,7 @@ class Processor:
             except Exception as e:
                 failed = (self._final_test_failure if isinstance(write, FinalTestWrite)
                           else self._smoothness_failure)
-                result, marker = failed(Path(outcome.path), e, outcome.started)
+                result, marker = failed(Path(outcome.path), e, outcome.started, saving=True)
                 if marker is not None:
                     self._write_marker(marker, db)
                 return result

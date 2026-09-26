@@ -235,19 +235,41 @@ def test_a_final_tests_stat_is_the_walks_converted_as_the_scan_reads_it(db, tmp_
             time.tzset()
 
 
-@pytest.mark.parametrize("failure,marker_reason", [
-    (RuntimeError("invented: the save failed"), "RuntimeError: invented: the save failed"),
-    (RuntimeError("invented: UNIQUE constraint failed: final_test_results.x"), None),  # permanent
-    (PermissionError("invented: the file is locked"), "no marker"),                     # transient
-])
+def _integrity(msg):
+    from sqlalchemy.exc import IntegrityError
+    return IntegrityError("INSERT INTO final_test_tracks (invented)", {}, Exception(msg))
+
+
+def _operational(msg):
+    from sqlalchemy.exc import OperationalError
+    return OperationalError("INSERT INTO final_test_results (invented)", {}, Exception(msg))
+
+
+# (what failed, the exception, the marker it earns: its reason / None = a marker with no reason /
+# "no marker"). Every value is invented.
+SAVE_FAILURES = [
+    ("a content refusal", ValueError("invented: the tracks disagree"),
+     "ValueError: invented: the tracks disagree"),
+    ("a permanent refusal", ValueError("Serial cannot be empty"), None),
+    ("a malformed unit", _integrity("UNIQUE constraint failed: final_test_tracks.track_id"), None),
+    ("a database error", _operational("no such column: invented_column"), "no marker"),
+    ("a bug in the save", RuntimeError("invented: the save's own bug"), "no marker"),
+    ("a locked file", PermissionError("invented: the file is locked"), "no marker"),
+]
+
+
+@pytest.mark.parametrize("what,failure,marker_reason", SAVE_FAILURES,
+                         ids=[c[0] for c in SAVE_FAILURES])
 @pytest.mark.parametrize("via", ["process_file", "the ingest's batch writer"])
-def test_a_final_test_save_that_fails_is_handled_as_it_always_was(
-        db, tmp_path, monkeypatch, failure, marker_reason, via):
-    """A final-test save that raises -- now on the consumer's thread, after the analysis, and in
-    the ingest inside a batch -- gets the rule the old try/except gave it: an ERROR result
-    ("Final Test error: ..."), and a skip marker WITH its reason for an ordinary failure, one
-    WITHOUT a reason for a permanent one, and none for a transient one. In a batch the file counts
-    as an error, and its marker is written with the next batch."""
+def test_a_final_test_save_that_fails_marks_the_file_only_for_its_own_content(
+        db, tmp_path, monkeypatch, what, failure, marker_reason, via):
+    """A final-test save that raises -- on the consumer's thread, after the analysis, and in the
+    ingest inside a batch -- is an ERROR result ("Final Test error: ..."). It records the file as
+    unreadable ONLY when the file's own content caused it (ruling of 2026-09-25): a validation
+    refusal is marked with its reason, a permanent one or a malformed unit with no reason (as
+    ever); a database or system error -- or anything else the save cannot attribute to the file
+    -- marks NOTHING: the file stays new. In a batch it counts as an error (a malformed unit as
+    failed), and its marker commits right after the batch."""
     import sqlite3
     from laser_trim_analyzer.core.ingest_run import BatchWriter
     from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
@@ -270,7 +292,9 @@ def test_a_final_test_save_that_fails_is_handled_as_it_always_was(
         writer.add(proc.analyse_path(ft))
         writer.flush()
         (committed,) = settled
-        assert committed.bucket == "errors" and not committed.saved, committed
+        want_bucket = "failed" if what == "a malformed unit" else "errors"
+        assert committed.bucket == want_bucket and not committed.saved, committed
+        assert committed.unsaved == (marker_reason == "no marker"), committed
         result = committed.result
     assert result.overall_status.value == "Error" and result.file_type == "final_test"
     assert result.errors == [f"Final Test error: {failure}"]
@@ -280,16 +304,22 @@ def test_a_final_test_save_that_fails_is_handled_as_it_always_was(
     finally:
         con.close()
     if marker_reason == "no marker":
-        assert rows == []
+        assert rows == [], f"{what} must never mark the file unreadable: {rows}"
     elif marker_reason is None:
         assert len(rows) == 1 and rows[0][0].startswith("content sha256="), rows
     else:
         assert len(rows) == 1 and rows[0][0].startswith(f"unreadable: {marker_reason}"), rows
 
 
-def test_a_smoothness_save_that_fails_is_handled_as_it_always_was(db, tmp_path, monkeypatch):
-    """The smoothness rule, on the save side: an ERROR result ("Smoothness error: ...") and a
-    skip marker with its reason."""
+@pytest.mark.parametrize("failure,marked", [
+    (ValueError("invented: the smoothness save failed"), True),       # the file's own content
+    (_operational("disk I/O error (invented)"), False),               # the database's refusal
+], ids=["a content refusal", "a database error"])
+def test_a_smoothness_save_that_fails_marks_the_file_only_for_its_own_content(
+        db, tmp_path, monkeypatch, failure, marked):
+    """The smoothness rule, on the save side: an ERROR result ("Smoothness error: ..."), and a
+    skip marker with its reason ONLY for the file's own content -- a database error leaves the
+    file new (ruling of 2026-09-25)."""
     import sqlite3
     from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
     from laser_trim_analyzer.database.manager import DatabaseManager
@@ -297,20 +327,23 @@ def test_a_smoothness_save_that_fails_is_handled_as_it_always_was(db, tmp_path, 
                                      max_dev=0.0031, spec=0.0050, result="PASSED")
 
     def fails(self, **kw):
-        raise RuntimeError("invented: the smoothness save failed")
+        raise failure
 
     monkeypatch.setattr(DatabaseManager, "save_smoothness_result", fails)
     proc = Processor(use_ml=False, snapshot=take_spec_snapshot(use_ml=False, db=db))
     result = proc.process_file(os_file)
     assert result.overall_status.value == "Error" and result.file_type == "smoothness"
-    assert result.errors == ["Smoothness error: invented: the smoothness save failed"]
+    assert result.errors == [f"Smoothness error: {failure}"]
     con = sqlite3.connect(f"file:{db.database_path}?mode=ro", uri=True)
     try:
         rows = con.execute("SELECT error_message FROM processed_files").fetchall()
     finally:
         con.close()
-    assert len(rows) == 1 and rows[0][0].startswith(
-        "unreadable: RuntimeError: invented: the smoothness save failed"), rows
+    if marked:
+        assert len(rows) == 1 and rows[0][0].startswith(
+            "unreadable: ValueError: invented: the smoothness save failed"), rows
+    else:
+        assert rows == [], rows
 
 
 def test_a_written_marker_is_remembered_by_the_run(db, tmp_path):
