@@ -351,12 +351,10 @@ rewritten at start-up. Nothing to retrain, nothing to click.
    missing their curves and skips everything already filled; you don't need to track where it
    got to.
 
-**At home (the Mac) only:** since 2026-09-24 the home copy of the database is read-only
-(`chmod a-w`), after two of Claude's scripts wrote to it by accident — schema and bookkeeping
-only, nothing of yours changed (`TRACKER.md`, top). The app opens it read-only, but Findings
-cannot refresh on it (this copy lacks one new column the app adds at a writable launch), so before
-using the app at home: `chmod u+w data/analysis.db`. Claude puts the write access back when its
-session work is over. Your work copy is unaffected.
+**At home (the Mac) only:** from 2026-09-24 to 2026-09-26 the home copy of the database was kept
+read-only (`chmod a-w`) after two of Claude's scripts wrote to it by accident — schema and bookkeeping
+only, nothing of yours changed (`TRACKER.md`, top). Write access is back since 2026-09-26, and the code
+now refuses such a write by itself. Nothing to run. Your work copy was never affected.
 
 ## ⚡ 2026-09-23 — bringing the finished rebuild home (do it THIS way)
 

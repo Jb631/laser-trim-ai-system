@@ -6,20 +6,18 @@ step-by-step instructions at the work machine; this is the index above it.
 
 Last updated: 2026-09-24
 
-## ▶ Where things stand (Claude, 2026-09-25)
+## ▶ Where things stand (Claude, 2026-09-26)
 
-**On `main`:** everything through this push (2026-09-25 morning) — facelift step 2 (the other six
-pages, and the Units chart redrawn) after a whole-branch review, its fix round and a re-review; the
-database guard (only the app opens its default database — every script now names one); and three
-small fixes. Before it, `422da7a` (2026-09-24): facelift step 1 and every parse fix. At work:
-`git pull`, then the top section of `BRING_TO_WORK.md` (and the two 2026-09-24 sections if you have
-not pulled them yet). Nothing needs running except the optional TrimVolts back-fill. **Being built
-now:** nothing of mine is in flight — the speed plan is complete (A3/A4/A5 shipped 2026-09-26). What
-is left is yours: the save probe and a two-minute app run at work (A6), and the decisions below. Pushed on 2026-09-25: the facelift follow-ups (F4) in the morning;
-the rest of the findings catalogue (B6) at midday (after pulling it, refresh the findings once:
-Settings → Database → Refresh process findings); the save probe; F5 ("Inactive" models) with the
-first three speed steps in the afternoon; and in the evening the batched saves (A4) with the
-`manager.py` split (C2 steps 2–6).
+**On `main`: everything.** The /goal of 2026-09-23 — finish the redesign, every parse upgrade and fix,
+and the task list — is done on my side. At work: `git pull`, then read the top sections of
+`BRING_TO_WORK.md` down to the ones you have already done, and **refresh the findings once** (Settings →
+Database → Refresh process findings). Pushed across 2026-09-24/26, each after its reviews and the whole
+test gate in the main checkout: facelift steps 1–2 and their follow-ups (F1–F5, incl. your "Inactive"
+label); every parse fix (G); the database guard; the findings catalogue — 11 analyzers (B6, B1c); the
+ingest speed plan — batched saves, worker processes, workers that come back (A3/A4/A5); and the
+`manager.py` split (C2). **Nothing of mine is in flight.** What is left is yours: the save probe and a
+two-minute app run at work (A6), and the decisions below; the parked items under A3 and C2 are
+optional follow-ups, none urgent.
 
 **The rebuild is done** (B2: 168,501 files in 21.8 hours, finished 2026-09-22) and every number
 that rested on a final-test verdict has been re-derived on it (B3).
@@ -48,15 +46,15 @@ the start-up unit_id backfill provably had nothing it could change; SQLite's own
 reads "ok". These are the same changes the app makes by itself on its first launch with this code.
 **Your WORK database is untouched** — this was the home copy. **What I did about it:** the Mac file
 is now read-only (`chmod a-w`), so a stray write fails loudly instead of landing, and every brief
-now explains exactly how the processor reaches the database. **Before you run the app on the Mac,
-give it write access back: `chmod u+w data/analysis.db`.** It opens read-only now, but this copy
-lacks the one column the newest code adds (`track2_parameters`), so Findings cannot refresh until
-a writable launch adds it (seconds). (I first wrote here that the app would open it read-only; the
-final review proved it could not — my check had used an empty database, and an unguarded start-up
-backfill stopped the app. That backfill is guarded now, `9d10803`.) I put the write access back
-myself when this session's subagent work is over. **Since 2026-09-25 the code itself prevents a
-repeat** (`ffd2516`): outside the app, asking for the database without naming one refuses before
-any file is opened, and says so once — so a script like those two stops with a message instead.
+now explains exactly how the processor reaches the database. (I first wrote here that the app would
+open it read-only; the final review proved it could not — my check had used an empty database, and an
+unguarded start-up backfill stopped the app. That backfill is guarded now, `9d10803`.) **Since
+2026-09-25 the code itself prevents a repeat** (`ffd2516`): outside the app, asking for the database
+without naming one refuses before any file is opened, and says so once — so a script like those two
+stops with a message instead. **Write access is back (2026-09-26, when the session's agent work
+ended):** the file is `-rw-r--r--` again, unchanged since 2026-09-24 12:17 (same 6,233,235,456 bytes,
+`quick_check` ok). Nothing to run before using the app at home; its first launch adds the one new
+column (`track2_parameters`) in seconds.
 
 ### Decisions that are yours
 
