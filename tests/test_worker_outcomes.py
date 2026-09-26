@@ -245,13 +245,18 @@ def _operational(msg):
     return OperationalError("INSERT INTO final_test_results (invented)", {}, Exception(msg))
 
 
-# (what failed, the exception, the marker it earns: its reason / None = a marker with no reason /
-# "no marker"). Every value is invented.
+# (what failed, the exception, the marker it earns: its reason / "no marker"). Every value is
+# invented. Closeout item 1 (2026-09-26): a permanent refusal and a malformed unit used to earn a
+# marker with NO reason at all (V5's own old behaviour) -- fixed, so both now name the exception
+# like every other marked branch; only "no marker" (a database/system error, never the file's
+# own) still marks nothing.
 SAVE_FAILURES = [
     ("a content refusal", ValueError("invented: the tracks disagree"),
      "ValueError: invented: the tracks disagree"),
-    ("a permanent refusal", ValueError("Serial cannot be empty"), None),
-    ("a malformed unit", _integrity("UNIQUE constraint failed: final_test_tracks.track_id"), None),
+    ("a permanent refusal", ValueError("Serial cannot be empty"),
+     "ValueError: Serial cannot be empty"),
+    ("a malformed unit", _integrity("UNIQUE constraint failed: final_test_tracks.track_id"),
+     "IntegrityError: (builtins.Exception) UNIQUE constraint failed: final_test_tracks.track_id"),
     ("a database error", _operational("no such column: invented_column"), "no marker"),
     ("a bug in the save", RuntimeError("invented: the save's own bug"), "no marker"),
     ("a locked file", PermissionError("invented: the file is locked"), "no marker"),
@@ -265,11 +270,11 @@ def test_a_final_test_save_that_fails_marks_the_file_only_for_its_own_content(
         db, tmp_path, monkeypatch, what, failure, marker_reason, via):
     """A final-test save that raises -- on the consumer's thread, after the analysis, and in the
     ingest inside a batch -- is an ERROR result ("Final Test error: ..."). It records the file as
-    unreadable ONLY when the file's own content caused it (ruling of 2026-09-25): a validation
-    refusal is marked with its reason, a permanent one or a malformed unit with no reason (as
-    ever); a database or system error -- or anything else the save cannot attribute to the file
-    -- marks NOTHING: the file stays new. In a batch it counts as an error (a malformed unit as
-    failed), and its marker commits right after the batch."""
+    unreadable ONLY when the file's own content caused it (ruling of 2026-09-25), and names why
+    every time it does (closeout item 1, 2026-09-26: a permanent refusal or a malformed unit used
+    to earn a marker with no reason at all); a database or system error -- or anything else the
+    save cannot attribute to the file -- marks NOTHING: the file stays new. In a batch it counts
+    as an error (a malformed unit as failed), and its marker commits right after the batch."""
     import sqlite3
     from laser_trim_analyzer.core.ingest_run import BatchWriter
     from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
@@ -305,8 +310,6 @@ def test_a_final_test_save_that_fails_marks_the_file_only_for_its_own_content(
         con.close()
     if marker_reason == "no marker":
         assert rows == [], f"{what} must never mark the file unreadable: {rows}"
-    elif marker_reason is None:
-        assert len(rows) == 1 and rows[0][0].startswith("content sha256="), rows
     else:
         assert len(rows) == 1 and rows[0][0].startswith(f"unreadable: {marker_reason}"), rows
 

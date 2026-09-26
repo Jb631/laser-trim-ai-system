@@ -957,11 +957,13 @@ class Processor:
                          f"error, not the file's ({type(exc).__name__}: {exc}) -- it is NOT "
                          f"recorded as unreadable, and is new again next run", exc_info=exc)
         elif self._is_permanent_failure(exc):
-            # Permanently unprocessable (or already saved): record as
-            # skipped so the next scan doesn't re-attempt it forever.
+            # Permanently unprocessable (or already saved): record as skipped -- WITH why, so
+            # the next scan doesn't re-attempt it forever AND the marker itself says what was
+            # wrong, instead of nothing at all (closeout item 1, 2026-09-26: V5's own old
+            # behaviour left this one branch's marker silent, unlike the branch just below it).
             logger.warning(f"Final Test {file_path.name} permanently "
                            f"unprocessable — recorded as skipped: {exc}")
-            marker = self._skip_marker(file_path)
+            marker = self._skip_marker(file_path, reason=f"{type(exc).__name__}: {exc}"[:200])
         else:
             # exc_info=exc: the traceback of THIS exception, whether or not it is the one being
             # handled (the ingest's writer applies this rule to a save that failed in a batch).

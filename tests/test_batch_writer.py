@@ -642,6 +642,47 @@ def test_one_content_refusal_is_marked_with_its_reason(db, tmp_path, monkeypatch
     assert _count(db, "final_test_results") == 4
 
 
+def test_a_malformed_final_test_in_a_batch_is_marked_with_its_reason(db, tmp_path, monkeypatch):
+    """Closeout item 1 (2026-09-26): a final test whose save breaks a UNIQUE constraint -- a
+    malformed unit, inside a BATCH -- is `_final_test_failure`'s `_is_permanent_failure` branch,
+    not the content-refusal branch just above (`_is_permanent_failure` catches "UNIQUE constraint
+    failed" by name). That branch called `_skip_marker(file_path)` with no `reason` at all -- as
+    V5 always did -- unlike the branch below it, which already names the reason. The app's rule is
+    that every failure says why; the ingest-speed re-review flagged this as "pre-existing,
+    non-blocking" rather than fixing it."""
+    from sqlalchemy.exc import IntegrityError
+    from laser_trim_analyzer.core.ingest_run import run_folder
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    folder = tmp_path / "Test Station"
+    _rout_files(folder, 5)
+    real = DatabaseManager._save_final_test_in
+
+    def malformed_sn102(self, session, metadata, *a, **k):
+        if metadata.get("serial") == "102":
+            raise IntegrityError(
+                "INSERT INTO final_test_tracks", {},
+                Exception("UNIQUE constraint failed: final_test_tracks.final_test_id, "
+                          "final_test_tracks.track_id (invented)"))
+        return real(self, session, metadata, *a, **k)
+
+    monkeypatch.setattr(DatabaseManager, "_save_final_test_in", malformed_sn102)
+    res = run_folder(str(folder), db=db, config=None, incremental=True)
+    # clean_series() (the sibling content-refusal test's own fixture) is a genuine FAIL verdict,
+    # so every file lands in the "failed" bucket whether or not it saved -- the malformed count
+    # (never a bucket) is what pins down that exactly one file was unsaved.
+    assert res.ok and res.phases.get("malformed") == 1, res
+    con = sqlite3.connect(f"file:{db.database_path}?mode=ro", uri=True)
+    try:
+        markers = con.execute("SELECT filename, error_message FROM processed_files").fetchall()
+    finally:
+        con.close()
+    assert len(markers) == 1 and markers[0][0] == "Rout_9990_sn102_vo.xlsx", markers
+    assert markers[0][1] is not None, (
+        "the marker names nothing at all -- V5's own old behaviour for this branch")
+    assert "UNIQUE constraint failed" in markers[0][1], markers[0][1]
+    assert _count(db, "final_test_results") == 4
+
+
 def test_content_refusals_are_the_files_own_and_never_stop_the_folder(db, tmp_path, monkeypatch,
                                                                      by_count):
     """A folder whose every save its files' content refuses (a folder of old files with no
