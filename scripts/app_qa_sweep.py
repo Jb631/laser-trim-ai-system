@@ -3088,6 +3088,704 @@ def check_track2_setup_fixtures() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# Columns a save stamps with the clock: equal by construction nowhere, compared nowhere.
+_SAVE_CLOCK_COLUMNS = {"timestamp", "processing_time", "created_date", "processed_date"}
+_SAVE_TABLES = ("analysis_results", "track_results", "trim_passes", "trim_setup", "processed_files")
+
+
+def _saved_rows(path: Path, tables=_SAVE_TABLES) -> dict:
+    """Every row of `tables` (the five a trim save writes), minus the clock columns."""
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        out = {}
+        for table in tables:
+            cur = con.execute(f"SELECT * FROM {table} ORDER BY id")
+            cols = [d[0] for d in cur.description]
+            out[table] = [{c: v for c, v in zip(cols, row) if c not in _SAVE_CLOCK_COLUMNS}
+                          for row in cur.fetchall()]
+        return out
+    finally:
+        con.close()
+
+
+def check_write_batch_fixtures() -> None:
+    """The batch writer (ingest-speed Task 6, spec 3.2-3.6) on the four trim fixtures, into
+    throwaway databases (--only write-batch). Nothing calls it in the app yet (the ingest moves
+    onto it in Task 10); these are the four promises it has to keep when something does:
+    the rows it stores are save_analysis's, every column of every row; the batch is ONE
+    transaction that a second connection can neither see into nor write past (spec F4); a file
+    that fails rolls back alone, its processed marker with it (ruling 7); and a session opened
+    mid-batch is refused instead of committing the batch (spec F5, ruling 6).
+
+    Falsify before trusting (2026-09-25): delete write_batch's BEGIN IMMEDIATE line and its
+    tripwire -- the one-transaction check goes FAIL; run a file's body without its savepoint --
+    the rolls-back-alone check goes FAIL; stop `session()` refusing mid-batch -- the refusal
+    check goes FAIL.
+    """
+    import shutil
+    import tempfile
+    from sqlalchemy import event
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.database.manager import NestedSessionError, TrimWrite
+
+    fixtures = [f for f in (REPO / "tests" / "fixtures" / "trim" / n for n in _FOUR_8232_FIXTURES)
+                if f.is_file()]
+    check("write batch: the four trim fixtures are present", len(fixtures) == 4,
+          f"{[f.name for f in fixtures]}")
+    if len(fixtures) != 4:
+        return
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None))
+    tmp = Path(tempfile.mkdtemp(prefix="write_batch_sweep_"))
+    opened = []
+
+    def manager(name):
+        m = _mgr.DatabaseManager(tmp / name)
+        opened.append(m)
+        return m
+
+    try:
+        one_by_one = manager("one_by_one.db")
+        _mgr._db_manager = one_by_one              # BOTH globals: a Processor must never
+        _dbpkg._db_manager = one_by_one            # reach the configured database.
+        proc = Processor(use_ml=False)
+        results = [proc.process_file(f) for f in fixtures]
+        for r in results:
+            one_by_one.save_analysis(r)
+
+        batched = manager("batched.db")
+        other = sqlite3.connect(str(tmp / "batched.db"), timeout=0)
+        seen, commits = [], [0]
+
+        def at_savepoint(conn, name):
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                other.execute("ROLLBACK")
+                could = "could write"
+            except sqlite3.OperationalError as e:
+                could = str(e)
+            seen.append((could, other.execute("SELECT COUNT(*) FROM analysis_results").fetchone()[0]))
+
+        def at_commit(conn):
+            commits[0] += 1
+        event.listen(batched._engine, "savepoint", at_savepoint)
+        event.listen(batched._engine, "commit", at_commit)
+        try:
+            outcomes = batched.write_batch(
+                [TrimWrite(r, *batched._file_identity(r.metadata.file_path)) for r in results])
+        finally:
+            event.remove(batched._engine, "savepoint", at_savepoint)
+            event.remove(batched._engine, "commit", at_commit)
+            other.close()
+        check("write batch: all four fixtures saved in one batch",
+              [o.status for o in outcomes] == ["saved"] * 4, f"{outcomes}")
+        check("write batch: ONE transaction -- at every savepoint a second connection could not "
+              "write and saw no row; one COMMIT",
+              seen == [("database is locked", 0)] * 4 and commits[0] == 1,
+              f"seen={seen}; commits={commits[0]}")
+        want, got = _saved_rows(tmp / "one_by_one.db"), _saved_rows(tmp / "batched.db")
+        moved = []
+        for t in _SAVE_TABLES:
+            if len(want[t]) != len(got[t]):
+                moved.append(f"{t}: {len(want[t])} rows -> {len(got[t])}")
+            else:
+                moved += [f"{t}[{i}]" for i, (w, g) in enumerate(zip(want[t], got[t])) if w != g]
+        check("write batch: stores exactly what save_analysis stores (5 tables, every column "
+              "but the clock)", not moved,
+              f"differ: {moved[:5]}" if moved else
+              f"{sum(len(v) for v in got.values())} rows identical")
+
+        fails = manager("one_fails.db")
+        doomed = results[2].metadata.filename
+        real_setup = fails._write_trim_setup
+
+        def fails_after_its_rows(session, analysis_id, setup):
+            from laser_trim_analyzer.database.models import AnalysisResult as _A
+            if session.get(_A, analysis_id).filename == doomed:
+                raise RuntimeError("invented failure after the file's rows were flushed")
+            return real_setup(session, analysis_id, setup)
+        fails._write_trim_setup = fails_after_its_rows
+        outcomes = fails.write_batch(
+            [TrimWrite(r, *fails._file_identity(r.metadata.file_path)) for r in results])
+        con = sqlite3.connect(f"file:{tmp / 'one_fails.db'}?mode=ro", uri=True)
+        try:
+            left = [con.execute(f"SELECT COUNT(*) FROM {t} WHERE filename = ?", (doomed,)).fetchone()[0]
+                    for t in ("analysis_results", "processed_files")]
+            orphans = con.execute("SELECT COUNT(*) FROM track_results WHERE analysis_id NOT IN "
+                                  "(SELECT id FROM analysis_results)").fetchone()[0]
+            others = con.execute("SELECT COUNT(*) FROM processed_files").fetchone()[0]
+        finally:
+            con.close()
+        check("write batch: a file that fails rolls back alone -- no rows, no marker -- and the "
+              "other three commit with theirs",
+              [o.status for o in outcomes] == ["saved", "saved", "failed", "saved"]
+              and left == [0, 0] and orphans == 0 and others == 3,
+              f"outcomes={[o.status for o in outcomes]}; left={left}; orphans={orphans}; "
+              f"markers={others}")
+
+        refusal = manager("refusal.db")
+        raised = []
+        real_setup2 = refusal._write_trim_setup
+
+        def opens_its_own(session, analysis_id, setup):
+            try:
+                with refusal.session() as s:
+                    s.execute(sqlalchemy_text("SELECT 1"))
+            except Exception as e:
+                raised.append(type(e).__name__)
+                raise
+            return real_setup2(session, analysis_id, setup)
+        refusal._write_trim_setup = opens_its_own
+        outcomes = refusal.write_batch(
+            [TrimWrite(r, *refusal._file_identity(r.metadata.file_path)) for r in results[:1]])
+        check("write batch: a session opened mid-batch is refused (NestedSessionError) and its "
+              "file fails, never commits the batch",
+              raised == [NestedSessionError.__name__] and outcomes[0].status == "failed"
+              and _saved_rows(tmp / "refusal.db")["analysis_results"] == [],
+              f"raised={raised}; outcome={outcomes[0]}")
+
+        # Task 7: the final-test body inside a batch stores exactly what save_final_test does.
+        # The processor saves each fixture through the PUBLIC method (recorded as it goes);
+        # the same payloads then go through write_batch into a database of their own.
+        import copy as _copy
+        from laser_trim_analyzer.database.manager import FinalTestWrite
+        station = tmp / "Test Station"            # the Format 4 file is routed by this folder
+        station.mkdir()
+        for f in sorted((REPO / "tests" / "fixtures" / "final_test").glob("*.xls")):
+            shutil.copyfile(f, station / f.name)
+        ft_public = manager("ft_public.db")
+        _mgr._db_manager = _dbpkg._db_manager = ft_public
+        payloads, real_save = [], ft_public.save_final_test
+
+        def recording(**kw):
+            payloads.append(_copy.deepcopy(kw))
+            return real_save(**kw)
+        ft_public.save_final_test = recording
+        ft_proc = Processor(use_ml=False)
+        for f in sorted(station.glob("*.xls")):
+            ft_proc.process_file(f)
+        del ft_public.save_final_test
+        ft_batched = manager("ft_batched.db")
+        outcomes = ft_batched.write_batch([FinalTestWrite(**kw) for kw in payloads])
+        ft_tables = ("final_test_results", "final_test_tracks")
+        want = _saved_rows(tmp / "ft_public.db", ft_tables)
+        got = _saved_rows(tmp / "ft_batched.db", ft_tables)
+        check("write batch: the final-test fixtures (formats 1, 3 and 4) store exactly what "
+              "save_final_test stores -- every column but the clock; Format 4 without a serial "
+              "refused on both paths",
+              len(payloads) == 6 and want == got and len(want["final_test_results"]) == 5
+              and sorted(o.status for o in outcomes) == ["failed"] + ["saved"] * 5,
+              f"{len(payloads)} payloads; outcomes={[o.status for o in outcomes]}; "
+              f"rows {sum(len(v) for v in want.values())} public vs "
+              f"{sum(len(v) for v in got.values())} batched; identical={want == got}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("write batch: the fixtures run through it", False, f"{type(e).__name__}: {e}")
+    finally:
+        _mgr._db_manager, _dbpkg._db_manager = saved
+        for m in opened:
+            m.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_worker_outcomes() -> None:
+    """Values out of the worker (ingest-speed Task 9, spec 4.1-4.2, ruling 9) on REAL files from
+    the regression corpus -- trims from both lasers, final tests of the formats the corpus holds,
+    smoothness exports -- into throwaway databases (--only worker-outcomes). The pool now runs
+    `analyse_path`, which must write nothing; the consumer makes every write. Three promises:
+      1. analysing them reaches for NO database: get_database, DatabaseManager(...) and
+         sqlite3.connect all refuse, and every reach is recorded (a worker process -- Task 11 --
+         has none to reach);
+      2. the Outcomes are the whole story: applied afterwards the way V5's loop does it (side
+         writes at once, each trim saved by the loop), they store exactly what `process_file`
+         stores file by file -- every column of every row but the clocks;
+      3. a trim's Outcome carries its file's own (size, mtime) and SHA-256.
+
+    Falsify before trusting (2026-09-25): make `_skipped` write its marker itself -- check 1
+    goes FAIL; make `apply_outcome` drop a final test's save -- check 2 goes FAIL.
+    """
+    import hashlib
+    import shutil
+    import tempfile
+    from collections import Counter
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
+
+    def firsts(folder: Path, n: int) -> list:
+        """The first workbook of each of the first n model folders (sorted)."""
+        if not folder.is_dir():
+            return []
+        out = []
+        for d in sorted(x for x in folder.iterdir() if x.is_dir()):
+            f = min((x for x in d.rglob("*") if x.is_file() and x.suffix.lower() in
+                     (".xls", ".xlsx") and not x.name.startswith("~$")), default=None)
+            if f is not None:
+                out.append(f)
+            if len(out) >= n:
+                break
+        return out
+
+    files = (firsts(base / "DLTS", 12) + firsts(base / "LTS", 8)
+             + firsts(base / "Test Station", 30)
+             + firsts(base / "Smoothness_Sample_2026-04-10" / "Test Station", 12))
+    if not files:
+        warn("worker outcomes: the corpus", f"no files under {base} -- not run")
+        return
+    tables = _SAVE_TABLES + ("final_test_results", "final_test_tracks", "smoothness_results",
+                             "smoothness_tracks")
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None))
+    tmp = Path(tempfile.mkdtemp(prefix="worker_outcomes_sweep_"))
+    opened = []
+    try:
+        applied = _mgr.DatabaseManager(tmp / "outcomes.db")
+        opened.append(applied)
+        per_file = _mgr.DatabaseManager(tmp / "per_file.db")
+        opened.append(per_file)
+
+        proc = Processor(use_ml=False, snapshot=SpecSnapshot())
+        proc.ml_storage_path = tmp / "no_ml_models"
+        reached = []
+
+        def refuse(what):
+            def refused(*a, **k):
+                reached.append(what)          # recorded: a reach the caller swallows shows
+                raise RuntimeError(f"the analysis reached for {what}")
+            return refused
+
+        real = (_mgr.get_database, getattr(_dbpkg, "get_database"),
+                _mgr.DatabaseManager.__init__, sqlite3.connect)
+        _mgr.get_database = _dbpkg.get_database = refuse("get_database")
+        _mgr.DatabaseManager.__init__ = refuse("DatabaseManager(...)")
+        sqlite3.connect = refuse("sqlite3.connect")
+        try:
+            outcomes = [proc.analyse_path(f) for f in files]
+        finally:
+            (_mgr.get_database, _dbpkg.get_database, _mgr.DatabaseManager.__init__,
+             sqlite3.connect) = real
+        kinds = Counter(("not test data" if o.result is None else o.result.file_type)
+                        for o in outcomes)
+        check("worker outcomes: analysing real files of every kind reaches for no database",
+              not reached and len(outcomes) == len(files),
+              f"{len(files)} files ({dict(kinds)}); reached={sorted(set(reached))[:3]}")
+
+        _mgr._db_manager = _dbpkg._db_manager = applied
+        for outcome in outcomes:              # V5's loop, applied afterwards
+            result = proc.apply_outcome(outcome, db=applied)
+            if result is not None:
+                applied.save_analysis(result)
+        _mgr._db_manager = _dbpkg._db_manager = per_file
+        one_by_one = Processor(use_ml=False, snapshot=SpecSnapshot())
+        one_by_one.ml_storage_path = tmp / "no_ml_models"
+        for f in files:
+            result = one_by_one.process_file(f)
+            if result is not None:
+                per_file.save_analysis(result)
+
+        def rows(path):
+            out = _saved_rows(path, tables)
+            for row in out["analysis_results"]:
+                if row["model"] == "Unknown" and row["overall_status"] == "ERROR":
+                    row["file_date"] = row["unit_id"] = "<now>"   # _create_minimal_metadata
+            return out
+
+        got, want = rows(tmp / "outcomes.db"), rows(tmp / "per_file.db")
+        counts = {t: len(v) for t, v in got.items()}
+        check("worker outcomes: the Outcomes, applied afterwards, store exactly what process_file "
+              "stores file by file (every column but the clocks)",
+              got == want and all(counts[t] for t in ("analysis_results", "final_test_results",
+                                                      "smoothness_results", "processed_files")),
+              f"rows {counts}; identical={got == want}")
+
+        wrong, trims = [], 0
+        for f, o in zip(files, outcomes):
+            if o.result is not None and o.result.file_type == "trim" \
+                    and o.result.overall_status.name != "ERROR":
+                trims += 1
+                st = f.stat()
+                if (o.stat != (st.st_size, st.st_mtime)
+                        or o.file_hash != hashlib.sha256(f.read_bytes()).hexdigest()):
+                    wrong.append(f.name)
+        check("worker outcomes: a trim's Outcome carries its file's own (size, mtime) and SHA-256",
+              trims > 0 and not wrong, f"{trims} trims; wrong={wrong[:3]}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("worker outcomes: the corpus runs through the analysis", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        _mgr._db_manager, _dbpkg._db_manager = saved
+        for m in opened:
+            m.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _order_free(tables: dict) -> dict:
+    """Rows with every id replaced by the natural key of the row it points at, in a stable
+    order: two runs that stored the same rows in a different ORDER compare equal."""
+    import json
+
+    def natural(row, *cols):
+        return json.dumps([row.get(c) for c in cols], default=str)
+
+    ak = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("analysis_results", [])}
+    tk = {r["id"]: json.dumps([ak.get(r["analysis_id"]), r["track_id"]])
+          for r in tables.get("track_results", [])}
+    fk = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("final_test_results", [])}
+    sk = {r["id"]: natural(r, "filename", "file_date", "model", "serial")
+          for r in tables.get("smoothness_results", [])}
+    refs = {"analysis_id": ak, "linked_trim_id": ak, "track_result_id": tk,
+            "final_test_id": fk, "smoothness_id": sk}
+    out = {}
+    for table, rows in tables.items():
+        conv = [{c: (refs[c].get(v, f"<dangling {v}>") if c in refs and v is not None else v)
+                 for c, v in r.items() if c != "id"} for r in rows]
+        out[table] = sorted(conv, key=lambda r: json.dumps(r, sort_keys=True, default=str))
+    return out
+
+
+def check_batched_ingest() -> None:
+    """run_folder on the batch writer (ingest-speed Task 10; spec 3.1, 3.9; rulings 5, 22) over
+    REAL corpus files of every kind -- trims from both lasers, final tests, smoothness exports --
+    into a throwaway database (--only batched-ingest). Three promises:
+      1. it stores exactly what the per-file way stores (process_file + save_analysis, one file
+         after another, into a database of its own) -- every column of every row but the clocks,
+         in whatever order its batches wrote them;
+      2. its buckets are counted from what COMMITTED: over the corpus trims, with one save made
+         to fail, they equal the verdicts of the rows actually stored plus one error for every
+         processed file that stored no row -- the failed save among them, never its verdict;
+      3. it wrote in batches of 20 files -- never a transaction per file. The 2-second rule is
+         switched off here (tests/test_batch_writer.py pins it), so the count does not depend on
+         how fast this machine is.
+    `_post_batch` (the final-test rematch, drift, findings) is switched off too: this compares
+    the SAVE paths, and the per-file way has no post-batch work.
+
+    Falsify before trusting (2026-09-25): write the trims without their stat -- check 1 goes
+    FAIL; count a failed save by its verdict -- check 2 goes FAIL; flush after every file --
+    check 3 goes FAIL.
+    """
+    import shutil
+    import tempfile
+    from laser_trim_analyzer.core import ingest_run
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.ml import invalidate_shared_ml_manager
+
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
+
+    def firsts(folder: Path, n: int) -> list:
+        if not folder.is_dir():
+            return []
+        out = []
+        for d in sorted(x for x in folder.iterdir() if x.is_dir()):
+            f = min((x for x in d.rglob("*") if x.is_file() and x.suffix.lower() in
+                     (".xls", ".xlsx") and not x.name.startswith("~$")), default=None)
+            if f is not None:
+                out.append(f)
+            if len(out) >= n:
+                break
+        return out
+
+    picks = {"laser": firsts(base / "DLTS", 12) + firsts(base / "LTS", 8),
+             "Test Station": firsts(base / "Test Station", 20),
+             "os": firsts(base / "Smoothness_Sample_2026-04-10" / "Test Station", 8)}
+    if not any(picks.values()):
+        warn("batched ingest: the corpus", f"no files under {base} -- not run")
+        return
+    tables = _SAVE_TABLES + ("final_test_results", "final_test_tracks", "smoothness_results",
+                             "smoothness_tracks")
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None), ingest_run._post_batch,
+             ingest_run.BatchWriter.FLUSH_SECONDS)
+    tmp = Path(tempfile.mkdtemp(prefix="batched_ingest_sweep_"))
+    opened = []
+    try:
+        root = tmp / "in"
+        for sub, files in picks.items():
+            for f in files:
+                dst = root / sub / f.parent.name / f.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dst)                           # the mtime travels
+        batched = _mgr.DatabaseManager(tmp / "batched.db")
+        opened.append(batched)
+        per_file = _mgr.DatabaseManager(tmp / "per_file.db")
+        opened.append(per_file)
+        calls = []
+        real_write_batch = batched.write_batch
+
+        def counted(items):
+            calls.append(len(items))
+            return real_write_batch(items)
+
+        batched.write_batch = counted
+        ingest_run._post_batch = lambda *a, **k: None
+        ingest_run.BatchWriter.FLUSH_SECONDS = 10 ** 9     # batches by count alone, here
+        invalidate_shared_ml_manager()
+        _mgr._db_manager = _dbpkg._db_manager = batched
+        res = ingest_run.run_folder(str(root), db=batched, config=None, incremental=True)
+        files, _ = ingest_run.discover_excel_files(str(root))
+        _mgr._db_manager = _dbpkg._db_manager = per_file
+        invalidate_shared_ml_manager()
+        one = Processor(use_ml=True)
+        for f in files:
+            result = one.process_file(Path(f))
+            if result is not None:
+                per_file.save_analysis(result)
+        invalidate_shared_ml_manager()
+
+        def rows(path):
+            out = _saved_rows(path, tables)
+            for row in out["analysis_results"]:
+                if row["model"] == "Unknown" and row["overall_status"] == "ERROR":
+                    row["file_date"] = row["unit_id"] = "<now>"   # _create_minimal_metadata
+            return _order_free(out)
+
+        got, want = rows(tmp / "batched.db"), rows(tmp / "per_file.db")
+        counts = {t: len(v) for t, v in got.items()}
+        check("batched ingest: run_folder stores exactly what the per-file way stores, real files "
+              "of every kind (every column but the clocks, in any order)",
+              res.ok and got == want and all(counts[t] for t in (
+                  "analysis_results", "final_test_results", "smoothness_results")),
+              f"{len(files)} files; ok={res.ok} {res.error or ''}; rows {counts}; "
+              f"identical={got == want}")
+        # 2. The trims again, into a database of their own, one save made to fail: the buckets
+        #    must be the stored rows' own verdicts, plus an error per processed file with no row.
+        from collections import Counter
+        trims_root = tmp / "trims_only"
+        for f in picks["laser"]:
+            dst = trims_root / f.parent.name / f.name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dst)
+        refused_name = sorted(f.name for f in picks["laser"])[0]
+        trims_db = _mgr.DatabaseManager(tmp / "trims_only.db")
+        opened.append(trims_db)
+        real_save_in = _mgr.DatabaseManager._save_analysis_in
+
+        def one_refused(self, session, analysis, *a, **k):
+            if analysis.metadata.filename == refused_name:
+                raise RuntimeError("sweep: an invented save failure")
+            return real_save_in(self, session, analysis, *a, **k)
+
+        reasons = []
+
+        class _Reasons(ingest_run.ProgressCoalescer):
+            def bucket(self, name, reason=""):
+                if reason:
+                    reasons.append(reason)
+                super().bucket(name, reason)
+
+        _mgr.DatabaseManager._save_analysis_in = one_refused
+        _mgr._db_manager = _dbpkg._db_manager = trims_db
+        try:
+            res2 = ingest_run.run_folder(str(trims_root), db=trims_db, config=None,
+                                         incremental=True, progress=_Reasons())
+        finally:
+            _mgr.DatabaseManager._save_analysis_in = real_save_in
+        con = sqlite3.connect(f"file:{tmp / 'trims_only.db'}?mode=ro", uri=True)
+        try:
+            stored = [s for (s,) in con.execute("SELECT overall_status FROM analysis_results")]
+            refused_rows = con.execute("SELECT COUNT(*) FROM analysis_results WHERE filename = ?",
+                                       (refused_name,)).fetchone()[0]
+        finally:
+            con.close()
+        verdict = {"PASS": "passed", "UNTRIMMED": "passed", "WARNING": "warnings",
+                   "FAIL": "failed", "ERROR": "errors"}
+        want_buckets = Counter(verdict[s] for s in stored)
+        want_buckets["errors"] += res2.new_files - len(stored)
+        check("batched ingest: its buckets were counted from what committed -- the stored rows' "
+              "own verdicts, and a save made to fail counted as the error it is, never its verdict",
+              res2.ok and dict(+want_buckets) == res2.buckets and refused_rows == 0
+              and res2.unsaved >= 1 and any(refused_name in r and "not saved" in r
+                                            for r in reasons),
+              f"buckets {res2.buckets} vs stored verdicts + errors {dict(+want_buckets)}; the "
+              f"refused save stored {refused_rows} rows; unsaved {res2.unsaved}")
+        most = -(-len(files) // ingest_run.BatchWriter.FLUSH_FILES) + 1   # + a fallback flush
+        check("batched ingest: it wrote in batches of 20 files, never a transaction per file",
+              calls and len(calls) <= most < len(files) and res.phases.get("save", 0) > 0,
+              f"{len(calls)} write_batch calls (at most {most}) for {len(files)} files, items "
+              f"per call {calls}")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("batched ingest: the corpus runs through run_folder", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        (_mgr._db_manager, _dbpkg._db_manager, ingest_run._post_batch,
+         ingest_run.BatchWriter.FLUSH_SECONDS) = saved
+        for m in opened:
+            m.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _same_values(a, b) -> bool:
+    """Exact equality of two model_dump()s, a NaN equal to a NaN (a stored NaN is a value)."""
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (a != a and b != b)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_values(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_same_values(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
+
+
+def check_spec_snapshot_on_database(db, raw) -> None:
+    """The spec snapshot (ingest-speed Task 8, spec §4, ruling 16) on the copy's REAL model_specs.
+
+    A worker process never opens a database, so it answers every spec question from a
+    SpecSnapshot taken at folder start -- and a spec changes the stored numbers (spec F8), so a
+    snapshot that answered one question differently from the database would store different
+    numbers without a word. On real data:
+      1. it carries every model_specs row, the ML thresholds of the COPY (the shared ML manager
+         is a five-minute process cache, so an earlier check's database must not leak in) and
+         every trained predictor that manager holds;
+      2. every model question -- each spec's model, each model the copy's trims and final tests
+         carry, each alias -- gets the database's answer, from the snapshot and from a pickled copy
+         (the spawn transport, Task 11);
+      3. every final-test question the same -- one real serial per (final-test model, trailing
+         character), which is where a section letter picks 8508-B over 8508;
+      4. a Processor carrying it -- pickled, ML on -- stores exactly what the database-backed
+         Processor stores, ML on, on corpus trim files whose numbers depend on their spec AND on
+         the ML state (a spec-less run and an ML-less run each differ), and asks the database
+         nothing.
+    The copy may carry no aliases; tests/test_spec_snapshot.py covers them with invented specs,
+    and the detail says how many were exercised here.
+
+    Falsify before trusting (2026-09-25): make SpecSnapshot.resolve_spec_for_ft skip the section
+    letter -- check 3 goes FAIL; make the Processor ignore its snapshot -- check 4 goes FAIL (no
+    file moved by its spec); take the snapshot without dropping the cached ML manager while
+    another database's is cached (the ingest checks leave one) -- check 1 goes FAIL, 0 thresholds;
+    make a snapshot-carrying Processor drop its ML state (review I-1's ML1) -- check 4 goes FAIL.
+    """
+    import pickle
+    from laser_trim_analyzer.core.processor import Processor, take_spec_snapshot
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.database.specs import SpecSnapshot, parse_aliases
+    from laser_trim_analyzer.ml import get_shared_ml_manager, invalidate_shared_ml_manager
+
+    # The corpus files for check 4, chosen from the copy's spec rows (read-only, no ML).
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
+    spec_models = {m for (m,) in raw.execute("SELECT model FROM model_specs")}
+    picks = []
+    for system, n in (("DLTS", 10), ("LTS", 6)):
+        folders = sorted(p for p in (base / system).iterdir() if p.is_dir()) \
+            if (base / system).is_dir() else []
+        firsts = [min((f for f in d.iterdir() if f.suffix.lower() in (".xls", ".xlsx")),
+                      default=None) for d in folders if d.name in spec_models]
+        picks += [f for f in firsts if f is not None][:n]
+
+    # Everything that reads the shared ML manager runs INSIDE this bracket: it is a five-minute
+    # process cache, so without it an earlier check's database would be the ML state here, and
+    # the copy's would leak into the checks after this one.
+    invalidate_shared_ml_manager()
+    try:
+        snap = take_spec_snapshot(use_ml=True, db=db)
+        manager = get_shared_ml_manager(db)          # the manager the snapshot was taken from
+        trained = sorted(m for m, p in manager.predictors.items() if p.is_trained)
+        database_backed = Processor(use_ml=True) if picks else None   # ML from the same manager
+    finally:
+        invalidate_shared_ml_manager()
+    back = pickle.loads(pickle.dumps(snap))   # the sweep's own object, made above
+
+    ids = [r for (r,) in raw.execute("SELECT id FROM model_specs ORDER BY id")]
+    thresholds = dict(raw.execute(
+        "SELECT model, sigma_threshold FROM model_ml_state "
+        "WHERE is_trained = 1 AND sigma_threshold IS NOT NULL").fetchall())
+    from laser_trim_analyzer.ml.predictor import FEATURE_COLUMNS
+    features = {c: 0.5 for c in FEATURE_COLUMNS}
+    unlike = [m for m, p in snap.ml_predictors.items()
+              if m not in back.ml_predictors or not _same_values(
+                  p.predict_failure_probability(features),
+                  back.ml_predictors[m].predict_failure_probability(features))]
+    # Predictors against the ML MANAGER's trained ones (review I-1c), not only against the
+    # snapshot's own pickled copy: a snapshot that dropped predictors agrees with itself.
+    check("spec snapshot: carries every model_specs row and the copy's own ML state -- every "
+          "trained predictor the ML manager holds; a pickled copy predicts as the original does",
+          [r["id"] for r in snap.specs] == ids != [] and snap.ml_thresholds == thresholds
+          and back.ml_thresholds == thresholds and back.specs == snap.specs
+          and sorted(snap.ml_predictors) == trained and sorted(back.ml_predictors) == trained
+          and not unlike,
+          f"{len(snap.specs)} of {len(ids)} specs; {len(snap.ml_thresholds)} thresholds vs "
+          f"{len(thresholds)} trained in model_ml_state; {len(snap.ml_predictors)} predictors vs "
+          f"{len(trained)} trained in the ML manager (from data/ml_models under {Path.cwd()}), "
+          f"unlike after pickling={unlike[:3]}")
+
+    models = {r["model"] for r in snap.specs}
+    models |= {m for (m,) in raw.execute("SELECT DISTINCT model FROM analysis_results")}
+    models |= {m for (m,) in raw.execute("SELECT DISTINCT model FROM final_test_results")}
+    aliases = {a for r in snap.specs for a in parse_aliases(r.get("aliases"))}
+    wrong, answered = [], 0
+    questions = sorted(models | aliases, key=lambda m: (m is None, str(m)))
+    for m in questions:
+        want = db.get_model_spec(m)
+        answered += want is not None
+        if snap.get_model_spec(m) != want or back.get_model_spec(m) != want:
+            wrong.append(m)
+    check("spec snapshot: every model question answered as the database answers it (the "
+          "snapshot and a pickled copy)",
+          not wrong and answered > 0,
+          f"{len(questions)} models, {answered} with a spec; {len(aliases)} aliases on this "
+          f"database (tests/test_spec_snapshot.py covers aliases); wrong={wrong[:5]}")
+
+    pairs = raw.execute("SELECT model, MIN(serial) FROM final_test_results "
+                        "GROUP BY model, substr(serial, -1)").fetchall()
+    wrong_ft, sectioned = [], 0
+    for m, s in pairs:
+        want = db.resolve_spec_for_ft(m, s)
+        if want is not None and want["model"] != (m or "").strip():
+            sectioned += 1                # another row answered: a section's spec
+        if snap.resolve_spec_for_ft(m, s) != want or back.resolve_spec_for_ft(m, s) != want:
+            wrong_ft.append((m, s))
+    check("spec snapshot: every final-test question answered as the database answers it -- one "
+          "real serial per (model, trailing character), where a section letter picks the "
+          "section's spec",
+          not wrong_ft and sectioned > 0,
+          f"{len(pairs)} (model, serial) questions, {sectioned} answered by a section's spec; "
+          f"wrong={wrong_ft[:5]}")
+
+    if not picks:
+        warn("spec snapshot: stored numbers", f"no corpus trim files under {base} -- not run")
+        return
+
+    def run(proc):
+        return [proc.process_file(f).model_dump(exclude={"processing_time"}) for f in picks]
+
+    # ML ON on both sides (review I-1b): the snapshot's ML half is compared, not left out.
+    by_database = run(database_backed)
+    asked, real_get, real_session = [], _mgr.get_database, db.session
+
+    def refused():
+        asked.append("get_database")      # recorded: a reach the caller swallows still shows
+        raise RuntimeError("the analysis asked the database")
+
+    def watched(*a, **kw):
+        asked.append("session")
+        return real_session(*a, **kw)
+
+    _mgr.get_database = _dbpkg.get_database = refused
+    db.session = watched
+    try:
+        by_snapshot = run(Processor(use_ml=True, snapshot=back))     # the PICKLED snapshot
+    finally:
+        _mgr.get_database = _dbpkg.get_database = real_get
+        del db.session
+    spec_less = run(Processor(use_ml=True, snapshot=SpecSnapshot(
+        ml_thresholds=snap.ml_thresholds, ml_predictors=snap.ml_predictors)))
+    ml_less = run(Processor(use_ml=False, snapshot=SpecSnapshot(specs=snap.specs)))
+    differ = [f.name for f, a, b in zip(picks, by_database, by_snapshot) if not _same_values(a, b)]
+    moved = sum(1 for a, c in zip(by_database, spec_less) if not _same_values(a, c))
+    moved_ml = sum(1 for a, c in zip(by_database, ml_less) if not _same_values(a, c))
+    errors = [f.name for f, a in zip(picks, by_database)
+              if getattr(a["overall_status"], "name", a["overall_status"]) == "ERROR"]
+    check("spec snapshot: a Processor carrying it (pickled, ML on) stores exactly what the "
+          "database-backed one stores, and asks the database nothing",
+          not differ and not asked and not errors and moved > 0 and moved_ml > 0,
+          f"{len(picks)} corpus trim files, {moved} moved by their spec and {moved_ml} by the ML "
+          f"state (a spec-less and an ML-less run differ); differ={differ[:3]}; "
+          f"asked={sorted(set(asked))}; ERROR={errors[:3]}")
+
+
 def check_track2_setup_on_database(raw) -> None:
     """On the copy: how many two-track System A/C analyses have (not yet) been
     reprocessed under this feature, and every one that HAS carries a Track 2 block
@@ -4352,6 +5050,14 @@ def main() -> int:
         check_track2_setup_fixtures()
     with _guard("track 2 setup: on the database"):
         check_track2_setup_on_database(raw)
+    with _guard("write batch: fixtures"):
+        check_write_batch_fixtures()
+    with _guard("worker outcomes: the corpus"):
+        check_worker_outcomes()
+    with _guard("batched ingest: the corpus"):
+        check_batched_ingest()
+    with _guard("spec snapshot: on the database"):
+        check_spec_snapshot_on_database(db, raw)
 
     # Ingest guard fires on a synthetic corrupt track.
     with _guard("ingest guard: a synthetic corrupt track"):
@@ -4968,7 +5674,10 @@ STANDALONE = {"glosses": check_usability_glosses,
               "increment-volts": lambda: (check_increment_volts_fixtures(),
                                           check_increment_volts_corpus()),
               "initial-trim-value": check_initial_trim_value_fixtures,
-              "track2-setup": check_track2_setup_fixtures}
+              "track2-setup": check_track2_setup_fixtures,
+              "write-batch": check_write_batch_fixtures,
+              "worker-outcomes": check_worker_outcomes,
+              "batched-ingest": check_batched_ingest}
 
 
 if __name__ == "__main__":

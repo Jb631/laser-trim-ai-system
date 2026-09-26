@@ -17,9 +17,10 @@ import json
 import logging
 import re
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
+from typing import Dict, List, Optional, Any, Union, Iterator, Sequence, Tuple
 from contextlib import contextmanager
 
 from sqlalchemy import (create_engine, exists, func, and_, or_, desc, text, case, select,
@@ -61,6 +62,19 @@ logger = logging.getLogger(__name__)
 # be spelled as `marker_reason is None` -- that would silently replace a
 # real None with `reason` and start marking track-level ERRORs as unreadable.
 _UNSET = object()
+
+
+def _size_and_mtime(stat) -> Optional[Tuple[int, float]]:
+    """A carried stat as (size, mtime), or None: the file could not be statted.
+
+    The save path is HANDED the (size, mtime) of the bytes that were parsed instead of statting
+    the file itself (ruling 10). Exactly two values: an `os.stat_result` (ten) fails to unpack
+    here, loudly, instead of being read as (st_mode, st_ino).
+    """
+    if stat is None:
+        return None
+    size, mtime = stat
+    return size, mtime
 
 
 def _error_reason(analysis) -> Optional[str]:
@@ -243,6 +257,144 @@ class DatabaseError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# The batch writer's vocabulary (ingest-speed Task 6, spec 3.2-3.6).
+# ---------------------------------------------------------------------------
+
+class NestedSessionError(DatabaseError):
+    """A session was opened on a thread that has a `write_batch` open (ruling 6).
+
+    The app has ONE SQLite connection (StaticPool), so that session's commit would commit the
+    batch mid-way and its rollback would roll it back (spec F5, measured). Every write a batch
+    runs takes the batch's session instead.
+    """
+
+
+class BatchCommitError(DatabaseError):
+    """A `write_batch` transaction could not be opened or committed.
+
+    WHAT IS STORED. Normally nothing of the batch: its one transaction was rolled back. The one
+    exception, which the cause says in words, is a transaction ENDED UNDER the batch -- a COMMIT or
+    ROLLBACK that was not its own, on the one shared connection (review I-1). Whatever such a COMMIT
+    made durable stays: the files before it, whole with their markers, and the file it interrupted,
+    whose first rows may be stored WITHOUT its marker. Nothing after it is, since the batch then
+    refuses to commit. Either way every marker that exists sits on a whole file, so the next scan
+    still decides correctly which files are new, and re-processing a half-stored one completes it
+    (its identity takes the update path).
+
+    `outcomes` holds one `failed` outcome per item -- never `saved`. `cause` is the underlying
+    error. `consecutive` is how many batch commits in a row have now failed on this database
+    (reset by the next one that commits): ruling 22's "two consecutive failed batch commits stop
+    the folder with the error named" is the CALLER's to act on, and this is what it reads. One
+    failure alone is survivable: its files are new again next run.
+    """
+
+    def __init__(self, cause: BaseException, outcomes: List["WriteOutcome"], consecutive: int):
+        self.cause = cause
+        self.outcomes = outcomes
+        self.consecutive = consecutive
+        super().__init__(
+            f"a batch of {len(outcomes)} file(s) could not be committed "
+            f"({consecutive} failed batch commit(s) in a row): {type(cause).__name__}: {cause}")
+
+
+@dataclass(frozen=True)
+class TrimWrite:
+    """One trim result for `write_batch`, with the (size, mtime) and SHA-256 of the bytes that
+    were PARSED -- recorded on its processed-files marker as given (ruling 10). (None, None):
+    the file could not be statted; its rows are written, no marker is, and `write_batch` says so
+    in a WARNING naming the file -- the file will be offered again next run (review m-4)."""
+    analysis: AnalysisResult
+    stat: Optional[Tuple[int, float]]
+    file_hash: Optional[str]
+
+
+@dataclass(frozen=True)
+class FinalTestWrite:
+    """One final test for `write_batch`: exactly what `save_final_test` takes -- the parsed and
+    graded payload, the SHA-256 of the bytes that were parsed and their (size, mtime datetime)."""
+    metadata: Dict[str, Any]
+    tracks: List[Dict[str, Any]]
+    test_results: Dict[str, Any]
+    file_hash: str
+    file_size: Optional[int] = None
+    file_modified_date: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class SmoothnessWrite:
+    """One Output Smoothness result for `write_batch`: exactly what `save_smoothness_result`
+    takes."""
+    metadata: Dict[str, Any]
+    tracks: List[Dict[str, Any]]
+    file_hash: str
+    file_size: Optional[int] = None
+    file_modified_date: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class SkipMarkerWrite:
+    """One per-path skip marker for `write_batch`: exactly what `mark_file_skipped` takes."""
+    filename: str
+    file_path: str
+    file_hash: str
+    file_size: Optional[int]
+    file_modified_date: Optional[datetime]
+    error_message: Optional[str] = None
+    failed_read: bool = False
+
+
+_BATCH_ITEMS = (TrimWrite, FinalTestWrite, SmoothnessWrite, SkipMarkerWrite)
+
+
+def _item_name(item) -> str:
+    """The file an item is about, for a log line or an outcome."""
+    if isinstance(item, TrimWrite):
+        return item.analysis.metadata.filename
+    if isinstance(item, SkipMarkerWrite):
+        return item.filename
+    return str(item.metadata.get("filename") or item.metadata.get("file_path") or "?")
+
+
+SAVED, DUPLICATE, FAILED = "saved", "duplicate", "failed"
+
+# The savepoint a write batch holds for its whole life, just inside BEGIN IMMEDIATE: if anything
+# ends the batch's transaction under it, this is gone, and its RELEASE before the COMMIT fails.
+_BATCH_GUARD = "lta_batch_guard"
+
+
+@dataclass(frozen=True)
+class WriteOutcome:
+    """What `write_batch` did with one item, once the batch COMMITTED.
+
+    `saved` carries the row id.
+
+    `failed` carries why. The item's savepoint was rolled back, its rows and its marker together:
+    nothing of it is stored.
+
+    `duplicate` is one of two things, and `reason` says which (review m-2):
+    * A UNIQUE constraint that the file's OWN rows broke: a MALFORMED file inside the batch, such
+      as two tracks with one track_id. Its savepoint was rolled back, so nothing of it is stored,
+      exactly as for `failed`. It never means "this unit is already stored": the body finds a
+      stored unit by its UNIQUE key and updates it, and relinks a processed row by content hash,
+      and under BEGIN IMMEDIATE nothing can be stored between that lookup and the write
+      (review m-3).
+    * For a SMOOTHNESS file only: another content hash already holds this file's identity
+      (filename, file_date, model, serial). The body's own savepoint rolled its insert back, and
+      the item's savepoint was then released with nothing in it: nothing of this file is stored,
+      and the row that holds the identity -- with other content -- is left as it was.
+
+    `error` is the exception an item's own body raised (a `failed` or malformed `duplicate`
+    item), for a caller that applies a rule to it -- the ingest's final-test and smoothness
+    failure rules (Task 10). None for a batch that could not commit: that failure is the batch's,
+    not the file's.
+    """
+    status: str
+    row_id: Optional[int] = None
+    reason: Optional[str] = None
+    error: Optional[BaseException] = field(default=None, compare=False, repr=False)
+
+
+# ---------------------------------------------------------------------------
 # The implicit default database is the APP's alone (2026-09-24).
 #
 # `DatabaseManager()` with no path -- which is what `get_database()` builds
@@ -263,7 +415,7 @@ _default_database_allowed = False
 
 # Set the first time DatabaseManager.__init__ logs the refusal below, so a
 # whole process writes it once -- not once per refusal. The Processor's
-# model-spec lookups (_get_linearity_type, _get_spec_for_analysis) each call
+# model-spec lookup (_get_spec_for_analysis, without a snapshot) calls
 # get_database() per file, so an unattended run over many files used to write
 # one ERROR line per file for the exact same cause. Tests reset this per test
 # (see conftest.py), the same way they pin _default_database_allowed.
@@ -298,7 +450,47 @@ def allow_default_database() -> None:
     _default_database_allowed = True
 
 
-class DatabaseManager:
+# Imported here, not at the top of the file: MigrationsMixin (database/migrations.py)
+# imports compute_unit_id and the two app_meta key constants back FROM this module, so
+# this import must stay below their definitions above -- otherwise migrations.py's own
+# top-level import of them would find this module only partially loaded. Safe every time
+# because database/__init__.py always imports this module (manager.py) first, before
+# anything can reach database/migrations.py directly.
+from laser_trim_analyzer.database.migrations import MigrationsMixin
+
+# Same reasoning, for the same reason (C2 Task 5, step 3): SpecsMixin (database/specs.py)
+# imports `logger` back FROM this module, so this import must stay below `logger`'s
+# definition above. This replaces the old early `from laser_trim_analyzer.database import
+# specs as _specs` module import (used to sit near the top of the file, before `logger` was
+# defined) -- that alias had no reader left in this file once the spec methods below moved
+# to specs.py, and keeping it at its old position would have made the new import circular.
+from laser_trim_analyzer.database.specs import SpecsMixin
+
+# Same reasoning again (C2 Task 5, step 4): ft_matching.py needs only `logger` back from this
+# module (everything else it needs -- DBAnalysisResult, Session, func, desc, datetime/time/
+# timedelta -- comes straight from sqlalchemy/datetime/database.models, not from here, so there is
+# no risk of an early-import cycle on those). Positioned after `logger` for the same reason as the
+# other two mixin imports above.
+from laser_trim_analyzer.database.ft_matching import FtMatchingMixin
+
+# Same reasoning again (C2 Task 5, step 5): maintenance.py needs `logger`,
+# `json_array_absent` and `GRADEABLE_STATUS_NAMES` back from this module -- all three stay
+# defined here (json_array_absent/GRADEABLE_STATUS_NAMES have no other reader today, but they
+# are general-purpose helpers, not maintenance-specific, so they were left in place rather than
+# moved). Positioned after all three are already defined, for the same reason as the other
+# mixin imports above.
+from laser_trim_analyzer.database.maintenance import MaintenanceMixin
+
+# Same reasoning again (C2 Task 5, step 6 -- the last step): smoothness.py needs only
+# `logger` back from this module. Everything else it needs (DBStatusType, case/desc/func,
+# datetime/timedelta) comes straight from database.models/sqlalchemy/datetime, not from here --
+# no circular risk there. Positioned after `logger` for the same reason as the other four mixin
+# imports above.
+from laser_trim_analyzer.database.smoothness import SmoothnessMixin
+
+
+class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceMixin,
+                      SmoothnessMixin):
     """
     Simplified database manager for v3.
 
@@ -397,11 +589,17 @@ class DatabaseManager:
             conn.execute(text("PRAGMA foreign_keys=ON"))
             conn.commit()
 
-        # Create session factory
-        self._SessionFactory = sessionmaker(bind=self._engine)
+        # Create session factory. Every Session is made by `_new_session()`, which refuses one
+        # on a thread that has a write batch open (ruling 6) -- through `session()` or directly.
+        self._session_maker = sessionmaker(bind=self._engine)
 
-        # Thread-local session storage
+        # Thread-local state. `batch_open`: this thread is inside `write_batch`.
+        # `batch_violation`: a session was refused inside the current batch item (kept even if
+        # the refusal was swallowed, so the item fails anyway).
         self._thread_local = threading.local()
+
+        # Batch commits that failed in a row (ruling 22); reset by one that commits.
+        self._failed_batch_commits = 0
 
         # Re-entrant DB lock. With StaticPool every thread shares one
         # underlying SQLite connection, so all session() / cursor.execute
@@ -647,1157 +845,6 @@ class DatabaseManager:
         return ({m[0] for m in trim if m[0]} | {m[0] for m in ft if m[0]}) \
             - {UNKNOWN_MODEL_SENTINEL}
 
-    @staticmethod
-    def _meta_get(session, key: str) -> Optional[str]:
-        """Read an app_meta value, or None if unset.
-
-        Never raises. It is called from inside migrations, and a database
-        opened before app_meta existed (or one where the CREATE failed) must
-        degrade to "no memory of a previous run" rather than take the whole
-        migration pass down with it.
-        """
-        try:
-            row = session.execute(
-                text("SELECT value FROM app_meta WHERE key = :k"), {"k": key}).fetchone()
-            return row[0] if row else None
-        except Exception:
-            session.rollback()
-            return None
-
-    @staticmethod
-    def _meta_set(session, key: str, value: str) -> None:
-        """Write an app_meta value, committing it. Never raises (see _meta_get).
-
-        A failure here costs only the skip — the next launch redoes the work
-        and tries to record it again — so it must not abort the migration that
-        just succeeded.
-        """
-        try:
-            session.execute(text(
-                "INSERT INTO app_meta (key, value, updated_at) VALUES (:k, :v, :t) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
-                "updated_at = excluded.updated_at"),
-                {"k": key, "v": value,
-                 "t": datetime.now().isoformat(sep=" ", timespec="seconds")})
-            session.commit()
-        except Exception:
-            session.rollback()
-            logger.warning(f"could not record app_meta[{key}]", exc_info=True)
-
-    def _run_migrations(self) -> None:
-        """Run database migrations for schema updates."""
-        # Baseline requalification audit table (2026-07-13: per-model manual
-        # baseline reset on design change — AS9100 traceability).
-        try:
-            with self.session() as _s:
-                _s.execute(text(
-                    "CREATE TABLE IF NOT EXISTS baseline_requalifications ("
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, "
-                    "effective_date TEXT NOT NULL, note TEXT, set_at TEXT NOT NULL)"))
-                _s.execute(text(
-                    "CREATE INDEX IF NOT EXISTS idx_baseline_requal_model "
-                    "ON baseline_requalifications(model)"))
-                _s.commit()
-        except Exception:
-            logger.exception("baseline_requalifications migration failed")
-
-        # App-level key/value state (2026-08-31). Every other table in this
-        # schema is domain data and there was no meta/settings table, so
-        # migrations had nowhere to record what they had already tried — see
-        # the Unknown-model re-parse below, its first and so far only user.
-        # Deliberately dumb: TEXT values, one row per key, raw SQL and no ORM
-        # model, matching baseline_requalifications directly above.
-        try:
-            with self.session() as _s:
-                _s.execute(text(
-                    "CREATE TABLE IF NOT EXISTS app_meta ("
-                    "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-                    "updated_at TEXT NOT NULL)"))
-                _s.commit()
-        except Exception:
-            logger.exception("app_meta migration failed")
-
-        needs_rematch = False
-
-        with self.session() as session:
-            # Migration: Add is_anomaly and anomaly_reason columns to track_results
-            try:
-                # Check if columns exist by attempting a query
-                session.execute(text("SELECT is_anomaly FROM track_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                # Columns don't exist, add them
-                logger.info("Running migration: Adding is_anomaly and anomaly_reason columns")
-                try:
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN is_anomaly BOOLEAN DEFAULT 0"))
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN anomaly_reason TEXT"))
-                    session.commit()
-                    logger.info("Migration completed: Added anomaly detection columns")
-                except Exception as e:
-                    logger.warning(f"Migration warning (may already exist): {e}")
-
-            # Migration: Add drift_baseline_cutoff_date column to model_ml_state
-            try:
-                session.execute(text("SELECT drift_baseline_cutoff_date FROM model_ml_state LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding drift_baseline_cutoff_date column")
-                try:
-                    session.execute(text("ALTER TABLE model_ml_state ADD COLUMN drift_baseline_cutoff_date DATETIME"))
-                    session.commit()
-                    logger.info("Migration completed: Added drift_baseline_cutoff_date column")
-                except Exception as e:
-                    logger.warning(f"Migration warning (may already exist): {e}")
-
-            # Migration: Add peak_cusum column to model_ml_state
-            try:
-                session.execute(text("SELECT peak_cusum FROM model_ml_state LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding peak_cusum column")
-                try:
-                    session.execute(text("ALTER TABLE model_ml_state ADD COLUMN peak_cusum FLOAT DEFAULT 0"))
-                    session.commit()
-                    logger.info("Migration completed: Added peak_cusum column")
-                except Exception as e:
-                    logger.warning(f"Migration warning (may already exist): {e}")
-
-            # Migration: Normalize status values from 'Pass' to 'PASS' format
-            # SQLAlchemy stores enum NAME (PASS), not value (Pass)
-            # This fixes data corrupted by bulk SQL that used .value instead of .name
-            try:
-                # Check if there are any title-case values that need fixing
-                result = session.execute(text(
-                    "SELECT COUNT(*) FROM analysis_results WHERE overall_status IN ('Pass', 'Fail', 'Warning', 'Error')"
-                )).scalar()
-                if result and result > 0:
-                    logger.info(f"Running migration: Normalizing {result} status values to uppercase")
-                    # Fix analysis_results
-                    session.execute(text("UPDATE analysis_results SET overall_status = 'PASS' WHERE overall_status = 'Pass'"))
-                    session.execute(text("UPDATE analysis_results SET overall_status = 'FAIL' WHERE overall_status = 'Fail'"))
-                    session.execute(text("UPDATE analysis_results SET overall_status = 'WARNING' WHERE overall_status = 'Warning'"))
-                    session.execute(text("UPDATE analysis_results SET overall_status = 'ERROR' WHERE overall_status = 'Error'"))
-                    # Fix track_results
-                    session.execute(text("UPDATE track_results SET status = 'PASS' WHERE status = 'Pass'"))
-                    session.execute(text("UPDATE track_results SET status = 'FAIL' WHERE status = 'Fail'"))
-                    session.execute(text("UPDATE track_results SET status = 'WARNING' WHERE status = 'Warning'"))
-                    session.execute(text("UPDATE track_results SET status = 'ERROR' WHERE status = 'Error'"))
-                    # Fix final_test_results / smoothness_results too (the original
-                    # migration missed these tables). Idempotent if already uppercase.
-                    for _tbl in ("final_test_results", "smoothness_results"):
-                        for _old, _new in (("Pass", "PASS"), ("Fail", "FAIL"),
-                                           ("Warning", "WARNING"), ("Error", "ERROR"),
-                                           ("Untrimmed", "UNTRIMMED")):
-                            try:
-                                session.execute(text(
-                                    f"UPDATE {_tbl} SET overall_status = '{_new}' "
-                                    f"WHERE overall_status = '{_old}'"))
-                            except Exception:
-                                pass  # table/column may not exist on older schemas
-                    session.commit()
-                    logger.info("Migration completed: Status values normalized")
-            except Exception as e:
-                logger.warning(f"Status normalization warning: {e}")
-
-            # Migration: Clean up "-shop" model name parsing artifacts
-            # Files like "8444-shop0_date.xlsx" were incorrectly parsed with
-            # model="8444-shop0" instead of model="8444", serial="shop0"
-            try:
-                shop_count = session.execute(text(
-                    "SELECT COUNT(*) FROM analysis_results WHERE LOWER(model) LIKE '%-shop%'"
-                )).scalar()
-                if shop_count and shop_count > 0:
-                    logger.info(f"Running migration: Cleaning up {shop_count} shop model name records")
-
-                    # Fix analysis_results: split "8444-shop0" into model="8444", serial="shop0"
-                    shop_records = session.execute(text(
-                        "SELECT id, model FROM analysis_results WHERE LOWER(model) LIKE '%-shop%'"
-                    )).fetchall()
-
-                    for row in shop_records:
-                        old_model = row[1]
-                        # Find the "-shop" split point (case-insensitive)
-                        lower = old_model.lower()
-                        shop_idx = lower.find('-shop')
-                        if shop_idx > 0:
-                            base_model = old_model[:shop_idx]
-                            new_serial = old_model[shop_idx + 1:]  # "shop0", "shop101", etc.
-                            session.execute(text(
-                                "UPDATE analysis_results SET model = :model, serial = :serial WHERE id = :id"
-                            ), {"model": base_model, "serial": new_serial, "id": row[0]})
-
-                    # Delete model_ml_state entries for fake shop model names
-                    ml_deleted = session.execute(text(
-                        "DELETE FROM model_ml_state WHERE LOWER(model) LIKE '%-shop%'"
-                    )).rowcount
-                    logger.info(f"Deleted {ml_deleted} fake ML state entries for shop models")
-
-                    session.commit()
-                    needs_rematch = True
-                    logger.info(f"Migration completed: Cleaned up {shop_count} shop model name records")
-            except Exception as e:
-                logger.warning(f"Shop model cleanup warning: {e}")
-
-            # Migration: Re-parse "Unknown" model records with improved parser logic
-            # Handles: multi-hyphen models (7280-1-CT), -sn serial indicators,
-            # concatenated sn patterns, "final NNN" serials, etc.
-            #
-            # Runs only when the Unknown population has CHANGED since the last
-            # attempt (2026-08-31). On the work database it re-parsed the same
-            # 381 filenames, fixed 0 of them and printed two INFO lines on
-            # every single launch for months. A migration that has provably
-            # finished should cost nothing and say nothing; otherwise the
-            # startup log stops being something anyone reads, and the next real
-            # message hides in the noise. The parser is what decides these
-            # filenames are unreadable, and the parser does not change between
-            # two launches — only the rows do. So the count of Unknown rows is
-            # the whole trigger: a different count means rows this has never
-            # tried (new Unknown rows arrived, or some were fixed or deleted),
-            # and it runs again and reports at INFO. Same count, same verdict,
-            # no work. The fix logic below is untouched.
-            try:
-                unknown_count = session.execute(text(
-                    "SELECT COUNT(*) FROM analysis_results WHERE model = 'Unknown'"
-                )).scalar() or 0
-                attempted = self._meta_get(session, UNKNOWN_REPARSE_COUNT_KEY)
-                if not unknown_count:
-                    pass  # nothing to re-parse, and nothing worth saying
-                elif attempted == str(unknown_count):
-                    logger.debug(
-                        f"Unknown model re-parse: skipped, {unknown_count} records "
-                        f"unchanged since the last attempt")
-                else:
-                    unknown_records = session.execute(text(
-                        "SELECT id, filename FROM analysis_results WHERE model = 'Unknown'"
-                    )).fetchall()
-                    logger.info(f"Running migration: Re-parsing {len(unknown_records)} Unknown model records")
-                    fixed = 0
-                    for row in unknown_records:
-                        rec_id, filename = row[0], row[1]
-                        model, serial = self._reparse_filename(filename)
-                        if model != "Unknown":
-                            session.execute(text(
-                                "UPDATE analysis_results SET model = :model, serial = :serial WHERE id = :id"
-                            ), {"model": model, "serial": serial, "id": rec_id})
-                            fixed += 1
-                    if fixed > 0:
-                        session.commit()
-                        needs_rematch = True
-                        logger.info(f"Migration completed: Fixed {fixed} of {len(unknown_records)} Unknown model records")
-                    else:
-                        logger.info("Migration: No Unknown records could be re-parsed")
-                    # The REMAINDER, not what we started with: storing the
-                    # pre-fix count on a run that fixed something would leave a
-                    # marker no future launch can ever match, and this would
-                    # re-run forever on exactly the databases it had improved.
-                    self._meta_set(session, UNKNOWN_REPARSE_COUNT_KEY,
-                                   str(unknown_count - fixed))
-            except Exception as e:
-                logger.warning(f"Unknown model re-parse warning: {e}")
-
-            # Migration: Ensure all performance indexes exist
-            # create_all() only creates indexes for NEW tables. Existing databases
-            # may be missing indexes that were added to models.py later.
-            # CREATE INDEX IF NOT EXISTS is idempotent — safe to run every startup.
-            try:
-                index_statements = [
-                    # analysis_results indexes
-                    "CREATE INDEX IF NOT EXISTS idx_filename_date ON analysis_results(filename, file_date)",
-                    "CREATE INDEX IF NOT EXISTS idx_file_date ON analysis_results(file_date)",
-                    "CREATE INDEX IF NOT EXISTS idx_model_serial ON analysis_results(model, serial)",
-                    "CREATE INDEX IF NOT EXISTS idx_model_serial_date ON analysis_results(model, serial, file_date)",
-                    "CREATE INDEX IF NOT EXISTS idx_timestamp ON analysis_results(timestamp)",
-                    "CREATE INDEX IF NOT EXISTS idx_status ON analysis_results(overall_status)",
-                    "CREATE INDEX IF NOT EXISTS idx_system ON analysis_results(system)",
-                    "CREATE INDEX IF NOT EXISTS idx_status_timestamp ON analysis_results(overall_status, timestamp)",
-                    "CREATE INDEX IF NOT EXISTS idx_model_status ON analysis_results(model, overall_status)",
-                    # track_results indexes
-                    "CREATE INDEX IF NOT EXISTS idx_track_analysis ON track_results(analysis_id, track_id)",
-                    "CREATE INDEX IF NOT EXISTS idx_track_sigma_gradient ON track_results(sigma_gradient)",
-                    "CREATE INDEX IF NOT EXISTS idx_track_sigma_pass ON track_results(sigma_pass)",
-                    "CREATE INDEX IF NOT EXISTS idx_track_linearity_pass ON track_results(linearity_pass)",
-                    "CREATE INDEX IF NOT EXISTS idx_track_risk_category ON track_results(risk_category)",
-                    "CREATE INDEX IF NOT EXISTS idx_track_failure_probability ON track_results(failure_probability)",
-                    "CREATE INDEX IF NOT EXISTS idx_track_status ON track_results(status)",
-                    "CREATE INDEX IF NOT EXISTS idx_track_analysis_prob ON track_results(analysis_id, failure_probability)",
-                    # final_test_results indexes
-                    "CREATE INDEX IF NOT EXISTS idx_ft_filename_date ON final_test_results(filename, file_date)",
-                    "CREATE INDEX IF NOT EXISTS idx_ft_model_serial ON final_test_results(model, serial)",
-                    "CREATE INDEX IF NOT EXISTS idx_ft_model_serial_date ON final_test_results(model, serial, file_date)",
-                    "CREATE INDEX IF NOT EXISTS idx_ft_timestamp ON final_test_results(timestamp)",
-                    "CREATE INDEX IF NOT EXISTS idx_ft_status ON final_test_results(overall_status)",
-                    "CREATE INDEX IF NOT EXISTS idx_ft_linked_trim ON final_test_results(linked_trim_id)",
-                    "CREATE INDEX IF NOT EXISTS idx_ft_test_date ON final_test_results(test_date)",
-                    # Standalone file_date index - Compare/Final Test page does
-                    # ORDER BY file_date DESC LIMIT 500 with no leading filter,
-                    # which the composite indexes don't satisfy.
-                    "CREATE INDEX IF NOT EXISTS idx_ft_file_date ON final_test_results(file_date)",
-                    # Placed last so the bulk loop on pre-Spec-1 DBs re-confirms all
-                    # existing indexes before failing on this one new-column entry.
-                    # The Spec 1 column migration immediately after (untrimmed_sigma_gradient
-                    # block) creates both the column and this index on first upgrade.
-                    "CREATE INDEX IF NOT EXISTS idx_track_untrimmed_sigma_gradient ON track_results(untrimmed_sigma_gradient)",
-                    # file_hash lookups (ingest-speed spec 3.7, ruling 11): every
-                    # final-test and smoothness save checks "is this content already
-                    # on record?" by file_hash before deciding insert vs. duplicate/
-                    # upsert (save_final_test, save_smoothness_result), and so do
-                    # is_file_processed and the stat-heal pass. Unindexed, F9 measured
-                    # that SCANning the whole final_test_results table (151,793 rows)
-                    # was 20 of the FT save's 22 ms; indexed, 3.4-3.7 batched.
-                    "CREATE INDEX IF NOT EXISTS idx_ft_file_hash ON final_test_results(file_hash)",
-                    "CREATE INDEX IF NOT EXISTS idx_smoothness_file_hash ON smoothness_results(file_hash)",
-                ]
-                created = 0
-                for stmt in index_statements:
-                    session.execute(text(stmt))
-                    created += 1
-                session.commit()
-                logger.info(f"Index migration: ensured {created} indexes exist")
-            except Exception as e:
-                session.rollback()  # Clear error state from the failed statement (e.g. a
-                                     # read-only database, James's first launch on a pre-
-                                     # Task-3 file before these two are no-ops) -- matches
-                                     # every sibling migration's idiom in this method.
-                logger.warning(f"Index migration warning: {e}")
-
-            # Migration: Add failure margin columns to track_results
-            try:
-                session.execute(text("SELECT max_violation FROM track_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding failure margin columns")
-                try:
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN max_violation FLOAT"))
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN avg_violation FLOAT"))
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN margin_to_spec FLOAT"))
-                    session.commit()
-                    logger.info("Migration completed: Added failure margin columns")
-                except Exception as e:
-                    logger.warning(f"Failure margin migration warning (may already exist): {e}")
-
-            # Migration: Add linearity_spec_warning column to track_results
-            try:
-                session.execute(text("SELECT linearity_spec_warning FROM track_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding linearity_spec_warning column")
-                try:
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN linearity_spec_warning TEXT"))
-                    session.commit()
-                    logger.info("Migration completed: Added linearity_spec_warning column")
-                except Exception as e:
-                    logger.warning(f"linearity_spec_warning migration warning (may already exist): {e}")
-
-            # Migration: Add error_reason column to analysis_results (2026-09-23).
-            # Why overall_status is ERROR, for the 237 rows on the rebuild that
-            # couldn't say -- see core/processor.py's error_reason_of(). Not
-            # back-filled: the Model page COALESCEs onto track_results'
-            # linearity_spec_warning/anomaly_reason for rows written before
-            # this column existed.
-            try:
-                session.execute(text("SELECT error_reason FROM analysis_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding error_reason column")
-                try:
-                    session.execute(text("ALTER TABLE analysis_results ADD COLUMN error_reason TEXT"))
-                    session.commit()
-                    logger.info("Migration completed: Added error_reason column")
-                except Exception as e:
-                    logger.warning(f"error_reason migration warning (may already exist): {e}")
-
-            # Migration: laser 1's TrimVolts capture on trim_passes (2026-09-24;
-            # see TrimPass.increment_volts). Metadata-only ADD COLUMNs, so a
-            # 6 GB database is not rewritten. Rows already stored read NULL --
-            # "not captured", which is exactly what they are -- until the
-            # back-fill (design doc ruling 4c) or a reprocess fills them. No
-            # DEFAULT, deliberately: a default would erase the record of which
-            # rows predate the capture.
-            increment_volts_columns = {
-                "increment_volts": "JSON",
-                "increment_volts_first_row": "INTEGER",
-                "increment_volts_truncated": "BOOLEAN",
-            }
-            for col_name, col_type in increment_volts_columns.items():
-                try:
-                    session.execute(text(
-                        f"ALTER TABLE trim_passes ADD COLUMN {col_name} {col_type}"))
-                    session.commit()
-                    logger.info(f"Migration: Added {col_name} column to trim_passes")
-                except Exception as e:
-                    if ("duplicate column" not in str(e).lower()
-                            and "already exists" not in str(e).lower()):
-                        logger.warning(f"trim_passes.{col_name} migration warning: {e}")
-                    session.rollback()
-            # ...and WHEN this database started capturing (INCREMENT_VOLTS_SINCE_KEY):
-            # recorded once, by the first start-up that finds the column in place
-            # with nothing recorded -- the one whose ALTER above just added it, or a
-            # new database's first start-up (create_all made the column). A database
-            # migrated by the first version of this code, which recorded nothing, gets
-            # its record at its next start-up; the passes written in between carry
-            # their curves anyway. Never recorded while the column is missing.
-            try:
-                has_column = any(
-                    r[1] == "increment_volts" for r in session.execute(
-                        text("PRAGMA table_info(trim_passes)")).fetchall())
-            except Exception:
-                session.rollback()
-                has_column = False
-            if has_column and self._meta_get(session, INCREMENT_VOLTS_SINCE_KEY) is None:
-                self._meta_set(session, INCREMENT_VOLTS_SINCE_KEY,
-                               datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f"))
-
-            # Migration: initial_trim_value gets its own column on trim_passes
-            # (2026-09-24; see TrimPass.initial_trim_value). Metadata-only ADD
-            # COLUMN -- no data is moved. The ~83,000 existing laser-2/3 pass
-            # rows keep the value inside `recipe`, where it has always been; a
-            # heavy UPDATE across them at start-up is the shape of the
-            # 2026-09-14 night. They read back the same value as a new row
-            # through trim_passes.initial_trim_values(row.initial_trim_value,
-            # row.recipe) -- no "since" record is needed the way increment_volts
-            # has one, because that helper's recipe fallback works forever, not
-            # just until a back-fill catches up. No DEFAULT: a default would
-            # make an old row indistinguishable from a laser-1 row that never
-            # had the value at all.
-            try:
-                session.execute(text("SELECT initial_trim_value FROM trim_passes LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding initial_trim_value column")
-                try:
-                    session.execute(text(
-                        "ALTER TABLE trim_passes ADD COLUMN initial_trim_value JSON"))
-                    session.commit()
-                    logger.info("Migration completed: Added initial_trim_value column")
-                except Exception as e:
-                    if ("duplicate column" not in str(e).lower()
-                            and "already exists" not in str(e).lower()):
-                        logger.warning(f"initial_trim_value migration warning: {e}")
-                    session.rollback()
-
-            # Migration: track2_parameters gets its own column on trim_setup
-            # (2026-09-24; see TrimSetup.track2_parameters). Metadata-only ADD
-            # COLUMN -- no data is moved, and there is nothing to move: this
-            # column never existed under another name. `trim_setup` stays one
-            # row per analysis (analysis_id is UNIQUE) -- dropping that would
-            # need a table rebuild, the same shape as the sigma-nullable
-            # migration above, for a column most files never populate. No
-            # back-fill either: two-track files that already exist in this
-            # database are re-read on reprocess, not updated here -- the
-            # column is simply NULL on every row until then.
-            try:
-                session.execute(text("SELECT track2_parameters FROM trim_setup LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding track2_parameters column")
-                try:
-                    session.execute(text(
-                        "ALTER TABLE trim_setup ADD COLUMN track2_parameters JSON"))
-                    session.commit()
-                    logger.info("Migration completed: Added track2_parameters column")
-                except Exception as e:
-                    if ("duplicate column" not in str(e).lower()
-                            and "already exists" not in str(e).lower()):
-                        logger.warning(f"track2_parameters migration warning: {e}")
-                    session.rollback()
-
-            # Migration: Add measured_electrical_angle column to track_results
-            try:
-                session.execute(text("SELECT measured_electrical_angle FROM track_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding measured_electrical_angle column")
-                try:
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN measured_electrical_angle FLOAT"))
-                    session.commit()
-                    logger.info("Migration completed: Added measured_electrical_angle column")
-                except Exception as e:
-                    logger.warning(f"measured_electrical_angle migration warning (may already exist): {e}")
-
-            # Migration: Add max deviation columns to track_results
-            try:
-                session.execute(text("SELECT max_deviation FROM track_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding max deviation columns")
-                try:
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN max_deviation FLOAT"))
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN max_deviation_position FLOAT"))
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN deviation_uniformity FLOAT"))
-                    session.commit()
-                    logger.info("Migration completed: Added max deviation columns")
-                except Exception as e:
-                    logger.warning(f"Max deviation migration warning (may already exist): {e}")
-
-            # Migration: Add untrimmed_sigma_gradient column to track_results.
-            # Spec 1 (2026-05-30): upstream element-quality signal independent
-            # of post-trim sigma_gradient.  Backfilled by natural reprocess flow.
-            try:
-                session.execute(
-                    text("SELECT untrimmed_sigma_gradient FROM track_results LIMIT 1")
-                )
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info(
-                    "Running migration: Adding untrimmed_sigma_gradient column"
-                )
-                try:
-                    session.execute(text(
-                        "ALTER TABLE track_results "
-                        "ADD COLUMN untrimmed_sigma_gradient FLOAT"
-                    ))
-                    session.execute(text(
-                        "CREATE INDEX IF NOT EXISTS "
-                        "idx_track_untrimmed_sigma_gradient "
-                        "ON track_results (untrimmed_sigma_gradient)"
-                    ))
-                    session.commit()
-                    logger.info(
-                        "Migration completed: Added untrimmed_sigma_gradient"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Migration warning (may already exist): {e}"
-                    )
-
-            # Migration: Add untrimmed_error_max column to track_results.
-            # Spec 2 (2026-06-02): worst-case linearity error across untrimmed
-            # data points; complements untrimmed_sigma_gradient as an element-
-            # quality signal.  Backfilled by natural reprocess flow.
-            try:
-                session.execute(
-                    text("SELECT untrimmed_error_max FROM track_results LIMIT 1")
-                )
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info(
-                    "Running migration: Adding untrimmed_error_max column"
-                )
-                try:
-                    session.execute(text(
-                        "ALTER TABLE track_results "
-                        "ADD COLUMN untrimmed_error_max FLOAT"
-                    ))
-                    session.execute(text(
-                        "CREATE INDEX IF NOT EXISTS "
-                        "idx_track_untrimmed_error_max "
-                        "ON track_results (untrimmed_error_max)"
-                    ))
-                    session.commit()
-                    logger.info(
-                        "Migration completed: Added untrimmed_error_max"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Migration warning (may already exist): {e}"
-                    )
-
-            # Migration: Add composite_trim_risk_score column to track_results.
-            try:
-                session.execute(
-                    text("SELECT composite_trim_risk_score FROM track_results LIMIT 1")
-                )
-            except OperationalError:
-                session.rollback()
-                logger.info("Running migration: Adding composite_trim_risk_score column")
-                try:
-                    session.execute(text(
-                        "ALTER TABLE track_results "
-                        "ADD COLUMN composite_trim_risk_score FLOAT"
-                    ))
-                    session.execute(text(
-                        "CREATE INDEX IF NOT EXISTS idx_track_composite_trim_risk_score "
-                        "ON track_results (composite_trim_risk_score)"
-                    ))
-                    session.commit()
-                    logger.info("Migration completed: Added composite_trim_risk_score")
-                except Exception as e:
-                    logger.warning(f"Migration warning (may already exist): {e}")
-
-            # Migration: Create model_metric_state table for Spec 2.
-            # This is a CREATE TABLE rather than ALTER TABLE because the
-            # table is entirely new in V6.  Use Base.metadata.create_all
-            # with checkfirst=True for idempotency.
-            try:
-                from laser_trim_analyzer.database.models import ModelMetricState
-                ModelMetricState.__table__.create(bind=self._engine, checkfirst=True)
-                session.commit()
-            except Exception as e:
-                session.rollback()
-                logger.warning(
-                    f"Migration warning for model_metric_state (may already exist): {e}"
-                )
-
-            # Migration: Retag LTS3 (System C) rows (2026-07-06). The third
-            # trim system writes files format-identical to an existing system,
-            # so anything processed before path-based detection landed was
-            # stored as A or B. Identity marker = an 'LTS3*' DIRECTORY in the
-            # path (a separator must follow, so filenames starting with LTS3
-            # don't match). Idempotent: already-C rows aren't selected.
-            try:
-                total_retagged = 0
-                for table in ("analysis_results", "final_test_results"):
-                    res = session.execute(text(
-                        f"UPDATE {table} SET system = 'C' "
-                        f"WHERE system != 'C' AND ("
-                        f"file_path LIKE '%/LTS3%/%' OR file_path LIKE '%\\LTS3%\\%'"
-                        f")"
-                    ))
-                    total_retagged += res.rowcount or 0
-                session.commit()
-                if total_retagged:
-                    logger.info(f"Migration: retagged {total_retagged} LTS3 rows as System C")
-            except Exception as e:
-                session.rollback()
-                logger.warning(f"LTS3 retag migration warning: {e}")
-
-            # Migration: Add last_row_id watermark + recent_window to
-            # model_metric_state (2026-07-06). last_row_id lets
-            # advance_drift_state consume same-day samples the date-only
-            # filter skipped forever; recent_window makes the step-change
-            # check live across restarts.
-            for col, ddl in (("last_row_id", "INTEGER"), ("recent_window", "TEXT")):
-                try:
-                    session.execute(text(
-                        f"SELECT {col} FROM model_metric_state LIMIT 1"))
-                except OperationalError:
-                    session.rollback()
-                    logger.info(f"Running migration: Adding model_metric_state.{col}")
-                    try:
-                        session.execute(text(
-                            f"ALTER TABLE model_metric_state ADD COLUMN {col} {ddl}"
-                        ))
-                        session.commit()
-                        logger.info(f"Migration completed: Added {col}")
-                    except Exception as e:
-                        logger.warning(f"{col} migration warning (may already exist): {e}")
-
-            # Migration: Add data_quality columns to analysis_results
-            try:
-                session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                logger.info("Running migration: Adding data_quality columns")
-                try:
-                    session.execute(text(
-                        "ALTER TABLE analysis_results ADD COLUMN data_quality VARCHAR(20) DEFAULT 'good'"
-                    ))
-                    session.execute(text(
-                        "ALTER TABLE analysis_results ADD COLUMN data_quality_issues TEXT"
-                    ))
-                    session.commit()
-                    logger.info("Migration completed: Added data_quality columns")
-                except Exception as e:
-                    logger.warning(f"Data quality migration warning (may already exist): {e}")
-
-            # Migration: Add Phase 2 spec-aware optimization columns to track_results.
-            # Each column gets its own try/commit so a duplicate-column error on
-            # one ALTER does not roll back columns added earlier in the same
-            # session — that was the prior bug (single rollback at end of loop
-            # discarded successful ALTERs in the SQLAlchemy unit of work).
-            phase2_columns = {
-                "optimal_slope": "FLOAT DEFAULT 0.0",
-                "station_compensation": "FLOAT",
-                "linearity_type": "VARCHAR(30)",
-                "raw_linearity_error": "FLOAT",
-                "optimized_linearity_error": "FLOAT",
-                "raw_fail_points": "INTEGER",
-            }
-            for col_name, col_type in phase2_columns.items():
-                try:
-                    session.execute(text(
-                        f"ALTER TABLE track_results ADD COLUMN {col_name} {col_type}"
-                    ))
-                    session.commit()
-                except Exception as e:
-                    session.rollback()
-                    if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                        logger.warning(f"Migration error adding {col_name}: {e}")
-            logger.info("Phase 2 migration: ensured spec-aware columns exist")
-
-            # Migration: Add match_method column to final_test_results
-            try:
-                session.execute(text("SELECT match_method FROM final_test_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                try:
-                    session.execute(text("ALTER TABLE final_test_results ADD COLUMN match_method VARCHAR(30)"))
-                    session.commit()
-                    logger.info("Migration: Added match_method column to final_test_results")
-                except Exception:
-                    pass
-
-            # Migration: Add trim_pass_count column to track_results.
-            # Counts how many laser-trim passes the equipment ran per track,
-            # surfaced from the file's "Trim N" / "TRK<n> M" sheet layout.
-            # Used as a quality indicator (1 = clean, 2+ = retrim needed).
-            try:
-                session.execute(text("SELECT trim_pass_count FROM track_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()
-                try:
-                    session.execute(text("ALTER TABLE track_results ADD COLUMN trim_pass_count INTEGER"))
-                    session.commit()
-                    logger.info("Migration: Added trim_pass_count column to track_results")
-                except Exception:
-                    pass
-
-            # Migration: Add unit_id column to analysis_results.
-            # Canonical unit identifier "<model>/<shop>/<date>", used by the
-            # unit-level yield feature (Trends chart + Excel "Yield by Unit"
-            # sheet). Nullable so the app remains functional during/after
-            # partial backfill; the backfill itself happens in a separate
-            # migration step below so it can be retried independently.
-            try:
-                session.execute(text("SELECT unit_id FROM analysis_results LIMIT 1"))
-            except OperationalError:
-                session.rollback()
-                try:
-                    session.execute(text(
-                        "ALTER TABLE analysis_results ADD COLUMN unit_id VARCHAR(80)"
-                    ))
-                    session.commit()
-                    logger.info("Migration: Added unit_id column to analysis_results")
-                except Exception as e:
-                    session.rollback()
-                    logger.warning(f"Migration error adding unit_id: {e}")
-            # Ensure the index exists on both new and migrated DBs. Project
-            # convention uses idx_* naming (not SQLAlchemy's auto ix_*),
-            # so we manage it explicitly here rather than via index=True
-            # on the column declaration.
-            try:
-                session.execute(text(
-                    "CREATE INDEX IF NOT EXISTS idx_analysis_unit_id "
-                    "ON analysis_results(unit_id)"
-                ))
-                session.commit()
-            except Exception as e:
-                session.rollback()
-                logger.warning(f"Migration error creating unit_id index: {e}")
-
-            # Migration: Backfill unit_id for existing rows. Idempotent —
-            # only updates rows where unit_id IS NULL, so re-running picks up
-            # where it left off (e.g. after a crash or interrupted startup).
-            # Done in Python because the shop-number extraction regex lives
-            # there; iterates in batches of 1000 to keep memory bounded.
-            #
-            # Guarded like every sibling migration (2026-09-24): it WRITES, so
-            # on a database it cannot write -- a read-only file, a full disk, a
-            # locked share -- it raised straight out of _init_database and the
-            # V6 app exited with "Fatal error" before showing a single screen.
-            # The work database has 1,512 rows no backfill can fill (a junk
-            # serial or no date), so this runs, and writes, at EVERY start-up.
-            # A refused backfill costs only the unit-level yield of the rows it
-            # did not reach, and it is retried at the next start-up.
-            try:
-                self._backfill_unit_ids(session)
-            except Exception as e:
-                session.rollback()
-                logger.warning(
-                    f"unit_id backfill migration refused, skipped until the next "
-                    f"start-up (the database opens without it): {e}")
-
-            # Migration: Add aliases column to model_specs.
-            # Stores pipe-separated alternate model numbers so a single spec
-            # row covers cases like 1621501 and 2001621501 being the same part.
-            try:
-                session.execute(text("SELECT aliases FROM model_specs LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                try:
-                    session.execute(text("ALTER TABLE model_specs ADD COLUMN aliases TEXT"))
-                    session.commit()
-                    logger.info("Migration: Added aliases column to model_specs")
-                except Exception as e:
-                    if "duplicate column" not in str(e).lower():
-                        logger.warning(f"aliases migration warning: {e}")
-                    session.rollback()
-
-            # Migration: Add exclude_points column to model_specs
-            try:
-                session.execute(text("SELECT exclude_points FROM model_specs LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                try:
-                    session.execute(text("ALTER TABLE model_specs ADD COLUMN exclude_points TEXT"))
-                    session.commit()
-                    logger.info("Migration: Added exclude_points column to model_specs")
-                except Exception as e:
-                    if "duplicate column" not in str(e).lower():
-                        logger.warning(f"exclude_points migration warning: {e}")
-                    session.rollback()
-
-            # Migration: Add exclude_points_ft column to model_specs
-            # FT files have different data point counts than trim files,
-            # so they need separate exclude ranges.
-            try:
-                session.execute(text("SELECT exclude_points_ft FROM model_specs LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                try:
-                    session.execute(text("ALTER TABLE model_specs ADD COLUMN exclude_points_ft TEXT"))
-                    session.commit()
-                    logger.info("Migration: Added exclude_points_ft column to model_specs")
-                except Exception as e:
-                    if "duplicate column" not in str(e).lower():
-                        logger.warning(f"exclude_points_ft migration warning: {e}")
-                    session.rollback()
-
-            # Migration: Add open_closed column to model_specs and backfill from
-            # circuit_type. The original importer wrote the Excel "Open/Closed"
-            # column into circuit_type, which is misleading — Open vs Closed
-            # refers to whether the resistive element is visible, not the
-            # electrical circuit type. Keep circuit_type for backward compat
-            # but add a correctly-named column and sync values across.
-            try:
-                session.execute(text("SELECT open_closed FROM model_specs LIMIT 1"))
-            except OperationalError:
-                session.rollback()  # Clear error state from failed probe
-                try:
-                    session.execute(text(
-                        "ALTER TABLE model_specs ADD COLUMN open_closed VARCHAR(10)"
-                    ))
-                    # Backfill from circuit_type for existing rows
-                    session.execute(text(
-                        "UPDATE model_specs SET open_closed = circuit_type "
-                        "WHERE open_closed IS NULL AND circuit_type IS NOT NULL"
-                    ))
-                    session.commit()
-                    logger.info(
-                        "Migration: Added open_closed column to model_specs "
-                        "and backfilled from circuit_type"
-                    )
-                except Exception as e:
-                    if "duplicate column" not in str(e).lower():
-                        logger.warning(f"open_closed migration warning: {e}")
-                    session.rollback()
-
-            # Migration: Add spec-aware columns to final_test_tracks so the FT
-            # analyzer's optimal_slope/offset/linearity_type are persisted (not
-            # just held in memory for the current Process Files screen).
-            ft_phase2_columns = {
-                "optimal_offset": "FLOAT",
-                "optimal_slope": "FLOAT DEFAULT 0.0",
-                "linearity_type": "VARCHAR(30)",
-            }
-            for col_name, col_type in ft_phase2_columns.items():
-                try:
-                    session.execute(text(
-                        f"ALTER TABLE final_test_tracks ADD COLUMN {col_name} {col_type}"
-                    ))
-                except Exception as e:
-                    if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                        logger.warning(f"FT migration warning adding {col_name}: {e}")
-                    session.rollback()
-            try:
-                session.commit()
-                logger.info("FT phase2 migration: ensured spec-aware columns exist on final_test_tracks")
-            except Exception:
-                pass
-
-            # Migration: Add the STATION-REFERENCE columns (2026-09-13).
-            #
-            # The app's own corrected grade stays in linearity_pass — these
-            # record what the SHEET said and which rows it graded, so a
-            # disagreement is visible instead of invisible. graded_window_source
-            # NULL is load-bearing: it marks a row graded before the window fix
-            # and is what count_legacy_ft_verdicts() counts and what the
-            # re-grade pass selects by default. Never backfill it with a
-            # default — a default would erase the record of what needs redoing.
-            ft_station_columns = {
-                "final_test_results": {
-                    "station_linearity_pass": "BOOLEAN",
-                    "station_cell_flag_conflict": "BOOLEAN",
-                    "graded_window_source": "VARCHAR(16)",
-                },
-                "final_test_tracks": {
-                    "station_flags": "TEXT",
-                    "station_fail_points": "INTEGER",
-                    "graded_start": "INTEGER",
-                    "graded_end": "INTEGER",
-                    "ignore_start": "INTEGER",
-                    "ignore_end": "INTEGER",
-                },
-            }
-            for _table, _columns in ft_station_columns.items():
-                for col_name, col_type in _columns.items():
-                    try:
-                        session.execute(text(
-                            f"ALTER TABLE {_table} ADD COLUMN {col_name} {col_type}"
-                        ))
-                        session.commit()
-                    except Exception as e:
-                        if ("duplicate column" not in str(e).lower()
-                                and "already exists" not in str(e).lower()):
-                            logger.warning(
-                                f"FT station-reference migration warning "
-                                f"adding {_table}.{col_name}: {e}")
-                        session.rollback()
-            try:
-                session.execute(text(
-                    "CREATE INDEX IF NOT EXISTS idx_ft_graded_window_source "
-                    "ON final_test_results (graded_window_source)"
-                ))
-                session.commit()
-            except Exception as e:
-                logger.warning(f"graded_window_source index warning: {e}")
-                session.rollback()
-
-            # Migration: Add consecutive_recovered column to model_ml_state
-            try:
-                session.execute(text("ALTER TABLE model_ml_state ADD COLUMN consecutive_recovered INTEGER DEFAULT 0"))
-                session.commit()
-            except Exception as e:
-                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                    logger.warning(f"consecutive_recovered migration warning: {e}")
-                session.rollback()
-
-            # Migration: Add electrical_angle_tol_type to model_specs so the
-            # angle-parser qualifier ('symmetric', 'min', 'max', 'range',
-            # 'bilateral') is preserved. The slope-correction rule depends on
-            # this to know whether a tolerance is one-sided or two-sided.
-            try:
-                session.execute(text(
-                    "ALTER TABLE model_specs ADD COLUMN electrical_angle_tol_type VARCHAR(12)"
-                ))
-                session.commit()
-                logger.info("Migration: Added electrical_angle_tol_type column to model_specs")
-            except Exception as e:
-                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                    logger.warning(f"electrical_angle_tol_type migration warning: {e}")
-                session.rollback()
-
-            # Migration: Add theory_data and test_volts columns for slope optimization
-            try:
-                session.execute(text("ALTER TABLE track_results ADD COLUMN theory_data TEXT"))
-                session.commit()
-                logger.info("Migration: Added theory_data column to track_results")
-            except Exception as e:
-                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                    logger.warning(f"theory_data migration warning: {e}")
-                session.rollback()
-
-            try:
-                session.execute(text("ALTER TABLE track_results ADD COLUMN test_volts FLOAT"))
-                session.commit()
-                logger.info("Migration: Added test_volts column to track_results")
-            except Exception as e:
-                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                    logger.warning(f"test_volts migration warning: {e}")
-                session.rollback()
-
-            # Migration: Add theory_data to final_test_tracks for slope optimization
-            try:
-                session.execute(text("ALTER TABLE final_test_tracks ADD COLUMN theory_data TEXT"))
-                session.commit()
-                logger.info("Migration: Added theory_data column to final_test_tracks")
-            except Exception as e:
-                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                    logger.warning(f"ft theory_data migration: {e}")
-                session.rollback()
-
-            # Migration: Add file_size / file_modified_date to the Final Test
-            # and Smoothness result tables (2026-08-29). ProcessedFile rows had
-            # them; these two didn't, so the incremental scan's stat fast-path
-            # could never apply to an FT/smoothness path — every known file was
-            # re-HASHED (full read over the share) on EVERY scan, and the heal
-            # pass only touched processed_files so it never got better. See
-            # Processor._is_processed / _load_processed_hashes.
-            stat_columns = {
-                "file_size": "INTEGER",
-                "file_modified_date": "DATETIME",
-            }
-            for tbl in ("final_test_results", "smoothness_results"):
-                for col_name, col_type in stat_columns.items():
-                    try:
-                        session.execute(text(
-                            f"ALTER TABLE {tbl} ADD COLUMN {col_name} {col_type}"
-                        ))
-                        session.commit()
-                        logger.info(f"Migration: Added {col_name} column to {tbl}")
-                    except Exception as e:
-                        if ("duplicate column" not in str(e).lower()
-                                and "already exists" not in str(e).lower()):
-                            logger.warning(f"{tbl}.{col_name} migration warning: {e}")
-                        session.rollback()
-
-            # Migration: Relax NOT NULL on sigma_gradient / sigma_threshold / sigma_pass
-            # so UNTRIMMED tracks (test-sweep-only files with no laser-trim runs) can
-            # be saved with sigma metrics absent. SQLite can't ALTER COLUMN nullability
-            # directly, so this rebuilds track_results via the rename-table pattern.
-            try:
-                info = session.execute(text("PRAGMA table_info(track_results)")).fetchall()
-                # PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
-                sigma_grad_notnull = next(
-                    (row[3] for row in info if row[1] == 'sigma_gradient'), 0
-                )
-                if sigma_grad_notnull == 1:
-                    logger.info(
-                        "Running migration: relaxing NOT NULL on sigma_gradient / "
-                        "sigma_threshold / sigma_pass in track_results"
-                    )
-                    create_sql = session.execute(text(
-                        "SELECT sql FROM sqlite_master WHERE type='table' "
-                        "AND name='track_results'"
-                    )).scalar()
-                    indexes = session.execute(text(
-                        "SELECT name, sql FROM sqlite_master WHERE type='index' "
-                        "AND tbl_name='track_results' AND sql IS NOT NULL"
-                    )).fetchall()
-
-                    new_sql = create_sql
-                    for _col in ('sigma_gradient', 'sigma_threshold', 'sigma_pass'):
-                        # Strip the column-level NOT NULL declaration. Preserves
-                        # the type/length so the column data is untouched.
-                        new_sql = re.sub(
-                            rf'(\b{_col}\b\s+\w+(?:\(\d+\))?)\s+NOT\s+NULL',
-                            r'\1',
-                            new_sql,
-                            count=1,
-                            flags=re.IGNORECASE,
-                        )
-                    new_sql = new_sql.replace(
-                        'CREATE TABLE track_results',
-                        'CREATE TABLE track_results_new',
-                        1,
-                    )
-
-                    # NOTE: No PRAGMA foreign_keys toggling here. SQLite ignores
-                    # PRAGMA foreign_keys when issued inside an open transaction,
-                    # so the typical "OFF / rebuild / ON" recipe is a no-op in
-                    # this session-scoped path. The rebuild is FK-safe today
-                    # because no table references track_results.id — if that
-                    # changes, the recipe needs to move outside this transaction
-                    # via a dedicated raw connection.
-                    session.execute(text(new_sql))
-                    session.execute(text(
-                        "INSERT INTO track_results_new SELECT * FROM track_results"
-                    ))
-                    session.execute(text("DROP TABLE track_results"))
-                    session.execute(text(
-                        "ALTER TABLE track_results_new RENAME TO track_results"
-                    ))
-                    for _idx_name, _idx_sql in indexes:
-                        # Re-raise on failure so the outer try/except triggers a
-                        # rollback. Silently losing an index would degrade query
-                        # performance without any signal to the operator.
-                        session.execute(text(_idx_sql))
-                    session.commit()
-                    logger.info(
-                        "Migration completed: sigma_gradient / sigma_threshold / "
-                        "sigma_pass are now nullable"
-                    )
-            except Exception as e:
-                session.rollback()
-                logger.warning(f"sigma-nullable migration warning: {e}")
-
-        # After session closes, re-run FT matching if model names were corrected
-        if needs_rematch:
-            try:
-                logger.info("Re-matching Final Test records after model name cleanup...")
-                stats = self.rematch_final_tests()
-                logger.info(f"Post-cleanup FT rematch: {stats}")
-            except Exception as e:
-                logger.warning(f"FT rematch after cleanup failed: {e}")
-
-    def _backfill_unit_ids(self, session) -> None:
-        """Populate analysis_results.unit_id for rows that don't have one yet.
-
-        Idempotent: only operates on NULL unit_id rows. Logs progress and a
-        post-run sanity check (count of NULL vs non-NULL).
-        """
-        from laser_trim_analyzer.database.models import AnalysisResult as DBAR
-
-        # Count rows that need backfill
-        to_backfill = (
-            session.query(func.count(DBAR.id))
-            .filter(DBAR.unit_id.is_(None))
-            .scalar()
-        ) or 0
-        if to_backfill == 0:
-            logger.debug("unit_id backfill: nothing to do")
-            return
-
-        logger.info(f"unit_id backfill: starting on {to_backfill} rows")
-        batch_size = 1000
-        updated = 0
-        skipped = 0  # rows that have nothing to backfill (junk serial / missing date)
-
-        # Process in batches so we don't load 80k rows into memory at once.
-        # The empty-string sentinel pattern below ensures unparseable rows
-        # don't keep appearing in subsequent batches (we then convert the
-        # sentinels back to NULL at the end).
-        while True:
-            rows = (
-                session.query(DBAR.id, DBAR.model, DBAR.serial, DBAR.file_date)
-                .filter(DBAR.unit_id.is_(None))
-                .limit(batch_size)
-                .all()
-            )
-            if not rows:
-                break
-
-            for row_id, model, serial, file_date in rows:
-                uid = compute_unit_id(model, serial, file_date)
-                if uid is None:
-                    # Junk serial / missing date — mark with empty-string sentinel
-                    # so the next batch query doesn't pick it up again.
-                    session.execute(
-                        text("UPDATE analysis_results SET unit_id = '' WHERE id = :i"),
-                        {"i": row_id},
-                    )
-                    skipped += 1
-                else:
-                    session.execute(
-                        text("UPDATE analysis_results SET unit_id = :u WHERE id = :i"),
-                        {"u": uid, "i": row_id},
-                    )
-                    updated += 1
-            session.commit()
-            logger.info(
-                f"unit_id backfill: progress {updated + skipped}/{to_backfill}"
-            )
-
-        # Restore NULL for unparseable rows.
-        session.execute(text(
-            "UPDATE analysis_results SET unit_id = NULL WHERE unit_id = ''"
-        ))
-        session.commit()
-
-        # Post-flight sanity check
-        non_null = (
-            session.query(func.count(DBAR.id))
-            .filter(DBAR.unit_id.isnot(None))
-            .scalar()
-        ) or 0
-        null_now = (
-            session.query(func.count(DBAR.id))
-            .filter(DBAR.unit_id.is_(None))
-            .scalar()
-        ) or 0
-        distinct_units = (
-            session.query(func.count(func.distinct(DBAR.unit_id)))
-            .filter(DBAR.unit_id.isnot(None))
-            .scalar()
-        ) or 0
-        logger.info(
-            f"unit_id backfill complete: "
-            f"{updated} populated, {skipped} junk-serial/no-date, "
-            f"{non_null} non-NULL total, {null_now} NULL total, "
-            f"{distinct_units} distinct units"
-        )
-
-        # Spot-check: log three sample unit_ids so an operator can verify
-        # the format on customer hardware where the DB isn't accessible.
-        samples = (
-            session.query(DBAR.unit_id)
-            .filter(DBAR.unit_id.isnot(None))
-            .limit(3)
-            .all()
-        )
-        sample_strs = [r[0] for r in samples]
-        logger.info(f"unit_id backfill sample unit_ids: {sample_strs}")
-
     @contextmanager
     def session(self) -> Iterator[Session]:
         """
@@ -1814,9 +861,15 @@ class DatabaseManager:
         ("bad parameter or other API misuse"). Serialising at the session
         boundary eliminates that race; reentrant so nested session() blocks
         and the explicit _write_lock acquisitions still work.
+
+        Raises NestedSessionError on a thread that has a `write_batch` open:
+        the RLock would let it in, and on the one shared connection its
+        commit would commit the batch (spec F5, ruling 6). Checked BEFORE the
+        lock, so another thread is never refused -- it waits for the batch.
         """
+        self._refuse_inside_batch()
         with self._write_lock:
-            session = self._SessionFactory()
+            session = self._new_session()
             try:
                 yield session
                 session.commit()
@@ -1826,6 +879,206 @@ class DatabaseManager:
                 raise
             finally:
                 session.close()
+
+    def _refuse_inside_batch(self) -> None:
+        """Raise NestedSessionError if THIS thread has a write batch open -- and remember it, so a
+        caller that swallows the exception still fails its batch item."""
+        tl = self._thread_local
+        if getattr(tl, "batch_open", False):
+            tl.batch_violation = (
+                "a database session was opened inside a write batch: on the app's one SQLite "
+                "connection its commit would commit the batch (spec F5) -- write through the "
+                "batch's session instead")
+            raise NestedSessionError(tl.batch_violation)
+
+    def _new_session(self) -> Session:
+        """The one place a Session is made: refused mid-batch, as above, and refused to a caller
+        that does not hold `_write_lock` (review I-1). A Session made without it would share the one
+        SQLite connection with a write batch on another thread: it would read the batch's
+        uncommitted rows, and its commit -- or its close, whose pool reset is a ROLLBACK -- would end
+        the batch's transaction under it. `session()` takes the lock first; a direct caller must."""
+        self._refuse_inside_batch()
+        # RLock._is_owned(): True only for the thread that holds it (CPython's RLock, C and
+        # Python alike; Condition relies on it). Owned by ANOTHER thread is not enough.
+        if not self._write_lock._is_owned():
+            raise DatabaseError("a database session was requested without holding _write_lock: "
+                                "on the app's one shared SQLite connection it could end another "
+                                "thread's write batch -- use session(), or take the lock first")
+        return self._session_maker()
+
+    # =========================================================================
+    # Write batches (ingest-speed Task 6, spec 3.2-3.6)
+    # =========================================================================
+
+    def write_batch(self, items: Sequence[Any]) -> List[WriteOutcome]:
+        """Write many files in ONE transaction, a savepoint per file; one outcome per item.
+
+        Items are TrimWrite, FinalTestWrite, SmoothnessWrite or SkipMarkerWrite -- each run by
+        its session-taking body, the one its public method (`save_analysis`, `save_final_test`,
+        `save_smoothness_result`, `mark_file_skipped`) wraps in a session of its own.
+
+        * BEGIN IMMEDIATE is the transaction's first statement (ruling 4). The engine uses
+          pysqlite's legacy transaction control, which emits no BEGIN before a SAVEPOINT: SQLite
+          then starts the transaction AT the first savepoint and RELEASE of it is a COMMIT, so
+          without this line a "batch" commits once per file, silently (spec F4). IMMEDIATE also
+          takes the write lock up front: another process holding it makes BEGIN wait
+          busy_timeout and fail loudly, never half-way through the batch.
+        * A SAVEPOINT per file, holding the file's rows AND its processed-files marker (ruling
+          7): one bad file rolls back alone, and "processed" is exactly "committed" -- a crash
+          before the COMMIT leaves every file of the batch new, since the ingest's scan reads
+          only committed markers (spec 3.4, F6).
+        * No other session on this thread until the batch is done (ruling 6): `session()`
+          raises NestedSessionError, and a refusal a caller swallowed still fails its file.
+        * The whole batch holds `_write_lock` (through `session()`): other threads wait for it,
+          they are never refused -- and no Session is made without that lock (`_new_session`).
+        * A guard savepoint, held from just after BEGIN to just before the COMMIT, proves the
+          COMMIT is the batch's own transaction's (review I-1): a COMMIT or ROLLBACK that ended it
+          under the batch destroys the guard, and the batch then raises instead of committing
+          whatever pysqlite silently began after it.
+
+        Returns one WriteOutcome per item, in order, once the batch has COMMITTED. If the
+        transaction cannot be opened or committed, BatchCommitError is raised carrying every item
+        as `failed` and how many batch commits in a row have failed; nothing of the batch is
+        stored, except what a foreign COMMIT that ended its transaction had already made durable
+        (see BatchCommitError). The flush policy -- how many files, how often -- is the caller's
+        (spec 3.1, ruling 5).
+        """
+        items = list(items)
+        for item in items:
+            if not isinstance(item, _BATCH_ITEMS):
+                raise TypeError("write_batch takes TrimWrite, FinalTestWrite, SmoothnessWrite or "
+                                f"SkipMarkerWrite items, not {type(item).__name__}")
+        if not items:
+            return []
+        tl = self._thread_local
+        with self._write_lock:
+            outcomes: List[WriteOutcome] = []
+            opened = False
+            try:
+                with self.session() as session:       # NestedSessionError if a batch is open
+                    tl.batch_open = opened = True
+                    connection = session.connection()
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                    dbapi = connection.connection.dbapi_connection
+                    self._batch_still_open(dbapi, "BEGIN IMMEDIATE")
+                    # The batch's GUARD: a savepoint only this transaction holds. Any COMMIT or
+                    # ROLLBACK that ends the transaction destroys it -- even though pysqlite then
+                    # silently BEGINs a new one at the next INSERT, which the tripwire cannot see
+                    # (review I-1) -- so its RELEASE below fails, and nothing is committed.
+                    connection.exec_driver_sql(f"SAVEPOINT {_BATCH_GUARD}")
+                    for item in items:
+                        outcomes.append(self._write_one(session, item))
+                        self._batch_still_open(dbapi, _item_name(item))
+                    self._release_batch_guard(connection)
+                # session() has committed: the batch is stored.
+            except Exception as exc:
+                if not opened and isinstance(exc, NestedSessionError):
+                    raise                            # write_batch inside a batch: a bug, not a commit
+                self._failed_batch_commits += 1
+                why = f"the batch was not committed: {type(exc).__name__}: {exc}"
+                raise BatchCommitError(exc, [WriteOutcome(FAILED, reason=why[:500]) for _ in items],
+                                       self._failed_batch_commits) from exc
+            finally:
+                if opened:
+                    tl.batch_open = False
+                    tl.batch_violation = None
+            self._failed_batch_commits = 0
+            return outcomes
+
+    def _write_one(self, session: Session, item) -> WriteOutcome:
+        """One file of a batch, in its own savepoint: its rows and its marker commit together
+        with the batch, or roll back together, alone. A failure of the savepoint machinery
+        itself (SAVEPOINT, ROLLBACK TO) is the batch's and propagates."""
+        tl = self._thread_local
+        tl.batch_violation = None
+        savepoint = session.begin_nested()
+        try:
+            status, row_id, why = self._write_item(session, item)
+            if tl.batch_violation is not None:      # a refused session it swallowed
+                raise NestedSessionError(tl.batch_violation)
+            savepoint.commit()                      # RELEASE: still inside the batch
+        except Exception as exc:
+            savepoint.rollback()                    # ROLLBACK TO: this file's rows AND marker
+            return self._item_failure(item, exc)
+        finally:
+            # Each file's body starts from an empty identity map, as it did in a session of its
+            # own. Defensive, not load-bearing today (removing it changes no stored row: the
+            # identity map holds clean objects weakly and nothing here keeps them), but the bodies
+            # delete in bulk and lean on ON DELETE CASCADE, and neither tells the session -- so an
+            # earlier file's object can never stand in for a row a later file's body reads.
+            session.expunge_all()
+        if isinstance(item, TrimWrite) and item.stat is None:
+            # Right for a file that could not be statted (an ERROR result for a file gone or
+            # locked has always kept its row); otherwise a caller dropped the parse's own stat,
+            # and the file would be re-parsed on every run without a word (review m-4).
+            logger.warning(f"{item.analysis.metadata.filename}: saved WITHOUT a processed marker -- "
+                           "no (size, mtime) came with it, so the next run offers it again")
+        return WriteOutcome(status, row_id=row_id, reason=why)
+
+    def _write_item(self, session: Session, item) -> Tuple[str, Optional[int], Optional[str]]:
+        """Run ONE item's session-taking body: (status, row id, why). Nothing here commits."""
+        if isinstance(item, TrimWrite):
+            return SAVED, self._save_analysis_in(session, item.analysis, item.stat,
+                                                 item.file_hash), None
+        if isinstance(item, FinalTestWrite):
+            return SAVED, self._save_final_test_in(
+                session, item.metadata, item.tracks, item.test_results, item.file_hash,
+                item.file_size, item.file_modified_date), None
+        if isinstance(item, SmoothnessWrite):
+            row_id = self._save_smoothness_in(session, item.metadata, item.tracks, item.file_hash,
+                                              item.file_size, item.file_modified_date)
+            if row_id == -1:
+                # save_smoothness_result's -1: its insert hit the UNIQUE identity (filename,
+                # file_date, model, serial) of a row holding DIFFERENT content, and nothing was
+                # stored. Never a `saved` outcome for a file with no row.
+                return DUPLICATE, None, ("nothing stored: a smoothness row with another content "
+                                         "hash already holds this file's identity "
+                                         "(filename, file_date, model, serial)")
+            return SAVED, row_id, None
+        return SAVED, self._mark_file_skipped_in(
+            session, filename=item.filename, file_path=item.file_path, file_hash=item.file_hash,
+            file_size=item.file_size, file_modified_date=item.file_modified_date,
+            error_message=item.error_message, failed_read=item.failed_read), None
+
+    @staticmethod
+    def _item_failure(item, exc: Exception) -> WriteOutcome:
+        name = _item_name(item)
+        why = f"{type(exc).__name__}: {exc}"[:500]
+        if isinstance(exc, IntegrityError) and "UNIQUE constraint" in str(exc):
+            logger.warning(f"{name}: not saved -- its own rows broke a UNIQUE constraint: {why}")
+            return WriteOutcome(DUPLICATE, reason=why, error=exc)
+        logger.error(f"Save failed for {name}: {why}")
+        return WriteOutcome(FAILED, reason=why, error=exc)
+
+    @staticmethod
+    def _batch_still_open(dbapi_connection, after: str) -> None:
+        """Early tripwire: the batch's transaction must stand from BEGIN IMMEDIATE to its COMMIT.
+
+        After BEGIN it proves the BEGIN began one (spec F4: pysqlite could otherwise leave the
+        savepoints to start it). Between files it catches a transaction ended with no statement
+        after it. It CANNOT see one ended and followed by an INSERT or UPDATE -- pysqlite's legacy
+        transaction control silently BEGINs again -- which is why the batch's guard savepoint,
+        released just before the COMMIT, is the check that settles it (review I-1)."""
+        if not dbapi_connection.in_transaction:
+            raise DatabaseError(
+                f"the batch's transaction ended before its commit (after {after}): files of this "
+                "batch may have been stored one by one; the next scan decides which")
+
+    @staticmethod
+    def _release_batch_guard(connection) -> None:
+        """RELEASE the batch's guard savepoint, the last statement before the COMMIT. It fails with
+        "no such savepoint" if and only if the transaction the batch opened has been ended under it
+        -- the one case in which the COMMIT to come would commit a different transaction."""
+        try:
+            connection.exec_driver_sql(f"RELEASE SAVEPOINT {_BATCH_GUARD}")
+        except OperationalError as exc:
+            if "no such savepoint" not in str(exc):
+                raise
+            raise DatabaseError(
+                "the batch's transaction was ended under it -- a COMMIT or ROLLBACK that was not "
+                "the batch's -- so it was not committed: whatever that COMMIT made durable stays "
+                "(the files before it, and perhaps the interrupted file's first rows without "
+                "their marker); the next scan decides which files are new") from exc
 
     # =========================================================================
     # Analysis Results
@@ -1851,122 +1104,167 @@ class DatabaseManager:
             logger.debug(f"Skipping save_analysis for Smoothness: {analysis.metadata.filename}")
             return getattr(analysis, 'smoothness_id', -1) or -1
 
+        # This caller was not handed the parse's own (size, mtime) and hash, so it takes them
+        # itself -- BEFORE the session, never inside it (ruling 10): with one SQLite connection
+        # shared by every thread (StaticPool), a stat inside the transaction held that
+        # connection across a ~113 ms share round trip per file. Same values as before, since
+        # the same two calls ran a few statements later.
+        stat, file_hash = self._file_identity(analysis.metadata.file_path)
+
         # session() acquires _write_lock internally (RLock-reentrant), so
         # wrapping with another `with self._write_lock` here is redundant and
         # only adds confusion to the lock graph. The session context is
         # sufficient for SQLite serialization.
         with self.session() as session:
-            # Check for existing record by the DB's UNIQUE-constraint key
-            # (filename, file_date, model, serial).  Pre-fix this filtered on
-            # (filename, file_path), but the UNIQUE constraint is keyed on
-            # the metadata tuple -- the same file on a different path string
-            # (UNC vs mapped drive, folder reorg, network share migration)
-            # missed this lookup and then raised IntegrityError at INSERT
-            # time.  Aligning the lookup with the constraint turns these
-            # re-presentations into idempotent UPDATEs.
-            # See save_final_test for the parallel lesson.
-            existing = session.query(DBAnalysisResult).filter(
-                DBAnalysisResult.filename == analysis.metadata.filename,
-                DBAnalysisResult.file_date == analysis.metadata.file_date,
-                DBAnalysisResult.model == analysis.metadata.model,
-                DBAnalysisResult.serial == analysis.metadata.serial,
-            ).first()
+            return self._save_analysis_in(session, analysis, stat, file_hash)
 
-            if existing:
-                logger.debug(f"Updating existing analysis: {analysis.metadata.filename}")
-                return self._update_existing_analysis(session, analysis)
+    def _file_identity(self, file_path: Union[str, Path]
+                       ) -> Tuple[Optional[Tuple[int, float]], Optional[str]]:
+        """(size, mtime) and SHA-256 of a file as it is on disk NOW.
 
-            # No existing record, create new one
-            db_analysis = self._map_analysis_to_db(analysis)
-            session.add(db_analysis)
-            session.flush()  # Get ID before commit
+        For the callers that did not parse it themselves -- `save_analysis`, `save_batch` -- and
+        so hold no stat or hash of the bytes that were parsed. Called OUTSIDE any transaction.
+        (None, None) when the file cannot be statted: the save then records no processed-files
+        marker, exactly as `_record_processed_file` always did for a file gone by save time. A
+        file that stats but cannot be read raises, as it did inside the save before.
+        """
+        file_path = Path(file_path)
+        try:
+            file_stat = stat_once(file_path)     # outside a parse: a REAL stat
+        except OSError:
+            return None, None
+        return ((file_stat.st_size, file_stat.st_mtime),
+                calculate_file_hash(file_path, known_stat=file_stat))
 
-            # Per-pass sweep/recipe rows and the file's laser-setup row.
-            # db_analysis.tracks preserves the append order _map_analysis_to_db
-            # built it in, so zipping with analysis.tracks pairs each parser
-            # track's trim_passes with the matching freshly-flushed DBTrackResult
-            # (which now carries a real id).
-            for track, db_track in zip(analysis.tracks, db_analysis.tracks):
-                self._write_trim_passes(session, db_track, track)
-            self._write_trim_setup(session, db_analysis.id, getattr(analysis, 'trim_setup', None))
+    def _save_analysis_in(self, session: Session, analysis: AnalysisResult,
+                          stat: Optional[Tuple[int, float]], file_hash: Optional[str]) -> int:
+        """Write one trim result into the session it is GIVEN; return its analysis id.
 
-            # Record as processed file
-            # ERROR results are marked success=False so they get retried
-            is_success = analysis.overall_status != AnalysisStatus.ERROR
-            self._record_processed_file(
-                session,
-                analysis.metadata.file_path,
-                db_analysis.id,
-                success=is_success,
-                # The row's own error_message: analysis_results.error_reason
-                # when the processor set one (track-level ERRORs included),
-                # else the same file-level text the marker below uses.
-                reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
-                # The marker's reason stays the file-level text ONLY -- see
-                # _record_processed_file's docstring for why this must not
-                # change which files get retried.
-                marker_reason=_error_reason(analysis),
-            )
+        What `save_analysis` always did -- the analysis row, its tracks, their trim passes, the
+        setup row and the processed-files marker -- minus the session: the caller owns it, and
+        with it the commit (`save_analysis`: one file per session; a batch writer: many files per
+        transaction, a savepoint each). The file's rows and its marker are written in the
+        caller's one unit of work, so "processed" is exactly "committed" (ruling 7).
 
-            logger.debug(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
-            return db_analysis.id
+        `stat` is the (size, mtime) and `file_hash` the SHA-256 of the bytes that were parsed:
+        recorded as given, never re-read -- this does no file I/O at all (ruling 10). `stat`
+        None means the file could not be statted: the rows are written, no marker is.
+
+        Never opens a session of its own: inside a batch that would commit the batch (spec F5).
+        """
+        if getattr(analysis, 'file_type', 'trim') != 'trim':
+            # save_analysis returns early for these; a final test or smoothness file written
+            # here would become an analysis row.
+            raise ValueError(f"{analysis.metadata.filename} is a {analysis.file_type} result, "
+                             "not a trim result -- its rows are not written here")
+
+        # Check for existing record by the DB's UNIQUE-constraint key
+        # (filename, file_date, model, serial).  Pre-fix this filtered on
+        # (filename, file_path), but the UNIQUE constraint is keyed on
+        # the metadata tuple -- the same file on a different path string
+        # (UNC vs mapped drive, folder reorg, network share migration)
+        # missed this lookup and then raised IntegrityError at INSERT
+        # time.  Aligning the lookup with the constraint turns these
+        # re-presentations into idempotent UPDATEs.
+        # See save_final_test for the parallel lesson.
+        existing = session.query(DBAnalysisResult).filter(
+            DBAnalysisResult.filename == analysis.metadata.filename,
+            DBAnalysisResult.file_date == analysis.metadata.file_date,
+            DBAnalysisResult.model == analysis.metadata.model,
+            DBAnalysisResult.serial == analysis.metadata.serial,
+        ).first()
+
+        if existing:
+            logger.debug(f"Updating existing analysis: {analysis.metadata.filename}")
+            return self._update_existing_analysis(session, analysis, stat, file_hash)
+
+        # No existing record, create new one
+        db_analysis = self._map_analysis_to_db(analysis)
+        session.add(db_analysis)
+        session.flush()  # Get ID before commit
+
+        # Per-pass sweep/recipe rows and the file's laser-setup row.
+        # db_analysis.tracks preserves the append order _map_analysis_to_db
+        # built it in, so zipping with analysis.tracks pairs each parser
+        # track's trim_passes with the matching freshly-flushed DBTrackResult
+        # (which now carries a real id).
+        for track, db_track in zip(analysis.tracks, db_analysis.tracks):
+            self._write_trim_passes(session, db_track, track)
+        self._write_trim_setup(session, db_analysis.id, getattr(analysis, 'trim_setup', None))
+
+        # Record as processed file
+        # ERROR results are marked success=False so they get retried
+        is_success = analysis.overall_status != AnalysisStatus.ERROR
+        self._record_processed_file(
+            session,
+            analysis.metadata.file_path,
+            db_analysis.id,
+            success=is_success,
+            # The row's own error_message: analysis_results.error_reason
+            # when the processor set one (track-level ERRORs included),
+            # else the same file-level text the marker below uses.
+            reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
+            # The marker's reason stays the file-level text ONLY -- see
+            # _record_processed_file's docstring for why this must not
+            # change which files get retried.
+            marker_reason=_error_reason(analysis),
+            stat=stat,
+            file_hash=file_hash,
+        )
+
+        logger.debug(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
+        return db_analysis.id
 
     def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
         """
-        Save multiple analysis results efficiently.
+        Save multiple analysis results in ONE transaction.
+
+        A wrapper over `write_batch` (ruling 8, 2026-09-25): one BEGIN IMMEDIATE transaction,
+        a savepoint per file, so each file is written exactly as `save_analysis` writes it --
+        trim_passes and trim_setup included, which the old commit-per-file body here never
+        wrote for a new file (the parked C2 finding). It has no callers; its signature and
+        its contract are kept: a final-test or smoothness result passes through as
+        `save_analysis` returns it, and a file that fails is logged and left out.
 
         Args:
             analyses: List of AnalysisResult objects
 
         Returns:
-            List of database IDs
+            List of database IDs, in input order, of what was saved
         """
-        saved_ids = []
+        ids: List[Optional[int]] = []
+        items: List[TrimWrite] = []
+        slots: List[int] = []
+        for analysis in analyses:
+            file_type = getattr(analysis, 'file_type', 'trim')
+            if file_type == 'final_test':
+                ids.append(getattr(analysis, 'final_test_id', -1) or -1)
+                continue
+            if file_type == 'smoothness':
+                ids.append(getattr(analysis, 'smoothness_id', -1) or -1)
+                continue
+            try:
+                # Taken before the transaction, as save_analysis does (ruling 10).
+                stat, file_hash = self._file_identity(analysis.metadata.file_path)
+            except Exception as e:
+                logger.error(f"Failed to save analysis {getattr(analysis.metadata, 'filename', '?')}: {e}")
+                continue
+            slots.append(len(ids))
+            ids.append(None)
+            items.append(TrimWrite(analysis, stat, file_hash))
 
-        with self._write_lock:
-            for analysis in analyses:
-                try:
-                    with self.session() as session:
-                        # Skip Final Test files - they're already saved in processor
-                        if getattr(analysis, 'file_type', 'trim') == 'final_test':
-                            saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
-                            continue
+        try:
+            outcomes = self.write_batch(items)
+        except BatchCommitError as e:
+            logger.error(f"Failed to save a batch of {len(items)} analyses: {e}")
+            outcomes = e.outcomes
+        for slot, item, outcome in zip(slots, items, outcomes):
+            if outcome.status == SAVED:
+                ids[slot] = outcome.row_id
+            else:
+                logger.error(f"Failed to save analysis {item.analysis.metadata.filename}: {outcome.reason}")
 
-                        # Check for existing record by the DB UNIQUE key
-                        # (filename, file_date, model, serial).  Must match
-                        # save_analysis; see comment there for rationale.
-                        existing = session.query(DBAnalysisResult).filter(
-                            DBAnalysisResult.filename == analysis.metadata.filename,
-                            DBAnalysisResult.file_date == analysis.metadata.file_date,
-                            DBAnalysisResult.model == analysis.metadata.model,
-                            DBAnalysisResult.serial == analysis.metadata.serial,
-                        ).first()
-
-                        if existing:
-                            # Update existing record
-                            updated_id = self._update_existing_analysis(session, analysis)
-                            saved_ids.append(updated_id)
-                        else:
-                            # Create new record
-                            db_analysis = self._map_analysis_to_db(analysis)
-                            session.add(db_analysis)
-                            session.flush()
-
-                            is_success = analysis.overall_status != AnalysisStatus.ERROR
-                            self._record_processed_file(
-                                session,
-                                analysis.metadata.file_path,
-                                db_analysis.id,
-                                success=is_success,
-                                # See save_analysis for why reason/marker_reason differ.
-                                reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
-                                marker_reason=_error_reason(analysis),
-                            )
-
-                            saved_ids.append(db_analysis.id)
-                except Exception as e:
-                    logger.error(f"Failed to save analysis {getattr(analysis.metadata, 'filename', '?')}: {e}")
-
+        saved_ids = [i for i in ids if i is not None]
         logger.info(f"Saved batch of {len(saved_ids)} analyses")
         return saved_ids
 
@@ -2130,13 +1428,26 @@ class DatabaseManager:
         success: bool = True,
         reason: Optional[str] = None,
         marker_reason=_UNSET,
+        *,
+        stat: Optional[Tuple[int, float]],
+        file_hash: Optional[str],
     ) -> None:
         """Record a file as processed.
+
+        Does NO file I/O (ruling 10, 2026-09-25): the row records the `stat` and `file_hash` it
+        is handed -- the (size, mtime) and SHA-256 of the bytes that were parsed -- instead of
+        statting and hashing the file inside the caller's transaction. That took a share round
+        trip per file while holding the app's one connection, and a file rewritten between parse
+        and save was recorded with the NEW stat on the OLD content, so the next scan's stat fast
+        path skipped the new content.
 
         Args:
             session: Active database session
             file_path: Path to the processed file
             analysis_id: ID of the saved AnalysisResult
+            stat: (size, mtime) of the parsed bytes; None = the file could not be statted, and
+                then nothing is recorded (what a failed stat here always meant)
+            file_hash: SHA-256 of the parsed bytes; required with a stat
             success: False for ERROR results — allows retry on next run
             reason: the ERROR's own words, written to THIS row's error_message
                 (analysis_results.error_reason when the caller has one, else
@@ -2157,14 +1468,13 @@ class DatabaseManager:
             marker_reason = reason
         file_path = Path(file_path)
 
-        # One stat for existence, size and mtime: on the work share each
-        # separate stat is a ~113 ms network conversation (2026-09-20).
-        try:
-            file_stat = stat_once(file_path)     # outside a parse: a REAL stat
-        except OSError:
-            return
-
-        file_hash = calculate_file_hash(file_path, known_stat=file_stat)
+        size_mtime = _size_and_mtime(stat)
+        if size_mtime is None:
+            return          # could not be statted: record nothing, as a failed stat always did
+        if not file_hash:
+            raise ValueError(f"{file_path.name}: a stat without a content hash -- the processed "
+                             "marker needs both (the hash is the file's identity)")
+        file_size, file_mtime = size_mtime
 
         # Check if already recorded before inserting (avoids IntegrityError
         # which would rollback the entire transaction including parent analysis)
@@ -2176,8 +1486,8 @@ class DatabaseManager:
                 filename=file_path.name,
                 file_path=str(file_path),
                 file_hash=file_hash,
-                file_size=file_stat.st_size,
-                file_modified_date=datetime.fromtimestamp(file_stat.st_mtime),
+                file_size=file_size,
+                file_modified_date=datetime.fromtimestamp(file_mtime),
                 analysis_id=analysis_id,
                 success=success,
                 error_message=(None if success else reason),
@@ -2216,10 +1526,11 @@ class DatabaseManager:
         if success:
             self._clear_failure_marker(session, file_path)
         else:
-            self._write_failure_marker(session, file_path, marker_reason)
+            self._write_failure_marker(session, file_path, marker_reason, stat=size_mtime)
 
     def _write_failure_marker(self, session: Session, file_path: Path,
-                              reason: Optional[str]) -> bool:
+                              reason: Optional[str], *,
+                              stat: Optional[Tuple[int, float]]) -> bool:
         """Remember that this PATH could not be read. Returns whether it was.
 
         Refuses TRANSIENT reasons — a locked workbook, a dropped share, a
@@ -2227,6 +1538,10 @@ class DatabaseManager:
         takes the reason text for exactly this caller. Those files must stay
         retryable; a half-written one also re-offers itself as soon as its
         size or mtime changes.
+
+        `stat` is the (size, mtime) the caller carries -- the parsed bytes' own, the same one
+        the processed-files row records -- never a second stat of the file (ruling 10). None
+        (could not be statted) writes no marker, as a failed stat here always did.
         """
         # Deferred import: core imports database, never the reverse. By the
         # time an ERROR result exists, the processor module is already loaded.
@@ -2241,11 +1556,10 @@ class DatabaseManager:
 
         marker_hash = self.skip_marker_hash(str(file_path))
         text = (UNREADABLE_PREFIX + reason)[:2000]
-        try:
-            stat = file_path.stat()
-            size, modified = stat.st_size, datetime.fromtimestamp(stat.st_mtime)
-        except OSError:
+        size_mtime = _size_and_mtime(stat)
+        if size_mtime is None:
             return False
+        size, modified = size_mtime[0], datetime.fromtimestamp(size_mtime[1])
 
         existing = session.execute(
             select(DBProcessedFile).where(
@@ -3993,9 +3307,15 @@ class DatabaseManager:
     def _update_existing_analysis(
         self,
         session: Session,
-        analysis: AnalysisResult
+        analysis: AnalysisResult,
+        stat: Optional[Tuple[int, float]],
+        file_hash: Optional[str],
     ) -> int:
-        """Update an existing analysis record."""
+        """Update an existing analysis record.
+
+        `stat` and `file_hash` are the parsed bytes' own (size, mtime) and SHA-256, recorded on
+        the processed-files row as given -- see `_save_analysis_in` (no file I/O here).
+        """
         # Find existing record by the DB UNIQUE-constraint key
         # (filename, file_date, model, serial).  Must match save_analysis /
         # save_batch -- if we re-query by (filename, file_path) here and the
@@ -4101,6 +3421,8 @@ class DatabaseManager:
                 # See save_analysis for why reason/marker_reason differ.
                 reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
                 marker_reason=_error_reason(analysis),
+                stat=stat,
+                file_hash=file_hash,
             )
 
             logger.debug(f"Updated analysis ID {existing.id}: status={analysis.overall_status.value}")
@@ -4125,6 +3447,8 @@ class DatabaseManager:
             success=is_success,
             reason=getattr(analysis, "error_reason", None) or _error_reason(analysis),
             marker_reason=_error_reason(analysis),
+            stat=stat,
+            file_hash=file_hash,
         )
         return db_analysis.id
 
@@ -5419,6 +4743,39 @@ class DatabaseManager:
 
         Returns:
             ID of saved FinalTestResult
+
+        The body is `_save_final_test_in` (ingest-speed Task 7); this wraps it in a session of its
+        own, committed once, holding the write lock -- as `write_batch` runs the same body inside
+        its one transaction.
+        """
+        with self._write_lock:
+            with self.session() as session:
+                return self._save_final_test_in(session, metadata, tracks, test_results,
+                                                file_hash, file_size, file_modified_date)
+
+    def _save_final_test_in(
+        self,
+        session: Session,
+        metadata: Dict[str, Any],
+        tracks: List[Dict[str, Any]],
+        test_results: Dict[str, Any],
+        file_hash: str,
+        file_size: Optional[int] = None,
+        file_modified_date: Optional[datetime] = None,
+    ) -> int:
+        """Write one final test into the session it is GIVEN; return its row id.
+
+        What `save_final_test` always did -- a content duplicate refreshed in place, a new file
+        inserted and linked to its trim, a UNIQUE-identity collision recovered -- with NO commit,
+        NO transaction-level rollback and NO session of its own (a commit here would commit the
+        whole batch this runs in: spec F5; write_batch's guard turns one into BatchCommitError).
+        Until 2026-09-25 this was three sessions deep and committed in each. The parts that were
+        separate transactions because they must NEVER be fatal -- the other path's marker, the
+        re-grade of a duplicate, the identity refresh -- now run in savepoints of their own, so a
+        failure there rolls back only itself, exactly as a failed transaction of its own did. The
+        insert runs in one too, so a UNIQUE collision can be recovered in the same session.
+        `file_hash`, `file_size` and `file_modified_date` are the parsed bytes' own, recorded as
+        given: no file I/O here.
         """
         from sqlalchemy.exc import IntegrityError
         from laser_trim_analyzer.core.ft_regrade import (
@@ -5428,267 +4785,255 @@ class DatabaseManager:
             FinalTestTrack as DBFinalTestTrack,
         )
 
-        # Use lock to prevent race conditions with SQLite
-        with self._write_lock:
-            # Is this CONTENT already on record?  Resolved in a session of
-            # its own so the marker write below happens OUTSIDE a read
-            # transaction — same reason as the IntegrityError branch at the
-            # bottom of this method.
-            dup_id = None
-            dup_path_on_record = None
-            with self.session() as session:
+        # Is this CONTENT already on record?
+        existing = (
+            session.query(DBFinalTestResult)
+            .filter(DBFinalTestResult.file_hash == file_hash)
+            .first()
+        )
+        if existing is not None:
+            # Stamp the stat onto a legacy row while we're here — this file was
+            # fully read to get here, so record what it costs nothing to record.
+            if file_size is not None and existing.file_size is None:
+                existing.file_size = file_size
+                existing.file_modified_date = file_modified_date
+                session.flush()
+            dup_id = existing.id
+            dup_path_on_record = existing.file_path
+
+            this_path = str(metadata.get("file_path") or "")
+            if this_path and this_path != (dup_path_on_record or ""):
+                # THIS PATH holds content already stored under ANOTHER path —
+                # the same export dropped into a model folder and into a
+                # "Voltage Output" / "Final Sheets" subfolder. The identity
+                # lives on the other path's row, so until 2026-09-15 nothing on
+                # record said this path had ever been looked at: the scan called
+                # it new on every run, read it over the share, parsed it,
+                # produced a verdict and dropped it. ~370 files a day on the work
+                # share (1,371 processed, 442 verdicts, index +69). A per-path
+                # skip marker is what records it.
+                self._mark_ft_duplicate_path_in(
+                    session, metadata, this_path, file_hash, file_size,
+                    file_modified_date,
+                    f"same content as final_test_results id {dup_id}")
+            # Refresh the stored verdict and tracks from THIS parse. Trim rows
+            # have always updated in place on a re-read
+            # (_update_existing_analysis); this early return used to hand back
+            # the old id and touch nothing else, so a reprocess of the ~151k-row
+            # work database silently refreshed only half of what anyone would
+            # expect. `_write_final_test_regrade` is the SAME writer the
+            # re-grade repair pass uses, so a refreshed row is indistinguishable
+            # from a freshly graded one. Never fatal: this save path runs
+            # unattended, overnight, over ~151,000 files, and one malformed
+            # record must cost only its own refresh -- not this file's save (the
+            # row being refreshed already exists and is valid, just possibly
+            # stale) and not the run.
+            self._regrade_final_test_in(session, dup_id, tracks, test_results)
+            logger.debug(f"Final test already exists: {metadata.get('filename')}")
+            return dup_id
+
+        try:
+            with session.begin_nested():
+                # Determine overall status from corrected track-level linearity
+                # first. The raw FT header can be stale after analyzer
+                # correction; any corrected track failure wins.
+                linearity_pass = self._resolve_final_test_linearity_pass(test_results, tracks)
+                overall_status = (
+                    DBStatusType.FAIL if linearity_pass is False else DBStatusType.PASS
+                )
+
+                # Find matching trim result
+                linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
+                    session,
+                    metadata.get("model"),
+                    metadata.get("serial"),
+                    metadata.get("file_date") or metadata.get("test_date")
+                )
+
+                # Create FinalTestResult
+                db_result = DBFinalTestResult(
+                    filename=metadata.get("filename", "unknown"),
+                    file_path=str(metadata.get("file_path", "")),
+                    file_hash=file_hash,
+                    file_date=metadata.get("file_date"),
+                    file_size=file_size,
+                    file_modified_date=file_modified_date,
+                    model=metadata.get("model", "unknown"),
+                    serial=metadata.get("serial", "unknown"),
+                    test_date=metadata.get("test_date"),
+                    overall_status=overall_status,
+                    linearity_pass=linearity_pass,
+                    # Reference, never the disposition — see the column
+                    # comments on FinalTestResult.
+                    station_linearity_pass=self._coerce_optional_bool(
+                        test_results.get("station_linearity_pass")),
+                    station_cell_flag_conflict=self._coerce_optional_bool(
+                        test_results.get("station_cell_flag_conflict")),
+                    graded_window_source=graded_window_source(tracks),
+                    linearity_error=tracks[0].get("linearity_error") if tracks else None,
+                    resistance_pass=test_results.get("resistance_pass"),
+                    resistance_value=test_results.get("resistance_value"),
+                    resistance_tolerance=test_results.get("resistance_tolerance"),
+                    electrical_angle_pass=test_results.get("electrical_angle_pass"),
+                    hysteresis_pass=test_results.get("hysteresis_pass"),
+                    phasing_pass=test_results.get("phasing_pass"),
+                    linked_trim_id=linked_trim_id,
+                    match_confidence=match_confidence,
+                    days_since_trim=days_since_trim,
+                    match_method=match_method,
+                )
+
+                session.add(db_result)
+                session.flush()
+                result_id = db_result.id
+
+                # Add tracks
+                for track_data in tracks:
+                    # Use electrical_angles as position_data (X-axis for charts)
+                    # electrical_angles contains: inches for linear pots, degrees for rotary
+                    position_values = track_data.get("electrical_angles") or track_data.get("positions")
+
+                    db_track = DBFinalTestTrack(
+                        final_test_id=result_id,
+                        track_id=track_data.get("track_id", "default"),
+                        status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
+                        linearity_spec=track_data.get("linearity_spec"),
+                        linearity_error=track_data.get("linearity_error"),
+                        linearity_pass=track_data.get("linearity_pass"),
+                        linearity_fail_points=track_data.get("linearity_fail_points", 0),
+                        position_data=position_values,
+                        error_data=track_data.get("errors"),
+                        theory_data=track_data.get("theory_values"),
+                        electrical_angle_data=track_data.get("electrical_angles"),
+                        upper_limits=track_data.get("upper_limits"),
+                        lower_limits=track_data.get("lower_limits"),
+                        max_deviation=track_data.get("max_deviation"),
+                        max_deviation_position=track_data.get("max_deviation_angle"),
+                        optimal_offset=track_data.get("optimal_offset"),
+                        optimal_slope=track_data.get("optimal_slope"),
+                        linearity_type=track_data.get("linearity_type"),
+                        **ft_reference_fields(track_data),
+                    )
+                    session.add(db_track)
+                # (the savepoint's release flushes the tracks: a track that breaks a
+                # constraint rolls the whole insert back, as the old commit did)
+            logger.debug(f"Saved Final Test: {metadata.get('filename')} (ID: {result_id}, linked_trim: {linked_trim_id})")
+            return result_id
+
+        except IntegrityError:
+            # The unique constraint that can fire is on
+            # (filename, file_date, model, serial), not on file_hash.
+            # When the same file is reprocessed with edited content the
+            # hash differs but the tuple still matches, so the previous
+            # hash-only fallback couldn't find the existing row and the
+            # error propagated to the user as "Error processing Final
+            # Test ... UNIQUE constraint failed". Query by both keys.
+            logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
+            existing_id = None
+            existing_path = None
+            try:
                 existing = (
                     session.query(DBFinalTestResult)
                     .filter(DBFinalTestResult.file_hash == file_hash)
                     .first()
                 )
+                if existing is None:
+                    existing = (
+                        session.query(DBFinalTestResult)
+                        .filter(
+                            DBFinalTestResult.filename == metadata.get("filename"),
+                            DBFinalTestResult.file_date == metadata.get("file_date"),
+                            DBFinalTestResult.model == metadata.get("model"),
+                            DBFinalTestResult.serial == metadata.get("serial"),
+                        )
+                        .first()
+                    )
                 if existing:
-                    # Stamp the stat onto a legacy row while we're here —
-                    # this file was fully read to get here, so record what
-                    # it costs nothing to record.
-                    if file_size is not None and existing.file_size is None:
-                        existing.file_size = file_size
-                        existing.file_modified_date = file_modified_date
-                        session.commit()
-                    dup_id = existing.id
-                    dup_path_on_record = existing.file_path
+                    existing_id = existing.id
+                    existing_path = existing.file_path
+            except Exception:
+                logger.debug("FT duplicate-recovery query failed", exc_info=True)
 
-            if dup_id is not None:
-                this_path = str(metadata.get("file_path") or "")
-                if this_path and this_path != (dup_path_on_record or ""):
-                    # THIS PATH holds content already stored under ANOTHER
-                    # path — the same export dropped into a model folder and
-                    # into a "Voltage Output" / "Final Sheets" subfolder.
-                    # The identity lives on the other path's row, so until
-                    # 2026-09-15 nothing on record said this path had ever
-                    # been looked at: the scan called it new on every run,
-                    # read it over the share, parsed it, produced a verdict
-                    # and dropped it. ~370 files a day on the work share
-                    # (1,371 processed, 442 verdicts, index +69). A per-path
-                    # skip marker is what records it.
-                    self._mark_ft_duplicate_path(
-                        metadata, this_path, file_hash, file_size,
+            if existing_id is not None:
+                # `str` because that is how the row's own file_path was written —
+                # comparing a Path with the stored string would send every
+                # same-path case down the copy branch.
+                dup_path = str(metadata.get("file_path") or "")
+                if dup_path and dup_path == (existing_path or ""):
+                    # SAME PATH. Not a copy at all: this file's own row owns the
+                    # unique tuple, and the file was re-exported in place after
+                    # that row was written, so the row's recorded hash and (size,
+                    # mtime) describe content that is no longer there. A skip
+                    # marker cannot help here — `_load_processed_hashes` lets the
+                    # FT row's stat overwrite the marker's for the same path — so
+                    # the scan re-hashed, missed, and re-parsed these every single
+                    # run (the 23 Voltage Output files that came back morning AND
+                    # afternoon on 2026-09-15, re-saved on the share on 09-10).
+                    # Refresh the row's IDENTITY so the next scan recognises the file.
+                    self._refresh_final_test_identity_in(
+                        session, existing_id, file_hash, file_size,
                         file_modified_date,
-                        f"same content as final_test_results id {dup_id}")
-                # Refresh the stored verdict and tracks from THIS parse.
-                # Trim rows have always updated in place on a re-read
-                # (_update_existing_analysis); this early return used to
-                # hand back the old id and touch nothing else, so a
-                # reprocess of the ~151k-row work database silently
-                # refreshed only half of what anyone would expect.
-                # apply_final_test_regrade is the SAME writer the re-grade
-                # repair pass already uses, so a refreshed row is
-                # indistinguishable from a freshly graded one. It takes
-                # _write_lock itself, which is fine — the lock is an RLock
-                # specifically so nested acquisitions on this thread do not
-                # deadlock (see its declaration).
-                #
-                # Never fatal: this save path runs unattended, overnight,
-                # over ~151,000 files. apply_final_test_regrade already
-                # catches its own exceptions and reports failure by
-                # returning False rather than raising, so this try/except
-                # is belt-and-suspenders for anything that still escapes
-                # it. Either way, one malformed record must cost only its
-                # own refresh, not this file's save (the row being
-                # refreshed already exists and is valid, just possibly
-                # stale) and not the run. See the task report for the full
-                # reasoning.
-                try:
-                    self.apply_final_test_regrade(dup_id, tracks, test_results)
-                except Exception:
-                    logger.warning(
-                        "Could not refresh final test %s on reprocess "
-                        "(final_test_results id %s) — leaving the "
-                        "previously stored result in place",
-                        metadata.get("filename"), dup_id, exc_info=True)
-                logger.debug(f"Final test already exists: {metadata.get('filename')}")
-                return dup_id
+                        filename=metadata.get("filename") or Path(dup_path).name)
+                elif dup_path:
+                    # This PATH holds content already on record under another
+                    # path. Without a marker the scan re-parses it on every run
+                    # forever, because the identity lives on the other path's row.
+                    self._mark_ft_duplicate_path_in(
+                        session, metadata, dup_path, file_hash, file_size,
+                        file_modified_date,
+                        f"duplicate of final_test_results id {existing_id}")
+                return existing_id
+            raise
 
-            try:
-                with self.session() as session:
-                    # Determine overall status from corrected track-level
-                    # linearity first. The raw FT header can be stale after
-                    # analyzer correction; any corrected track failure wins.
-                    linearity_pass = self._resolve_final_test_linearity_pass(test_results, tracks)
-                    overall_status = (
-                        DBStatusType.FAIL if linearity_pass is False else DBStatusType.PASS
-                    )
-
-                    # Find matching trim result
-                    linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
-                        session,
-                        metadata.get("model"),
-                        metadata.get("serial"),
-                        metadata.get("file_date") or metadata.get("test_date")
-                    )
-
-                    # Create FinalTestResult
-                    db_result = DBFinalTestResult(
-                        filename=metadata.get("filename", "unknown"),
-                        file_path=str(metadata.get("file_path", "")),
-                        file_hash=file_hash,
-                        file_date=metadata.get("file_date"),
-                        file_size=file_size,
-                        file_modified_date=file_modified_date,
-                        model=metadata.get("model", "unknown"),
-                        serial=metadata.get("serial", "unknown"),
-                        test_date=metadata.get("test_date"),
-                        overall_status=overall_status,
-                        linearity_pass=linearity_pass,
-                        # Reference, never the disposition — see the column
-                        # comments on FinalTestResult.
-                        station_linearity_pass=self._coerce_optional_bool(
-                            test_results.get("station_linearity_pass")),
-                        station_cell_flag_conflict=self._coerce_optional_bool(
-                            test_results.get("station_cell_flag_conflict")),
-                        graded_window_source=graded_window_source(tracks),
-                        linearity_error=tracks[0].get("linearity_error") if tracks else None,
-                        resistance_pass=test_results.get("resistance_pass"),
-                        resistance_value=test_results.get("resistance_value"),
-                        resistance_tolerance=test_results.get("resistance_tolerance"),
-                        electrical_angle_pass=test_results.get("electrical_angle_pass"),
-                        hysteresis_pass=test_results.get("hysteresis_pass"),
-                        phasing_pass=test_results.get("phasing_pass"),
-                        linked_trim_id=linked_trim_id,
-                        match_confidence=match_confidence,
-                        days_since_trim=days_since_trim,
-                        match_method=match_method,
-                    )
-
-                    session.add(db_result)
-                    session.flush()
-                    result_id = db_result.id
-
-                    # Add tracks
-                    for track_data in tracks:
-                        # Use electrical_angles as position_data (X-axis for charts)
-                        # electrical_angles contains: inches for linear pots, degrees for rotary
-                        position_values = track_data.get("electrical_angles") or track_data.get("positions")
-
-                        db_track = DBFinalTestTrack(
-                            final_test_id=result_id,
-                            track_id=track_data.get("track_id", "default"),
-                            status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
-                            linearity_spec=track_data.get("linearity_spec"),
-                            linearity_error=track_data.get("linearity_error"),
-                            linearity_pass=track_data.get("linearity_pass"),
-                            linearity_fail_points=track_data.get("linearity_fail_points", 0),
-                            position_data=position_values,
-                            error_data=track_data.get("errors"),
-                            theory_data=track_data.get("theory_values"),
-                            electrical_angle_data=track_data.get("electrical_angles"),
-                            upper_limits=track_data.get("upper_limits"),
-                            lower_limits=track_data.get("lower_limits"),
-                            max_deviation=track_data.get("max_deviation"),
-                            max_deviation_position=track_data.get("max_deviation_angle"),
-                            optimal_offset=track_data.get("optimal_offset"),
-                            optimal_slope=track_data.get("optimal_slope"),
-                            linearity_type=track_data.get("linearity_type"),
-                            **ft_reference_fields(track_data),
-                        )
-                        session.add(db_track)
-
-                    session.commit()
-                    logger.debug(f"Saved Final Test: {metadata.get('filename')} (ID: {result_id}, linked_trim: {linked_trim_id})")
-                    return result_id
-
-            except IntegrityError as e:
-                # The unique constraint that can fire is on
-                # (filename, file_date, model, serial), not on file_hash.
-                # When the same file is reprocessed with edited content the
-                # hash differs but the tuple still matches, so the previous
-                # hash-only fallback couldn't find the existing row and the
-                # error propagated to the user as "Error processing Final
-                # Test ... UNIQUE constraint failed". Query by both keys.
-                logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
-                existing_id = None
-                existing_path = None
-                try:
-                    with self.session() as session:
-                        existing = (
-                            session.query(DBFinalTestResult)
-                            .filter(DBFinalTestResult.file_hash == file_hash)
-                            .first()
-                        )
-                        if existing is None:
-                            existing = (
-                                session.query(DBFinalTestResult)
-                                .filter(
-                                    DBFinalTestResult.filename == metadata.get("filename"),
-                                    DBFinalTestResult.file_date == metadata.get("file_date"),
-                                    DBFinalTestResult.model == metadata.get("model"),
-                                    DBFinalTestResult.serial == metadata.get("serial"),
-                                )
-                                .first()
-                            )
-                        if existing:
-                            existing_id = existing.id
-                            existing_path = existing.file_path
-                except Exception:
-                    logger.debug("FT duplicate-recovery query failed", exc_info=True)
-
-                if existing_id is not None:
-                    # Written outside the recovery session so no write nests
-                    # inside a read transaction. `str` because that is how the
-                    # row's own file_path was written — comparing a Path with
-                    # the stored string would send every same-path case down
-                    # the copy branch.
-                    dup_path = str(metadata.get("file_path") or "")
-                    if dup_path and dup_path == (existing_path or ""):
-                        # SAME PATH. Not a copy at all: this file's own row
-                        # owns the unique tuple, and the file was re-exported
-                        # in place after that row was written, so the row's
-                        # recorded hash and (size, mtime) describe content
-                        # that is no longer there. A skip marker cannot help
-                        # here — `_load_processed_hashes` lets the FT row's
-                        # stat overwrite the marker's for the same path — so
-                        # the scan re-hashed, missed, and re-parsed these
-                        # every single run (the 23 Voltage Output files that
-                        # came back morning AND afternoon on 2026-09-15,
-                        # re-saved on the share on 09-10). Refresh the row's
-                        # IDENTITY so the next scan recognises the file.
-                        self._refresh_final_test_identity(
-                            existing_id, file_hash, file_size,
-                            file_modified_date,
-                            filename=metadata.get("filename") or Path(dup_path).name)
-                    elif dup_path:
-                        # This PATH holds content already on record under
-                        # another path. Without a marker the scan re-parses
-                        # it on every run forever, because the identity lives
-                        # on the other path's row.
-                        self._mark_ft_duplicate_path(
-                            metadata, dup_path, file_hash, file_size,
-                            file_modified_date,
-                            f"duplicate of final_test_results id {existing_id}")
-                    return existing_id
-                raise
-
-    def _mark_ft_duplicate_path(self, metadata: Dict[str, Any], dup_path: str,
-                                file_hash: str, file_size: Optional[int],
-                                file_modified_date, reason: str) -> None:
+    def _mark_ft_duplicate_path_in(self, session: Session, metadata: Dict[str, Any],
+                                   dup_path: str, file_hash: str, file_size: Optional[int],
+                                   file_modified_date, reason: str) -> None:
         """Record THIS path as holding content already on record elsewhere.
 
-        The row it duplicates keeps the content identity; this path gets a
-        per-path skip marker so the incremental scan stops offering it. Never
-        fatal — a file that cannot be marked is merely offered again.
+        The row it duplicates keeps the content identity; this path gets a per-path skip marker so
+        the incremental scan stops offering it. Never fatal — a file that cannot be marked is
+        merely offered again — so the marker runs in a savepoint of its own (it was a transaction
+        of its own until 2026-09-25) and a failure rolls back only the marker.
         """
         try:
-            self.mark_file_skipped(
-                filename=(metadata.get("filename") or Path(dup_path).name),
-                file_path=dup_path,
-                file_hash=file_hash,
-                file_size=file_size,
-                file_modified_date=file_modified_date,
-                error_message=reason,
-            )
-        except Exception:
-            logger.debug("Could not mark FT duplicate path as skipped",
-                         exc_info=True)
+            with session.begin_nested():
+                self._mark_file_skipped_in(
+                    session,
+                    filename=(metadata.get("filename") or Path(dup_path).name),
+                    file_path=dup_path,
+                    file_hash=file_hash,
+                    file_size=file_size,
+                    file_modified_date=file_modified_date,
+                    error_message=reason,
+                )
+        except Exception as e:
+            # Said at WARNING (review m-1): at DEBUG the app's INFO log never showed it, and a path
+            # that cannot be marked is quietly read and parsed again on every run.
+            logger.warning(f"{metadata.get('filename') or Path(dup_path).name}: could not mark "
+                           f"this path as holding content already on record ({type(e).__name__}: "
+                           f"{e}) -- it will be read again next run")
 
-    def _refresh_final_test_identity(self, result_id: int, file_hash: str,
-                                     file_size: Optional[int],
-                                     file_modified_date,
-                                     filename: str = "") -> None:
+    def _regrade_final_test_in(self, session: Session, final_test_id: int,
+                               tracks: List[Dict[str, Any]],
+                               test_results: Dict[str, Any]) -> bool:
+        """Re-grade a stored final test from THIS parse, never fatally, in a savepoint of its own.
+
+        The session-taking form of `apply_final_test_regrade` for the save path: the same writer
+        (`_write_final_test_regrade`) and the same log line on failure, but no session, no lock and
+        no commit of its own. A failure rolls back the re-grade alone and leaves the stored result.
+        """
+        try:
+            with session.begin_nested():
+                return self._write_final_test_regrade(session, final_test_id, tracks,
+                                                      test_results)
+        except Exception as e:
+            logger.error(f"Failed to apply re-grade to FT {final_test_id}: {e}")
+            return False
+
+    def _refresh_final_test_identity_in(self, session: Session, result_id: int, file_hash: str,
+                                        file_size: Optional[int],
+                                        file_modified_date,
+                                        filename: str = "") -> None:
         """Point an existing FT row at the content now sitting at its path.
 
         Only the identity columns move (file_hash, file_size,
@@ -5697,27 +5042,33 @@ class DatabaseManager:
         rewriting its tracks and its trim link, which this method is not.
         The log line says so, because a file whose content changed and whose
         verdict did not is something the user should be able to see.
+
+        Never fatal, in a savepoint of its own (it was a transaction of its own until
+        2026-09-25).
         """
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
         )
         try:
-            with self._write_lock:
-                with self.session() as session:
-                    row = session.get(DBFinalTestResult, result_id)
-                    if row is None:
-                        return
-                    row.file_hash = file_hash
-                    if file_size is not None:
-                        row.file_size = file_size
-                        row.file_modified_date = file_modified_date
+            with session.begin_nested():
+                row = session.get(DBFinalTestResult, result_id)
+                if row is None:
+                    return
+                row.file_hash = file_hash
+                if file_size is not None:
+                    row.file_size = file_size
+                    row.file_modified_date = file_modified_date
             logger.warning(
                 f"Final test {filename or result_id}: the file at this path has "
                 f"changed since it was recorded — identity refreshed on "
                 f"final_test_results id {result_id}; the stored result is "
                 f"unchanged (re-read the file to re-grade it)")
-        except Exception:
-            logger.debug("Could not refresh FT identity", exc_info=True)
+        except Exception as e:
+            # Said at WARNING (review m-1), as the duplicate-path marker above: unrefreshed, the
+            # file is quietly re-read on every run.
+            logger.warning(f"Final test {filename or result_id}: could not refresh its identity "
+                           f"on final_test_results id {result_id} ({type(e).__name__}: {e}) -- "
+                           "the file will be read again next run")
 
     def count_legacy_ft_verdicts(self) -> int:
         """How many final-test rows were graded BEFORE the ignore-window fix.
@@ -6180,576 +5531,6 @@ class DatabaseManager:
 
             return result
 
-    @staticmethod
-    def _normalize_serial(serial: str) -> str:
-        """
-        Normalize a serial number for fuzzy matching (selective).
-
-        Handles common formatting differences between trim and FT files:
-        - Strip leading zeros (007 -> 7)
-        - Lowercase
-        - Strip whitespace
-        - Remove common prefixes (sn, s/n, #)
-        - Strip known track-position suffixes only (A/B for dual-track,
-          P/R for primary/redundant, T for test)
-        - Do NOT strip other letters (25D, 31L stay as-is since they may
-          be meaningful serial identifiers)
-        """
-        import re
-        s = serial.lower().strip()
-        s = re.sub(r'^(sn|s/n|s\.n\.|#)\s*', '', s)
-        # Strip only known track-indicator suffixes
-        s = re.sub(r'^(\d+)[abprt]$', r'\1', s)
-        s = s.lstrip('0') or '0'
-        return s
-
-    @staticmethod
-    def _normalize_serial_aggressive(serial: str) -> str:
-        """
-        Aggressively normalize a serial number — strips ALL trailing letters.
-
-        Used as a fallback when selective normalization fails to find a match.
-        May produce false matches (e.g. 25D matches 25E) but increases recall.
-        """
-        import re
-        s = serial.lower().strip()
-        s = re.sub(r'^(sn|s/n|s\.n\.|#)\s*', '', s)
-        s = re.sub(r'^(\d+)[a-z]$', r'\1', s)
-        s = s.lstrip('0') or '0'
-        return s
-
-    @staticmethod
-    def _normalize_model(model: str) -> str:
-        """
-        Normalize a model number to its base form for variant matching.
-
-        Strips trailing letter suffixes that indicate product variants:
-        - 8275A, 8275B, 8275C → 8275
-        - 8508-A, 8508-B → 8508
-        - 7280-1-CT, 7280-1-AB → 7280-1
-
-        Strips leading zeros in hyphenated suffixes:
-        - 2475-08 → 2475-8
-        - 8867-01 → 8867-1
-
-        Does NOT strip numeric suffixes (8340-1 stays 8340-1) since
-        those are distinct model configurations.
-        """
-        import re
-        if not model:
-            return model
-        # Strip leading zeros in hyphenated numeric suffixes: "2475-08" → "2475-8"
-        s = re.sub(r'-0+(\d)', r'-\1', model)
-        # Strip trailing letter-only variant: "8275A" → "8275"
-        s = re.sub(r'^(\d+)[A-Za-z]$', r'\1', s)
-        # Strip trailing hyphen + letter(s) variant: "8508-A" → "8508", "7280-1-CT" → "7280-1"
-        s = re.sub(r'^(\d+(?:-\d+)*)-[A-Za-z]+$', r'\1', s)
-        # Strip trailing letters glued to a hyphenated numeric suffix:
-        # "7953-1A" → "7953-1" (2026-07-13: FT files say "7953-1", trim files
-        # say "7953-1A"/"7953-1B" — 197 recent FT records unlinkable without this)
-        s = re.sub(r'^(\d+(?:-\d+)+)[A-Za-z]+$', r'\1', s)
-        return s
-
-    def _find_matching_trim(
-        self,
-        session: Session,
-        model: Optional[str],
-        serial: Optional[str],
-        test_date: Optional[datetime]
-    ) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[str]]:
-        """
-        Find the matching trim result for a final test.
-
-        Logic:
-        1. Exact model + exact serial match (case-insensitive) — highest confidence
-        2. Exact model + fuzzy serial match (strip zeros, prefixes, track suffixes)
-        3. Normalized model + fuzzy serial match (8275A trim matches 8275 FT)
-
-        Among candidates the LATEST trim wins, and "latest" is resolved down to
-        the clock time: a unit that fails linearity is re-trimmed until it
-        passes, so several attempts share one calendar date and only the last
-        one is the disposition the unit carried to final test. Linking an
-        earlier failing attempt is what inflated the "overkill" metric.
-
-        The window is bounded by calendar DATE, not by the raw timestamps —
-        final-test records are stored at midnight, so a same-day trim at 14:30
-        must still match (7,263 real linked rows are same-day).
-
-        Returns:
-            Tuple of (trim_id, confidence, days_since_trim, match_method)
-        """
-        from laser_trim_analyzer.utils.constants import FINAL_TEST_MAX_DAYS_FROM_TRIM
-
-        if not model or not serial or not test_date:
-            return None, None, None, None
-
-        serial_clean = serial.lower().strip()
-        test_day = test_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        # Half-open [cutoff, next midnight): keeps the file_date index usable.
-        cutoff_date = test_day - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
-        before_date = test_day + timedelta(days=1)
-
-        def _days_since(trim_date: datetime) -> int:
-            """Trim→FT age in whole days, immune to the trim's clock time."""
-            return (test_day - trim_date.replace(
-                hour=0, minute=0, second=0, microsecond=0)).days
-
-        # Attempt 1: Exact model + exact serial match (case-insensitive)
-        candidates = (
-            session.query(DBAnalysisResult)
-            .filter(
-                DBAnalysisResult.model == model,
-                func.lower(DBAnalysisResult.serial) == serial_clean,
-                DBAnalysisResult.file_date.isnot(None),
-                DBAnalysisResult.file_date < before_date,
-                DBAnalysisResult.file_date >= cutoff_date,
-            )
-            .order_by(desc(DBAnalysisResult.file_date), desc(DBAnalysisResult.id))
-            .limit(5)
-            .all()
-        )
-
-        if candidates:
-            match = candidates[0]
-            days_diff = _days_since(match.file_date)
-            confidence = self._calculate_match_confidence(days_diff, exact_serial=True)
-            return match.id, confidence, days_diff, "exact"
-
-        # Attempt 2: Exact model + fuzzy serial match
-        ft_serial_norm = self._normalize_serial(serial)
-
-        model_trims = (
-            session.query(DBAnalysisResult.id, DBAnalysisResult.serial, DBAnalysisResult.file_date)
-            .filter(
-                DBAnalysisResult.model == model,
-                DBAnalysisResult.file_date.isnot(None),
-                DBAnalysisResult.file_date < before_date,
-                DBAnalysisResult.file_date >= cutoff_date,
-            )
-            .order_by(desc(DBAnalysisResult.file_date), desc(DBAnalysisResult.id))
-            .all()
-        )
-
-        for trim_id, trim_serial, trim_date in model_trims:
-            if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
-                days_diff = _days_since(trim_date)
-                confidence = self._calculate_match_confidence(days_diff, exact_serial=False)
-                logger.debug(
-                    f"Fuzzy match: FT serial '{serial}' → trim serial '{trim_serial}' "
-                    f"(normalized: '{ft_serial_norm}'), {days_diff} days"
-                )
-                return trim_id, confidence, days_diff, "fuzzy_serial"
-
-        # Attempt 2b: Exact model + aggressively normalized serial (strips all trailing letters)
-        ft_serial_aggressive = self._normalize_serial_aggressive(serial)
-        if ft_serial_aggressive != ft_serial_norm:
-            for trim_id, trim_serial, trim_date in model_trims:
-                if trim_serial and self._normalize_serial_aggressive(trim_serial) == ft_serial_aggressive:
-                    days_diff = _days_since(trim_date)
-                    confidence = self._calculate_match_confidence(days_diff, exact_serial=False) * 0.90
-                    logger.debug(
-                        f"Aggressive fuzzy match: FT serial '{serial}' -> trim serial '{trim_serial}' "
-                        f"(aggressive norm: '{ft_serial_aggressive}'), {days_diff} days"
-                    )
-                    return trim_id, confidence, days_diff, "fuzzy_serial_aggressive"
-
-        # Attempt 3: Model variant matching — normalize model on both sides
-        # This handles cases like FT model "8275" matching trim model "8275A"
-        # or FT model "8508" matching trim model "8508-A"
-        ft_model_norm = self._normalize_model(model)
-
-        if ft_model_norm != model:
-            # FT model itself has a suffix — try base model in trim
-            variant_trims = (
-                session.query(DBAnalysisResult.id, DBAnalysisResult.serial,
-                              DBAnalysisResult.file_date, DBAnalysisResult.model)
-                .filter(
-                    DBAnalysisResult.model == ft_model_norm,
-                    DBAnalysisResult.file_date.isnot(None),
-                    DBAnalysisResult.file_date < before_date,
-                    DBAnalysisResult.file_date >= cutoff_date,
-                )
-                .order_by(desc(DBAnalysisResult.file_date), desc(DBAnalysisResult.id))
-                .all()
-            )
-            for trim_id, trim_serial, trim_date, trim_model in variant_trims:
-                if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
-                    days_diff = _days_since(trim_date)
-                    confidence = self._calculate_match_confidence(days_diff, exact_serial=False, model_variant=True)
-                    logger.debug(
-                        f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
-                        f"(normalized model: '{ft_model_norm}'), {days_diff} days"
-                    )
-                    return trim_id, confidence, days_diff, "model_variant"
-
-        # Try reverse: trim has variant suffixes, FT has base model
-        # Find all trim models that normalize to our FT model
-        # Use LIKE to find variants efficiently (e.g. "8275%" for FT model "8275")
-        variant_trims = (
-            session.query(DBAnalysisResult.id, DBAnalysisResult.serial,
-                          DBAnalysisResult.file_date, DBAnalysisResult.model)
-            .filter(
-                DBAnalysisResult.model.like(f"{model}%"),
-                DBAnalysisResult.model != model,  # Skip exact (already tried)
-                DBAnalysisResult.file_date.isnot(None),
-                DBAnalysisResult.file_date < before_date,
-                DBAnalysisResult.file_date >= cutoff_date,
-            )
-            .order_by(desc(DBAnalysisResult.file_date), desc(DBAnalysisResult.id))
-            .all()
-        )
-
-        for trim_id, trim_serial, trim_date, trim_model in variant_trims:
-            # Verify this is actually a variant (normalizes to same base)
-            if self._normalize_model(trim_model) != ft_model_norm:
-                continue
-            if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
-                days_diff = _days_since(trim_date)
-                confidence = self._calculate_match_confidence(days_diff, exact_serial=False, model_variant=True)
-                logger.debug(
-                    f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
-                    f"(base model: '{ft_model_norm}'), {days_diff} days"
-                )
-                return trim_id, confidence, days_diff, "model_variant"
-
-        return None, None, None, None
-
-    @staticmethod
-    def _calculate_match_confidence(days_diff: int, exact_serial: bool = True,
-                                     model_variant: bool = False) -> float:
-        """Calculate match confidence based on time proximity and match quality.
-
-        Confidence bands:
-        - Exact model + exact serial, same week: 0.93-1.00
-        - Exact model + fuzzy serial, same week: 0.84-0.90
-        - Model variant + fuzzy serial, same week: 0.71-0.77
-        - Any match beyond 30 days: drops significantly
-        """
-        # Time-based confidence. Decay beyond 30 days is 0.002/day so the
-        # scale spans the full 180-day match window (0.40 ≈ 180d); the old
-        # 0.007/day rate hit the 0.40 floor by day ~73 and couldn't tell a
-        # 75-day link from a 175-day one.
-        if days_diff <= 7:
-            time_conf = 1.0 - (days_diff * 0.01)
-        elif days_diff <= 30:
-            time_conf = 0.9 - ((days_diff - 7) * 0.01)
-        else:
-            time_conf = 0.7 - ((days_diff - 30) * 0.002)
-
-        # Match quality penalties (applied multiplicatively)
-        if not exact_serial:
-            time_conf *= 0.90  # was 0.95 — fuzzy serial is less certain
-
-        if model_variant:
-            time_conf *= 0.85  # model variant adds uncertainty
-
-        return max(0.40, time_conf)
-
-    def backfill_trim_file_times(self, chunk_size: int = 5000) -> Dict[str, int]:
-        """Recover the clock time for trim rows stored before the parser kept it.
-
-        Until 2026-08-30 `_extract_date_from_filename` parsed only the calendar
-        date and threw away the time sitting in the same filename, so every
-        same-day re-trim attempt tied on `file_date`. `_find_matching_trim` then
-        linked an arbitrary attempt — in practice the earliest-ingested — and a
-        unit that was re-trimmed into spec before final test scored as a trim
-        "overkill". This re-reads the time out of `filename` for rows still at
-        midnight and rewrites `file_date` in place.
-
-        Idempotent: rows already carrying a time, and rows whose filename has no
-        time to recover, are left alone. Callers that care about link accuracy
-        should follow this with `rematch_final_tests()`.
-
-        Returns counts: scanned, updated, no_time_in_filename.
-        """
-        from laser_trim_analyzer.core.parser import ExcelParser
-
-        parser = ExcelParser()
-        stats = {"scanned": 0, "updated": 0, "no_time_in_filename": 0}
-
-        with self._write_lock:
-            with self.session() as session:
-                # Only rows sitting exactly at midnight can be missing a time.
-                base = (session.query(DBAnalysisResult.id, DBAnalysisResult.filename,
-                                      DBAnalysisResult.file_date)
-                        .filter(DBAnalysisResult.file_date.isnot(None),
-                                func.strftime('%H:%M:%S', DBAnalysisResult.file_date)
-                                == '00:00:00')
-                        .order_by(DBAnalysisResult.id))
-                offset = 0
-                while True:
-                    rows = base.limit(chunk_size).offset(offset).all()
-                    if not rows:
-                        break
-                    updates = []
-                    for row_id, filename, file_date in rows:
-                        stats["scanned"] += 1
-                        stamp = parser._extract_date_from_filename(filename or "")
-                        # Trust only the TIME: the filename date can disagree with
-                        # a date taken from inside the workbook, and re-dating rows
-                        # is not this method's job.
-                        if stamp is None or stamp.time() == time(0, 0):
-                            stats["no_time_in_filename"] += 1
-                            continue
-                        updates.append({"id": row_id, "file_date": file_date.replace(
-                            hour=stamp.hour, minute=stamp.minute, second=stamp.second)})
-                    if updates:
-                        session.bulk_update_mappings(DBAnalysisResult, updates)
-                        stats["updated"] += len(updates)
-                    session.commit()
-                    # Updated rows drop out of the midnight filter, so only the
-                    # skipped ones remain ahead of the cursor.
-                    offset += len(rows) - len(updates)
-
-        logger.info("Trim time backfill: %d scanned, %d updated, %d had no time in filename",
-                    stats["scanned"], stats["updated"], stats["no_time_in_filename"])
-        return stats
-
-    def rematch_final_tests(self) -> Dict[str, int]:
-        """
-        Re-run matching for all Final Test records against current trim data.
-
-        This is useful when trim files are imported after Final Test files,
-        or when trim data has been updated.
-
-        Returns:
-            Dict with counts: new_matches, updated_matches, unchanged, total
-        """
-        from laser_trim_analyzer.database.models import (
-            FinalTestResult as DBFinalTestResult,
-        )
-
-        stats = {"new_matches": 0, "updated_matches": 0, "unchanged": 0, "total": 0}
-
-        with self._write_lock:
-            with self.session() as session:
-                # Get all Final Test records
-                final_tests = session.query(DBFinalTestResult).all()
-                stats["total"] = len(final_tests)
-
-                for ft in final_tests:
-                    # Get test date (prefer file_date, fall back to test_date)
-                    test_date = ft.file_date or ft.test_date
-
-                    # Find matching trim
-                    new_trim_id, new_confidence, new_days, new_method = self._find_matching_trim(
-                        session, ft.model, ft.serial, test_date
-                    )
-
-                    # Check if match changed
-                    if new_trim_id != ft.linked_trim_id:
-                        if ft.linked_trim_id is None and new_trim_id is not None:
-                            stats["new_matches"] += 1
-                        elif ft.linked_trim_id is not None and new_trim_id is not None:
-                            stats["updated_matches"] += 1
-
-                        # Update the record
-                        ft.linked_trim_id = new_trim_id
-                        ft.match_confidence = new_confidence
-                        ft.days_since_trim = new_days
-                        ft.match_method = new_method
-                    else:
-                        stats["unchanged"] += 1
-
-                session.commit()
-                logger.info(
-                    f"Rematch complete: {stats['new_matches']} new, "
-                    f"{stats['updated_matches']} updated, {stats['unchanged']} unchanged"
-                )
-
-        return stats
-
-    def rematch_unlinked_final_tests(self, models=None) -> Dict[str, int]:
-        """Link-only rematch pass over FT records that have NO trim link yet.
-
-        Why this exists (2026-07-13): matching runs at FT save time, so an FT
-        file processed in the same batch as — or any batch before — its trim
-        file finds nothing and stays NULL forever. Nothing ever retried. This
-        runs automatically after every processing batch.
-
-        `models`: restrict the pass to FT records for these models (the models
-        whose trims were just saved). A late trim can only create links for
-        the models in that batch, so re-attempting the other ~100k
-        permanently-unmatchable FT records every batch is pure waste — the
-        work log read "Unlinked-FT rematch: 0 of 101,605 linked" after every
-        single batch. Scoping is by NORMALIZED model family, not by exact
-        name, so the model-variant stage ("8275" FT ↔ "8275A" trim) still
-        works. None = every unlinked record (full pass).
-
-        Bulk strategy: instead of the per-record query cascade (minutes for
-        30k+ records), load every candidate trim ONCE, build serial-form
-        indexes in memory, and answer each FT record with bisect lookups.
-        Match semantics mirror _find_matching_trim exactly: newest trim at or
-        before the FT date within FINAL_TEST_MAX_DAYS_FROM_TRIM, staged
-        exact serial → fuzzy → aggressive → model-variant.
-
-        Existing links are never touched — rematch_final_tests() re-evaluates
-        everything if that is ever needed.
-        """
-        import bisect
-        import time as _time
-        from collections import defaultdict
-        from sqlalchemy import update as sa_update
-        from laser_trim_analyzer.database.models import (
-            FinalTestResult as DBFinalTestResult,
-        )
-        from laser_trim_analyzer.utils.constants import FINAL_TEST_MAX_DAYS_FROM_TRIM
-
-        t0 = _time.time()
-        stats = {"unlinked": 0, "new_matches": 0, "still_unmatched": 0,
-                 "seconds": 0.0, "models": []}
-        window = timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
-        families = None
-        if models is not None:
-            families = {self._normalize_model(m) for m in models if m}
-            if not families:
-                return stats
-
-        with self._write_lock:
-            with self.session() as session:
-                # Narrow column query, not full ORM entities: the loop reads
-                # five fields, and materializing 100k+ FinalTestResult objects
-                # (with their identity map) was minutes of the post-batch cost.
-                pending = (
-                    session.query(
-                        DBFinalTestResult.id, DBFinalTestResult.model,
-                        DBFinalTestResult.serial, DBFinalTestResult.file_date,
-                        DBFinalTestResult.test_date,
-                    )
-                    .filter(DBFinalTestResult.linked_trim_id.is_(None))
-                    .all()
-                )
-                if families is not None:
-                    # Normalization is Python-side, so the family filter can't
-                    # be pushed into SQL — but the rows are narrow tuples.
-                    pending = [ft for ft in pending if ft.model
-                               and self._normalize_model(ft.model) in families]
-                stats["unlinked"] = len(pending)
-                if not pending:
-                    return stats
-
-                # One pass over all trims → per-serial-form indexes of
-                # (file_date, trim_id) sorted ascending, plus a per-family
-                # index for variant matches ("8275" FT ↔ "8275A" trim).
-                exact_ix: dict = defaultdict(list)    # (model, serial_lower) → [(date, id)]
-                fuzzy_ix: dict = defaultdict(list)    # (model, norm_serial)  → [(date, id)]
-                aggr_ix: dict = defaultdict(list)     # (model, aggr_serial)  → [(date, id)]
-                variant_ix: dict = defaultdict(list)  # (norm_model, norm_serial) → [(date, id, model)]
-                rows = session.query(
-                    DBAnalysisResult.id, DBAnalysisResult.model,
-                    DBAnalysisResult.serial, DBAnalysisResult.file_date,
-                ).filter(
-                    DBAnalysisResult.file_date.isnot(None),
-                    DBAnalysisResult.serial.isnot(None),
-                ).order_by(DBAnalysisResult.file_date).all()
-                for tid, tmodel, tserial, tdate in rows:
-                    if families is not None and self._normalize_model(tmodel) not in families:
-                        continue    # can't match any in-scope FT record
-                    s_low = tserial.lower().strip()
-                    s_norm = self._normalize_serial(tserial)
-                    exact_ix[(tmodel, s_low)].append((tdate, tid))
-                    fuzzy_ix[(tmodel, s_norm)].append((tdate, tid))
-                    aggr_ix[(tmodel, self._normalize_serial_aggressive(tserial))].append((tdate, tid))
-                    variant_ix[(self._normalize_model(tmodel), s_norm)].append((tdate, tid, tmodel))
-
-                def newest_in_window(entries, test_date, cutoff, model_ok=None):
-                    """Rightmost entry with cutoff <= date <= test_date whose
-                    model passes model_ok (None = any)."""
-                    i = bisect.bisect_right(entries, (test_date, float("inf"))) - 1
-                    while i >= 0:
-                        e = entries[i]
-                        if e[0] < cutoff:
-                            return None
-                        if model_ok is None or model_ok(e[2]):
-                            return e
-                        i -= 1
-                    return None
-
-                affected_models = set()
-                link_updates: List[Dict[str, Any]] = []
-                for ft in pending:
-                    test_date = ft.file_date or ft.test_date
-                    if not ft.model or not ft.serial or not test_date:
-                        stats["still_unmatched"] += 1
-                        continue
-                    cutoff = test_date - window
-                    s_low = ft.serial.lower().strip()
-                    s_norm = self._normalize_serial(ft.serial)
-                    hit = method = None
-                    exact_serial = True
-                    variant = False
-                    penalty = 1.0
-                    e = newest_in_window(exact_ix.get((ft.model, s_low), ()), test_date, cutoff)
-                    if e:
-                        hit, method = e, "exact"
-                    if hit is None:
-                        e = newest_in_window(fuzzy_ix.get((ft.model, s_norm), ()), test_date, cutoff)
-                        if e:
-                            hit, method, exact_serial = e, "fuzzy_serial", False
-                    if hit is None:
-                        # Parity with _find_matching_trim attempt 2b: the
-                        # aggressive stage only runs when the FT serial itself
-                        # changes under aggressive normalization (code-review
-                        # finding #2, 2026-07-13 — the bulk path previously
-                        # probed unconditionally and could link serial "123"
-                        # to trim "123X", which save-time matching never does).
-                        s_aggr = self._normalize_serial_aggressive(ft.serial)
-                        if s_aggr != s_norm:
-                            e = newest_in_window(
-                                aggr_ix.get((ft.model, s_aggr), ()), test_date, cutoff)
-                            if e:
-                                hit, method, exact_serial, penalty = (
-                                    e, "fuzzy_serial_aggressive", False, 0.90)
-                    if hit is None:
-                        # Variant stage — one side MUST be the base form
-                        # (code-review finding #1, 2026-07-13 BLOCKER: keying
-                        # only on the normalized family let FT "7953-1A" link
-                        # to a "7953-1B" trim — SIBLING variants, a match class
-                        # _find_matching_trim never makes. Attempt 3a matches
-                        # trims whose model IS the base; attempt 3b matches
-                        # variant trims only when the FT model is the base).
-                        ft_norm = self._normalize_model(ft.model)
-                        ft_is_base = (ft.model == ft_norm)
-                        e = newest_in_window(
-                            variant_ix.get((ft_norm, s_norm), ()),
-                            test_date, cutoff,
-                            model_ok=lambda m, _fn=ft_norm, _fm=ft.model, _fb=ft_is_base:
-                                m != _fm and (_fb or m == _fn))
-                        if e:
-                            hit, method, exact_serial, variant = e, "model_variant", False, True
-                    if hit is None:
-                        stats["still_unmatched"] += 1
-                        continue
-                    days_diff = (test_date - hit[0]).days
-                    link_updates.append({
-                        "id": ft.id,
-                        "linked_trim_id": hit[1],
-                        "match_confidence": self._calculate_match_confidence(
-                            days_diff, exact_serial=exact_serial,
-                            model_variant=variant) * penalty,
-                        "days_since_trim": days_diff,
-                        "match_method": method,
-                    })
-                    affected_models.add(ft.model)
-                    stats["new_matches"] += 1
-                stats["models"] = sorted(affected_models)
-
-                if link_updates:
-                    # Bulk UPDATE ... WHERE id = :id (one statement, no ORM
-                    # objects) — same four columns the loop used to assign.
-                    session.execute(sa_update(DBFinalTestResult), link_updates)
-                session.commit()
-
-        stats["seconds"] = round(_time.time() - t0, 1)
-        logger.info(
-            "Unlinked-FT rematch (%s): %d of %d linked in %.1fs (%d still unmatched)",
-            "all models" if families is None
-            else f"{len(families)} model(s) from this batch",
-            stats["new_matches"], stats["unlinked"], stats["seconds"],
-            stats["still_unmatched"],
-        )
-        return stats
-
     def search_final_tests(
         self,
         model: Optional[str] = None,
@@ -6970,941 +5751,9 @@ class DatabaseManager:
             model_list = [m[0] for m in models if m[0]]
             return sorted(model_list, key=_model_sort_key)
 
-    def get_final_tests_missing_tracks(self) -> List[Dict[str, Any]]:
-        """
-        Get Final Test records that have 0 tracks stored.
-
-        Returns:
-            List of dicts with id, filename, file_path, model
-        """
-        from laser_trim_analyzer.database.models import (
-            FinalTestResult as DBFinalTestResult,
-            FinalTestTrack as DBFinalTestTrack,
-        )
-
-        with self.session() as session:
-            # Subquery to count tracks per final test
-            track_count_subq = (
-                session.query(
-                    DBFinalTestTrack.final_test_id,
-                    func.count(DBFinalTestTrack.id).label('track_count')
-                )
-                .group_by(DBFinalTestTrack.final_test_id)
-                .subquery()
-            )
-
-            # Get Final Tests with no tracks (LEFT JOIN where track_count is NULL)
-            results = (
-                session.query(DBFinalTestResult)
-                .outerjoin(track_count_subq, DBFinalTestResult.id == track_count_subq.c.final_test_id)
-                .filter(track_count_subq.c.track_count == None)
-                .all()
-            )
-            return [
-                {
-                    "id": r.id,
-                    "filename": r.filename,
-                    "file_path": r.file_path,
-                    "model": r.model,
-                    "serial": r.serial,
-                }
-                for r in results
-            ]
-
-    def update_final_test_tracks(
-        self,
-        final_test_id: int,
-        tracks: List[Dict[str, Any]]
-    ) -> bool:
-        """
-        Update track data for an existing Final Test record.
-
-        Used to fix records that were created before parser improvements.
-
-        Args:
-            final_test_id: ID of the Final Test record
-            tracks: List of track data dicts
-
-        Returns:
-            True if successful
-        """
-        from laser_trim_analyzer.core.ft_regrade import ft_reference_fields
-        from laser_trim_analyzer.database.models import (
-            FinalTestResult as DBFinalTestResult,
-            FinalTestTrack as DBFinalTestTrack,
-        )
-
-        with self._write_lock:
-            try:
-                with self.session() as session:
-                    # Get existing record
-                    result = session.get(DBFinalTestResult, final_test_id)
-                    if not result:
-                        logger.warning(f"Final Test ID {final_test_id} not found")
-                        return False
-
-                    # Delete existing tracks (if any)
-                    session.query(DBFinalTestTrack).filter(
-                        DBFinalTestTrack.final_test_id == final_test_id
-                    ).delete()
-
-                    # Add new tracks
-                    for track_data in tracks:
-                        position_values = track_data.get("electrical_angles") or track_data.get("positions")
-
-                        db_track = DBFinalTestTrack(
-                            final_test_id=final_test_id,
-                            track_id=track_data.get("track_id", "default"),
-                            status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
-                            linearity_spec=track_data.get("linearity_spec"),
-                            linearity_error=track_data.get("linearity_error"),
-                            linearity_pass=track_data.get("linearity_pass"),
-                            linearity_fail_points=track_data.get("linearity_fail_points", 0),
-                            position_data=position_values,
-                            error_data=track_data.get("errors"),
-                            theory_data=track_data.get("theory_values"),
-                            electrical_angle_data=track_data.get("electrical_angles"),
-                            upper_limits=track_data.get("upper_limits"),
-                            lower_limits=track_data.get("lower_limits"),
-                            max_deviation=track_data.get("max_deviation"),
-                            max_deviation_position=track_data.get("max_deviation_angle"),
-                            optimal_offset=track_data.get("optimal_offset"),
-                            optimal_slope=track_data.get("optimal_slope"),
-                            linearity_type=track_data.get("linearity_type"),
-                            **ft_reference_fields(track_data),
-                        )
-                        session.add(db_track)
-
-                    # Update linearity_error on main record if tracks have it
-                    if tracks and tracks[0].get("linearity_error") is not None:
-                        result.linearity_error = tracks[0].get("linearity_error")
-
-                    session.commit()
-                    logger.info(f"Updated Final Test {final_test_id} with {len(tracks)} tracks")
-                    return True
-
-            except Exception as e:
-                logger.error(f"Error updating Final Test tracks: {e}")
-                return False
-
-    def get_trim_records_missing_tracks(self, linked_only: bool = True) -> List[Dict[str, Any]]:
-        """
-        Get Trim (AnalysisResult) records whose track measurements are missing.
-
-        Two shapes count as missing, and re-parsing the source file is the
-        repair for both:
-
-        1. ZERO track rows — the record was stored before track persistence
-           existed, so there is nothing to plot or re-grade.
-        2. Every track row present but ALL of them array-less (position_data
-           and error_data both decode to nothing) while the parent carries a
-           gradeable status. That is a unit claiming a PASS/WARNING/FAIL
-           disposition with no measurement anywhere behind it.
-
-        UNTRIMMED and ERROR parents are excluded from shape 2 ON PURPOSE.
-        Array-lessness is the *expected* state for both: an UNTRIMMED file is
-        a test sweep with no laser-trim run (the parser deliberately moves its
-        sweep into untrimmed_positions/untrimmed_errors and clears the trimmed
-        arrays — see LaserTrimParser._parse_untrimmed_only_track), and an
-        ERROR row never got far enough to measure anything. On the work
-        database those two account for ~5,666 of the ~5,811 array-less track
-        rows; flagging them would bury any genuine defect in by-design noise
-        and would send the repair tool off to re-parse thousands of files
-        that would come back byte-identical.
-
-        Partial data is likewise NOT missing: a multi-track unit with one real
-        track and one array-less track keeps its measurement and its verdict,
-        so it is left alone. Re-parsing it would rewrite good rows.
-
-        Args:
-            linked_only: If True, only return records that are linked to Final Tests
-
-        Returns:
-            List of record info dicts with id, filename, file_path, model, serial
-        """
-        with self.session() as session:
-            # Per-analysis track census: how many rows, and how many of those
-            # carry no arrays at all.
-            track_count_subq = (
-                session.query(
-                    DBTrackResult.analysis_id,
-                    func.count(DBTrackResult.id).label('track_count'),
-                    func.sum(
-                        case(
-                            (and_(json_array_absent(DBTrackResult.position_data),
-                                  json_array_absent(DBTrackResult.error_data)), 1),
-                            else_=0,
-                        )
-                    ).label('empty_track_count'),
-                )
-                .group_by(DBTrackResult.analysis_id)
-                .subquery()
-            )
-
-            no_tracks = or_(
-                track_count_subq.c.track_count == None,  # noqa: E711 (SQL NULL)
-                track_count_subq.c.track_count == 0,
-            )
-            all_tracks_empty = and_(
-                track_count_subq.c.track_count > 0,
-                track_count_subq.c.track_count == track_count_subq.c.empty_track_count,
-                DBAnalysisResult.overall_status.in_(GRADEABLE_STATUS_NAMES),
-            )
-
-            query = (
-                session.query(DBAnalysisResult)
-                .outerjoin(track_count_subq, DBAnalysisResult.id == track_count_subq.c.analysis_id)
-                .filter(or_(no_tracks, all_tracks_empty))
-            )
-
-            if linked_only:
-                # Get IDs of analyses that are linked to Final Tests
-                from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
-                linked_ids = (
-                    session.query(DBFinalTestResult.linked_trim_id)
-                    .filter(DBFinalTestResult.linked_trim_id != None)
-                    .distinct()
-                    .all()
-                )
-                linked_id_list = [lid[0] for lid in linked_ids]
-                query = query.filter(DBAnalysisResult.id.in_(linked_id_list))
-
-            results = query.all()
-
-            return [
-                {
-                    "id": r.id,
-                    "filename": r.filename,
-                    "file_path": r.file_path,
-                    "model": r.model,
-                    "serial": r.serial,
-                }
-                for r in results
-            ]
-
-    def update_trim_tracks(
-        self,
-        analysis_id: int,
-        tracks: List["TrackResult"]
-    ) -> bool:
-        """
-        Update track data for an existing Trim (AnalysisResult) record.
-
-        Used to fix records that were created before track data storage was added.
-
-        Args:
-            analysis_id: ID of the AnalysisResult record
-            tracks: List of TrackResult objects from re-parsing
-
-        Returns:
-            True if successful
-        """
-        try:
-            with self.session() as session:
-                # Get existing record
-                result = session.get(DBAnalysisResult, analysis_id)
-                if not result:
-                    logger.warning(f"Analysis ID {analysis_id} not found")
-                    return False
-
-                # Delete existing tracks (if any)
-                session.query(DBTrackResult).filter(
-                    DBTrackResult.analysis_id == analysis_id
-                ).delete()
-
-                # Add new tracks
-                for track in tracks:
-                    db_track = self._map_track_to_db(track)
-                    db_track.analysis_id = analysis_id
-                    session.add(db_track)
-
-                session.commit()
-                logger.info(f"Updated Analysis {analysis_id} with {len(tracks)} tracks")
-                return True
-
-        except Exception as e:
-            logger.error(f"Error updating Trim tracks: {e}")
-            return False
-
-    def update_trim_tracks_from_final_test(
-        self,
-        analysis_id: int,
-        ft_tracks: List[Dict[str, Any]]
-    ) -> bool:
-        """
-        Update Trim (AnalysisResult) track data from Final Test format data.
-
-        Used when "Trim" records actually point to Final Test files.
-        Converts FT track format to TrackResult format.
-
-        Args:
-            analysis_id: ID of the AnalysisResult record
-            ft_tracks: List of track dicts from Final Test parser
-
-        Returns:
-            True if successful
-        """
-        try:
-            with self.session() as session:
-                # Get existing record
-                result = session.get(DBAnalysisResult, analysis_id)
-                if not result:
-                    logger.warning(f"Analysis ID {analysis_id} not found")
-                    return False
-
-                # Delete existing tracks (if any)
-                session.query(DBTrackResult).filter(
-                    DBTrackResult.analysis_id == analysis_id
-                ).delete()
-
-                # Add new tracks converted from FT format
-                for ft_track in ft_tracks:
-                    # Get position data (FT format uses electrical_angles)
-                    positions = ft_track.get("electrical_angles") or ft_track.get("positions", [])
-                    errors = ft_track.get("errors", [])
-                    upper_limits = ft_track.get("upper_limits", [])
-                    lower_limits = ft_track.get("lower_limits", [])
-
-                    # Calculate linearity metrics
-                    linearity_error = ft_track.get("linearity_error", 0.0)
-                    linearity_spec = ft_track.get("linearity_spec", 0.02)
-                    linearity_pass = ft_track.get("linearity_pass", True)
-
-                    # Create TrackResult-compatible DB record
-                    db_track = DBTrackResult(
-                        analysis_id=analysis_id,
-                        track_id=ft_track.get("track_id", "default"),
-                        status=DBStatusType.PASS if linearity_pass else DBStatusType.FAIL,
-                        # Sigma values - use defaults for FT data
-                        sigma_gradient=0.0,
-                        sigma_threshold=1.0,
-                        sigma_pass=True,
-                        # Linearity values
-                        linearity_spec=linearity_spec,
-                        final_linearity_error_shifted=linearity_error,
-                        linearity_pass=linearity_pass,
-                        linearity_fail_points=ft_track.get("linearity_fail_points", 0),
-                        # Track data for charts
-                        position_data=positions,
-                        error_data=errors,
-                        upper_limits=upper_limits,
-                        lower_limits=lower_limits,
-                        # Travel length from position range
-                        travel_length=max(positions) - min(positions) if positions and len(positions) > 1 else 1.0,
-                    )
-                    session.add(db_track)
-
-                session.commit()
-                logger.info(f"Updated Analysis {analysis_id} with {len(ft_tracks)} tracks from FT format")
-                return True
-
-        except Exception as e:
-            logger.error(f"Error updating Trim tracks from FT: {e}")
-            return False
-
     # =========================================================================
     # Database Health & Cleanup
     # =========================================================================
-
-    def scan_database_health(self) -> Dict[str, Any]:
-        """
-        Scan the entire database and return a health report.
-
-        Identifies dirty/suspect records across multiple categories without
-        modifying anything. Returns counts and record IDs for each issue.
-        """
-        health = {
-            "total_analyses": 0,
-            "total_tracks": 0,
-            "issues": {},
-            "total_dirty_records": 0,
-        }
-
-        with self.session() as session:
-            health["total_analyses"] = (
-                session.query(func.count(DBAnalysisResult.id)).scalar() or 0
-            )
-            health["total_tracks"] = (
-                session.query(func.count(DBTrackResult.id)).scalar() or 0
-            )
-
-            dirty_ids = set()
-
-            # 1. Unknown model
-            unknown_model = session.query(DBAnalysisResult.id).filter(
-                DBAnalysisResult.model == "Unknown"
-            ).all()
-            if unknown_model:
-                ids = {r[0] for r in unknown_model}
-                dirty_ids |= ids
-                health["issues"]["unknown_model"] = {
-                    "count": len(ids),
-                    "label": "Unknown model (parser couldn't extract)",
-                }
-
-            # 2. Unknown serial
-            unknown_serial = session.query(DBAnalysisResult.id).filter(
-                DBAnalysisResult.serial == "Unknown"
-            ).all()
-            if unknown_serial:
-                ids = {r[0] for r in unknown_serial}
-                dirty_ids |= ids
-                health["issues"]["unknown_serial"] = {
-                    "count": len(ids),
-                    "label": "Unknown serial number",
-                }
-
-            # 3. Missing file date
-            null_date = session.query(DBAnalysisResult.id).filter(
-                DBAnalysisResult.file_date.is_(None)
-            ).all()
-            if null_date:
-                ids = {r[0] for r in null_date}
-                dirty_ids |= ids
-                health["issues"]["missing_file_date"] = {
-                    "count": len(ids),
-                    "label": "Missing file date",
-                }
-
-            # 4. ERROR status records
-            error_records = session.query(DBAnalysisResult.id).filter(
-                DBAnalysisResult.overall_status == DBStatusType.ERROR
-            ).all()
-            if error_records:
-                ids = {r[0] for r in error_records}
-                dirty_ids |= ids
-                health["issues"]["error_status"] = {
-                    "count": len(ids),
-                    "label": "ERROR status (processing failed)",
-                }
-
-            # 5. Analyses with no tracks (orphaned)
-            analyses_no_tracks = session.query(DBAnalysisResult.id).filter(
-                ~exists().where(DBTrackResult.analysis_id == DBAnalysisResult.id)
-            ).all()
-            if analyses_no_tracks:
-                ids = {r[0] for r in analyses_no_tracks}
-                dirty_ids |= ids
-                health["issues"]["no_tracks"] = {
-                    "count": len(ids),
-                    "label": "No track data (empty analyses)",
-                }
-
-            # 6. Track-level quality issues (negative sigma, all-zero data, etc.)
-            bad_sigma = session.query(
-                DBTrackResult.analysis_id
-            ).filter(
-                DBTrackResult.sigma_gradient < 0
-            ).distinct().all()
-            if bad_sigma:
-                ids = {r[0] for r in bad_sigma}
-                dirty_ids |= ids
-                health["issues"]["negative_sigma"] = {
-                    "count": len(ids),
-                    "label": "Negative sigma gradient (impossible value)",
-                }
-
-            # 7. Tracks with no spec limits (can't determine pass/fail)
-            no_limits = session.query(
-                DBTrackResult.analysis_id
-            ).filter(
-                DBTrackResult.upper_limits.is_(None),
-                DBTrackResult.lower_limits.is_(None),
-                DBTrackResult.linearity_spec.is_(None),
-            ).distinct().all()
-            if no_limits:
-                ids = {r[0] for r in no_limits}
-                dirty_ids |= ids
-                health["issues"]["no_spec_limits"] = {
-                    "count": len(ids),
-                    "label": "No spec limits (can't verify pass/fail)",
-                }
-
-            # 8. Already-flagged suspect quality
-            suspect = session.query(DBAnalysisResult.id).filter(
-                DBAnalysisResult.data_quality == "suspect"
-            ).all()
-            if suspect:
-                ids = {r[0] for r in suspect}
-                dirty_ids |= ids
-                health["issues"]["suspect_quality"] = {
-                    "count": len(ids),
-                    "label": "Previously flagged as suspect",
-                }
-
-            health["total_dirty_records"] = len(dirty_ids)
-
-        return health
-
-    def retroactive_validate(self) -> Dict[str, Any]:
-        """
-        Retroactively validate ALL records in the database and update
-        data_quality flags.
-
-        Checks analysis-level and track-level quality issues, then
-        updates the data_quality and data_quality_issues columns.
-
-        Uses raw SQL updates to avoid SQLAlchemy dirty-tracking issues
-        with JSON (list) columns that are unhashable.
-
-        Returns summary of what was found and updated.
-        """
-        from sqlalchemy import update as sa_update
-
-        summary = {"scanned": 0, "flagged": 0, "already_suspect": 0, "issues_by_type": {}}
-        batch_size = 1000
-
-        with self._write_lock:
-            with self.session() as session:
-                total = session.query(func.count(DBAnalysisResult.id)).scalar() or 0
-                summary["scanned"] = total
-
-                # Process in batches to avoid memory issues with large databases
-                for offset in range(0, total, batch_size):
-                    # Use read-only loading — we'll update via raw SQL to avoid
-                    # SQLAlchemy dirty-tracking on JSON (list) columns
-                    analyses = session.query(
-                        DBAnalysisResult.id,
-                        DBAnalysisResult.model,
-                        DBAnalysisResult.serial,
-                        DBAnalysisResult.file_date,
-                        DBAnalysisResult.data_quality,
-                    ).order_by(DBAnalysisResult.id).offset(offset).limit(batch_size).all()
-
-                    for a_id, a_model, a_serial, a_file_date, a_dq in analyses:
-                        issues = []
-
-                        # Analysis-level checks
-                        if a_model == "Unknown":
-                            issues.append("Unknown model")
-                        if a_serial == "Unknown":
-                            issues.append("Unknown serial")
-                        if a_file_date is None:
-                            issues.append("Missing file date")
-
-                        # Track-level checks — query track columns directly
-                        tracks = session.query(
-                            DBTrackResult.track_id,
-                            DBTrackResult.sigma_gradient,
-                            DBTrackResult.linearity_spec,
-                            DBTrackResult.upper_limits,
-                            DBTrackResult.lower_limits,
-                            DBTrackResult.position_data,
-                            DBTrackResult.error_data,
-                        ).filter(
-                            DBTrackResult.analysis_id == a_id
-                        ).all()
-
-                        if not tracks:
-                            issues.append("No track data")
-
-                        for t_id, t_sigma, t_lin_spec, t_upper, t_lower, t_pos, t_err in tracks:
-                            tid = t_id or "?"
-
-                            if t_sigma is not None and t_sigma < 0:
-                                issues.append(f"{tid}: negative sigma_gradient ({t_sigma:.4f})")
-
-                            if not t_upper and not t_lower and t_lin_spec is None:
-                                issues.append(f"{tid}: no spec limits")
-
-                            if t_err:
-                                try:
-                                    if all(v == 0 or v is None for v in t_err):
-                                        issues.append(f"{tid}: all-zero error data")
-                                except (TypeError, ValueError):
-                                    issues.append(f"{tid}: corrupt error data")
-
-                            if t_pos:
-                                try:
-                                    if len(t_pos) < 10:
-                                        issues.append(f"{tid}: too few data points ({len(t_pos)})")
-                                except TypeError:
-                                    issues.append(f"{tid}: corrupt position data")
-
-                            if t_pos and t_err:
-                                try:
-                                    if len(t_pos) != len(t_err):
-                                        issues.append(
-                                            f"{tid}: array mismatch (pos={len(t_pos)}, err={len(t_err)})"
-                                        )
-                                except TypeError:
-                                    pass
-
-                        # Update via raw SQL to avoid unhashable-list errors from JSON columns
-                        if issues:
-                            was_suspect = a_dq == "suspect"
-                            session.execute(
-                                sa_update(DBAnalysisResult)
-                                .where(DBAnalysisResult.id == a_id)
-                                .values(
-                                    data_quality="suspect",
-                                    data_quality_issues=", ".join(issues),
-                                )
-                            )
-                            if was_suspect:
-                                summary["already_suspect"] += 1
-                            else:
-                                summary["flagged"] += 1
-
-                            for issue in issues:
-                                category = issue.split(":")[0].strip() if ":" in issue else issue
-                                summary["issues_by_type"][category] = summary["issues_by_type"].get(category, 0) + 1
-                        else:
-                            if a_dq == "suspect":
-                                session.execute(
-                                    sa_update(DBAnalysisResult)
-                                    .where(DBAnalysisResult.id == a_id)
-                                    .values(
-                                        data_quality="good",
-                                        data_quality_issues=None,
-                                    )
-                                )
-
-                    session.flush()
-
-                logger.info(
-                    f"Retroactive validation: scanned {summary['scanned']}, "
-                    f"flagged {summary['flagged']} new, "
-                    f"{summary['already_suspect']} already suspect"
-                )
-
-        return summary
-
-    def _collect_cleanup_ids(
-        self,
-        session,
-        delete_non_mps: bool = False,
-        mps_models: Optional[List[str]] = None,
-        delete_before_date: Optional[datetime] = None,
-        delete_suspect_quality: bool = False,
-        delete_unknown: bool = False,
-        delete_error_status: bool = False,
-        delete_no_tracks: bool = False,
-        delete_misclassified_ft: bool = False,
-    ) -> tuple:
-        """
-        Collect record IDs matching cleanup criteria. Shared by preview and execute.
-
-        Returns:
-            (ids_to_delete set, by_reason dict)
-        """
-        ids_to_delete = set()
-        by_reason = {}
-
-        if delete_non_mps and mps_models:
-            mps_set = set(m.strip() for m in mps_models if m.strip())
-            non_mps = session.query(
-                DBAnalysisResult.id, DBAnalysisResult.model
-            ).filter(
-                DBAnalysisResult.model.notin_(mps_set)
-            ).all()
-            non_mps_ids = {r[0] for r in non_mps}
-            non_mps_models = sorted(set(r[1] for r in non_mps))
-            ids_to_delete |= non_mps_ids
-            by_reason["non_mps_models"] = {
-                "count": len(non_mps_ids),
-                "models": non_mps_models,
-            }
-
-        if delete_before_date:
-            old_records = session.query(
-                DBAnalysisResult.id
-            ).filter(
-                DBAnalysisResult.file_date < delete_before_date
-            ).all()
-            old_ids = {r[0] for r in old_records}
-            ids_to_delete |= old_ids
-            by_reason["before_date"] = {
-                "count": len(old_ids),
-                "date": delete_before_date.strftime("%Y-%m-%d"),
-            }
-
-        if delete_suspect_quality:
-            suspect = session.query(
-                DBAnalysisResult.id
-            ).filter(
-                DBAnalysisResult.data_quality == "suspect"
-            ).all()
-            suspect_ids = {r[0] for r in suspect}
-            ids_to_delete |= suspect_ids
-            by_reason["suspect_quality"] = {
-                "count": len(suspect_ids),
-            }
-
-        if delete_unknown:
-            unknown = session.query(
-                DBAnalysisResult.id
-            ).filter(
-                or_(
-                    DBAnalysisResult.model == "Unknown",
-                    DBAnalysisResult.serial == "Unknown",
-                )
-            ).all()
-            unknown_ids = {r[0] for r in unknown}
-            ids_to_delete |= unknown_ids
-            by_reason["unknown_model_serial"] = {
-                "count": len(unknown_ids),
-            }
-
-        if delete_error_status:
-            errors = session.query(
-                DBAnalysisResult.id
-            ).filter(
-                DBAnalysisResult.overall_status == DBStatusType.ERROR
-            ).all()
-            error_ids = {r[0] for r in errors}
-            ids_to_delete |= error_ids
-            by_reason["error_status"] = {
-                "count": len(error_ids),
-            }
-
-        if delete_no_tracks:
-            no_tracks = session.query(
-                DBAnalysisResult.id
-            ).filter(
-                ~exists().where(DBTrackResult.analysis_id == DBAnalysisResult.id)
-            ).all()
-            no_track_ids = {r[0] for r in no_tracks}
-            ids_to_delete |= no_track_ids
-            by_reason["no_tracks"] = {
-                "count": len(no_track_ids),
-            }
-
-        if delete_misclassified_ft:
-            # Find trim records that are actually Final Test files:
-            # 1. Files from "Test Station" paths
-            # 2. Files with _Redundant_ or _Primary_ in filename
-            # 3. Files with "final" followed by a number in filename
-            ft_patterns = [
-                DBAnalysisResult.filename.like("%Test Station%"),
-                DBAnalysisResult.filename.like("%test station%"),
-                DBAnalysisResult.filename.like("%_Redundant_%"),
-                DBAnalysisResult.filename.like("%_redundant_%"),
-                DBAnalysisResult.filename.like("%_Primary_%"),
-                DBAnalysisResult.filename.like("%_primary_%"),
-            ]
-            misclassified = session.query(
-                DBAnalysisResult.id
-            ).filter(
-                or_(*ft_patterns)
-            ).all()
-            misc_ids = {r[0] for r in misclassified}
-
-            # Also find "model final NNN" pattern files in trim table
-            final_pattern = session.query(
-                DBAnalysisResult.id
-            ).filter(
-                DBAnalysisResult.filename.like("% final %")
-            ).all()
-            final_ids = {r[0] for r in final_pattern}
-            misc_ids |= final_ids
-
-            ids_to_delete |= misc_ids
-            by_reason["misclassified_ft"] = {
-                "count": len(misc_ids),
-            }
-
-        return ids_to_delete, by_reason
-
-    def preview_cleanup(
-        self,
-        delete_non_mps: bool = False,
-        mps_models: Optional[List[str]] = None,
-        delete_before_date: Optional[datetime] = None,
-        delete_suspect_quality: bool = False,
-        delete_unknown: bool = False,
-        delete_error_status: bool = False,
-        delete_no_tracks: bool = False,
-        delete_misclassified_ft: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        Preview what a cleanup operation would delete WITHOUT actually deleting.
-
-        Returns:
-            Dict with counts and model lists for what would be deleted
-        """
-        preview = {
-            "total_records": 0,
-            "records_to_delete": 0,
-            "models_to_delete": [],
-            "by_reason": {},
-        }
-
-        with self.session() as session:
-            preview["total_records"] = (
-                session.query(func.count(DBAnalysisResult.id)).scalar() or 0
-            )
-
-            ids_to_delete, by_reason = self._collect_cleanup_ids(
-                session,
-                delete_non_mps=delete_non_mps,
-                mps_models=mps_models,
-                delete_before_date=delete_before_date,
-                delete_suspect_quality=delete_suspect_quality,
-                delete_unknown=delete_unknown,
-                delete_error_status=delete_error_status,
-                delete_no_tracks=delete_no_tracks,
-                delete_misclassified_ft=delete_misclassified_ft,
-            )
-
-            preview["by_reason"] = by_reason
-            preview["records_to_delete"] = len(ids_to_delete)
-
-            if ids_to_delete:
-                models = session.query(
-                    DBAnalysisResult.model
-                ).filter(
-                    DBAnalysisResult.id.in_(ids_to_delete)
-                ).distinct().all()
-                preview["models_to_delete"] = sorted(m[0] for m in models)
-
-        return preview
-
-    def execute_cleanup(
-        self,
-        delete_non_mps: bool = False,
-        mps_models: Optional[List[str]] = None,
-        delete_before_date: Optional[datetime] = None,
-        delete_suspect_quality: bool = False,
-        delete_unknown: bool = False,
-        delete_error_status: bool = False,
-        delete_no_tracks: bool = False,
-        delete_misclassified_ft: bool = False,
-    ) -> Dict[str, int]:
-        """
-        Execute database cleanup — permanently delete matching records.
-
-        Uses the same filters as preview_cleanup(). Deletes analysis records
-        and associated tracks and alerts. Keeps processed_files records so
-        the same bad files won't be reprocessed next time (the FK has
-        ondelete=SET NULL so the link is safely cleared).
-
-        Returns:
-            Dict with deletion counts
-        """
-        deleted = {"analyses": 0, "tracks": 0, "alerts": 0}
-
-        with self._write_lock:
-            with self.session() as session:
-                ids_to_delete, _ = self._collect_cleanup_ids(
-                    session,
-                    delete_non_mps=delete_non_mps,
-                    mps_models=mps_models,
-                    delete_before_date=delete_before_date,
-                    delete_suspect_quality=delete_suspect_quality,
-                    delete_unknown=delete_unknown,
-                    delete_error_status=delete_error_status,
-                    delete_no_tracks=delete_no_tracks,
-                    delete_misclassified_ft=delete_misclassified_ft,
-                )
-
-                if not ids_to_delete:
-                    return deleted
-
-                # Delete in batches to avoid SQLite variable limits
-                id_list = list(ids_to_delete)
-                batch_size = 500
-
-                for i in range(0, len(id_list), batch_size):
-                    batch = id_list[i:i + batch_size]
-
-                    deleted["tracks"] += session.query(DBTrackResult).filter(
-                        DBTrackResult.analysis_id.in_(batch)
-                    ).delete(synchronize_session=False)
-
-                    deleted["alerts"] += session.query(DBQAAlert).filter(
-                        DBQAAlert.analysis_id.in_(batch)
-                    ).delete(synchronize_session=False)
-
-                    # Keep processed_files records — prevents reprocessing
-                    # the same bad files. FK ondelete=SET NULL clears the link.
-
-                    deleted["analyses"] += session.query(DBAnalysisResult).filter(
-                        DBAnalysisResult.id.in_(batch)
-                    ).delete(synchronize_session=False)
-
-                logger.info(
-                    f"Database cleanup: deleted {deleted['analyses']} analyses, "
-                    f"{deleted['tracks']} tracks, {deleted['alerts']} alerts "
-                    f"(processed_files kept to prevent reprocessing)"
-                )
-
-        return deleted
-
-    def count_failed_file_markers(self) -> int:
-        """Count files being skipped because they FAILED TO READ (2026-09-17).
-
-        A subset of `count_skipped_files`: same rows, narrowed to the ones
-        whose reason carries `UNREADABLE_PREFIX`. That tag, not "has a reason",
-        is the discriminator — every marker has a reason (`mark_file_skipped`
-        records the content hash in it), and the duplicate markers say "same
-        content as final_test_results id N". Scoping on NOT NULL would sweep
-        in the 8,114 non-trim files and every duplicate.
-        """
-        with self.session() as session:
-            return session.query(func.count(DBProcessedFile.id)).filter(
-                DBProcessedFile.analysis_id.is_(None),
-                DBProcessedFile.success == True,
-                DBProcessedFile.error_message.like(UNREADABLE_PREFIX + "%"),
-            ).scalar() or 0
-
-    def reset_failed_file_markers(self) -> int:
-        """Forget the "could not read this" markers so the files are re-offered.
-
-        The escape hatch behind Settings → "Retry unreadable files": what a
-        parser upgrade needs, and nothing more. Non-trim markers and duplicate
-        markers are left in place — they did not fail to read, and re-offering
-        them would undo the thing the markers exist for.
-
-        Trim ERROR rows (success=False, with their analysis) are untouched:
-        they are what the cleanup tools and the scan's "retrying earlier
-        errors" line read. Dropping the marker is what makes the file eligible
-        again; the file is then re-processed and, if it fails again, re-marked.
-
-        Returns the number of markers cleared.
-        """
-        with self._write_lock:
-            with self.session() as session:
-                count = session.query(DBProcessedFile).filter(
-                    DBProcessedFile.analysis_id.is_(None),
-                    DBProcessedFile.success == True,
-                    DBProcessedFile.error_message.like(UNREADABLE_PREFIX + "%"),
-                ).delete(synchronize_session=False)
-
-                logger.info(f"Cleared {count} unreadable-file markers; those "
-                            f"files will be offered again on the next run")
-
-        return count
-
-    def count_skipped_files(self) -> int:
-        """Count non-trim/non-FT files that were skipped and recorded."""
-        with self.session() as session:
-            return session.query(func.count(DBProcessedFile.id)).filter(
-                DBProcessedFile.analysis_id.is_(None),
-                DBProcessedFile.success == True,
-            ).scalar() or 0
-
-    def reset_skipped_files(self) -> int:
-        """
-        Remove processed_files entries for skipped non-trim files so they
-        get re-evaluated on the next processing run.
-
-        Only clears entries with analysis_id=NULL (no analysis was created),
-        which are files that were detected as non-trim and skipped.
-
-        Returns:
-            Number of entries cleared
-        """
-        with self._write_lock:
-            with self.session() as session:
-                count = session.query(DBProcessedFile).filter(
-                    DBProcessedFile.analysis_id.is_(None),
-                    DBProcessedFile.success == True,
-                ).delete(synchronize_session=False)
-
-                logger.info(f"Reset {count} skipped file entries for reprocessing")
-
-        return count
 
     @staticmethod
     def skip_marker_hash(file_path: str) -> str:
@@ -7960,6 +5809,25 @@ class DatabaseManager:
         the reason with `UNREADABLE_PREFIX`, which is what
         `count_failed_file_markers` / `reset_failed_file_markers` — and so
         Settings → "Retry unreadable files" — scope on.
+
+        The body is `_mark_file_skipped_in` (ingest-speed Task 7); this wraps it in a session of
+        its own, committed once, holding the write lock.
+        """
+        with self._write_lock:
+            with self.session() as session:
+                self._mark_file_skipped_in(
+                    session, filename=filename, file_path=file_path, file_hash=file_hash,
+                    file_size=file_size, file_modified_date=file_modified_date,
+                    error_message=error_message, failed_read=failed_read)
+
+    def _mark_file_skipped_in(self, session: Session, *, filename: str, file_path: str,
+                              file_hash: str, file_size: Optional[int], file_modified_date,
+                              error_message: Optional[str] = None,
+                              failed_read: bool = False) -> int:
+        """Write one per-path skip marker into the session it is GIVEN; return its row id.
+
+        What `mark_file_skipped` always did (see it for the why), with no commit, no session of its
+        own and no file I/O: the size, mtime and content hash are the caller's.
         """
         marker_hash = self.skip_marker_hash(file_path)
         reason = (error_message or "").strip()
@@ -7970,842 +5838,35 @@ class DatabaseManager:
                       if reason else f"content sha256={file_hash}")
         reason = reason[:2000] or None
 
-        with self._write_lock:
-            with self.session() as session:
-                existing = session.query(DBProcessedFile).filter(
-                    DBProcessedFile.file_path == file_path
-                ).first()
-                if existing is not None:
-                    # Refresh the stat so the scan's fast path stays exact,
-                    # and the reason so it reflects this run. `success` and
-                    # `analysis_id` are left alone on purpose: a real
-                    # analysis row keeps its analysis, and a trim ERROR row
-                    # (success=False) stays retryable.
-                    existing.file_size = file_size
-                    existing.file_modified_date = file_modified_date
-                    if reason is not None:
-                        existing.error_message = reason
-                    return
+        existing = session.query(DBProcessedFile).filter(
+            DBProcessedFile.file_path == file_path
+        ).first()
+        if existing is not None:
+            # Refresh the stat so the scan's fast path stays exact,
+            # and the reason so it reflects this run. `success` and
+            # `analysis_id` are left alone on purpose: a real
+            # analysis row keeps its analysis, and a trim ERROR row
+            # (success=False) stays retryable.
+            existing.file_size = file_size
+            existing.file_modified_date = file_modified_date
+            if reason is not None:
+                existing.error_message = reason
+            session.flush()
+            return existing.id
 
-                session.add(DBProcessedFile(
-                    filename=filename,
-                    file_path=file_path,
-                    file_hash=marker_hash,
-                    file_size=file_size,
-                    file_modified_date=file_modified_date,
-                    error_message=reason,
-                    analysis_id=None,
-                    success=True,
-                ))
-
-    def update_processed_file_stats(self, entries) -> Dict[str, int]:
-        """Repair size/mtime on processed rows after a hash-confirm.
-
-        entries: iterable of (file_hash, file_size, file_modified_date).
-        Lets the incremental scan's stat fast-path work on the next run for
-        rows whose recorded stat was missing or stale. Content identity is
-        unchanged — only rows matched by their content hash are updated.
-
-        Covers final_test_results and smoothness_results as well as
-        processed_files (2026-08-29): FT rows never carried a stat, so the
-        heal never reached them and every scan re-hashed the whole FT share.
-        The first scan after this ships hash-confirms once, stamps the rows,
-        and every scan after that is pure in-memory.
-
-        Returns rows updated PER TABLE plus "total". Per-table counts, not one
-        number, because the old single count hid the bug for six weeks: the
-        scan logged "Repaired stat records for 150,938 processed files" while
-        the UPDATE matched ~0 rows (FT files have no processed_files row).
-        The caller logs queued-vs-updated so a silent no-op can't hide again.
-        """
-        from laser_trim_analyzer.database.models import (
-            FinalTestResult as DBFinalTestResult,
-            SmoothnessResult as DBSmoothnessResult,
+        marker = DBProcessedFile(
+            filename=filename,
+            file_path=file_path,
+            file_hash=marker_hash,
+            file_size=file_size,
+            file_modified_date=file_modified_date,
+            error_message=reason,
+            analysis_id=None,
+            success=True,
         )
-
-        tables = (("processed_files", DBProcessedFile),
-                  ("final_test_results", DBFinalTestResult),
-                  ("smoothness_results", DBSmoothnessResult))
-        counts: Dict[str, int] = {name: 0 for name, _ in tables}
-        with self._write_lock:
-            with self.session() as session:
-                for file_hash, file_size, file_modified_date in entries:
-                    for name, model in tables:
-                        counts[name] += session.query(model).filter(
-                            model.file_hash == file_hash
-                        ).update({
-                            model.file_size: file_size,
-                            model.file_modified_date: file_modified_date,
-                        })
-        counts["total"] = sum(counts[name] for name, _ in tables)
-        return counts
-
-    def recompute_overall_statuses(self, dry_run: bool = True,
-                                   batch_size: int = 1000) -> Dict[str, Any]:
-        """Re-grade every analysis' overall_status from its tracks' STORED
-        pass flags, using the current (correct) rule. (2026-07-07, M4.)
-
-        Why: ~42%% of historical rows are WARNING with three different
-        historical meanings (old rule labeled linearity-FAILs as Warning;
-        later gate changes were never backfilled). Linearity is a zero-
-        tolerance customer requirement — a linearity-FAIL presenting as
-        "Warning" is a misclassification, not a cosmetic quirk.
-
-        Rule (mirrors analyzer._determine + processor rollup):
-          track: FAIL if linearity_pass is False; else PASS if sigma_pass is
-                 True; else WARNING. UNTRIMMED tracks excluded from judging.
-          analysis: all-PASS -> PASS; any FAIL -> FAIL; else WARNING.
-
-        Safety: analyses where any judged track has linearity_pass = NULL are
-        SKIPPED (never regraded) — those are the un-evaluated/empty-array rows
-        that Fix Missing Tracks must repair first. ERROR and UNTRIMMED
-        analyses are untouched. dry_run=True only counts.
-
-        Returns {"examined", "changed", "skipped_null_flags", "transitions":
-        {"OLD->NEW": n}, "sample_changed_ids": [...]}.
-        """
-        from collections import defaultdict
-
-        out: Dict[str, Any] = {"examined": 0, "changed": 0,
-                               "skipped_null_flags": 0,
-                               "transitions": defaultdict(int),
-                               "sample_changed_ids": []}
-        updates: List[tuple] = []  # (analysis_id, new_status)
-
-        with self.session() as session:
-            rows = (session.query(
-                        DBAnalysisResult.id, DBAnalysisResult.overall_status,
-                        DBTrackResult.status, DBTrackResult.linearity_pass,
-                        DBTrackResult.sigma_pass)
-                    .join(DBTrackResult,
-                          DBTrackResult.analysis_id == DBAnalysisResult.id)
-                    .filter(DBAnalysisResult.overall_status.notin_(
-                        [DBStatusType.UNTRIMMED, DBStatusType.ERROR]))
-                    .order_by(DBAnalysisResult.id)
-                    .yield_per(5000))
-
-            current: Dict[int, Any] = {}
-            tracks_by_analysis: Dict[int, list] = {}
-            for aid, overall, tstatus, lin, sig in rows:
-                current[aid] = overall
-                tracks_by_analysis.setdefault(aid, []).append((tstatus, lin, sig))
-
-            for aid, tracks in tracks_by_analysis.items():
-                out["examined"] += 1
-                judged = [(lin, sig) for (tstatus, lin, sig) in tracks
-                          if getattr(tstatus, "name", str(tstatus)) != "UNTRIMMED"]
-                if not judged:
-                    continue
-                if any(lin is None for (lin, _sig) in judged):
-                    out["skipped_null_flags"] += 1
-                    continue
-                track_statuses = [
-                    DBStatusType.FAIL if lin is False
-                    else (DBStatusType.PASS if sig is True else DBStatusType.WARNING)
-                    for (lin, sig) in judged
-                ]
-                if all(s == DBStatusType.PASS for s in track_statuses):
-                    new = DBStatusType.PASS
-                elif any(s == DBStatusType.FAIL for s in track_statuses):
-                    new = DBStatusType.FAIL
-                else:
-                    new = DBStatusType.WARNING
-
-                old = current[aid]
-                old_name = getattr(old, "name", str(old))
-                if old_name != new.name:
-                    out["changed"] += 1
-                    out["transitions"][f"{old_name}->{new.name}"] += 1
-                    if len(out["sample_changed_ids"]) < 10:
-                        out["sample_changed_ids"].append(aid)
-                    updates.append((aid, new))
-
-        out["transitions"] = dict(out["transitions"])
-        if dry_run or not updates:
-            return out
-
-        # Execute in batches; partial progress is preserved on error (same
-        # philosophy as backfill_max_deviation).
-        with self._write_lock:
-            with self.session() as session:
-                for i in range(0, len(updates), batch_size):
-                    for aid, new in updates[i:i + batch_size]:
-                        session.query(DBAnalysisResult).filter(
-                            DBAnalysisResult.id == aid
-                        ).update({DBAnalysisResult.overall_status: new},
-                                 synchronize_session=False)
-                    session.commit()
-        logger.info(f"Status recompute: {out['changed']} of {out['examined']} "
-                    f"regraded; {out['skipped_null_flags']} skipped (NULL flags); "
-                    f"transitions={out['transitions']}")
-        return out
-
-    def backfill_max_deviation(self, batch_size: int = 1000) -> int:
-        """
-        Backfill max_deviation, max_deviation_position, and deviation_uniformity
-        for existing tracks that have error_data but no max_deviation.
-
-        Commits in batches so that partial progress is preserved if an error
-        occurs mid-way.  This is intentional — a backfill that saves 900 of
-        1000 rows is better than one that saves 0.
-
-        Returns:
-            Number of tracks updated (may be partial on error)
-        """
-        import json
-        import statistics as stats_module
-
-        updated = 0
-        with self._write_lock:
-            session = self._SessionFactory()
-            try:
-                # Get total count first
-                total = session.execute(text(
-                    "SELECT COUNT(*) FROM track_results "
-                    "WHERE max_deviation IS NULL AND error_data IS NOT NULL"
-                )).scalar()
-
-                if total == 0:
-                    logger.info("No tracks need max_deviation backfill")
-                    return 0
-
-                logger.info(f"Backfilling max_deviation for {total} tracks...")
-
-                last_id = 0
-                while True:
-                    rows = session.execute(text(
-                        "SELECT id, error_data, position_data, optimal_offset "
-                        "FROM track_results "
-                        "WHERE max_deviation IS NULL AND error_data IS NOT NULL "
-                        "AND id > :last_id "
-                        "ORDER BY id LIMIT :limit"
-                    ), {"limit": batch_size, "last_id": last_id}).fetchall()
-
-                    if not rows:
-                        break
-                    last_id = rows[-1].id
-
-                    for row in rows:
-                        try:
-                            errors = json.loads(row.error_data) if isinstance(row.error_data, str) else row.error_data
-                            positions = json.loads(row.position_data) if isinstance(row.position_data, str) else row.position_data
-                            opt_offset = row.optimal_offset or 0.0
-
-                            if not errors or not positions:
-                                continue
-
-                            shifted = [e + opt_offset for e in errors]
-                            abs_errs = [abs(e) for e in shifted]
-                            max_dev = max(abs_errs)
-                            max_idx = abs_errs.index(max_dev)
-                            max_dev_pos = positions[max_idx] if max_idx < len(positions) else None
-
-                            dev_unif = None
-                            if len(abs_errs) > 1:
-                                mean_abs = stats_module.mean(abs_errs)
-                                if mean_abs > 0:
-                                    dev_unif = stats_module.stdev(abs_errs) / mean_abs
-
-                            session.execute(text(
-                                "UPDATE track_results SET "
-                                "max_deviation = :max_dev, "
-                                "max_deviation_position = :max_dev_pos, "
-                                "deviation_uniformity = :dev_unif "
-                                "WHERE id = :id"
-                            ), {
-                                "max_dev": max_dev,
-                                "max_dev_pos": max_dev_pos,
-                                "dev_unif": dev_unif,
-                                "id": row.id
-                            })
-                            updated += 1
-                        except Exception as e:
-                            logger.warning(f"Failed to backfill track {row.id}: {e}")
-
-                    session.commit()
-                    logger.info(f"Backfilled {updated}/{total} tracks...")
-
-            except Exception as e:
-                session.rollback()
-                logger.error(f"Backfill error after {updated} updates: {e}")
-            finally:
-                session.close()
-
-        logger.info(f"Backfill complete: {updated} tracks updated")
-        return updated
-
-    # =========================================================================
-    # Model Specifications
-    # =========================================================================
-
-    @staticmethod
-    def _spec_to_dict(s: "ModelSpec") -> Dict[str, Any]:
-        return {
-            "id": s.id,
-            "model": s.model,
-            "element_type": s.element_type,
-            "product_class": s.product_class,
-            "linearity_type": s.linearity_type,
-            "linearity_spec_text": s.linearity_spec_text,
-            "linearity_spec_pct": s.linearity_spec_pct,
-            "total_resistance_min": s.total_resistance_min,
-            "total_resistance_max": s.total_resistance_max,
-            "electrical_angle": s.electrical_angle,
-            "electrical_angle_tol": s.electrical_angle_tol,
-            "electrical_angle_tol_type": getattr(s, "electrical_angle_tol_type", None),
-            "electrical_angle_unit": s.electrical_angle_unit,
-            "output_smoothness": s.output_smoothness,
-            "circuit_type": s.circuit_type,
-            "open_closed": getattr(s, "open_closed", None) or s.circuit_type,
-            "aliases": getattr(s, "aliases", None),
-            "exclude_points": getattr(s, "exclude_points", None),
-            "exclude_points_ft": getattr(s, "exclude_points_ft", None),
-            "notes": s.notes,
-        }
-
-    @staticmethod
-    def _parse_aliases(aliases_str: Optional[str]) -> List[str]:
-        """Parse pipe-separated aliases into a trimmed list of non-empty tokens."""
-        if not aliases_str:
-            return []
-        return [a.strip() for a in aliases_str.split("|") if a.strip()]
-
-    def get_all_model_specs(self) -> List[Dict[str, Any]]:
-        """Get all model specs as dicts."""
-        with self.session() as session:
-            specs = session.query(ModelSpec).order_by(ModelSpec.model).all()
-            return [self._spec_to_dict(s) for s in specs]
-
-    def get_model_spec(self, model: str) -> Optional[Dict[str, Any]]:
-        """
-        Get spec for a specific model. Checks both the primary `model` column
-        and the pipe-separated `aliases` column, so `1621501` and `2001621501`
-        can share a single spec row.
-        """
-        if not model:
-            return None
-        model = model.strip()
-        with self.session() as session:
-            # Primary match first
-            spec = session.query(ModelSpec).filter(
-                ModelSpec.model == model
-            ).first()
-            if spec:
-                return self._spec_to_dict(spec)
-
-            # Fallback: search aliases. SQLite's LIKE is case-insensitive by
-            # default for ASCII; we wrap with the delimiter to avoid matching
-            # prefixes/suffixes ('21501' should not match '1621501').
-            like_pattern = f"%|{model}|%"
-            # Also match at start/end without a leading/trailing pipe
-            candidates = session.query(ModelSpec).filter(
-                ModelSpec.aliases.isnot(None),
-                ModelSpec.aliases != "",
-            ).all()
-            for c in candidates:
-                if model in self._parse_aliases(c.aliases):
-                    return self._spec_to_dict(c)
-            return None
-
-    def resolve_spec_for_ft(self, model: Optional[str], serial: Optional[str]) -> Optional[Dict[str, Any]]:
-        """
-        Resolve a model spec for a Final Test record.
-
-        Multi-section parts (e.g. 8508) store their spec as per-section rows:
-        8508-A, 8508-B, 8508-C, 8508-D. But FT files for the same product are
-        labeled as model='8508' with the section baked into the serial by the
-        operator (e.g. serial='31B' for section B, SN31). This helper tries
-        the section-specific spec first, then falls back to the plain model.
-
-        Resolution order:
-          1. If serial ends in a letter AND get_model_spec(model-letter) exists,
-             return that row.
-          2. Otherwise return get_model_spec(model).
-        """
-        if not model:
-            return None
-
-        if serial:
-            # Trailing letter on the serial — e.g., '31B', '1004a'.
-            # Uppercase it so '31b' and '31B' both resolve to '-B'.
-            import re as _re
-            m = _re.match(r'^.*?([A-Za-z])\s*$', str(serial))
-            if m:
-                section_letter = m.group(1).upper()
-                section_model = f"{model}-{section_letter}"
-                section_spec = self.get_model_spec(section_model)
-                if section_spec:
-                    return section_spec
-
-        # Fallback: plain model lookup (covers single-section parts).
-        return self.get_model_spec(model)
-
-    def save_model_spec(self, data: Dict[str, Any]) -> Tuple[int, bool]:
-        """Create or update a model spec. Returns (spec_id, was_update)."""
-        with self._write_lock:
-            with self.session() as session:
-                existing = session.query(ModelSpec).filter(
-                    ModelSpec.model == data["model"]
-                ).first()
-
-                if existing:
-                    for key, value in data.items():
-                        if key not in ("id", "model", "created_at", "updated_at"):
-                            setattr(existing, key, value)
-                    # updated_at handled automatically by onupdate=utc_now
-                    session.flush()
-                    return existing.id, True
-                else:
-                    spec = ModelSpec(**{k: v for k, v in data.items() if k != "id"})
-                    session.add(spec)
-                    session.flush()
-                    return spec.id, False
-
-    def delete_model_spec(self, model: str) -> bool:
-        """Delete a model spec. Returns True if found and deleted."""
-        with self._write_lock:
-            with self.session() as session:
-                spec = session.query(ModelSpec).filter(
-                    ModelSpec.model == model
-                ).first()
-                if spec:
-                    session.delete(spec)
-                    return True
-                return False
-
-    def get_distinct_element_types(self) -> List[str]:
-        """Get all distinct element types from model_specs."""
-        with self.session() as session:
-            results = session.query(ModelSpec.element_type).filter(
-                ModelSpec.element_type.isnot(None)
-            ).distinct().order_by(ModelSpec.element_type).all()
-            return [r[0] for r in results]
-
-    def get_distinct_product_classes(self) -> List[str]:
-        """Get all distinct product classes from model_specs."""
-        with self.session() as session:
-            results = session.query(ModelSpec.product_class).filter(
-                ModelSpec.product_class.isnot(None)
-            ).distinct().order_by(ModelSpec.product_class).all()
-            return [r[0] for r in results]
-
-    @staticmethod
-    def _parse_angle_string(angle_text: Optional[str]) -> Tuple[Optional[float], Optional[float], Optional[str], Optional[str]]:
-        """
-        Parse a single angle-spec string into (value, tol, unit, tol_type).
-
-        Handles many formats:
-          '1.31" ± .005"'        symmetric tolerance
-          '.665" +/-.005"'       symmetric tolerance
-          '150° ± 1°'            symmetric tolerance
-          '350° Min'             one-sided (floor; slope may go up)
-          '340° Max'             one-sided (ceiling; slope may go down)
-          '89° - 91°'            range (midpoint ± half-range)
-          '2.812" - 2.832"'      range
-          '±45°', '+/- 27.5°'    bilateral (±N from center)
-          '120°', '1.25"'        nominal only, no tolerance
-          'See ATP-10312-DS'     reference doc — returns all Nones
-          'SEE CHARTS'           reference doc — returns all Nones
-
-        Returns (angle_val, angle_tol, angle_unit, angle_tol_type).
-        All None if the text is empty or a reference-doc string.
-        """
-        import re as _re
-
-        angle_val = None
-        angle_tol = None
-        angle_unit = None
-        angle_tol_type = None
-
-        if not angle_text:
-            return angle_val, angle_tol, angle_unit, angle_tol_type
-
-        txt = angle_text.strip()
-        if not txt:
-            return angle_val, angle_tol, angle_unit, angle_tol_type
-
-        txt_lower = txt.lower()
-
-        # Reference-doc strings: store nothing (don't pull a part
-        # number out of the string and call it an angle).
-        if (txt_lower.startswith("see ") or
-            "see chart" in txt_lower or
-            "see table" in txt_lower or
-            "see atp" in txt_lower):
-            return None, None, None, None
-
-        has_deg = '°' in txt or 'deg' in txt_lower
-        has_inch = '"' in txt
-        unit_guess = "deg" if has_deg else ("in" if has_inch else None)
-
-        # Bilateral: starts with ± or +/- (e.g. '±45°', '+/- 27.5°')
-        bi_match = _re.match(r'^\s*(?:[±]|\+/?-)\s*([\d.]+)', txt)
-
-        # "Min" or "Max" qualifier anywhere in the text.
-        has_min = bool(_re.search(r'\bmin\b', txt_lower))
-        has_max = bool(_re.search(r'\bmax\b', txt_lower))
-
-        # Range form: "89° - 91°" or "2.812" - 2.832""
-        range_match = _re.search(r'([\d.]+)[°"]?\s*[-–]\s*([\d.]+)', txt)
-
-        # Symmetric form: "N ± M" or "N +/- M"
-        sym_match = _re.search(r'([\d.]+)[°"]?\s*(?:[±]|\+/?-)\s*([\d.]+)', txt)
-
-        # Priority: symmetric > range > bilateral > min/max > plain
-        if sym_match and not (bi_match and bi_match.start() == 0 and '±' not in txt[:3]):
-            try:
-                angle_val = float(sym_match.group(1))
-                angle_tol = float(sym_match.group(2))
-                angle_tol_type = "symmetric"
-                angle_unit = unit_guess or "in"
-            except ValueError:
-                pass
-
-        if angle_val is None and range_match:
-            try:
-                lo = float(range_match.group(1))
-                hi = float(range_match.group(2))
-                if hi > lo:
-                    angle_val = (lo + hi) / 2.0
-                    angle_tol = (hi - lo) / 2.0
-                    angle_tol_type = "range"
-                    angle_unit = unit_guess or "in"
-            except ValueError:
-                pass
-
-        if angle_val is None and bi_match:
-            try:
-                angle_val = float(bi_match.group(1))
-                angle_tol = None
-                angle_tol_type = "bilateral"
-                angle_unit = unit_guess or "deg"
-            except ValueError:
-                pass
-
-        if angle_val is None and has_min:
-            num_match = _re.search(r'([\d.]+)', txt)
-            if num_match:
-                try:
-                    angle_val = float(num_match.group(1))
-                    angle_tol = None
-                    angle_tol_type = "min"
-                    angle_unit = unit_guess or "in"
-                except ValueError:
-                    pass
-
-        if angle_val is None and has_max:
-            num_match = _re.search(r'([\d.]+)', txt)
-            if num_match:
-                try:
-                    angle_val = float(num_match.group(1))
-                    angle_tol = None
-                    angle_tol_type = "max"
-                    angle_unit = unit_guess or "in"
-                except ValueError:
-                    pass
-
-        if angle_val is None:
-            num_match = _re.search(r'([\d.]+)', txt)
-            if num_match:
-                try:
-                    angle_val = float(num_match.group(1))
-                    angle_tol = None
-                    angle_tol_type = None
-                    angle_unit = unit_guess or "in"
-                except ValueError:
-                    pass
-
-        return angle_val, angle_tol, angle_unit, angle_tol_type
-
-    @staticmethod
-    def _split_multi_section_angle(angle_text: Optional[str]) -> List[Tuple[List[str], str]]:
-        """
-        If the angle text describes multiple sections with different specs,
-        split it into [(sections, per_section_angle_text), ...].
-
-        Example inputs that trigger splitting:
-          'Section A, B & C = 60° +/-.3°\\nSection D = 66.66° +/-.3°'
-            -> [(['A','B','C'], '60° +/-.3°'), (['D'], '66.66° +/-.3°')]
-          'Sections A, B = 60° ± .3°; Section C = 66° ± .3°'
-            -> [(['A','B'], '60° ± .3°'), (['C'], '66° ± .3°')]
-
-        Returns empty list when the text is NOT a multi-section spec — caller
-        should then treat the whole string as a single spec.
-        """
-        import re as _re
-
-        if not angle_text:
-            return []
-
-        txt = angle_text.strip()
-
-        # Must contain at least two occurrences of "Section" (case-insensitive)
-        # to qualify as multi-section. One "Section X = Y" row is technically
-        # possible but pointless to split.
-        if len(_re.findall(r'\bsections?\b', txt, _re.IGNORECASE)) < 2:
-            return []
-
-        # Split on newlines OR on semicolons — the real-world Excel has
-        # '\n' but users may type ';' too.
-        raw_parts = [p.strip() for p in _re.split(r'[\n\r;]+', txt) if p.strip()]
-
-        out: List[Tuple[List[str], str]] = []
-        for part in raw_parts:
-            # Match: "Section(s) A, B & C = <spec text>"
-            m = _re.match(
-                r'^\s*Sections?\s+([A-Za-z0-9 ,&/]+?)\s*=\s*(.+)$',
-                part,
-                _re.IGNORECASE,
-            )
-            if not m:
-                continue
-            sections_str = m.group(1).strip()
-            spec_text = m.group(2).strip()
-            # Break 'A, B & C' into ['A','B','C']. Accept ',', '&', ' and '.
-            tokens = _re.split(r'[,&/]|\band\b', sections_str, flags=_re.IGNORECASE)
-            sections = [t.strip().upper() for t in tokens if t.strip()]
-            # Only keep single-letter section labels (A-Z). Drop anything weird
-            # to stay conservative.
-            sections = [s for s in sections if _re.match(r'^[A-Z]$', s)]
-            if sections and spec_text:
-                out.append((sections, spec_text))
-
-        return out
-
-    def import_model_specs_from_excel(self, file_path: str) -> Dict[str, int]:
-        """
-        Import model specs from the reference Excel file.
-        Merges: updates existing, adds new, never deletes.
-
-        Returns: {"updated": N, "added": N, "skipped": N}
-        """
-        import re
-        import openpyxl
-
-        wb = openpyxl.load_workbook(file_path, read_only=True)
-        result = {"updated": 0, "added": 0, "skipped": 0}
-
-        # Collect data from all three sheets
-        model_data = {}  # model -> dict of fields
-
-        # Sheet 1: Model Reference (primary, most complete)
-        if "Model Reference" in wb.sheetnames:
-            ws = wb["Model Reference"]
-
-            # Detect column positions from header row instead of hardcoding.
-            # This handles spreadsheets with or without an extra leading column.
-            col_map = {}
-            header_aliases = {
-                "model": "model",
-                "element type": "element_type",
-                "linearity": "linearity",
-                "total resistance": "resistance",
-                "electrical angle": "angle",
-                "output smoothness": "smoothness",
-                "open/closed": "open_closed",
-                "product class": "product_class",
-                "aliases": "aliases",
-            }
-            for header_row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
-                if not header_row:
-                    break
-                for idx, cell in enumerate(header_row):
-                    if cell is None:
-                        continue
-                    key = str(cell).strip().lower()
-                    if key in header_aliases:
-                        col_map[header_aliases[key]] = idx
-            logger.debug(f"Model Reference column map: {col_map}")
-
-            if "model" not in col_map:
-                logger.warning("Model Reference sheet has no 'Model' column header — skipping")
-            else:
-                def _cell(row, field):
-                    """Get a cell value by field name, or None if column missing."""
-                    idx = col_map.get(field)
-                    if idx is None or idx >= len(row) or row[idx] is None:
-                        return None
-                    return str(row[idx]).strip() or None
-
-                for row in ws.iter_rows(min_row=2, values_only=True):
-                    if not row:
-                        continue
-                    model = _cell(row, "model")
-                    if not model:
-                        continue
-
-                    element_type = _cell(row, "element_type")
-                    linearity_text = _cell(row, "linearity")
-                    resistance_text = _cell(row, "resistance")
-                    angle_text = _cell(row, "angle")
-                    smoothness = _cell(row, "smoothness")
-                    open_closed = _cell(row, "open_closed")
-                    product_class = _cell(row, "product_class")
-                    aliases_raw = _cell(row, "aliases")
-
-                    # Parse linearity type from text
-                    linearity_type = None
-                    linearity_pct = None
-                    if linearity_text:
-                        lt_lower = linearity_text.lower()
-                        # Extract type: look for (Absolute), (Independent), etc.
-                        type_match = re.search(
-                            r'\(?(Absolute|Independent|Term Base|Zero-Based|VR Max)\)?',
-                            linearity_text, re.IGNORECASE
-                        )
-                        if type_match:
-                            linearity_type = type_match.group(1)
-                            # Normalize case
-                            type_map = {"absolute": "Absolute", "independent": "Independent",
-                                        "term base": "Term Base", "zero-based": "Zero-Based",
-                                        "vr max": "VR Max"}
-                            linearity_type = type_map.get(linearity_type.lower(), linearity_type)
-                        elif any(kw in lt_lower for kw in
-                                 ['see chart', 'see table', 'function', 'trim according',
-                                  'logarithmic', 'logaithmic', 'bowtie', 'no linearity']):
-                            linearity_type = "Custom"
-
-                        # Extract percentage: handle ± N.N%, +/-N.N%, +/-.N%
-                        # Try ± first, then +/- variants
-                        pct_match = re.search(r'[±]\s*(\d*\.?\d+)\s*%', linearity_text)
-                        if not pct_match:
-                            pct_match = re.search(r'\+/?-?\s*(\d*\.?\d+)\s*%', linearity_text)
-                        if pct_match:
-                            try:
-                                linearity_pct = float(pct_match.group(1))
-                            except ValueError:
-                                pass
-
-                    # Parse resistance: "950 - 1,050 Ω" → min=950, max=1050
-                    r_min = None
-                    r_max = None
-                    if resistance_text:
-                        r_match = re.search(
-                            r'([\d,]+\.?\d*)\s*[-–]\s*([\d,]+\.?\d*)',
-                            resistance_text
-                        )
-                        if r_match:
-                            try:
-                                r_min = float(r_match.group(1).replace(',', ''))
-                                r_max = float(r_match.group(2).replace(',', ''))
-                            except ValueError:
-                                pass
-
-                    # Parse angle — either a single spec or a multi-section spec.
-                    # Multi-section example from Excel (model 8508):
-                    #   'Section A, B & C = 60° +/-.3°\nSection D = 66.66° +/-.3°'
-                    # In that case we emit one spec row per section letter so the
-                    # trim files (which come in as 8508-A, 8508-B, ...) each find
-                    # the matching spec via plain model-name lookup.
-                    sections = self._split_multi_section_angle(angle_text)
-
-                    # Normalize aliases: accept '|' or ',' as separator, dedupe
-                    # and drop empties. Stored as pipe-separated in DB.
-                    aliases_norm = None
-                    if aliases_raw and aliases_raw not in ("None", "nan"):
-                        tokens = re.split(r'[|,]', aliases_raw)
-                        clean = []
-                        seen = set()
-                        for t in tokens:
-                            t = t.strip()
-                            if t and t not in seen and t != model:
-                                seen.add(t)
-                                clean.append(t)
-                        if clean:
-                            aliases_norm = " | ".join(clean)
-
-                    # Shared fields common to every section row for this source row.
-                    shared = {
-                        "element_type": element_type if element_type and element_type != 'None' else None,
-                        "product_class": product_class if product_class and product_class != 'None' else None,
-                        "linearity_type": linearity_type,
-                        "linearity_spec_text": linearity_text if linearity_text and linearity_text != 'None' else None,
-                        "linearity_spec_pct": linearity_pct,
-                        "total_resistance_min": r_min,
-                        "total_resistance_max": r_max,
-                        "output_smoothness": smoothness if smoothness and smoothness != 'None' else None,
-                        # Write open_closed to both new and legacy fields so GUIs
-                        # reading either column keep working.
-                        "open_closed": open_closed if open_closed and open_closed != 'None' else None,
-                        "circuit_type": open_closed if open_closed and open_closed != 'None' else None,
-                        "aliases": aliases_norm,
-                    }
-
-                    if sections:
-                        # Multi-section model: emit one row per section letter.
-                        for section_letters, per_section_text in sections:
-                            angle_val, angle_tol, angle_unit, angle_tol_type = \
-                                self._parse_angle_string(per_section_text)
-                            for letter in section_letters:
-                                section_model = f"{model}-{letter}"
-                                model_data[section_model] = {
-                                    "model": section_model,
-                                    **shared,
-                                    "electrical_angle": angle_val,
-                                    "electrical_angle_tol": angle_tol,
-                                    "electrical_angle_tol_type": angle_tol_type,
-                                    "electrical_angle_unit": angle_unit,
-                                }
-                        logger.info(
-                            f"Model specs: expanded {model!r} into "
-                            f"{sum(len(s) for s, _ in sections)} section rows"
-                        )
-                    else:
-                        # Normal single-spec row.
-                        angle_val, angle_tol, angle_unit, angle_tol_type = \
-                            self._parse_angle_string(angle_text)
-                        model_data[model] = {
-                            "model": model,
-                            **shared,
-                            "electrical_angle": angle_val,
-                            "electrical_angle_tol": angle_tol,
-                            "electrical_angle_tol_type": angle_tol_type,
-                            "electrical_angle_unit": angle_unit,
-                        }
-
-        # Sheet 2: Element Type (supplement — broader coverage)
-        if "Element Type" in wb.sheetnames:
-            ws = wb["Element Type"]
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                model = str(row[0]).strip() if row[0] else None
-                etype = str(row[1]).strip() if row[1] else None
-                if model and etype and etype != 'None':
-                    if model not in model_data:
-                        model_data[model] = {"model": model, "element_type": etype}
-                    elif not model_data[model].get("element_type"):
-                        model_data[model]["element_type"] = etype
-
-        # Sheet 3: Product Class (supplement — broadest coverage)
-        if "Product Class" in wb.sheetnames:
-            ws = wb["Product Class"]
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                model = str(row[0]).strip() if row[0] else None
-                pclass = str(row[1]).strip() if row[1] else None
-                if model and pclass and pclass != 'None':
-                    if model not in model_data:
-                        model_data[model] = {"model": model, "product_class": pclass}
-                    elif not model_data[model].get("product_class"):
-                        model_data[model]["product_class"] = pclass
-
-        wb.close()
-
-        # Save to database (merge logic — save_model_spec handles upsert atomically)
-        for model_name, data in model_data.items():
-            try:
-                _, was_update = self.save_model_spec(data)
-                if was_update:
-                    result["updated"] += 1
-                else:
-                    result["added"] += 1
-            except Exception as e:
-                logger.warning(f"Skipping model spec {model_name}: {e}")
-                result["skipped"] += 1
-
-        logger.info(
-            f"Model specs import: {result['added']} added, "
-            f"{result['updated']} updated, {result['skipped']} skipped"
-        )
-        return result
+        session.add(marker)
+        session.flush()
+        return marker.id
 
     # =========================================================================
     # Output Smoothness Methods
@@ -8820,6 +5881,27 @@ class DatabaseManager:
 
         file_size / file_modified_date feed the incremental scan's stat
         fast-path (see save_final_test).
+
+        The body is `_save_smoothness_in` (ingest-speed Task 7); this wraps it in a session of its
+        own, committed once, holding the write lock.
+        """
+        with self._write_lock:
+            with self.session() as session:
+                return self._save_smoothness_in(session, metadata, tracks, file_hash,
+                                                file_size, file_modified_date)
+
+    def _save_smoothness_in(
+        self, session: Session, metadata: Dict[str, Any], tracks: List[Dict[str, Any]],
+        file_hash: str, file_size: Optional[int] = None,
+        file_modified_date: Optional[datetime] = None,
+    ) -> int:
+        """Write one Output Smoothness result into the session it is GIVEN; return its id.
+
+        What `save_smoothness_result` always did -- an upsert of the same content, else an insert
+        linked to its trim -- with no commit and no session of its own. Its IntegrityError fallback
+        was a second session: the upsert or insert now runs in a savepoint, so a UNIQUE collision
+        rolls back only that and the fallback reads in the same session. -1 still means the
+        collision was with a row holding OTHER content, and nothing was stored.
         """
         from laser_trim_analyzer.database.models import (
             SmoothnessResult as DBSmoothnessResult,
@@ -8838,60 +5920,59 @@ class DatabaseManager:
         spec = metadata.get("smoothness_spec") or (tracks[0].get("smoothness_spec") if tracks else None)
         passes = all(t.get("smoothness_pass", True) for t in tracks) if tracks else None
 
-        with self._write_lock:
-            try:
-                with self.session() as session:
-                    existing = session.query(DBSmoothnessResult).filter(
-                        DBSmoothnessResult.file_hash == file_hash
-                    ).first()
-                    if existing:
-                        # UPSERT: the old code silently returned here without
-                        # updating anything. That meant records imported before
-                        # the parser fix kept their zeroed values forever, even
-                        # when reprocessed. Now we overwrite the parent row's
-                        # aggregate fields and replace the child tracks so a
-                        # reprocess actually refreshes the stored data.
-                        existing.overall_status = overall_status
-                        existing.smoothness_spec = spec
-                        existing.max_smoothness_value = max_smooth
-                        existing.avg_smoothness_value = avg_smooth
-                        existing.smoothness_pass = passes
-                        if file_size is not None:
-                            existing.file_size = file_size
-                            existing.file_modified_date = file_modified_date
-                        if metadata.get("file_date"):
-                            existing.file_date = metadata.get("file_date")
-                        if metadata.get("test_date"):
-                            existing.test_date = metadata.get("test_date")
-                        if metadata.get("element_label"):
-                            existing.element_label = metadata.get("element_label")
+        try:
+            with session.begin_nested():
+                existing = session.query(DBSmoothnessResult).filter(
+                    DBSmoothnessResult.file_hash == file_hash
+                ).first()
+                if existing:
+                    # UPSERT: the old code silently returned here without
+                    # updating anything. That meant records imported before
+                    # the parser fix kept their zeroed values forever, even
+                    # when reprocessed. Now we overwrite the parent row's
+                    # aggregate fields and replace the child tracks so a
+                    # reprocess actually refreshes the stored data.
+                    existing.overall_status = overall_status
+                    existing.smoothness_spec = spec
+                    existing.max_smoothness_value = max_smooth
+                    existing.avg_smoothness_value = avg_smooth
+                    existing.smoothness_pass = passes
+                    if file_size is not None:
+                        existing.file_size = file_size
+                        existing.file_modified_date = file_modified_date
+                    if metadata.get("file_date"):
+                        existing.file_date = metadata.get("file_date")
+                    if metadata.get("test_date"):
+                        existing.test_date = metadata.get("test_date")
+                    if metadata.get("element_label"):
+                        existing.element_label = metadata.get("element_label")
 
-                        # Replace the per-track rows
-                        session.query(DBSmoothnessTrack).filter(
-                            DBSmoothnessTrack.smoothness_id == existing.id
-                        ).delete(synchronize_session=False)
+                    # Replace the per-track rows
+                    session.query(DBSmoothnessTrack).filter(
+                        DBSmoothnessTrack.smoothness_id == existing.id
+                    ).delete(synchronize_session=False)
 
-                        for track_data in tracks:
-                            db_track = DBSmoothnessTrack(
-                                smoothness_id=existing.id,
-                                track_id=track_data.get("track_id", "default"),
-                                status=DBStatusType.PASS if track_data.get("smoothness_pass", True) else DBStatusType.FAIL,
-                                smoothness_spec=track_data.get("smoothness_spec"),
-                                max_smoothness=track_data.get("max_smoothness"),
-                                avg_smoothness=track_data.get("avg_smoothness"),
-                                smoothness_pass=track_data.get("smoothness_pass"),
-                                position_data=track_data.get("positions"),
-                                smoothness_data=track_data.get("smoothness_values"),
-                            )
-                            session.add(db_track)
-
-                        logger.debug(
-                            f"Updated Smoothness: {metadata.get('filename')} "
-                            f"(ID: {existing.id}, max={max_smooth:.4f}, spec={spec}, "
-                            f"tracks={len(tracks)})"
+                    for track_data in tracks:
+                        db_track = DBSmoothnessTrack(
+                            smoothness_id=existing.id,
+                            track_id=track_data.get("track_id", "default"),
+                            status=DBStatusType.PASS if track_data.get("smoothness_pass", True) else DBStatusType.FAIL,
+                            smoothness_spec=track_data.get("smoothness_spec"),
+                            max_smoothness=track_data.get("max_smoothness"),
+                            avg_smoothness=track_data.get("avg_smoothness"),
+                            smoothness_pass=track_data.get("smoothness_pass"),
+                            position_data=track_data.get("positions"),
+                            smoothness_data=track_data.get("smoothness_values"),
                         )
-                        return existing.id
+                        session.add(db_track)
 
+                    logger.debug(
+                        f"Updated Smoothness: {metadata.get('filename')} "
+                        f"(ID: {existing.id}, max={max_smooth:.4f}, spec={spec}, "
+                        f"tracks={len(tracks)})"
+                    )
+                    result_id = existing.id
+                else:
                     linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
                         session, metadata.get("model"), metadata.get("serial"),
                         metadata.get("file_date") or metadata.get("test_date")
@@ -8937,260 +6018,14 @@ class DatabaseManager:
                         session.add(db_track)
 
                     logger.debug(f"Saved Smoothness: {metadata.get('filename')} (ID: {result_id})")
-                    return result_id
+            return result_id
 
-            except IntegrityError:
-                logger.warning(f"Smoothness duplicate: {metadata.get('filename')}")
-                with self.session() as session:
-                    existing = session.query(DBSmoothnessResult).filter(
-                        DBSmoothnessResult.file_hash == file_hash
-                    ).first()
-                    return existing.id if existing else -1
-
-    def get_smoothness_files_missing_tracks(self) -> List[Dict[str, Any]]:
-        """
-        Get Output Smoothness records that have 0 tracks stored.
-
-        Used to repair records imported by the older code that wrote the
-        result row but did not persist the per-position arrays needed to
-        render the chart.
-
-        Returns:
-            List of dicts with id, filename, file_path, model, serial.
-        """
-        from laser_trim_analyzer.database.models import (
-            SmoothnessResult as DBSmoothnessResult,
-            SmoothnessTrack as DBSmoothnessTrack,
-        )
-
-        with self.session() as session:
-            track_count_subq = (
-                session.query(
-                    DBSmoothnessTrack.smoothness_id,
-                    func.count(DBSmoothnessTrack.id).label('track_count')
-                )
-                .group_by(DBSmoothnessTrack.smoothness_id)
-                .subquery()
-            )
-
-            results = (
-                session.query(DBSmoothnessResult)
-                .outerjoin(
-                    track_count_subq,
-                    DBSmoothnessResult.id == track_count_subq.c.smoothness_id,
-                )
-                .filter(track_count_subq.c.track_count == None)
-                .all()
-            )
-            return [
-                {
-                    "id": r.id,
-                    "filename": r.filename,
-                    "file_path": r.file_path,
-                    "model": r.model,
-                    "serial": r.serial,
-                }
-                for r in results
-            ]
-
-    def update_smoothness_tracks(
-        self,
-        smoothness_id: int,
-        tracks: List[Dict[str, Any]],
-    ) -> bool:
-        """
-        Replace the per-track data for an existing Smoothness record.
-
-        Used to fix records that were imported before the smoothness_tracks
-        write was added to save_smoothness_result.
-        """
-        from laser_trim_analyzer.database.models import (
-            SmoothnessTrack as DBSmoothnessTrack,
-        )
-
-        if not tracks:
-            return False
-
-        with self._write_lock:
-            try:
-                with self.session() as session:
-                    # Delete any existing (likely zero) tracks first
-                    session.query(DBSmoothnessTrack).filter(
-                        DBSmoothnessTrack.smoothness_id == smoothness_id
-                    ).delete(synchronize_session=False)
-
-                    for track_data in tracks:
-                        db_track = DBSmoothnessTrack(
-                            smoothness_id=smoothness_id,
-                            track_id=track_data.get("track_id", "default"),
-                            status=DBStatusType.PASS if track_data.get("smoothness_pass", True) else DBStatusType.FAIL,
-                            smoothness_spec=track_data.get("smoothness_spec"),
-                            max_smoothness=track_data.get("max_smoothness"),
-                            avg_smoothness=track_data.get("avg_smoothness"),
-                            smoothness_pass=track_data.get("smoothness_pass"),
-                            position_data=track_data.get("positions"),
-                            smoothness_data=track_data.get("smoothness_values"),
-                        )
-                        session.add(db_track)
-                    return True
-            except Exception as e:
-                logger.error(f"update_smoothness_tracks({smoothness_id}) failed: {e}")
-                return False
-
-    def search_smoothness_results(
-        self, model: Optional[str] = None, limit: int = 500
-    ) -> List[Dict[str, Any]]:
-        """Search Output Smoothness results."""
-        from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
-
-        with self.session() as session:
-            query = session.query(DBSmoothnessResult)
-            if model and model != "All Models":
-                query = query.filter(DBSmoothnessResult.model == model)
-            results = query.order_by(desc(DBSmoothnessResult.file_date)).limit(limit).all()
-            return [
-                {
-                    "id": r.id, "filename": r.filename, "model": r.model,
-                    "serial": r.serial, "element_label": r.element_label,
-                    "file_date": r.file_date, "test_date": r.test_date,
-                    "overall_status": r.overall_status.value if r.overall_status else "UNKNOWN",
-                    "smoothness_spec": r.smoothness_spec,
-                    "max_smoothness_value": r.max_smoothness_value,
-                    "avg_smoothness_value": r.avg_smoothness_value,
-                    "smoothness_pass": r.smoothness_pass,
-                    "linked_trim_id": r.linked_trim_id,
-                    "match_confidence": r.match_confidence,
-                    "match_method": r.match_method,
-                }
-                for r in results
-            ]
-
-    def get_smoothness_result(self, result_id: int) -> Optional[Dict[str, Any]]:
-        """Get a single Output Smoothness result by ID with tracks."""
-        from laser_trim_analyzer.database.models import (
-            SmoothnessResult as DBSmoothnessResult,
-            SmoothnessTrack as DBSmoothnessTrack,
-        )
-        with self.session() as session:
-            result = session.query(DBSmoothnessResult).filter(
-                DBSmoothnessResult.id == result_id
+        except IntegrityError:
+            logger.warning(f"Smoothness duplicate: {metadata.get('filename')}")
+            existing = session.query(DBSmoothnessResult).filter(
+                DBSmoothnessResult.file_hash == file_hash
             ).first()
-            if not result:
-                return None
-            tracks = session.query(DBSmoothnessTrack).filter(
-                DBSmoothnessTrack.smoothness_id == result_id
-            ).all()
-            return {
-                "id": result.id, "filename": result.filename,
-                "model": result.model, "serial": result.serial,
-                "element_label": result.element_label,
-                "file_date": result.file_date, "test_date": result.test_date,
-                "overall_status": result.overall_status.value if result.overall_status else "UNKNOWN",
-                "smoothness_spec": result.smoothness_spec,
-                "max_smoothness_value": result.max_smoothness_value,
-                "smoothness_pass": result.smoothness_pass,
-                "linked_trim_id": result.linked_trim_id,
-                "match_method": result.match_method,
-                "match_confidence": result.match_confidence,
-                "tracks": [
-                    {
-                        "track_id": t.track_id,
-                        "smoothness_spec": t.smoothness_spec,
-                        "max_smoothness": t.max_smoothness,
-                        "smoothness_pass": t.smoothness_pass,
-                        "positions": t.position_data or [],
-                        "smoothness_values": t.smoothness_data or [],
-                    }
-                    for t in tracks
-                ],
-            }
-
-    def get_smoothness_stats(self, days_back: int = 90) -> Dict[str, Any]:
-        """Get Output Smoothness dashboard statistics."""
-        from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
-        with self.session() as session:
-            cutoff = datetime.now() - timedelta(days=days_back)
-            total = session.query(func.count(DBSmoothnessResult.id)).filter(
-                DBSmoothnessResult.file_date >= cutoff
-            ).scalar() or 0
-            if total == 0:
-                return {"total": 0, "pass_rate": 0, "linked_count": 0, "link_rate": 0}
-            passed = session.query(func.count(DBSmoothnessResult.id)).filter(
-                DBSmoothnessResult.file_date >= cutoff,
-                DBSmoothnessResult.smoothness_pass == True,
-            ).scalar() or 0
-            linked = session.query(func.count(DBSmoothnessResult.id)).filter(
-                DBSmoothnessResult.file_date >= cutoff,
-                DBSmoothnessResult.linked_trim_id.isnot(None),
-            ).scalar() or 0
-            return {
-                "total": total,
-                "pass_rate": round(passed / total * 100, 1),
-                "linked_count": linked,
-                "link_rate": round(linked / total * 100, 1),
-            }
-
-    def get_smoothness_stats_by_model(
-        self, model: Optional[str] = None, days_back: int = 90
-    ) -> List[Dict[str, Any]]:
-        """Get Output Smoothness statistics grouped by model.
-
-        Args:
-            model: Optional model filter. If given, return stats for that model only.
-            days_back: Number of days to look back (default 90).
-
-        Returns:
-            List of dicts sorted by pass_rate ascending (worst first), then margin.
-        """
-        from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
-
-        with self.session() as session:
-            cutoff = datetime.now() - timedelta(days=days_back)
-
-            query = session.query(
-                DBSmoothnessResult.model,
-                func.count(DBSmoothnessResult.id).label("count"),
-                func.sum(
-                    case(
-                        (DBSmoothnessResult.smoothness_pass == True, 1),
-                        else_=0,
-                    )
-                ).label("passed"),
-                func.avg(DBSmoothnessResult.max_smoothness_value).label("avg_max_smoothness"),
-                func.max(DBSmoothnessResult.max_smoothness_value).label("worst_case"),
-                func.avg(DBSmoothnessResult.smoothness_spec).label("spec_limit"),
-            ).filter(
-                DBSmoothnessResult.file_date >= cutoff,
-            ).group_by(DBSmoothnessResult.model)
-
-            if model is not None:
-                query = query.filter(DBSmoothnessResult.model == model)
-
-            rows = query.all()
-
-            results: List[Dict[str, Any]] = []
-            for row in rows:
-                count = row.count
-                passed = row.passed or 0
-                pass_rate = round(passed / count * 100, 1) if count else 0.0
-                avg_max = round(row.avg_max_smoothness, 4) if row.avg_max_smoothness is not None else 0.0
-                worst = round(row.worst_case, 4) if row.worst_case is not None else 0.0
-                spec = round(row.spec_limit, 4) if row.spec_limit is not None else 0.0
-                margin = round(spec - avg_max, 4)
-
-                results.append({
-                    "model": row.model,
-                    "count": count,
-                    "passed": passed,
-                    "pass_rate": pass_rate,
-                    "avg_max_smoothness": avg_max,
-                    "worst_case": worst,
-                    "spec_limit": spec,
-                    "margin": margin,
-                })
-
-            results.sort(key=lambda r: (r["pass_rate"], r["margin"]))
-            return results
+            return existing.id if existing else -1
 
     # =========================================================================
     # Cpk / Analytics Queries (Phase 4)

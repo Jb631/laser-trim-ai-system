@@ -36,7 +36,7 @@ from laser_trim_analyzer.core.ingest_run import (
     run_folder,
     run_folders,
 )
-from laser_trim_analyzer.core.processor import Processor
+from laser_trim_analyzer.core.processor import Outcome, Processor
 
 BATCH = 20          # processor.py's batch_size — the boundary under test
 
@@ -49,15 +49,18 @@ class _StubProcessor(Processor):
     use_ml=False keeps the constructor off the database — Processor's ML
     threshold load goes through the global manager, which ignores an injected
     handle and would create one at the config default.
+
+    The stub is the pool's unit of work, `analyse_path` (ingest-speed Task 9:
+    the pool analyses, the consumer writes); it asks for no write.
     """
 
     def __init__(self, *a, **k):
         k.setdefault("use_ml", False)
         super().__init__(*a, **k)
 
-    def process_file(self, file_path, generate_plots=True):
-        return self._create_error_result(
-            self._create_minimal_metadata(Path(file_path)), "stub", time.time())
+    def analyse_path(self, file_path, disk_stat=None):
+        return Outcome(path=str(file_path), result=self._create_error_result(
+            self._create_minimal_metadata(Path(file_path)), "stub", time.time()))
 
 
 class _FakeDb:
@@ -66,6 +69,17 @@ class _FakeDb:
 
     def save_analysis(self, result):
         self.saved.append(result)
+
+    def write_batch(self, items):
+        """Since ingest-speed Task 10 the run's writer saves in batches: every item is saved,
+        and each trim it was handed is recorded as saved."""
+        from laser_trim_analyzer.database.manager import TrimWrite, WriteOutcome
+        out = []
+        for item in items:
+            if isinstance(item, TrimWrite):
+                self.saved.append(item.analysis)
+            out.append(WriteOutcome("saved", row_id=len(out) + 1))
+        return out
 
 
 def _paths(n):

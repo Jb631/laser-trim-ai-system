@@ -20,9 +20,11 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Callable, Generator
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Callable, Generator, Tuple
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout   # builtin only from 3.11
 
 try:
     import psutil
@@ -46,7 +48,9 @@ from laser_trim_analyzer.core.models import (
 from laser_trim_analyzer.config import Config, get_config
 from laser_trim_analyzer.core.final_test_parser import FinalTestParser
 from laser_trim_analyzer.core.smoothness_parser import SmoothnessParser, is_smoothness_file
-from laser_trim_analyzer.utils.hashing import calculate_file_hash
+from laser_trim_analyzer.utils.hashing import calculate_file_hash, shares_one_stat, stat_once
+from laser_trim_analyzer.database.manager import FinalTestWrite, SkipMarkerWrite, SmoothnessWrite
+from laser_trim_analyzer.database.specs import SpecSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +127,146 @@ def error_reason_of(tracks, overall_status) -> Optional[str]:
     return ("; ".join(parts)[:500]) or "ERROR with no recorded reason"
 
 
+ML_FALLBACK_WARNING = (
+    "ML state could not be loaded ({why}): sigma thresholds fall back to the formula defaults, "
+    "and no failure-probability predictor runs, for every model it did not load -- the ingest "
+    "goes on (sigma is a drift signal, never a rejection)")
+
+
+def load_ml_state(db) -> Tuple[Dict[str, float], Dict[str, object]]:
+    """(sigma thresholds, trained predictors) per model -- the ML state the analysis uses.
+
+    The one extraction rule, for a Processor built without a snapshot (`_load_ml_thresholds`) and
+    for `take_spec_snapshot` alike. Never fatal, as it never was: any failure means no ML state,
+    and the analyzer falls back to its formula thresholds. But never SILENT (review m-3, ruling
+    of 2026-09-25): a failed load WARNS, naming what failed -- once per call, which the ingest
+    makes once per folder (its snapshot). It does not refuse the folder: predictors never load on
+    the Mac by design, and sigma never rejects a unit.
+    """
+    thresholds: Dict[str, float] = {}
+    predictors: Dict[str, object] = {}
+    try:
+        from laser_trim_analyzer.ml import get_shared_ml_manager
+        ml_manager = get_shared_ml_manager(db)
+        # The manager swallows its own load failures (and the shared cache serves the half-loaded
+        # manager for five minutes): it records why, and this is where that is said.
+        failed = getattr(ml_manager, "load_error", None)
+        if failed:
+            logger.warning(ML_FALLBACK_WARNING.format(why=failed))
+
+        # Extract thresholds from trained models
+        for model_name in ml_manager.trained_models:
+            optimizer = ml_manager.threshold_optimizers.get(model_name)
+            if optimizer and optimizer.is_calculated:
+                thresholds[model_name] = optimizer.threshold
+
+        # Extract trained predictors for failure probability
+        for model_name, predictor in ml_manager.predictors.items():
+            if predictor.is_trained:
+                predictors[model_name] = predictor
+
+        if thresholds:
+            logger.info(f"Loaded ML thresholds for {len(thresholds)} models")
+        else:
+            logger.debug("No trained ML thresholds found, using formula")
+
+        if predictors:
+            logger.info(f"Loaded ML predictors for {len(predictors)} models")
+
+    except Exception as e:
+        logger.warning(ML_FALLBACK_WARNING.format(why=f"{type(e).__name__}: {e}"))
+        return {}, {}
+    return thresholds, predictors
+
+
+def take_spec_snapshot(*, use_ml: bool = True, db=None) -> SpecSnapshot:
+    """What the analysis reads from the database, read ONCE: at folder start (ruling 16).
+
+    Every model spec, and with `use_ml` the ML thresholds and predictors -- from the database the
+    Processor's own lookups use (`get_database()`) unless one is named. A Processor built with it
+    answers every spec question from it and never asks the database; a spec edited while a folder
+    runs reaches the next folder's snapshot. Plain, picklable data (see SpecSnapshot). A failure to
+    read the specs RAISES: analysing a folder spec-less would store different numbers without a
+    word (spec §4.3).
+    """
+    if db is None:
+        from laser_trim_analyzer.database import get_database
+        db = get_database()
+    thresholds, predictors = load_ml_state(db) if use_ml else ({}, {})
+    return SpecSnapshot(specs=tuple(db.get_all_model_specs()),
+                        ml_thresholds=thresholds, ml_predictors=predictors)
+
+
+def is_content_refusal(exc: Optional[BaseException]) -> bool:
+    """Did the FILE's own content cause this save error? (Ruling of 2026-09-25.)
+
+    Only such an error -- a validation refusal (a ValueError, such as "Serial cannot be empty"),
+    or a malformed or duplicate unit (an IntegrityError) -- may record a file as unreadable.
+    Anything else a save raises -- OperationalError, any other database or driver error, disk
+    I/O, schema drift, a bug -- the save cannot attribute to the file: the database refused it,
+    not the file. Such a file is NEVER marked; it stays new, is counted as an error, and feeds the
+    ingest's stop rule. None (a batch-level failure, no exception of the file's) is not the
+    file's either.
+    """
+    if exc is None:
+        return False
+    from sqlalchemy.exc import IntegrityError as _SAIntegrityError
+    import sqlite3 as _sqlite3
+    return isinstance(exc, (ValueError, _SAIntegrityError, _sqlite3.IntegrityError))
+
+
+def record_row_id(result: Optional[AnalysisResult], write: Any, row_id: Optional[int]) -> None:
+    """The saved row's id onto the result, as the analysis did when it saved: a final test's (not
+    a header-only row's: that result is its ERROR), a smoothness file's. For every writer."""
+    if result is None:
+        return
+    if isinstance(write, FinalTestWrite):
+        if result.overall_status != AnalysisStatus.ERROR:
+            result.final_test_id = row_id
+            logger.debug(f"Processed Final Test: {result.metadata.filename} - "
+                         f"{result.overall_status.value} (ID: {row_id})")
+    elif isinstance(write, SmoothnessWrite):
+        result.smoothness_id = row_id
+        logger.debug(f"Processed Smoothness: {result.metadata.filename} - "
+                     f"{result.overall_status.value} (ID: {row_id})")
+
+
+@dataclass
+class Outcome:
+    """What analysing ONE file found, and every database write it asks for -- as values.
+
+    `Processor.analyse_path` makes one and touches no database (ingest-speed spec 4.1-4.2, ruling
+    9). The writes the pool threads used to make themselves, in the middle of the analysis --
+    the per-path skip markers, the final-test save, the smoothness save -- come back in `writes`,
+    in the order the old code made them, and the CONSUMER applies them: through a writer when
+    one is given (the ingest), or at once through the public methods (`Processor.apply_outcome`,
+    which `process_file` and V5's loop use), exactly as before.
+
+    `result` is what `process_file` returns for the file: an AnalysisResult, or None for a file
+    that is not test data. A trim result is still its caller's to save, as it always was; `stat`
+    and `file_hash` are the (size, mtime) and SHA-256 of the bytes that were PARSED, for that save
+    (ruling 10): (None, None) when the file could not be statted. `started` is when the analysis
+    began (`time.time()`), for the ERROR result a failed save becomes. `identity_error`: why a
+    trim file that stats could not be hashed -- its save must fail, as `save_analysis`'s did.
+    `internal`: the analysis itself raised (in the pool) -- nothing to save; the file is an error,
+    and new again next run.
+    """
+    path: str
+    result: Optional[AnalysisResult] = None
+    writes: Tuple[Any, ...] = ()
+    stat: Optional[Tuple[int, float]] = None
+    file_hash: Optional[str] = None
+    started: float = 0.0
+    identity_error: Optional[str] = None
+    internal: Optional[str] = None
+
+
+class WriterStop(Exception):
+    """Raised by a writer to END the batch: the folder cannot go on -- e.g. ruling 22's two
+    consecutive failed batch commits. It propagates out of `process_batch` (the pool's per-file
+    error handling never swallows it), and the folder fails with this message."""
+
+
 class Processor:
     """
     Unified processor for laser trim files.
@@ -139,6 +283,7 @@ class Processor:
         self,
         config: Optional[Config] = None,
         use_ml: bool = True,
+        snapshot: Optional[SpecSnapshot] = None,
     ):
         """
         Initialize processor.
@@ -146,8 +291,13 @@ class Processor:
         Args:
             config: Configuration object
             use_ml: Whether to attempt loading ML thresholds from database
+            snapshot: What the analysis would read from the database, read once at folder start
+                (`take_spec_snapshot`). Given one, every spec question and the ML thresholds and
+                predictors come from it and the analysis never asks the database; without one,
+                they come from `get_database()` as they always have (the V5 loop, scripts).
         """
         self.config = config or get_config()
+        self._snapshot = snapshot
         self.parser = ExcelParser()
         self.final_test_parser = FinalTestParser()  # For Final Test files
         self.smoothness_parser = SmoothnessParser()  # For Output Smoothness files
@@ -193,7 +343,11 @@ class Processor:
         # Storage path for composite risk pickle files (mirrors MLManager convention).
         self.ml_storage_path = Path("data/ml_models")
         if use_ml:
-            self._load_ml_thresholds()
+            if snapshot is not None:
+                self._model_thresholds = dict(snapshot.ml_thresholds)
+                self._model_predictors = dict(snapshot.ml_predictors)
+            else:
+                self._load_ml_thresholds()
 
         # Create analyzer with per-model thresholds
         self.analyzer = Analyzer(
@@ -201,43 +355,24 @@ class Processor:
         )
 
     def _load_ml_thresholds(self) -> None:
-        """Load trained per-model thresholds from database."""
+        """Load trained per-model thresholds from database (no snapshot given)."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import get_shared_ml_manager
-
             db = get_database()
-            ml_manager = get_shared_ml_manager(db)
-
-            # Extract thresholds from trained models
-            for model_name in ml_manager.trained_models:
-                optimizer = ml_manager.threshold_optimizers.get(model_name)
-                if optimizer and optimizer.is_calculated:
-                    self._model_thresholds[model_name] = optimizer.threshold
-
-            # Extract trained predictors for failure probability
-            for model_name, predictor in ml_manager.predictors.items():
-                if predictor.is_trained:
-                    self._model_predictors[model_name] = predictor
-
-            if self._model_thresholds:
-                logger.info(f"Loaded ML thresholds for {len(self._model_thresholds)} models")
-            else:
-                logger.debug("No trained ML thresholds found, using formula")
-
-            if self._model_predictors:
-                logger.info(f"Loaded ML predictors for {len(self._model_predictors)} models")
-
         except Exception as e:
             logger.debug(f"Could not load ML thresholds: {e}")
             self._model_thresholds = {}
             self._model_predictors = {}
+            return
+        self._model_thresholds, self._model_predictors = load_ml_state(db)
 
     def process_file(self, file_path: Path, generate_plots: bool = True) -> Optional[AnalysisResult]:
         """
         Process a single file (trim or final test).
 
-        Automatically detects file type and routes to appropriate handler.
+        Automatically detects file type and routes to appropriate handler: the analysis
+        (`analyse_path`), then the writes it asks for made at once (`apply_outcome`) -- what
+        this method always did, for its callers outside the ingest (V5, track_repair, scripts).
 
         Args:
             file_path: Path to Excel file
@@ -246,6 +381,23 @@ class Processor:
         Returns:
             AnalysisResult with all track data (for trim files)
             or special final_test result marker
+        """
+        file_path = Path(file_path)
+        return self.apply_outcome(self.analyse_path(file_path,
+                                                    self._disk_stats.get(str(file_path))))
+
+    @shares_one_stat
+    def analyse_path(self, file_path: Path, disk_stat: Optional[tuple] = None) -> Outcome:
+        """Analyse ONE file and return what it found, touching no database (spec 4.1, ruling 9).
+
+        Today's `process_file` body minus every write: a skip marker, a final-test or smoothness
+        save come back as values in the Outcome, for the consumer to apply (see Outcome). The spec
+        questions are answered by the Processor's snapshot when it has one (ruling 16); without
+        one they still ask `get_database()`, as `process_file` always did.
+
+        `disk_stat` is the walk's (size, mtime) for this path, when the walk took one: a final
+        test or smoothness file records it, as it always has. One stat per path for the whole
+        analysis (`@shares_one_stat`): what the parse read is what the Outcome says it read.
         """
         start_time = time.time()
         file_path = Path(file_path)
@@ -257,15 +409,18 @@ class Processor:
 
         if file_type == "non_trim":
             logger.debug(f"Skipping non-trim file: {file_path.name}")
-            self._mark_file_skipped(file_path)
-            return None
+            return self._skipped(file_path, start_time)
 
         if file_type == "final_test":
-            return self._process_final_test_file(file_path, start_time)
+            return self._final_test_outcome(file_path, start_time, disk_stat)
 
         if file_type == "smoothness":
-            return self._process_smoothness_file(file_path, start_time)
+            return self._smoothness_outcome(file_path, start_time, disk_stat)
 
+        return self._trim_outcome(file_path, start_time)
+
+    def _trim_outcome(self, file_path: Path, start_time: float) -> Outcome:
+        """A trim file's analysis, as an Outcome (the trim half of the old process_file)."""
         # Process as trim file (existing logic)
         try:
             # Parse file
@@ -275,16 +430,15 @@ class Processor:
                 # Parameter/report workbook named like test data — a known
                 # non-data layout. Skip like non_trim; never an ERROR row.
                 logger.debug(f"Skipping parameter/report workbook {file_path.name}: {e}")
-                self._mark_file_skipped(file_path)
-                return None
+                return self._skipped(file_path, start_time)
             metadata = parsed["metadata"]
             tracks_data = parsed["tracks"]
             file_hash = parsed["file_hash"]
 
             if not tracks_data:
-                return self._create_error_result(
+                return self._trim_done(file_path, start_time, self._create_error_result(
                     metadata, "No valid track data found", start_time
-                )
+                ), file_hash)
 
             # Look up full spec (linearity type + angle spec + tol + tol_type)
             # for this model. These drive the slope-from-tolerance rule in
@@ -472,37 +626,72 @@ class Processor:
             logger.debug(f"Completed: {file_path.name} - {overall_status.value} "
                        f"({processing_time:.2f}s)")
 
-            return result
+            return self._trim_done(file_path, start_time, result, file_hash)
 
         except FileNotFoundError as e:
             logger.error(f"File not found: {file_path}")
-            return self._create_error_result(
+            return self._trim_done(file_path, start_time, self._create_error_result(
                 self._create_minimal_metadata(file_path),
                 f"File not found: {e}",
                 start_time
-            )
+            ))
         except Exception as e:
+            writes: Tuple[Any, ...] = ()
             if self._is_permanent_failure(e):
                 logger.warning(f"{file_path.name} permanently unprocessable — "
                                f"recorded as skipped: {e}")
-                self._mark_file_skipped(file_path)
+                marker = self._skip_marker(file_path)
+                writes = (marker,) if marker is not None else ()
             else:
                 logger.exception(f"Error processing {file_path.name}: {e}")
-            return self._create_error_result(
+            return self._trim_done(file_path, start_time, self._create_error_result(
                 self._create_minimal_metadata(file_path),
                 str(e),
                 start_time
-            )
+            ), writes=writes)
 
-    def _disk_stat_for_save(self, file_path: Path) -> tuple:
+    def _trim_done(self, file_path: Path, start_time: float, result: AnalysisResult,
+                   file_hash: Optional[str] = None, writes: Tuple[Any, ...] = ()) -> Outcome:
+        """A trim file's Outcome, carrying the (size, mtime) and SHA-256 of the bytes that were
+        parsed -- what `save_analysis`'s `_file_identity` takes at save time, taken HERE: inside
+        the analysis's one-stat scope the stat is the parse's own, and the hash is the parse's
+        (or, for a file the parse never hashed, the file's). (None, None) for a file that cannot
+        be statted, as `_file_identity` gives; a file that stats but cannot be read records why,
+        since its save must fail as `save_analysis`'s did."""
+        stat, identity_error = None, None
+        try:
+            st = stat_once(file_path)
+        except OSError:
+            st = None
+        if st is not None:
+            stat = (st.st_size, st.st_mtime)
+            if file_hash is None:
+                try:
+                    file_hash = calculate_file_hash(file_path, known_stat=st)
+                except Exception as e:
+                    identity_error = f"{type(e).__name__}: {e}"
+        return Outcome(path=str(file_path), result=result, writes=tuple(writes), stat=stat,
+                       file_hash=file_hash, started=start_time, identity_error=identity_error)
+
+    def _skipped(self, file_path: Path, start_time: float) -> Outcome:
+        """Not test data (non_trim, a parameter workbook): no result, and a skip marker."""
+        marker = self._skip_marker(file_path)
+        return Outcome(path=str(file_path), result=None,
+                       writes=(marker,) if marker is not None else (), started=start_time)
+
+    def _disk_stat_for_save(self, file_path: Path, disk_stat: Optional[tuple] = None) -> tuple:
         """(size, mtime datetime) for a file, or (None, None) if unavailable.
 
         Prefers the stat captured during folder discovery (scandir hands it
-        over with the listing — no extra network round trip). Recorded on the
-        FT/smoothness row so the NEXT scan recognises the file from memory
-        instead of reading every byte of it to hash.
+        over with the listing — no extra network round trip): handed in as
+        `disk_stat` (a worker process has no `_disk_stats`), else looked up.
+        Recorded on the FT/smoothness row so the NEXT scan recognises the file
+        from memory instead of reading every byte of it to hash -- which is why
+        the mtime is converted exactly so, `datetime.fromtimestamp`, local: the
+        scan compares it with the walk's (review of Tasks 5-6, the Task 9
+        hand-off).
         """
-        st = self._disk_stats.get(str(file_path))
+        st = disk_stat if disk_stat is not None else self._disk_stats.get(str(file_path))
         if st is None:
             try:
                 _st = file_path.stat()
@@ -514,22 +703,24 @@ class Processor:
         except (OSError, OverflowError, ValueError):
             return (None, None)
 
-    def _process_final_test_file(self, file_path: Path, start_time: float) -> AnalysisResult:
+    def _final_test_outcome(self, file_path: Path, start_time: float,
+                            disk_stat: Optional[tuple] = None) -> Outcome:
         """
-        Process a Final Test file.
+        Analyse a Final Test file: its Outcome carries the `save_final_test` it asks for.
 
-        Parses the file, saves to database, and returns a special marker result.
+        Parses and grades the file, and returns a special marker result.
         Final Test files don't go through the same analysis pipeline as trim files.
+        The save is the consumer's (`apply_outcome`, or the ingest's writer); a save that
+        raises is handled there by the same rule as a failure here (`_final_test_failure`).
 
         Args:
             file_path: Path to Final Test Excel file
             start_time: Processing start time
+            disk_stat: The walk's (size, mtime) for this path, if it took one
 
         Returns:
-            AnalysisResult with file_type='final_test' marker
+            Outcome whose result has file_type='final_test'
         """
-        from laser_trim_analyzer.database import get_database
-
         try:
             # Parse the Final Test file
             parsed = self.final_test_parser.parse_file(file_path)
@@ -541,7 +732,7 @@ class Processor:
 
             # Add file path to metadata
             metadata["file_path"] = str(file_path)
-            ft_size, ft_mtime = self._disk_stat_for_save(file_path)
+            ft_size, ft_mtime = self._disk_stat_for_save(file_path, disk_stat)
 
             processing_time = time.time() - start_time
 
@@ -560,8 +751,7 @@ class Processor:
             if not tracks:
                 logger.warning(f"Final Test file has no track data: {file_path.name}")
                 # Still save the header row so the file is tracked as processed
-                db = get_database()
-                db.save_final_test(
+                header = FinalTestWrite(
                     metadata=metadata,
                     tracks=tracks,
                     test_results=test_results,
@@ -575,7 +765,7 @@ class Processor:
                     start_time
                 )
                 error_result.file_type = "final_test"  # Prevent saving as trim record
-                return error_result
+                return self._side_outcome(file_path, start_time, error_result, header, disk_stat)
 
             # Look up full spec for FT analysis. Use the FT-specific resolver
             # so multi-section parts (e.g. 8508) pick up the per-section spec
@@ -613,9 +803,9 @@ class Processor:
             test_results = dict(test_results)
             test_results["linearity_pass"] = (overall_status == AnalysisStatus.PASS)
 
-            # Save to database (now with enriched tracks)
-            db = get_database()
-            final_test_id = db.save_final_test(
+            # The save (now with enriched tracks) is the consumer's: apply_outcome, or the
+            # ingest's writer. Its row id lands on the result there (final_test_id).
+            write = FinalTestWrite(
                 metadata=metadata,
                 tracks=tracks,
                 test_results=test_results,
@@ -633,34 +823,62 @@ class Processor:
 
             # Mark this as a final test file for special handling
             result.file_type = "final_test"
-            result.final_test_id = final_test_id
 
-            logger.debug(f"Processed Final Test: {file_path.name} - {overall_status.value} "
-                       f"(ID: {final_test_id}, {processing_time:.2f}s)")
-
-            return result
+            return self._side_outcome(file_path, start_time, result, write, disk_stat)
 
         except Exception as e:
-            if self._is_permanent_failure(e):
-                # Permanently unprocessable (or already saved): record as
-                # skipped so the next scan doesn't re-attempt it forever.
-                logger.warning(f"Final Test {file_path.name} permanently "
-                               f"unprocessable — recorded as skipped: {e}")
-                self._mark_file_skipped(file_path)
-            else:
-                logger.exception(f"Error processing Final Test {file_path.name}: {e}")
-                # Same as the smoothness branch below: an FT error result is
-                # never saved, so without this the file comes back tomorrow.
-                if not self._is_transient_failure(e):
-                    self._mark_file_skipped(
-                        file_path, reason=f"{type(e).__name__}: {e}"[:200])
-            error_result = self._create_error_result(
-                self._create_minimal_metadata(file_path),
-                f"Final Test error: {e}",
-                start_time
-            )
-            error_result.file_type = "final_test"  # Prevent saving as trim record
-            return error_result
+            error_result, marker = self._final_test_failure(file_path, e, start_time)
+            return Outcome(path=str(file_path), result=error_result,
+                           writes=(marker,) if marker is not None else (), started=start_time)
+
+    def _final_test_failure(self, file_path: Path, exc: Exception, start_time: float,
+                            saving: bool = False
+                            ) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
+        """The final-test failure rule, ONE place: for an exception while the file was analysed
+        (`_final_test_outcome`) and for one while its row was saved (`apply_outcome`, the
+        ingest's writer) -- what the old single try/except did for both. It logs the traceback of
+        the exception it is given. Returns the ERROR result and the skip marker to write, if any.
+
+        `saving`: the exception came from the SAVE. Then only a content refusal may mark the file
+        (`is_content_refusal`): a database or system error leaves it new, never unreadable.
+        """
+        marker = None
+        if saving and not is_content_refusal(exc):
+            logger.error(f"Final Test {file_path.name}: the save failed with a database or system "
+                         f"error, not the file's ({type(exc).__name__}: {exc}) -- it is NOT "
+                         f"recorded as unreadable, and is new again next run", exc_info=exc)
+        elif self._is_permanent_failure(exc):
+            # Permanently unprocessable (or already saved): record as
+            # skipped so the next scan doesn't re-attempt it forever.
+            logger.warning(f"Final Test {file_path.name} permanently "
+                           f"unprocessable — recorded as skipped: {exc}")
+            marker = self._skip_marker(file_path)
+        else:
+            # exc_info=exc: the traceback of THIS exception, whether or not it is the one being
+            # handled (the ingest's writer applies this rule to a save that failed in a batch).
+            logger.error(f"Error processing Final Test {file_path.name}: {exc}", exc_info=exc)
+            # Same as the smoothness branch below: an FT error result is
+            # never saved, so without this the file comes back tomorrow.
+            if not self._is_transient_failure(exc):
+                marker = self._skip_marker(
+                    file_path, reason=f"{type(exc).__name__}: {exc}"[:200])
+        error_result = self._create_error_result(
+            self._create_minimal_metadata(file_path),
+            f"Final Test error: {exc}",
+            start_time
+        )
+        error_result.file_type = "final_test"  # Prevent saving as trim record
+        return error_result, marker
+
+    def _side_outcome(self, file_path: Path, start_time: float, result: AnalysisResult,
+                      write: Any, disk_stat: Optional[tuple]) -> Outcome:
+        """A final test's or smoothness file's Outcome: its one save, with the stat it records."""
+        st = disk_stat if disk_stat is not None else self._disk_stats.get(str(file_path))
+        if st is None and write.file_size is not None and write.file_modified_date is not None:
+            st = (write.file_size, write.file_modified_date.timestamp())
+        return Outcome(path=str(file_path), result=result, writes=(write,),
+                       stat=tuple(st) if st is not None else None,
+                       file_hash=write.file_hash, started=start_time)
 
     def process_batch(
         self,
@@ -669,6 +887,7 @@ class Processor:
         incremental: bool = True,
         disk_stats: Optional[Dict[str, tuple]] = None,
         cancel: Optional["threading.Event"] = None,
+        writer: Optional[Any] = None,
     ) -> Generator[AnalysisResult, None, BatchSummary]:
         """
         Process multiple files with progress reporting.
@@ -682,6 +901,12 @@ class Processor:
                 for persistence, and only then does the loop end. Nothing is
                 killed, so no batch is ever half-written. The summary comes
                 back exactly as it would from a finished run.
+            writer: Where each file's writes go (spec 4.1, ruling 9). The pool
+                runs `analyse_path`, which writes nothing; every Outcome comes
+                back to THIS thread and is handed to `writer.add(outcome)`,
+                which returns the result to yield. With no writer, each
+                Outcome's writes are made at once (`apply_outcome`) -- what the
+                pool threads used to do themselves, so V5's loop keeps working.
 
         Yields:
             AnalysisResult for each file
@@ -720,13 +945,18 @@ class Processor:
         if use_parallel:
             logger.info(f"Using parallel processing ({total_files} >= {turbo_threshold})")
             yield from self._process_parallel(
-                file_paths, progress_callback, incremental, summary, cancel
+                file_paths, progress_callback, incremental, summary, cancel, writer
             )
         else:
             logger.info(f"Using sequential processing ({total_files} < {turbo_threshold})")
             yield from self._process_sequential(
-                file_paths, progress_callback, incremental, summary, cancel
+                file_paths, progress_callback, incremental, summary, cancel, writer
             )
+
+        # The generator's end (a Stop lands here too): the writer commits what it
+        # still holds (spec 3.1, ruling 5) before anything reads the database.
+        if writer is not None and hasattr(writer, "flush"):
+            writer.flush()
 
         # Persist any stat repairs collected during the incremental scan (rows
         # whose content matched by hash but whose recorded size/mtime was
@@ -793,6 +1023,7 @@ class Processor:
         incremental: bool,
         summary: BatchSummary,
         cancel: Optional["threading.Event"] = None,
+        writer: Optional[Any] = None,
     ) -> Generator[AnalysisResult, None, None]:
         """Process files sequentially with memory management."""
         gc_interval = 50  # Run GC every 50 files
@@ -833,8 +1064,10 @@ class Processor:
                     progress_percent=i / len(file_paths) * 100,
                 ))
 
-            # Process
-            result = self.process_file(file_path)
+            # Process: the analysis, then its writes -- the writer's when there is one, made
+            # at once when there is not (spec 4.1).
+            result = self._hand_over(
+                self.analyse_path(file_path, self._disk_stats.get(str(file_path))), writer)
 
             # Skip non-trim files (process_file returns None for these)
             if result is None:
@@ -874,9 +1107,13 @@ class Processor:
         incremental: bool,
         summary: BatchSummary,
         cancel: Optional["threading.Event"] = None,
+        writer: Optional[Any] = None,
     ) -> Generator[AnalysisResult, None, None]:
         """
         Process files in parallel with memory-aware throttling.
+
+        The pool threads run `analyse_path` and write nothing; each Outcome is
+        handed over HERE, on the consumer's thread (`_hand_over`).
 
         On 8GB systems, limits workers and monitors memory to prevent crashes.
         Falls back to sequential processing if memory is critical.
@@ -1030,7 +1267,7 @@ class Processor:
             logger.warning("Memory critical - falling back to sequential processing")
             yield from self._process_sequential(
                 [Path(f) for f in files_to_process],
-                progress_callback, False, summary
+                progress_callback, False, summary, writer=writer
             )
             return
 
@@ -1053,57 +1290,27 @@ class Processor:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit batch tasks
                 future_to_file = {
-                    executor.submit(self.process_file, Path(f)): f
+                    executor.submit(self.analyse_path, Path(f),
+                                    self._disk_stats.get(str(Path(f)))): f
                     for f in batch
                 }
 
-                # Process as completed
-                for future in as_completed(future_to_file):
-                    file_path = future_to_file[future]
-                    completed += 1
-
+                # Process as completed. The consumer waits on the pool at most 1 s at a time
+                # (spec 3.1): a writer holding files flushes 2 s after the first of them even
+                # while the share stalls. `pending` keeps submission order, for as_completed.
+                pending = dict.fromkeys(future_to_file)
+                tick = getattr(writer, "tick", None)
+                while pending:
                     try:
-                        result = future.result()
-
-                        # Skip non-trim files (process_file returns None)
-                        if result is None:
-                            summary.skipped += 1
-                            if progress_callback:
-                                progress_callback(ProcessingStatus(
-                                    filename=Path(file_path).name,
-                                    status="skipped",
-                                    message="Non-trim file skipped",
-                                    progress_percent=completed / len(files_to_process) * 100,
-                                ))
-                            continue
-
-                        self._update_summary(summary, result)
-
-                        if progress_callback:
-                            progress_callback(ProcessingStatus(
-                                filename=Path(file_path).name,
-                                status="completed",
-                                progress_percent=completed / len(files_to_process) * 100,
-                                result=result,
-                            ))
-
-                        yield result
-
-                    except Exception as e:
-                        logger.error(f"Error processing {file_path}: {e}")
-                        # Count as processed-with-error so the buckets sum to
-                        # `processed`, matching the sequential path (where
-                        # process_file returns an ERROR result via _update_summary).
-                        summary.processed += 1
-                        summary.errors += 1
-
-                        if progress_callback:
-                            progress_callback(ProcessingStatus(
-                                filename=Path(file_path).name,
-                                status="failed",
-                                message=str(e),
-                                progress_percent=completed / len(files_to_process) * 100,
-                            ))
+                        for future in as_completed(list(pending), timeout=1.0):
+                            del pending[future]
+                            completed += 1
+                            yield from self._one_completed(
+                                future, future_to_file[future], writer, summary,
+                                progress_callback, completed, len(files_to_process))
+                    except FuturesTimeout:
+                        if tick is not None:
+                            tick()
 
             # GC between batches
             gc.collect()
@@ -1112,6 +1319,74 @@ class Processor:
             if self._check_memory_warning():
                 logger.warning("Memory warning - reducing workers")
                 max_workers = max(1, max_workers - 1)
+
+    def _one_completed(self, future, file_path, writer, summary: BatchSummary,
+                       progress_callback, completed: int, total: int):
+        """One finished future of the pool, on the consumer's thread: its Outcome handed over,
+        the summary and progress updated, the result yielded (a generator: nothing is yielded for
+        a file that is not test data, or one that failed). A writer's WriterStop propagates; any
+        other failure is this file's error, as it always was."""
+        try:
+            try:
+                outcome = future.result()
+            except Exception as e:
+                if writer is not None:
+                    # The analysis itself raised: nothing to save. The writer counts it (an
+                    # error), so the buckets still sum to what was processed.
+                    writer.add(Outcome(path=str(file_path),
+                                       internal=f"{type(e).__name__}: {e}"))
+                raise
+            result = self._hand_over(outcome, writer)
+
+            # Skip non-trim files (process_file returns None)
+            if result is None:
+                summary.skipped += 1
+                if progress_callback:
+                    progress_callback(ProcessingStatus(
+                        filename=Path(file_path).name,
+                        status="skipped",
+                        message="Non-trim file skipped",
+                        progress_percent=completed / total * 100,
+                    ))
+                return
+
+            self._update_summary(summary, result)
+
+            if progress_callback:
+                progress_callback(ProcessingStatus(
+                    filename=Path(file_path).name,
+                    status="completed",
+                    progress_percent=completed / total * 100,
+                    result=result,
+                ))
+
+            yield result
+
+        except WriterStop:
+            raise
+        except Exception as e:
+            logger.error(f"Error processing {file_path}: {e}")
+            # Count as processed-with-error so the buckets sum to
+            # `processed`, matching the sequential path (where
+            # process_file returns an ERROR result via _update_summary).
+            summary.processed += 1
+            summary.errors += 1
+
+            if progress_callback:
+                progress_callback(ProcessingStatus(
+                    filename=Path(file_path).name,
+                    status="failed",
+                    message=str(e),
+                    progress_percent=completed / total * 100,
+                ))
+
+    def _hand_over(self, outcome: Outcome, writer) -> Optional[AnalysisResult]:
+        """One file's Outcome to whoever makes its writes -- on THIS thread, the consumer's: the
+        writer when there is one (the ingest), else at once, here (V5's loop). Returns the result
+        the loop yields."""
+        if writer is None:
+            return self.apply_outcome(outcome)
+        return writer.add(outcome)
 
     def _get_safe_worker_count(self, file_count: int) -> int:
         """Determine safe number of workers based on available memory."""
@@ -1209,10 +1484,11 @@ class Processor:
 
         return issues
 
-    def _process_smoothness_file(self, file_path: Path, start_time: float) -> AnalysisResult:
-        """Process an Output Smoothness file."""
-        from laser_trim_analyzer.database import get_database
-
+    def _smoothness_outcome(self, file_path: Path, start_time: float,
+                            disk_stat: Optional[tuple] = None) -> Outcome:
+        """Analyse an Output Smoothness file: its Outcome carries the `save_smoothness_result` it
+        asks for (the consumer's; a save that raises is handled there by `_smoothness_failure`,
+        the same rule as a failure here)."""
         try:
             parsed = self.smoothness_parser.parse_file(file_path)
             metadata = parsed["metadata"]
@@ -1231,9 +1507,8 @@ class Processor:
                     f"layout matches the expected Betatronix or generic format."
                 )
 
-            db = get_database()
-            os_size, os_mtime = self._disk_stat_for_save(file_path)
-            result_id = db.save_smoothness_result(
+            os_size, os_mtime = self._disk_stat_for_save(file_path, disk_stat)
+            write = SmoothnessWrite(
                 metadata=metadata, tracks=tracks, file_hash=file_hash,
                 file_size=os_size, file_modified_date=os_mtime,
             )
@@ -1271,42 +1546,39 @@ class Processor:
                 metadata=minimal_metadata, overall_status=overall_status,
                 processing_time=processing_time, tracks=analyzed_tracks,
             )
-            result.file_type = "smoothness"
-            result.smoothness_id = result_id
+            result.file_type = "smoothness"   # its row id (smoothness_id) lands where it is saved
 
-            logger.debug(
-                f"Processed Smoothness: {file_path.name} - {overall_status.value} "
-                f"(ID: {result_id}, {processing_time:.2f}s)"
-            )
-            return result
+            return self._side_outcome(file_path, start_time, result, write, disk_stat)
 
         except Exception as e:
-            logger.exception(f"Error processing Smoothness {file_path.name}: {e}")
-            error_result = self._create_error_result(
-                self._create_minimal_metadata(file_path),
-                f"Smoothness error: {e}", start_time
-            )
-            error_result.file_type = "smoothness"  # Prevent saving as trim record
-            # …and record WHY, or nothing is written anywhere at all: the error
-            # result is not saved (file_type keeps it out of save_analysis), so
-            # the scan offered these files again every single run. 67 of them
-            # on 2026-09-17 — opened, refused, forgotten, repeat.
-            if not self._is_transient_failure(e):
-                self._mark_file_skipped(
-                    file_path, reason=f"{type(e).__name__}: {e}"[:200])
-            return error_result
+            error_result, marker = self._smoothness_failure(file_path, e, start_time)
+            return Outcome(path=str(file_path), result=error_result,
+                           writes=(marker,) if marker is not None else (), started=start_time)
 
-    def _get_linearity_type(self, model: str) -> Optional[str]:
-        """Look up linearity type from model_specs table."""
-        try:
-            from laser_trim_analyzer.database import get_database
-            db = get_database()
-            spec = db.get_model_spec(model)
-            if spec:
-                return spec.get("linearity_type")
-        except Exception as e:
-            logger.debug(f"Could not look up model spec for {model}: {e}")
-        return None
+    def _smoothness_failure(self, file_path: Path, exc: Exception, start_time: float,
+                            saving: bool = False
+                            ) -> Tuple[AnalysisResult, Optional[SkipMarkerWrite]]:
+        """The smoothness failure rule, ONE place (see `_final_test_failure`, `saving` included)."""
+        if saving and not is_content_refusal(exc):
+            logger.error(f"Smoothness {file_path.name}: the save failed with a database or system "
+                         f"error, not the file's ({type(exc).__name__}: {exc}) -- it is NOT "
+                         f"recorded as unreadable, and is new again next run", exc_info=exc)
+        else:
+            logger.error(f"Error processing Smoothness {file_path.name}: {exc}", exc_info=exc)
+        error_result = self._create_error_result(
+            self._create_minimal_metadata(file_path),
+            f"Smoothness error: {exc}", start_time
+        )
+        error_result.file_type = "smoothness"  # Prevent saving as trim record
+        # …and record WHY, or nothing is written anywhere at all: the error
+        # result is not saved (file_type keeps it out of save_analysis), so
+        # the scan offered these files again every single run. 67 of them
+        # on 2026-09-17 — opened, refused, forgotten, repeat.
+        marker = None
+        if not self._is_transient_failure(exc) and not (saving and not is_content_refusal(exc)):
+            marker = self._skip_marker(
+                file_path, reason=f"{type(exc).__name__}: {exc}"[:200])
+        return error_result, marker
 
     def _get_spec_for_analysis(
         self,
@@ -1336,12 +1608,16 @@ class Processor:
         if not model:
             return empty
         try:
-            from laser_trim_analyzer.database import get_database
-            db = get_database()
+            # The folder's snapshot when there is one -- the same resolver, never the database
+            # (ruling 16); else the database, as before.
+            source = getattr(self, "_snapshot", None)
+            if source is None:
+                from laser_trim_analyzer.database import get_database
+                source = get_database()
             if is_final_test:
-                spec = db.resolve_spec_for_ft(model, serial)
+                spec = source.resolve_spec_for_ft(model, serial)
             else:
-                spec = db.get_model_spec(model)
+                spec = source.get_model_spec(model)
             if not spec:
                 return empty
 
@@ -1709,15 +1985,24 @@ class Processor:
 
         Either way the marker is per-PATH and carries the file's size and
         mtime, so a file whose bytes CHANGE on disk is offered again by itself.
-        """
-        try:
-            from laser_trim_analyzer.database import get_database
 
-            db = get_database()
+        The analysis no longer calls this: it asks for the marker as a value
+        (`_skip_marker`) and the consumer writes it (`_write_marker`). This is
+        the two together, for a caller that wants the marker written now.
+        """
+        marker = self._skip_marker(file_path, reason)
+        if marker is not None:
+            self._write_marker(marker)
+
+    def _skip_marker(self, file_path: Path,
+                     reason: Optional[str] = None) -> Optional[SkipMarkerWrite]:
+        """The marker `_mark_file_skipped` writes, as a VALUE: the file's hash and (size, mtime)
+        taken here, exactly as they were, and nothing written. None if they cannot be taken --
+        never fatal, as the write never was (the file is merely offered again)."""
+        try:
             file_hash = calculate_file_hash(file_path)
             stat = file_path.stat()
-
-            db.mark_file_skipped(
+            return SkipMarkerWrite(
                 filename=file_path.name,
                 file_path=str(file_path),
                 file_hash=file_hash,
@@ -1726,15 +2011,80 @@ class Processor:
                 error_message=reason,
                 failed_read=reason is not None,
             )
-
-            # Update in-memory cache if loaded (path + content hash).
-            if self._processed_filenames is not None:
-                self._processed_filenames.add(str(file_path))
-                if self._processed_hashes is not None:
-                    self._processed_hashes.add(file_hash)
-
         except Exception as e:
             logger.debug(f"Could not record skipped file {file_path.name}: {e}")
+            return None
+
+    def _write_marker(self, marker: SkipMarkerWrite, db=None) -> None:
+        """Write one skip marker now, through `mark_file_skipped` (on `db`, else `get_database()`),
+        and remember the path and hash in this run's caches. Never fatal."""
+        try:
+            if db is None:
+                from laser_trim_analyzer.database import get_database
+                db = get_database()
+            db.mark_file_skipped(
+                filename=marker.filename,
+                file_path=marker.file_path,
+                file_hash=marker.file_hash,
+                file_size=marker.file_size,
+                file_modified_date=marker.file_modified_date,
+                error_message=marker.error_message,
+                failed_read=marker.failed_read,
+            )
+            self.remember_marker(marker)
+        except Exception as e:
+            logger.debug(f"Could not record skipped file {marker.filename}: {e}")
+
+    def remember_marker(self, marker: SkipMarkerWrite) -> None:
+        """A marker has been WRITTEN: this run's in-memory caches know the path and its content
+        now, as they did when the analysis wrote markers itself (a writer calls this once it has
+        committed one)."""
+        if self._processed_filenames is not None:
+            self._processed_filenames.add(marker.file_path)
+            if self._processed_hashes is not None:
+                self._processed_hashes.add(marker.file_hash)
+
+    def apply_outcome(self, outcome: Outcome, db=None) -> Optional[AnalysisResult]:
+        """Make an Outcome's writes AT ONCE, through the public methods, and return what
+        `process_file` returns -- the writes the analysis used to make itself (V5's loop,
+        `process_file`, and any caller with no writer).
+
+        Markers never fail the file (as `_mark_file_skipped` never did). A final-test or
+        smoothness save that raises -- or whose database cannot be reached -- is handled by the
+        rule the old try/except applied to it (`_final_test_failure`, `_smoothness_failure`): the
+        marker that rule asks for is written, and its ERROR result is returned. A trim result is
+        NOT saved here: its caller saves it, as it always has. `db`: where to write, else
+        `get_database()`, as before.
+        """
+        result = outcome.result
+        for write in outcome.writes:
+            if isinstance(write, SkipMarkerWrite):
+                self._write_marker(write, db)
+                continue
+            try:
+                target = db
+                if target is None:
+                    from laser_trim_analyzer.database import get_database
+                    target = get_database()
+                if isinstance(write, FinalTestWrite):
+                    row_id = target.save_final_test(
+                        metadata=write.metadata, tracks=write.tracks,
+                        test_results=write.test_results, file_hash=write.file_hash,
+                        file_size=write.file_size, file_modified_date=write.file_modified_date)
+                else:
+                    row_id = target.save_smoothness_result(
+                        metadata=write.metadata, tracks=write.tracks, file_hash=write.file_hash,
+                        file_size=write.file_size, file_modified_date=write.file_modified_date)
+            except Exception as e:
+                failed = (self._final_test_failure if isinstance(write, FinalTestWrite)
+                          else self._smoothness_failure)
+                result, marker = failed(Path(outcome.path), e, outcome.started, saving=True)
+                if marker is not None:
+                    self._write_marker(marker, db)
+                return result
+            record_row_id(result, write, row_id)
+        return result
+
 
     def _load_processed_hashes(self) -> None:
         """Load processed file info from database into memory cache.

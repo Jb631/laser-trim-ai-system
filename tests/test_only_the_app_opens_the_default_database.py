@@ -121,8 +121,9 @@ def test_the_refusal_is_logged_once_per_process_not_once_per_call(tmp_path, monk
 def test_processor_model_spec_lookups_across_two_files_log_the_refusal_exactly_once(
         tmp_path, monkeypatch, caplog):
     """The brief's own framing: two files processed with no database named ->
-    exactly one ERROR record. _get_linearity_type / _get_spec_for_analysis are
-    the Processor's model-spec lookups that reach get_database() per file; the
+    exactly one ERROR record. _get_spec_for_analysis is the Processor's
+    model-spec lookup that reaches get_database() per file (without a snapshot;
+    the dead _get_linearity_type was the other, deleted 2026-09-25); the
     Processor's own handling (swallow at DEBUG, degrade to no specs) is
     unchanged -- only the ERROR-level log at the source is deduped."""
     from laser_trim_analyzer.core.processor import Processor
@@ -133,10 +134,8 @@ def test_processor_model_spec_lookups_across_two_files_log_the_refusal_exactly_o
     proc = Processor(use_ml=False)
 
     with caplog.at_level(logging.ERROR, logger="laser_trim_analyzer.database.manager"):
-        assert proc._get_linearity_type("MODEL-FILE-1") is None      # "file" 1
-        assert proc._get_spec_for_analysis("MODEL-FILE-1") is not None
-        assert proc._get_linearity_type("MODEL-FILE-2") is None      # "file" 2
-        assert proc._get_spec_for_analysis("MODEL-FILE-2") is not None
+        assert proc._get_spec_for_analysis("MODEL-FILE-1") is not None   # "file" 1
+        assert proc._get_spec_for_analysis("MODEL-FILE-2") is not None   # "file" 2
 
     refusals = [r for r in caplog.records
                 if r.levelno == logging.ERROR and "No database named" in r.message]
@@ -157,7 +156,7 @@ def test_with_a_tmp_manager_injected_the_processor_logs_no_refusal_at_all(
     proc = Processor(use_ml=False)
 
     with caplog.at_level(logging.ERROR, logger="laser_trim_analyzer.database.manager"):
-        proc._get_linearity_type("MODEL-FILE-1")
+        proc._get_spec_for_analysis("MODEL-FILE-1")
         proc._get_spec_for_analysis("MODEL-FILE-2")
 
     refusals = [r for r in caplog.records

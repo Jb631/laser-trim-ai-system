@@ -142,6 +142,26 @@ def test_run_folder_survives_a_processor_explosion_and_names_it(tmp_path,
     assert res.ok is False and "disk went away" in res.error
 
 
+def _handed_to(k, result, i):
+    """What a stub processor does since ingest-speed Task 10: every result goes to the run's
+    writer as an Outcome (the writer saves the trims, in batches), and is then yielded."""
+    from laser_trim_analyzer.core.processor import Outcome
+    k["writer"].add(Outcome(path=f"/nowhere/f{i}.xls", result=result, stat=(1, 0.0),
+                            file_hash=f"invented-{i}"))
+    return result
+
+
+def _saved_outcomes(items, each=None):
+    """A fake database's write_batch: every item saved (after `each(item)`, if given)."""
+    from laser_trim_analyzer.database.manager import WriteOutcome
+    out = []
+    for n, item in enumerate(items):
+        if each is not None:
+            each(item)
+        out.append(WriteOutcome("saved", row_id=n + 1))
+    return out
+
+
 # ---- Task 4: many folders, in order, surviving a dead one -----------------
 
 class _FakeDb:
@@ -425,16 +445,18 @@ def test_the_ingest_actually_measures_what_saving_costs(tmp_path, monkeypatch):
 
         def process_batch(self, *a, **k):
             for i in range(N):
-                yield _result(i)
+                yield _handed_to(k, _result(i), i)
             return SimpleNamespace(processed=N)
 
     class _SlowDb:
         def __init__(self):
             self.saved = 0
 
-        def save_analysis(self, result):
-            _time.sleep(SAVE_S)          # a save that costs a known amount
-            self.saved += 1
+        def write_batch(self, items):
+            def one(item):
+                _time.sleep(SAVE_S)      # a save that costs a known amount, per file
+                self.saved += 1
+            return _saved_outcomes(items, one)
 
     monkeypatch.setattr(ingest_run, "Processor", _Proc)
     monkeypatch.setattr(ingest_run, "_post_batch", lambda *a, **k: None)
@@ -472,15 +494,15 @@ def test_the_run_reports_where_its_time_goes_WITHOUT_finishing(tmp_path, monkeyp
 
         def process_batch(self, *a, **k):
             for i in range(N):
-                yield SimpleNamespace(
+                yield _handed_to(k, SimpleNamespace(
                     file_type="trim",
                     metadata=SimpleNamespace(model="8232-1", filename=f"f{i}.xls"),
-                    overall_status=AnalysisStatus.PASS)
+                    overall_status=AnalysisStatus.PASS), i)
             return SimpleNamespace(processed=N)
 
     class _Db:
-        def save_analysis(self, result):
-            _time.sleep(0.01)
+        def write_batch(self, items):
+            return _saved_outcomes(items, lambda item: _time.sleep(0.01))
 
     said = []
     monkeypatch.setattr(ir.logger, "info", lambda fmt, *a: said.append(fmt % a if a else fmt))
@@ -552,14 +574,14 @@ def test_the_saves_cpu_is_its_own_threads_not_the_whole_processs(tmp_path, monke
 
         def process_batch(self, *a, **k):
             for i in range(N):
-                yield _result(i)
+                yield _handed_to(k, _result(i), i)
             return SimpleNamespace(processed=N)
 
     class _SleepDb:
         """This thread does almost no work of its own -- like a save mostly waiting on the
         GIL or the write lock, not actually computing anything."""
-        def save_analysis(self, result):
-            _time.sleep(SAVE_S)
+        def write_batch(self, items):
+            return _saved_outcomes(items, lambda item: _time.sleep(SAVE_S))
 
     monkeypatch.setattr(ingest_run, "Processor", _Proc)
     monkeypatch.setattr(ingest_run, "_post_batch", lambda *a, **k: None)
@@ -613,15 +635,15 @@ def test_ingest_so_far_line_also_carries_the_cpu_figure(tmp_path, monkeypatch):
 
         def process_batch(self, *a, **k):
             for i in range(N):
-                yield SimpleNamespace(
+                yield _handed_to(k, SimpleNamespace(
                     file_type="trim",
                     metadata=SimpleNamespace(model="8232-1", filename=f"f{i}.xls"),
-                    overall_status=AnalysisStatus.PASS)
+                    overall_status=AnalysisStatus.PASS), i)
             return SimpleNamespace(processed=N)
 
     class _Db:
-        def save_analysis(self, result):
-            _time.sleep(0.01)
+        def write_batch(self, items):
+            return _saved_outcomes(items, lambda item: _time.sleep(0.01))
 
     said = []
     monkeypatch.setattr(ir.logger, "info", lambda fmt, *a: said.append(fmt % a if a else fmt))
