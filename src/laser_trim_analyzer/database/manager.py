@@ -18,7 +18,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Iterator, Sequence, Tuple
 from contextlib import contextmanager
@@ -5752,7 +5752,7 @@ class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceM
             return sorted(model_list, key=_model_sort_key)
 
     # =========================================================================
-    # Database Health & Cleanup
+    # Skip Markers (Per-Path Failure / Non-Test Records)
     # =========================================================================
 
     @staticmethod
