@@ -391,7 +391,21 @@ def test_keep_keeps_the_copy_and_says_where(probe, work, capsys):
     assert [p.name for p in work["tmp"].iterdir() if p.is_dir()] == []    # temp files still go
 
 
-def test_the_full_run_prints_the_loop_block(probe, work, capsys):
+def test_the_full_run_prints_the_loop_block(probe, work, capsys, monkeypatch):
+    """The LOOP block, every line. The process line runs the ingest's OWN worker pool
+    (core/ingest_worker.py -- spawn, the database trap, the copy's specs as a SpecSnapshot), and
+    so does the last line, the loop itself on worker processes (Task 12). The loops' save figures
+    are the batch writer's own: the ingest saves in write_batch since Task 10, so a timer on
+    save_analysis read 0.0 there."""
+    from laser_trim_analyzer.core import ingest_worker
+    started = []
+    real_start = ingest_worker.WorkerPool.start.__func__
+
+    def spy(cls, ctx, n, **k):
+        started.append((n, sorted(s["model"] for s in ctx.snapshot.specs)))
+        return real_start(cls, ctx, n, **k)
+
+    monkeypatch.setattr(ingest_worker.WorkerPool, "start", classmethod(spy))
     assert _run(probe, work, "--procs", "2") == 0
     lines = capsys.readouterr().out.splitlines()
     i = lines.index("LOOP  the same 3 files, local copies, model specs from the copy, ms per file")
@@ -403,17 +417,29 @@ def test_the_full_run_prints_the_loop_block(probe, work, capsys):
     for label, line in zip(labels, lines[i + 1:i + 6]):
         assert line.startswith(label), line
         assert re.search(r"\d+\.\d$", line), line
-    assert re.match(r"^   of which save: wall \d+\.\d, cpu \d+\.\d \| GC pauses \d+\.\d \| rest -?\d+\.\d$",
-                    lines[i + 6]), lines[i + 6]
+    assert float(lines[i + 5].split()[-1]) > 0, lines[i + 5]      # the loop took some time
+    saved = re.match(r"^   of which save: wall (\d+\.\d), cpu \d+\.\d \| GC pauses \d+\.\d \| "
+                     r"rest -?\d+\.\d$", lines[i + 6])
+    assert saved and float(saved.group(1)) > 0, lines[i + 6]
+    assert lines[i + 7].startswith("the same loop on worker processes, headless (run_folder)")
+    assert re.search(r"\d+\.\d$", lines[i + 7]) and float(lines[i + 7].split()[-1]) > 0, \
+        lines[i + 7]
+    saved = re.match(r"^   of which save: wall (\d+\.\d), cpu \d+\.\d \| pool start (\d+\.\d) s "
+                     r"\(not in the ms/file\) \| workers 2 processes \(ready in \d+\.\d s\)$",
+                     lines[i + 8])
+    assert saved and float(saved.group(1)) > 0 and float(saved.group(2)) > 0, lines[i + 8]
+    assert started == [(2, ["8074"]), (2, ["8074"])], started
     assert lines[-1] == "copy and temp files deleted."
     assert list(work["tmp"].iterdir()) == []
 
 
-# ---- the batch writer the probe carries until Task 6 --------------------------------------
+# ---- the probe's batch lines are the app's own batch writer (Task 12) ---------------------
 
 def test_the_probes_batch_writer_is_one_transaction_per_batch(probe, tmp_path):
     """Spec F4: without an explicit BEGIN, pysqlite's first RELEASE commits, and every later
-    SAVEPOINT opens a fresh transaction -- a 'batch' that is really a commit per file."""
+    SAVEPOINT opens a fresh transaction -- a 'batch' that is really a commit per file. Since Task
+    12 the probe's batch lines are the app's OWN `write_batch`: its guard savepoint and one per
+    file, every one inside the batch's one transaction, and one COMMIT."""
     from sqlalchemy import event
     from laser_trim_analyzer.core.processor import Processor
     from laser_trim_analyzer.database import manager as mgr
@@ -426,16 +452,26 @@ def test_the_probes_batch_writer_is_one_transaction_per_batch(probe, tmp_path):
     try:
         proc = Processor(use_ml=False)
         results = [proc.process_file(REPO / "tests" / "fixtures" / "trim" / n) for n in TRIM_FIXTURES]
-        in_txn = []
+        in_txn, names, commits = [], [], []
 
-        @event.listens_for(db._engine, "savepoint")
-        def _sp(conn, name):
-            in_txn.append(conn.connection.dbapi_connection.in_transaction)
+        # At the cursor: the writer's guard is raw SQL, which the "savepoint" event never sees.
+        @event.listens_for(db._engine, "before_cursor_execute")
+        def _sp(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("SAVEPOINT"):
+                names.append(statement.split()[-1])
+                in_txn.append(conn.connection.dbapi_connection.in_transaction)
+
+        @event.listens_for(db._engine, "commit")
+        def _commit(conn):
+            commits.append(1)
 
         outcomes = probe._save_batch_probe(db, results)
         assert [o[0] for o in outcomes] == ["saved"] * 3
-        # the 2nd and 3rd SAVEPOINTs must open INSIDE the batch's one transaction
-        assert len(in_txn) == 3 and all(in_txn[1:]), in_txn
+        # the app's own writer: its guard, then one SAVEPOINT per file -- every one INSIDE the
+        # batch's one transaction -- and one COMMIT
+        assert names[0] == "lta_batch_guard" and len(names) == 4, names
+        assert all(in_txn), in_txn
+        assert len(commits) == 1, commits
     finally:
         db.close()
         mgr._db_manager, dbpkg._db_manager = before
@@ -477,12 +513,17 @@ def test_the_older_probes_say_where_their_specs_came_from(script, work):
 
 
 def test_pool_probe_workers_get_the_specs_too(tmp_path, work, monkeypatch):
+    import logging
     monkeypatch.syspath_prepend(str(REPO / "scripts"))
     import pool_probe
     from laser_trim_analyzer.database import manager as mgr
     import laser_trim_analyzer.database as dbpkg
 
     before = (mgr._db_manager, getattr(dbpkg, "_db_manager", None))
+    # `_processor()` is WORKER code: it silences warnings for the rest of its process. Run here,
+    # that process is the test run's -- every test after this one, in-process, would log nothing
+    # below ERROR (and a worker pool started after it mirrors that: ingest-speed Task 11).
+    quiet = logging.root.manager.disable
     monkeypatch.setattr(pool_probe, "_PROC", None)
     try:
         pool_probe._use_scratch_db(str(tmp_path), str(work["src"]))
@@ -495,3 +536,53 @@ def test_pool_probe_workers_get_the_specs_too(tmp_path, work, monkeypatch):
         if mgr._db_manager is not before[0]:
             mgr._db_manager.close()
         mgr._db_manager, dbpkg._db_manager = before
+        logging.disable(quiet)
+
+
+def test_the_worker_process_loop_leaves_the_pool_start_out_of_its_ms_per_file(
+        probe, work, capsys, monkeypatch):
+    """Review m-4: a slow start of the worker processes -- 3 s here; an endpoint scanner can make
+    it so at work -- is reported beside the loop, never inside its ms/file: 3 files would read
+    1,000 ms/file with it, as if processes were slower."""
+    import time as _time
+    from laser_trim_analyzer.core import ingest_worker
+    real_start = ingest_worker.WorkerPool.start.__func__
+
+    def slow(cls, ctx, n, **k):
+        _time.sleep(3.0)
+        return real_start(cls, ctx, n, **k)
+
+    monkeypatch.setattr(ingest_worker.WorkerPool, "start", classmethod(slow))
+    assert _run(probe, work, "--procs", "2") == 0
+    lines = capsys.readouterr().out.splitlines()
+    i = next(k for k, ln in enumerate(lines)
+             if ln.startswith("the same loop on worker processes, headless (run_folder)"))
+    assert float(lines[i].split()[-1]) < 1000, lines[i]
+    start = re.search(r"pool start (\d+\.\d) s", lines[i + 1])
+    assert start and float(start.group(1)) >= 3.0, lines[i + 1]
+
+
+def test_a_failed_start_of_the_worker_processes_is_left_out_of_the_ms_per_file_too(
+        probe, work, capsys, monkeypatch):
+    """Final review, m-5: a start that FAILS after 3 s -- the folder then runs on threads -- is
+    reported beside the loop like a start that succeeded, never inside its ms/file while the
+    line reads "pool start 0.0 s"."""
+    import time as _time
+    from laser_trim_analyzer.core import ingest_worker
+    real_start = ingest_worker.WorkerPool.start.__func__
+
+    def slow_then_failed(cls, ctx, n, **k):
+        if ctx.processor_class is not probe._Seen:     # the "parsing on processes" line's pool
+            return real_start(cls, ctx, n, **k)
+        _time.sleep(3.0)                              # run_folder's: slow, and then it fails
+        raise ingest_worker.PoolFailed("an invented refusal")
+
+    monkeypatch.setattr(ingest_worker.WorkerPool, "start", classmethod(slow_then_failed))
+    assert _run(probe, work, "--procs", "2") == 0
+    lines = capsys.readouterr().out.splitlines()
+    i = next(k for k, ln in enumerate(lines)
+             if ln.startswith("the same loop on worker processes, headless (run_folder)"))
+    assert float(lines[i].split()[-1]) < 1000, lines[i]
+    start = re.search(r"pool start (\d+\.\d) s", lines[i + 1])
+    assert start and float(start.group(1)) >= 3.0, lines[i + 1]
+    assert "processes could not start: an invented refusal" in lines[i + 1], lines[i + 1]

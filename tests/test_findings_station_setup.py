@@ -297,3 +297,30 @@ def test_nine_in_ten_differing_positions_wider_is_wider(db):
     _seed_on(db, "W9", SystemType.B, trim, ft)
     assert "about 5× wider" in only(station_setup.analyze("W9", db, tracks_for(days(START, 5)),
                                                         label)[1]).title
+
+
+# ---- the stored fact does not depend on the order the rows were stored in (review I-2) ---------
+
+def test_the_stored_fact_is_the_same_whatever_order_the_units_were_stored_in(tmp_path):
+    """station_setup's fact and finding -- stored in model_process_facts and process_findings --
+    come from the newest linked pairs. Newest by the units' own dates, so two storage orders of
+    the same units store the same fact (by id, one order stored 20% and the other 80%)."""
+    import laser_trim_analyzer.database as _d
+    import laser_trim_analyzer.database.manager as _m
+    from test_spec_alignment import ORDERS, _dated_units
+    stored = []
+    before = (_m._db_manager, _d._db_manager)
+    try:
+        for i, order in enumerate(ORDERS):
+            d = _m.DatabaseManager(tmp_path / f"order{i}.db")
+            _m._db_manager = _d._db_manager = d
+            try:
+                _dated_units(d, "ORD", order)
+                facts, findings = station_setup.analyze("ORD", d, tracks_for(days(START, 5)), label)
+                stored.append((facts, [(f.title, f.summary, f.strength_value) for f in findings]))
+            finally:
+                d.close()
+    finally:
+        _m._db_manager, _d._db_manager = before
+    assert all(s == stored[0] for s in stored), [s[0].get("pct_positions_differing") for s in stored]
+    assert stored[0][0]["pct_positions_differing"] == pytest.approx(0.2)

@@ -24,11 +24,12 @@ At the end -- on Ctrl-C too -- the copy and the local copies of the files are de
 THE SAVE LINES. The first N files (in the ingest's own discovery order) are copied to a local temp
 folder, parsed ONCE, and their rows deleted from the copy. Each setting then saves those same
 results under fresh identities -- a per-setting filename prefix and a content hash derived from the
-real one -- so every save is a new file's INSERT, never an update. Batch 1 is today's code
-(`save_analysis`, one commit per file); 10 and 50 use a batch writer carried here until the app has
-its own (spec Task 6): ONE transaction opened with BEGIN IMMEDIATE and a SAVEPOINT per file --
-without that explicit BEGIN pysqlite commits at the first RELEASE, and a "batch" is one commit per
-file again (spec F4). The 12 settings run interleaved, two rounds in opposite orders; each line is
+real one -- so every save is a new file's INSERT, never an update. Batch 1 is `save_analysis`, one
+commit per file; 10 and 50 are the app's own batch writer (`write_batch`, spec Task 6 -- what the
+ingest has saved with since Task 10): ONE transaction opened with BEGIN IMMEDIATE and a SAVEPOINT
+per file -- without that explicit BEGIN pysqlite commits at the first RELEASE, and a "batch" is one
+commit per file again (spec F4). The 12 settings run interleaved, two rounds in opposite orders;
+each line is
 the median of its two rounds, in ms per file: total, then Python/ORM (building the rows, the unit
 of work), SQL (the statements themselves) and commit (the WAL write, its flush, and any automatic
 checkpoint); p99 is over single saves at batch 1 and over whole batches otherwise. `<- today` marks
@@ -37,9 +38,14 @@ Task 4 landed (ruling 12), `1 NORMAL 64MB` since; `1 OFF` is only the floor -- n
 a proposal.
 
 THE LOOP LINES. `rest` is what the ingest's own loop costs per file beyond parsing on 4 threads and
-the save's own CPU: batch barriers, GC, bookkeeping -- and whatever the unexplained part is. The LOOP
-runs under the app's OWN pragmas (read from the copy's connection as the app opens it), never under
-whichever SAVE setting happened to run last.
+the save's own CPU: batch barriers, GC, bookkeeping -- and whatever the unexplained part is. The
+process line runs the ingest's OWN worker processes (core/ingest_worker.py, spec section 4: spawn,
+the database trap, the model specs as a SpecSnapshot); the last line is the same loop again with
+those worker processes parsing while this process saves (A3) -- the app does that for a folder
+with 200 or more new files. Its ms/file leaves out the time the worker processes took to start,
+which the line under it gives apart: with 120 files and a start that an endpoint scanner can make
+slow, it would otherwise read as "processes are slower" when the loop itself is not. The LOOP runs under the app's OWN pragmas (read from the copy's
+connection as the app opens it), never under whichever SAVE setting happened to run last.
 
 POINT IT AT A LASER FOLDER (DLTS or LTS). Final-test and smoothness files are saved by the processor
 itself the moment they are parsed, so in another folder they would land in the copy untimed and
@@ -53,7 +59,6 @@ import argparse
 import gc
 import hashlib
 import logging
-import multiprocessing as mp
 import ntpath
 import os
 import platform
@@ -65,7 +70,7 @@ import sys
 import tempfile
 import time
 import traceback
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -90,7 +95,8 @@ LOOP_LABELS = ("parse+analyse, one at a time, without specs (what pool_probe mea
                "parse+analyse, one at a time, with specs (what the ingest does)",
                "parse+analyse, 4 threads, with specs",
                "parse+analyse, {n} processes, with specs (pool ready in {ready:.1f} s)",
-               "today's loop, headless (run_folder)")
+               "today's loop, headless (run_folder)",
+               "the same loop on worker processes, headless (run_folder)")
 LOOP_WIDTH = len(LOOP_LABELS[0])
 
 
@@ -260,29 +266,24 @@ def _forget(db, results) -> None:
 # the SAVE block
 
 def _save_batch_probe(db, analyses):
-    """The spec's batch writer (section 3.2) until the app has its own (Task 6): ONE transaction,
-    opened with BEGIN IMMEDIATE, and a SAVEPOINT per file whose body is save_analysis's own.
+    """The app's OWN batch writer (`write_batch`, spec 3.2; Task 12 retired the copy this probe
+    carried): ONE transaction, opened with BEGIN IMMEDIATE, a SAVEPOINT per file whose body is
+    save_analysis's own (`_save_analysis_in`), the processed marker inside it.
 
     The explicit BEGIN is the whole point (spec F4): pysqlite emits no BEGIN before a SAVEPOINT,
     SQLite then starts the transaction AT the savepoint, and RELEASE of that outermost savepoint is
     a COMMIT -- one commit per file, which is what batching exists to avoid.
 
-    The body per file IS save_analysis's own since Task 5 (`_save_analysis_in`), handed each
-    file's (size, mtime) and hash taken before the transaction, as the app's writer will be."""
-    carried = [db._file_identity(a.metadata.file_path) for a in analyses]
-    out = []
-    with db.session() as session:
-        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-        for a, (stat, file_hash) in zip(analyses, carried):
-            sp = session.begin_nested()
-            try:
-                rid = db._save_analysis_in(session, a, stat, file_hash)
-                sp.commit()
-                out.append(("saved", rid))
-            except Exception as e:
-                sp.rollback()
-                out.append(("failed", f"{type(e).__name__}: {e}"[:160]))
-    return out
+    Each file's (size, mtime) and hash are taken before the transaction, as the ingest's writer is
+    handed them -- and inside this timed call, so the totals stay comparable with batch 1's."""
+    from laser_trim_analyzer.database.manager import BatchCommitError, TrimWrite
+    items = [TrimWrite(a, *db._file_identity(a.metadata.file_path)) for a in analyses]
+    try:
+        outcomes = db.write_batch(items)
+    except BatchCommitError as e:
+        outcomes = e.outcomes
+    return [("saved", o.row_id) if o.status == "saved"
+            else (o.status, (o.reason or o.status)[:160]) for o in outcomes]
 
 
 class _SaveTimer:
@@ -425,72 +426,6 @@ def _run_save_block(db, results, today=None) -> None:
 # ---------------------------------------------------------------------------------------------
 # the LOOP block
 
-class _SpecsOnly:
-    """What a worker process has instead of a database: the copy's model specs, resolved exactly as
-    get_model_spec / resolve_spec_for_ft resolve them (spec section 4: workers never open a
-    database). Anything else a worker asks of it is a probe bug, and says so."""
-
-    def __init__(self, specs):
-        self._specs = list(specs)
-
-    def get_model_spec(self, model):
-        if not model:
-            return None
-        model = model.strip()
-        for s in self._specs:
-            if s.get("model") == model:
-                return dict(s)
-        from laser_trim_analyzer.database.manager import DatabaseManager
-        for s in self._specs:
-            if s.get("aliases") and model in DatabaseManager._parse_aliases(s["aliases"]):
-                return dict(s)
-        return None
-
-    def resolve_spec_for_ft(self, model, serial):
-        if not model:
-            return None
-        if serial:
-            m = re.match(r"^.*?([A-Za-z])\s*$", str(serial))
-            if m:
-                section = self.get_model_spec(f"{model}-{m.group(1).upper()}")
-                if section:
-                    return section
-        return self.get_model_spec(model)
-
-    def __getattr__(self, name):
-        raise RuntimeError(f"a probe worker process has no database (it asked for {name!r})")
-
-
-_WORKER = None
-
-
-def _pool_init(specs, thresholds, predictors):
-    """Each worker: the ingest's Processor with the parent's specs and thresholds, and NO database."""
-    logging.disable(logging.WARNING)
-    from laser_trim_analyzer.database import manager as mgr
-    import laser_trim_analyzer.database as dbpkg
-    stub = _SpecsOnly(specs)
-    mgr._db_manager = stub
-    dbpkg._db_manager = stub
-    from laser_trim_analyzer.core.analyzer import Analyzer
-    from laser_trim_analyzer.core.processor import Processor
-    global _WORKER
-    p = Processor(use_ml=False)
-    p._model_thresholds = dict(thresholds)
-    p._model_predictors = dict(predictors)
-    p.analyzer = Analyzer(model_thresholds=p._model_thresholds)
-    _WORKER = p
-
-
-def _pool_warm(_):
-    time.sleep(0.2)
-    return os.getpid()
-
-
-def _pool_work(path_str):
-    return _WORKER.process_file(Path(path_str)) is not None
-
-
 def _time_serial(proc, paths) -> float:
     proc.process_file(paths[0])                       # warm the imports, not the measurement
     t = time.perf_counter()
@@ -528,59 +463,66 @@ def _process_line(n, ready, value, note) -> str:
 
 
 def _time_processes(db, proc, paths, n):
-    """(ms/file, seconds until every worker was up, a note if the predictors stayed behind).
-    Start-up is NOT charged to throughput."""
+    """(ms/file, seconds until every worker was up, a note if the predictors stayed behind -- or if
+    any file came back `internal`) on the ingest's OWN worker processes (core/ingest_worker.py:
+    spawn, the database trap, one log queue): the Processor's own analysis, with the copy's model
+    specs, ML thresholds and -- when they can be sent -- predictors carried as a SpecSnapshot, as
+    the ingest carries them. Start-up is NOT charged to throughput."""
+    from laser_trim_analyzer.core import ingest_worker
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database.specs import SpecSnapshot
     predictors, note = _sendable_predictors(proc._model_predictors)
-    ctx = mp.get_context("spawn")                     # what Windows does, on every platform
-    t0 = time.perf_counter()
-    with ProcessPoolExecutor(max_workers=n, mp_context=ctx, initializer=_pool_init,
-                             initargs=(db.get_all_model_specs(), dict(proc._model_thresholds),
-                                       predictors)) as ex:
-        seen = set()
-        for _ in range(10):
-            seen |= set(ex.map(_pool_warm, range(n)))
-            if len(seen) >= n:
-                break
-        ready = time.perf_counter() - t0
+    snapshot = SpecSnapshot(specs=tuple(db.get_all_model_specs()),
+                            ml_thresholds=dict(proc._model_thresholds), ml_predictors=predictors)
+    sender = Processor(config=proc.config, snapshot=snapshot, ml_storage_path=proc.ml_storage_path)
+    pool = ingest_worker.WorkerPool.start(ingest_worker.context_for(sender), n)
+    try:
         t = time.perf_counter()
-        list(ex.map(_pool_work, [str(p) for p in paths], chunksize=1))
+        outcomes = [f.result() for f in [pool.submit(p) for p in paths]]
         wall = time.perf_counter() - t
-    return wall / len(paths) * 1e3, ready, note
+    finally:
+        pool.close()
+    internal = [o for o in outcomes if o is not None and o.internal]
+    if internal:
+        why = (f"<- {len(internal)} of {len(paths)} files came back internal "
+               f"({internal[0].internal})")[:240]
+        note = f"{note} {why}" if note else why
+    return wall / len(paths) * 1e3, pool.ready_seconds, note
 
 
-def _time_run_folder(db, files_dir: Path, paths):
+from laser_trim_analyzer.core.processor import Processor as _Processor  # noqa: E402
+
+_BUILT = []
+
+
+class _Seen(_Processor):
+    """The ingest's own Processor, remembering each one built (the loop's own scan timings live
+    on it). At module level, so a worker process can build it too: a worker is handed its parent's
+    processor class by reference, and a class it cannot import would send the loop to threads."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        _BUILT.append(self)
+
+
+def _time_run_folder(db, files_dir: Path, paths, processes: int = 0):
     """Today's loop, exactly as the ingest runs it, headless: run_folder over the local copies,
     incremental, on the parallel path (the threshold is lowered so N files take it, as every real
-    folder does). The post-batch work (re-link, drift, findings) is not the per-file loop and is
-    skipped. Returns (loop ms/file, save wall, save cpu, gc pauses), all per file."""
+    folder does) -- with `processes`, on that many of the ingest's worker processes, however few
+    files (the app starts them from 200). The post-batch work (re-link, drift, findings) is not the
+    per-file loop and is skipped. Returns (loop ms/file, save wall, save cpu, gc pauses) per file --
+    the save figures the batch writer's own (every save is in its `write_batch` since Task 10) --
+    which workers ran, and the seconds its worker processes took to start, which the loop's
+    ms/file leaves out (0 on threads)."""
     from sqlalchemy import text
     from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.core import ingest_run
-    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.core import ingest_run, ingest_worker
 
     # The SAVE block recorded these local paths as processed; the loop must meet them as new.
     prefix = str(files_dir)
     with db.session() as s:
         s.execute(text("DELETE FROM processed_files WHERE substr(file_path, 1, :n) = :p"),
                   {"n": len(prefix), "p": prefix})
-
-    built = []
-
-    class _Seen(Processor):
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
-            built.append(self)
-
-    save = {"wall": 0.0, "cpu": 0.0}
-    real_save = db.save_analysis
-
-    def timed_save(r):
-        w, c = time.perf_counter(), time.thread_time()
-        try:
-            return real_save(r)
-        finally:
-            save["wall"] += time.perf_counter() - w
-            save["cpu"] += time.thread_time() - c
 
     pauses = {"t": 0.0, "at": None}
 
@@ -593,30 +535,36 @@ def _time_run_folder(db, files_dir: Path, paths):
 
     cfg = Config()
     cfg.processing.turbo_mode_threshold = 1
-    real_post, real_proc = ingest_run._post_batch, ingest_run.Processor
+    real = (ingest_run._post_batch, ingest_run.Processor, ingest_worker.PROCESS_MIN_FILES,
+            ingest_worker.MAX_WORKERS)
     ingest_run._post_batch = lambda *a, **k: None
     ingest_run.Processor = _Seen
-    db.save_analysis = timed_save
+    if processes:
+        ingest_worker.PROCESS_MIN_FILES, ingest_worker.MAX_WORKERS = 1, processes
+    del _BUILT[:]
     gc.callbacks.append(on_gc)
     try:
         res = ingest_run.run_folder(str(files_dir), db=db, config=cfg, incremental=True)
     finally:
         gc.callbacks.remove(on_gc)
-        del db.save_analysis
-        ingest_run._post_batch, ingest_run.Processor = real_post, real_proc
+        (ingest_run._post_batch, ingest_run.Processor, ingest_worker.PROCESS_MIN_FILES,
+         ingest_worker.MAX_WORKERS) = real
     if not res.ok:
         raise RuntimeError(f"run_folder failed: {res.error}")
     done = int(getattr(res.summary, "processed", 0) or 0) or len(paths)
-    loop_s = built[-1].last_scan_stats.get("process_seconds", 0.0)
-    return (loop_s / done * 1e3, save["wall"] / done * 1e3, save["cpu"] / done * 1e3,
-            pauses["t"] / done * 1e3)
+    consumer = _BUILT[-1]          # built after the run's own planning processor
+    start = consumer.last_pool_start
+    loop_s = consumer.last_scan_stats.get("process_seconds", 0.0) - start
+    return (loop_s / done * 1e3, res.phases.get("save", 0.0) / done * 1e3,
+            res.phases.get("save_cpu", 0.0) / done * 1e3, pauses["t"] / done * 1e3, res.workers,
+            start)
 
 
 def _loop_line(label: str, value: float) -> str:
     return f"{label:<{LOOP_WIDTH}}{value:>7.1f}"
 
 
-def _run_loop_block(db, paths, files_dir: Path, procs: int) -> None:
+def _run_loop_block(db, paths, files_dir: Path, procs: int, results=()) -> None:
     from laser_trim_analyzer.core.processor import Processor
     print(f"LOOP  the same {len(paths)} files, local copies, model specs from the copy, ms per file")
 
@@ -639,11 +587,18 @@ def _run_loop_block(db, paths, files_dir: Path, procs: int) -> None:
     print(_process_line(procs, ready, per, note), flush=True)
 
     _status("LOOP  today's loop")
-    loop, save_wall, save_cpu, gc_ms = _time_run_folder(db, files_dir, paths)
-    _status("")
+    loop, save_wall, save_cpu, gc_ms, _, _ = _time_run_folder(db, files_dir, paths)
     print(_loop_line(LOOP_LABELS[4], loop))
     print(f"   of which save: wall {save_wall:.1f}, cpu {save_cpu:.1f} | GC pauses {gc_ms:.1f} | "
-          f"rest {loop - threads - save_cpu:.1f}")
+          f"rest {loop - threads - save_cpu:.1f}", flush=True)
+
+    _status(f"LOOP  the loop on {procs} worker processes")
+    _forget(db, results)            # the loop above stored them: this one must meet them new too
+    loop, save_wall, save_cpu, _, workers, start = _time_run_folder(db, files_dir, paths, procs)
+    _status("")
+    print(_loop_line(LOOP_LABELS[5], loop))          # how many ran: the `workers` detail below
+    print(f"   of which save: wall {save_wall:.1f}, cpu {save_cpu:.1f} | pool start {start:.1f} s "
+          f"(not in the ms/file) | workers {workers}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -760,7 +715,7 @@ def main(argv=None) -> int:
             step = "timing the loop"
             # Explicitly the app's own pragmas: the SAVE block leaves whichever setting ran last.
             _set_pragmas(db, *app)
-            _run_loop_block(db, paths, files_dir, max(1, args.procs))
+            _run_loop_block(db, paths, files_dir, max(1, args.procs), results)
     except KeyboardInterrupt:
         interrupted = True
     except Exception as e:

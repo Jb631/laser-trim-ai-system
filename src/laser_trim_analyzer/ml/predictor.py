@@ -40,6 +40,19 @@ def _class_label_is_failure(label: Any) -> bool:
     return bool(label == 1 or label is True)
 
 
+def _predict_on_one_thread(classifier: Any) -> None:
+    """A forest that PREDICTS runs on one thread (controller ruling, 2026-09-25).
+
+    With n_jobs=-1, predict_proba sums the trees across threads in whatever order they finish, so
+    a stored failure_probability varied in its last bit from run to run (measured: 3 distinct
+    values in 300 calls on one input; 1 with n_jobs=1). And inside the ingest's worker
+    processes (ingest-speed A3) it would be nested parallelism: all cores per predict call, per
+    worker. Training keeps its threads; every classifier that is loaded, or that is about to be
+    used after training, predicts on one."""
+    if classifier is not None and hasattr(classifier, "n_jobs"):
+        classifier.n_jobs = 1
+
+
 # Feature columns used for prediction.
 #
 # linearity_error / fail_points / error_to_spec are DELIBERATELY excluded: the
@@ -357,6 +370,10 @@ class ModelPredictor:
                 name: float(imp)
                 for name, imp in zip(available_features, self.classifier.feature_importances_)
             }
+
+            # Trained -- and cross-validated -- on every core, exactly as before; from here on it
+            # only predicts, and a predicting forest runs on one thread.
+            _predict_on_one_thread(self.classifier)
 
             # Update state
             self.is_trained = True
@@ -685,6 +702,7 @@ class ModelPredictor:
 
             self.model_name = data['model_name']
             self.classifier = data['classifier']
+            _predict_on_one_thread(self.classifier)     # whatever n_jobs it was saved with
             self.scaler = data['scaler']
             self.is_trained = data['is_trained']
             self.training_date = data['training_date']

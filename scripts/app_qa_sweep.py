@@ -3447,6 +3447,30 @@ def _order_free(tables: dict) -> dict:
     return out
 
 
+def _ingest_corpus():
+    """(the corpus folder, {sub-folder: files}) -- the first file of each model folder: 12 DLTS
+    and 8 LTS trims, 20 final tests, 8 smoothness exports. The batched-ingest and process-mode
+    checks take the same files."""
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
+
+    def firsts(folder: Path, n: int) -> list:
+        if not folder.is_dir():
+            return []
+        out = []
+        for d in sorted(x for x in folder.iterdir() if x.is_dir()):
+            f = min((x for x in d.rglob("*") if x.is_file() and x.suffix.lower() in
+                     (".xls", ".xlsx") and not x.name.startswith("~$")), default=None)
+            if f is not None:
+                out.append(f)
+            if len(out) >= n:
+                break
+        return out
+
+    return base, {"laser": firsts(base / "DLTS", 12) + firsts(base / "LTS", 8),
+                  "Test Station": firsts(base / "Test Station", 20),
+                  "os": firsts(base / "Smoothness_Sample_2026-04-10" / "Test Station", 8)}
+
+
 def check_batched_ingest() -> None:
     """run_folder on the batch writer (ingest-speed Task 10; spec 3.1, 3.9; rulings 5, 22) over
     REAL corpus files of every kind -- trims from both lasers, final tests, smoothness exports --
@@ -3475,24 +3499,7 @@ def check_batched_ingest() -> None:
     import laser_trim_analyzer.database as _dbpkg
     from laser_trim_analyzer.ml import invalidate_shared_ml_manager
 
-    base = REPO / "Work Files" / "Sample_Base_2026-04-10"
-
-    def firsts(folder: Path, n: int) -> list:
-        if not folder.is_dir():
-            return []
-        out = []
-        for d in sorted(x for x in folder.iterdir() if x.is_dir()):
-            f = min((x for x in d.rglob("*") if x.is_file() and x.suffix.lower() in
-                     (".xls", ".xlsx") and not x.name.startswith("~$")), default=None)
-            if f is not None:
-                out.append(f)
-            if len(out) >= n:
-                break
-        return out
-
-    picks = {"laser": firsts(base / "DLTS", 12) + firsts(base / "LTS", 8),
-             "Test Station": firsts(base / "Test Station", 20),
-             "os": firsts(base / "Smoothness_Sample_2026-04-10" / "Test Station", 8)}
+    base, picks = _ingest_corpus()
     if not any(picks.values()):
         warn("batched ingest: the corpus", f"no files under {base} -- not run")
         return
@@ -3618,6 +3625,182 @@ def check_batched_ingest() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def check_process_mode_ingest(raw=None) -> None:
+    """Worker PROCESSES (ingest-speed Task 11, A3; spec section 4, rulings 13-19) over the
+    batched-ingest corpus -- trims from both lasers, final tests, smoothness exports -- against
+    the same run_folder on THREADS, each into a throwaway database of its own
+    (--only process-mode). In the main sweep both databases carry the copy's REAL model specs
+    and ML state (read from the copy, never written there), so a snapshot that did not reach the
+    workers intact -- specs, thresholds, predictors -- stores different numbers; run alone, both
+    are spec-less. Three promises:
+      1. the two runs store exactly the same rows -- every column but the clocks, in any order
+         (a pool completes files in any order);
+      2. the process run really ran on worker processes, from its first file to its last -- its
+         mode is "2 processes (ready in X s)" and nothing after it: a pool that broke at once and
+         ran the folder on threads also STARTS "2 processes" (final review, I-2) -- no file came
+         back `internal` (no worker reached for a database), and its buckets are the thread run's;
+      3. (A5, Task 12) a third process run under scripted memory pressure -- the in-flight cap
+         drops to one and comes back, each change logged -- stores exactly the same rows too:
+         the cap moves WHEN files run, never what is stored. Its chunks are 5 files, so 48 files
+         give the cap enough boundaries to fall and recover.
+    `_post_batch` is off (this compares what the ingest SAVES), and so is the 2-second flush.
+
+    Falsify before trusting (2026-09-26): the cap never coming back -- check 3 goes FAIL;
+    every worker exiting on its first file (the folder then runs on threads and stores the same
+    rows) -- checks 2 and 3 go FAIL, 3 on its mode alone with its cap clause taken out;
+    build the worker's processor without its snapshot --
+    check 2 goes FAIL (it asks get_database() for its ML state as it is built: the trap refuses
+    the worker, and the folder runs on threads); without its snapshot AND with ML off -- both go
+    FAIL (every spec lookup hits the trap: 40 files internal, none stored); with ML off alone --
+    both go FAIL on the copy (its sigma thresholds move the verdicts).
+    """
+    import logging
+    import shutil
+    import tempfile
+    from collections import Counter
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.core import ingest_run, ingest_worker, processor as _processor
+    from laser_trim_analyzer.database import manager as _mgr
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.ml import invalidate_shared_ml_manager
+
+    base, picks = _ingest_corpus()
+    if not any(picks.values()):
+        warn("process mode: the corpus", f"no files under {base} -- not run")
+        return
+    tables = _SAVE_TABLES + ("final_test_results", "final_test_tracks", "smoothness_results",
+                             "smoothness_tracks")
+    saved = (_mgr._db_manager, getattr(_dbpkg, "_db_manager", None), ingest_run._post_batch,
+             ingest_run.BatchWriter.FLUSH_SECONDS, ingest_worker.PROCESS_MIN_FILES,
+             ingest_worker.MAX_WORKERS, _processor.CHUNK, _processor.memory_percent)
+    tmp = Path(tempfile.mkdtemp(prefix="process_mode_sweep_"))
+    said = []
+
+    class _Said(logging.Handler):
+        def emit(self, record):
+            said.append(record.getMessage())
+
+    heard = _Said(level=logging.INFO)
+    opened = []
+    try:
+        root = tmp / "in"
+        for sub, files in picks.items():
+            for f in files:
+                dst = root / sub / f.parent.name / f.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dst)                           # the mtime travels
+        seeded = {}
+        runs = {}
+        ingest_run._post_batch = lambda *a, **k: None
+        ingest_run.BatchWriter.FLUSH_SECONDS = 10 ** 9
+        ingest_worker.MAX_WORKERS = 2
+        config = Config()
+        config.processing.turbo_mode_threshold = 1            # both runs take the pool path
+        # memory: the start check, then one reading per chunk boundary -- pressure, then calm
+        readings = [50.0, 91.0, 92.0, 79.0, 79.0] + [50.0] * 20
+        for label, min_files in (("threads", 10 ** 9), ("processes", 1), ("throttled", 1)):
+            path = tmp / f"{label}.db"
+            db = _mgr.DatabaseManager(path)
+            opened.append(db)
+            if raw is not None:
+                seeded = _seed_specs_and_ml_state(raw, path)
+            ingest_worker.PROCESS_MIN_FILES = min_files
+            proc_log = logging.getLogger(_processor.__name__)
+            level = proc_log.level
+            if label == "throttled":
+                _processor.CHUNK = 5
+                _processor.memory_percent = lambda: readings.pop(0) if len(readings) > 1 \
+                    else readings[0]
+                proc_log.addHandler(heard)
+                proc_log.setLevel(logging.INFO)          # a recovery is logged at INFO
+            invalidate_shared_ml_manager()
+            _mgr._db_manager = _dbpkg._db_manager = db
+            try:
+                runs[label] = ingest_run.run_folder(str(root), db=db, config=config,
+                                                    incremental=True)
+            finally:
+                proc_log.removeHandler(heard)
+                proc_log.setLevel(level)
+                _processor.CHUNK, _processor.memory_percent = saved[6], saved[7]
+            invalidate_shared_ml_manager()
+
+        def rows(label):
+            out = _saved_rows(tmp / f"{label}.db", tables)
+            for row in out["analysis_results"]:
+                if row["model"] == "Unknown" and row["overall_status"] == "ERROR":
+                    row["file_date"] = row["unit_id"] = "<now>"   # _create_minimal_metadata
+            return _order_free(out)
+
+        got, want = rows("processes"), rows("threads")
+        counts = {t: len(v) for t, v in got.items()}
+        res_p, res_t = runs["processes"], runs["threads"]
+        check("process mode: worker processes store exactly what threads store, real files of "
+              "every kind (every column but the clocks, in any order)",
+              res_p.ok and res_t.ok and got == want and all(counts[t] for t in (
+                  "analysis_results", "final_test_results", "smoothness_results")),
+              f"{sum(len(v) for v in picks.values())} files; specs/ML-state rows copied in "
+              f"{seeded or 'none (run alone)'}; ok={res_p.ok}/{res_t.ok} "
+              f"{res_p.error or res_t.error or ''}; rows {counts}; identical={got == want}")
+        check("process mode: it ran on worker processes, no worker reached for a database, and "
+              "it counted what the thread run counted",
+              _ran_on_processes(res_p.workers, 2) and not res_p.phases.get("internal")
+              and Counter(res_p.buckets) == Counter(res_t.buckets),
+              f"workers '{res_p.workers}' vs '{res_t.workers}'; internal "
+              f"{res_p.phases.get('internal', 0)}; buckets {res_p.buckets} vs {res_t.buckets}")
+        throttled = rows("throttled")
+        changes = [m for m in said if m.startswith("workers ")]
+        check("process mode: under memory pressure the in-flight cap drops and comes back, each "
+              "change logged -- and what it stores does not move (A5)",
+              runs["throttled"].ok and throttled == want
+              and _ran_on_processes(runs["throttled"].workers, 2)
+              and changes == ["workers 2 → 1: memory at 91%", "workers 1 → 2: memory back to 79%"],
+              f"changes {changes}; identical rows={throttled == want}; "
+              f"workers '{runs['throttled'].workers}'")
+    except Exception as e:                      # an exception is a FAIL, never a skip
+        check("process mode: the corpus runs through run_folder", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        (_mgr._db_manager, _dbpkg._db_manager, ingest_run._post_batch,
+         ingest_run.BatchWriter.FLUSH_SECONDS, ingest_worker.PROCESS_MIN_FILES,
+         ingest_worker.MAX_WORKERS, _processor.CHUNK, _processor.memory_percent) = saved
+        for m in opened:
+            m.close()
+        invalidate_shared_ml_manager()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _ran_on_processes(workers: str, n: int) -> bool:
+    """Did a folder run on `n` worker processes from its first file to its last? Its mode is then
+    exactly "N processes (ready in X s)"; "2 processes (ready in 0.9 s), then 4 threads (worker
+    processes broke after 0 files ...)" also STARTS "2 processes", and every file of it ran on
+    threads (final review, I-2)."""
+    import re
+    m = re.fullmatch(r"(\d+) process(?:es)? \(ready in \d+(?:\.\d+)? s\)", workers or "")
+    return bool(m) and int(m.group(1)) == n
+
+
+def _seed_specs_and_ml_state(raw, path: Path) -> dict:
+    """The copy's model_specs and model_ml_state rows into a throwaway database (the copy is only
+    READ): what an ingest's snapshot is taken from. Returns how many rows each."""
+    out = {}
+    con = sqlite3.connect(str(path))
+    try:
+        for table in ("model_specs", "model_ml_state"):
+            cur = raw.execute(f"SELECT * FROM {table}")
+            cols = [d[0] for d in cur.description]
+            mine = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+            keep = [i for i, c in enumerate(cols) if c in mine]
+            rows = [tuple(r[i] for i in keep) for r in cur.fetchall()]
+            names = ", ".join(cols[i] for i in keep)
+            con.executemany(f"INSERT INTO {table} ({names}) VALUES "
+                            f"({', '.join('?' * len(keep))})", rows)
+            out[table] = len(rows)
+        con.commit()
+    finally:
+        con.close()
+    return out
+
+
 def _same_values(a, b) -> bool:
     """Exact equality of two model_dump()s, a NaN equal to a NaN (a stored NaN is a value)."""
     if isinstance(a, float) and isinstance(b, float):
@@ -3687,10 +3870,10 @@ def check_spec_snapshot_on_database(db, raw) -> None:
     finally:
         invalidate_shared_ml_manager()
     back = pickle.loads(pickle.dumps(snap))   # the sweep's own object, made above
-    # The trained forests carry n_jobs=-1: predict_proba sums the trees across threads in a
-    # varying order, so a probability's last bit varies call to call (2026-09-25; 3 distinct
-    # values in 300 calls on one input). Pinned to one thread on every predictor compared here,
-    # or check 4 would fail at random wherever predictors load.
+    # A forest with n_jobs=-1 sums its trees across threads in a varying order, so a
+    # probability's last bit varies call to call (2026-09-25; 3 distinct values in 300 calls on
+    # one input). Since Task 11 the predictor pins itself to one thread when it is loaded or
+    # trained (controller ruling); pinned here too, so check 4 never depends on that.
     for predictor in list(manager.predictors.values()) + list(back.ml_predictors.values()):
         if getattr(getattr(predictor, "classifier", None), "n_jobs", None) not in (None, 1):
             predictor.classifier.n_jobs = 1
@@ -5063,6 +5246,8 @@ def main() -> int:
         check_worker_outcomes()
     with _guard("batched ingest: the corpus"):
         check_batched_ingest()
+    with _guard("process mode: the corpus"):
+        check_process_mode_ingest(raw)
     with _guard("spec snapshot: on the database"):
         check_spec_snapshot_on_database(db, raw)
 
@@ -5684,7 +5869,8 @@ STANDALONE = {"glosses": check_usability_glosses,
               "track2-setup": check_track2_setup_fixtures,
               "write-batch": check_write_batch_fixtures,
               "worker-outcomes": check_worker_outcomes,
-              "batched-ingest": check_batched_ingest}
+              "batched-ingest": check_batched_ingest,
+              "process-mode": check_process_mode_ingest}
 
 
 if __name__ == "__main__":
