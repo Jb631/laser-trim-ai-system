@@ -292,3 +292,88 @@ def test_a_broken_database_degrades_to_insufficient(db):
 
     c = compare_station_specs(_Boom(), "BROKEN")
     assert c.status == "insufficient" and c.matched_positions == 0
+
+
+# ---- "the newest pairs" are the newest by the DATA, never by the order rows were stored --------
+# Review of ingest-speed Tasks 11-12 (I-2), controller ruling: these samples were `id DESC LIMIT n`,
+# and ids follow commit order -- which worker processes, and a pool that breaks and re-runs its
+# files on threads, change from run to run. A stored fact (station_setup's) then moved between
+# two runs over the same files: 8340-1, 22% -> 23%. They are ordered by the test's own date (a
+# final test's test_date, else its file_date; a trim's file_date), then the file name, then id.
+
+def _dated_units(db, model, order, *, n=8, linked=True, same_day=False, special=3,
+                 trim_special=False):
+    """`n` units of `model`, unit k trimmed and tested on day k (or all on one day, `same_day`),
+    stored in `order`. Every band is +/-0.05 except unit `special`'s final test (+/-0.30, so it
+    differs from trim) -- and, with `trim_special`, its trim too -- so WHICH units are sampled
+    decides the answer. Odd units' final tests carry a test_date and an OLD file_date, even ones no
+    test_date: a final test's own date is its test_date, else its file_date (unit 3 is odd)."""
+    from datetime import timedelta
+    pos = _positions()
+    for k in order:
+        day = D0 + timedelta(days=0 if same_day else k)
+        ft_half = 0.30 if k == special else 0.05
+        trim_half = 0.30 if (trim_special and k == special) else 0.05
+        with db.session() as s:
+            a = AnalysisResult(model=model, serial=f"{model}-{k}", system=SystemType.A,
+                               file_date=day, filename=f"{model}_u{k}.xls",
+                               overall_status=StatusType.PASS)
+            s.add(a)
+            s.flush()
+            s.add(TrackResult(analysis_id=a.id, track_id="TRK1", status=StatusType.PASS,
+                              position_data=list(pos), upper_limits=[trim_half] * N_PTS,
+                              lower_limits=[-trim_half] * N_PTS))
+            f = FinalTestResult(model=model, serial=f"{model}-{k}", filename=f"{model}-u{k}.xls",
+                                file_date=(D0 if k % 2 else day),
+                                test_date=(day if k % 2 else None),
+                                overall_status=StatusType.PASS,
+                                linked_trim_id=a.id if linked else None)
+            s.add(f)
+            s.flush()
+            s.add(FinalTestTrack(final_test_id=f.id, track_id="TRK1", status=StatusType.PASS,
+                                 position_data=list(pos), upper_limits=[ft_half] * N_PTS,
+                                 lower_limits=[-ft_half] * N_PTS))
+
+
+ORDERS = (list(range(8)), list(reversed(range(8))), [3, 7, 0, 5, 1, 6, 2, 4])
+
+
+def _compare_in_every_order(tmp_path, **kw):
+    from laser_trim_analyzer.core.spec_alignment import sample_and_compare
+    out = []
+    for i, order in enumerate(ORDERS):
+        d = DatabaseManager(tmp_path / f"order{i}.db")
+        try:
+            _dated_units(d, "ORD", order, **kw)
+            out.append(sample_and_compare(d, "ORD"))
+        finally:
+            d.close()
+    return out
+
+
+def test_the_newest_linked_pairs_are_the_newest_by_date_whatever_order_they_were_stored_in(
+        tmp_path):
+    """The five newest units by their own dates are days 7..3 -- unit 3 (its final test dated by
+    test_date, its file_date old) differing, four aligned: 20% on every storage order. By id, the
+    last-stored five were sampled instead; by file_date alone, unit 3 fell out of the five."""
+    got = _compare_in_every_order(tmp_path)
+    assert all(c == got[0] for c in got), [c.pct_positions_differing for c in got]
+    assert got[0].pct_positions_differing == pytest.approx(0.2)
+
+
+def test_without_links_each_station_is_sampled_by_its_own_dates_whatever_the_order(tmp_path):
+    """The fallback pairing (no links) zips the newest trims with the newest final tests, each by
+    its own dates: unit 3's trim meets unit 3's final test, both +/-0.30 -- aligned, on every
+    storage order. Sampling either side by id pairs unit 3 with a neighbour, and they differ."""
+    got = _compare_in_every_order(tmp_path, linked=False, trim_special=True)
+    assert all(c == got[0] for c in got), [c.pct_positions_differing for c in got]
+    assert got[0].pct_positions_differing == pytest.approx(0.0)
+    assert got[0].status == "aligned"
+
+
+def test_units_tested_the_same_day_are_ordered_by_file_name_whatever_the_order(tmp_path):
+    """One day's units: the file name decides which five are "the newest" -- u7..u3, the same on
+    every storage order -- never the id a row happened to get."""
+    got = _compare_in_every_order(tmp_path, same_day=True)
+    assert all(c == got[0] for c in got), [c.pct_positions_differing for c in got]
+    assert got[0].pct_positions_differing == pytest.approx(0.2)

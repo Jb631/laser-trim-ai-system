@@ -197,7 +197,25 @@ def half_bands(upper_limits: Sequence, lower_limits: Sequence) -> List[float]:
 
 # ---------------------------------------------------------------------------
 # DB layer — sampling the newest stored limit arrays on each side.
+#
+# "Newest" is by the DATA: a final test's own date (its test_date, else its file_date), a trim's
+# file_date, then the file name, then the row id as the last tie-break -- never the id alone. Ids
+# follow the order rows were committed, and that order changes from run to run: the ingest's
+# worker processes finish files in any order, and a pool that breaks re-runs its files on threads.
+# By id, a stored fact moved between two runs over the same files (station_setup on 8340-1, 22%
+# -> 23% of positions differing: review of ingest-speed Tasks 11-12, I-2; controller ruling).
+# Within one file its tracks come in track order.
 # ---------------------------------------------------------------------------
+
+
+def _ft_newest_first(DBFT):
+    from sqlalchemy import func
+    return (func.coalesce(DBFT.test_date, DBFT.file_date).desc(), DBFT.filename.desc(),
+            DBFT.id.desc())
+
+
+def _trim_newest_first(DBAR):
+    return (DBAR.file_date.desc(), DBAR.filename.desc(), DBAR.id.desc())
 
 def _code(system) -> str:
     return str(getattr(system, "value", system) or "")
@@ -235,7 +253,9 @@ def _linked_pairs(db, model: str, limit: int) -> List[Tuple[List[_Point],
                         DBFTT.position_data.isnot(None),
                         DBFTT.upper_limits.isnot(None),
                         DBFTT.lower_limits.isnot(None))
-                .order_by(DBFT.id.desc()).limit(limit).all())
+                .order_by(*_ft_newest_first(DBFT), DBFTT.track_id, DBTR.track_id,
+                          DBFTT.id, DBTR.id)
+                .limit(limit).all())
     return [(_points(*r[:3]), _points(*r[3:6]), _code(r[6])) for r in rows]
 
 
@@ -249,7 +269,8 @@ def _trim_arrays(db, model: str, limit: int) -> List[Tuple[List[_Point], str]]:
                         DBTR.position_data.isnot(None),
                         DBTR.upper_limits.isnot(None),
                         DBTR.lower_limits.isnot(None))
-                .order_by(DBTR.id.desc()).limit(limit).all())
+                .order_by(*_trim_newest_first(DBAR), DBTR.track_id, DBTR.id)
+                .limit(limit).all())
     return [(_points(*r[:3]), _code(r[3])) for r in rows]
 
 
@@ -264,7 +285,8 @@ def _ft_arrays(db, model: str, limit: int) -> List[List[_Point]]:
                         DBFTT.position_data.isnot(None),
                         DBFTT.upper_limits.isnot(None),
                         DBFTT.lower_limits.isnot(None))
-                .order_by(DBFTT.id.desc()).limit(limit).all())
+                .order_by(*_ft_newest_first(DBFT), DBFTT.track_id, DBFTT.id)
+                .limit(limit).all())
     return [_points(*r) for r in rows]
 
 
