@@ -985,6 +985,46 @@ def test_a_pool_that_breaks_while_a_worker_waits_on_the_barrier_fails_its_start_
     assert time.monotonic() - t0 < 25
 
 
+def test_a_worker_that_dies_unseen_while_the_pool_starts_is_noticed_within_seconds(
+        tmp_path, processes, monkeypatch):
+    """Closeout item 2 (2026-09-26): the gap the test above deliberately did not cover -- a LATER
+    worker (not the first spawned) dies while the pool starts. concurrent.futures' own broken-pool
+    detection never notices it (nothing wakes its manager thread again once both warm-ups are
+    submitted), so the first worker sits on the warm-up barrier for a partner that will never
+    arrive, and -- without this fix -- the start would run out its whole 120 s `timeout` before
+    `out_of_time()` finally caught it. At work, an endpoint scanner killing a starting process
+    would cost two minutes before the folder fell back to threads.
+
+    The wait loop must notice the dead worker itself on its very next poll (~0.2 s), name it (pid
+    and exit code), and let the folder fall back to threads at once -- bounded here (`join`) so a
+    reverted fix fails this test in seconds rather than hanging it for two minutes."""
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    _slow_spawns(monkeypatch, 2.0, [])
+    models = tmp_path / "models"
+    models.mkdir()
+    proc = worker_stubs.SecondWorkerDiesAtOnceProcessor(
+        config=_parallel_config(), snapshot=SpecSnapshot(), ml_storage_path=models / "no_models")
+    files = worker_stubs.make_files(tmp_path / "in", [f"f{i:03d}.xls" for i in range(30)])
+    got = []
+
+    def run():
+        got.extend(proc.process_batch(files, incremental=False, writer=_Collect()))
+
+    t0 = time.monotonic()
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    th.join(20)
+    elapsed = time.monotonic() - t0
+    assert not th.is_alive(), (
+        f"the folder had not finished {elapsed:.0f} s in -- the dead worker was not noticed "
+        "promptly (bound here so this test fails instead of waiting out the 120 s start limit)")
+    assert len(got) == 30, got
+    assert elapsed < 20, f"took {elapsed:.1f} s -- close to the 120 s start limit, not seconds"
+    assert "processes could not start" in proc.last_workers, proc.last_workers
+    assert "died" in proc.last_workers and "exit code" in proc.last_workers, proc.last_workers
+    assert "thread" in proc.last_workers, proc.last_workers
+
+
 # ---- a worker pool that keeps reaching for a database (review m-6) ----------------------------
 
 def test_worker_processes_that_keep_reaching_for_a_database_hand_the_folder_to_threads(

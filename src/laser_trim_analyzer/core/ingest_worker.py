@@ -404,7 +404,12 @@ class WorkerPool:
         demand, holding its lock while the child starts and reads the context (~48 MB) -- seconds
         each at work. So the warm-ups are submitted one at a time, Stop, the close and the
         deadline asked before each (final review, I-1: asked only once all n were spawned, Stop
-        took 12.9 s for 4 workers, and a close landed on an empty process table)."""
+        took 12.9 s for 4 workers, and a close landed on an empty process table).
+
+        The wait loop also checks the pool's own processes every poll (closeout item 2): a worker
+        that dies is not always noticed by concurrent.futures itself -- only the FIRST spawned is
+        always being watched; a LATER one dying goes unseen (nothing wakes its manager thread
+        again once every warm-up is submitted) and would otherwise sit out the whole `timeout`."""
         t0 = time.monotonic()
         try:
             blob = pickle.dumps(ctx, protocol=pickle.HIGHEST_PROTOCOL)
@@ -430,6 +435,30 @@ class WorkerPool:
                 raise PoolFailed(f"the {n} worker processes were not all up within "
                                  f"{timeout:.0f} s")
 
+        def dead_worker() -> Optional[str]:
+            """A worker already exited, read straight from the executor's own process table (as
+            `_stop_executor` reads it -- under the executor's `_shutdown_lock`, since a spawn in
+            progress holds it and registers its pid before releasing it).
+
+            concurrent.futures' own broken-pool detection watches only the workers its manager
+            thread had when it last woke: the FIRST spawned is always among them, but once every
+            warm-up is submitted nothing wakes that thread again, so a LATER worker dying is
+            unseen (closeout item 2: "a worker dying during the start after the executor's last
+            check is noticed only at the 120 s limit -- CPython's own behaviour"; at work an
+            endpoint scanner can kill a starting process). Checked every poll of the wait loop
+            below, so the fallback to threads happens within a poll instead of the full
+            `timeout`."""
+            lock = getattr(executor, "_shutdown_lock", None)
+            with (lock if lock is not None else contextlib.nullcontext()):
+                table = getattr(executor, "_processes", None)
+                procs = list((table or {}).values())
+            for p in procs:
+                code = p.exitcode
+                if code is not None:
+                    return (f"worker process {p.pid} died while the pool was starting "
+                            f"(exit code {code})")
+            return None
+
         try:
             barrier = mp.Barrier(n)
             executor = ProcessPoolExecutor(
@@ -447,6 +476,9 @@ class WorkerPool:
                 asked_to_stop()
                 if not not_done:
                     break
+                dead = dead_worker()
+                if dead is not None:
+                    raise PoolFailed(dead)
                 out_of_time()
             pids = [f.result() for f in futures]
         except BaseException as e:

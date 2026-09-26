@@ -173,6 +173,30 @@ class FirstWorkerDiesLateProcessor(StubProcessor):
             os._exit(3)
 
 
+class SecondWorkerDiesAtOnceProcessor(StubProcessor):
+    """A processor whose SECOND build in a worker process (a marker file beside its models folder
+    says which build is which) dies AT ONCE, os._exit -- before ever reaching the warm-up barrier,
+    unlike FirstWorkerDiesLateProcessor above. The first build proceeds normally and waits on the
+    barrier for a partner that never arrives.
+
+    Closeout item 2 (2026-09-26): concurrent.futures' own broken-pool detection watches only the
+    workers its manager thread had when it last woke -- the FIRST spawned is always one of them
+    (see the barrier test above), but this LATER one's death is not, and nothing else wakes that
+    thread again once both warm-ups are submitted. Left to concurrent.futures alone, this sits out
+    the pool's full start `timeout` (120 s); the pool's own wait loop must notice it on its next
+    poll instead."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        if in_a_worker_process():
+            marker = Path(self.ml_storage_path).parent / "first_worker_built"
+            try:
+                with open(marker, "x"):
+                    pass
+            except FileExistsError:
+                os._exit(7)
+
+
 class SecondWorkerSlowProcessor(StubProcessor):
     """A processor whose SECOND build in a worker process takes 30 s (a marker file beside its
     models folder says which build is which): the first worker waits on the warm-up barrier
