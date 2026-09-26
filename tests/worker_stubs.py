@@ -28,6 +28,7 @@ import hashlib
 import logging
 import multiprocessing
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -35,6 +36,18 @@ from pathlib import Path
 from laser_trim_analyzer.core.processor import Outcome, Processor
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+_UNBROKEN = re.compile(r"(\d+) process(?:es)? \(ready in \d+(?:\.\d+)? s\)")
+
+
+def ran_on_processes(workers: str, n: int) -> bool:
+    """Did the folder run on `n` worker processes from its first file to its last -- a pool that
+    never broke and never fell back to threads? "2 processes (ready in 0.9 s), then 4 threads
+    (worker processes broke after 0 files ...)" also STARTS with "2 processes", and every file of
+    it ran on threads (final review, I-2)."""
+    m = _UNBROKEN.fullmatch(workers or "")
+    return bool(m) and int(m.group(1)) == n
 
 
 def in_a_worker_process() -> bool:
@@ -139,6 +152,46 @@ class SlowStartProcessor(StubProcessor):
         super().__init__(*a, **k)
         if in_a_worker_process():
             time.sleep(20)
+
+
+class FirstWorkerDiesLateProcessor(StubProcessor):
+    """A processor whose FIRST build in a worker process (a marker file beside its models folder
+    says which build is which) waits 6 s and then kills that worker outright. By then the second
+    worker is waiting on the warm-up barrier -- and concurrent.futures, finding the pool broken,
+    terminates it THERE."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        if in_a_worker_process():
+            marker = Path(self.ml_storage_path).parent / "first_worker_built"
+            try:
+                with open(marker, "x"):
+                    pass
+            except FileExistsError:
+                return
+            time.sleep(6.0)
+            os._exit(3)
+
+
+class SecondWorkerSlowProcessor(StubProcessor):
+    """A processor whose SECOND build in a worker process takes 30 s (a marker file beside its
+    models folder says which build is which): the first worker waits on the warm-up barrier
+    meanwhile."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        if in_a_worker_process():
+            marker = Path(self.ml_storage_path).parent / "first_worker_built"
+            try:
+                with open(marker, "x"):
+                    pass
+            except FileExistsError:
+                time.sleep(30.0)
+
+
+def wait_on(barrier) -> None:
+    """A process's whole life: waiting on `barrier` (a test kills it there)."""
+    barrier.wait(120)
 
 
 class LoudInitProcessor(StubProcessor):

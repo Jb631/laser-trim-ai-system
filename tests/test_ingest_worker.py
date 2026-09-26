@@ -476,7 +476,7 @@ def test_worker_processes_get_the_next_chunk_before_the_last_one_is_back(tmp_pat
     files = worker_stubs.make_files(tmp_path, [f"slow_{i:03d}.xls" for i in range(60)])
     proc = worker_stubs.StubProcessor(config=_parallel_config(), snapshot=SpecSnapshot())
     outs, ins, most = _out_and_in(monkeypatch, processes.WorkerPool, proc, files)
-    assert proc.last_workers.startswith("2 processes"), proc.last_workers
+    assert worker_stubs.ran_on_processes(proc.last_workers, 2), proc.last_workers
     assert outs[20] < ins[19], "the 21st file went out only once the first 20 were back: a barrier"
     assert most == 40, f"at most two chunks in flight, and two: {most}"
     monkeypatch.setattr(processes, "PROCESS_MIN_FILES", 10 ** 9)
@@ -494,7 +494,8 @@ def test_while_the_worker_processes_start_the_progress_line_says_so(tmp_path, pr
     said = []
     got = list(proc.process_batch(files, progress_callback=lambda st: said.append(st),
                                   incremental=False, writer=_Collect()))
-    assert len(got) == 30 and proc.last_workers.startswith("2 processes")
+    assert len(got) == 30 and worker_stubs.ran_on_processes(proc.last_workers, 2), \
+        proc.last_workers
     starting = [st.message for st in said if st.status == "scanning"
                 and "worker processes" in (st.message or "")]
     assert starting == ["Starting 2 worker processes for 30 files…"], starting
@@ -739,6 +740,251 @@ def test_a_folder_stopped_while_its_worker_processes_start_analyses_nothing(tmp_
         proc.last_workers
 
 
+def _slow_spawns(monkeypatch, seconds, spawned):
+    """Every worker process spawned `seconds` late -- in the PARENT, where the serial spawn happens:
+    at work each spawn writes the ~48 MB context into the child's pipe and waits while an endpoint
+    scanner reads every module it imports (final review, I-1). Records each pid spawned."""
+    from concurrent.futures import process as _cfp
+    real = _cfp.ProcessPoolExecutor._spawn_process
+
+    def slow(self):
+        time.sleep(seconds)
+        real(self)
+        spawned.extend(pid for pid in self._processes if pid not in spawned)
+
+    monkeypatch.setattr(_cfp.ProcessPoolExecutor, "_spawn_process", slow)
+
+
+def _stub_context(tmp_path):
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.core.ingest_worker import context_for
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    return context_for(worker_stubs.StubProcessor(config=Config(), snapshot=SpecSnapshot(),
+                                                  ml_storage_path=tmp_path / "no_models"))
+
+
+def test_stop_during_the_serial_spawn_is_honoured_within_one_spawn(tmp_path, processes,
+                                                                   monkeypatch):
+    """Final review, I-1: the workers are spawned one after another, each spawn a few seconds at
+    work. Stop at 0.5 s must end the start after the spawn in progress -- not after all of them
+    (it took 12.9 s for 4 workers) -- and leave no worker behind."""
+    spawned = []
+    _slow_spawns(monkeypatch, 2.0, spawned)
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    t0 = time.monotonic()
+    with pytest.raises(processes.PoolStopped, match="stopped"):
+        processes.WorkerPool.start(_stub_context(tmp_path), 3, cancel=cancel)
+    assert time.monotonic() - t0 < 4.5, "Stop waited for more than the one spawn in progress"
+    assert len(spawned) == 1, spawned
+    assert not _gone_within(spawned, 5), "a worker spawned before Stop outlived it"
+
+
+def test_closing_during_the_serial_spawn_terminates_the_spawn_in_progress(tmp_path, processes,
+                                                                          monkeypatch):
+    """Final review, I-1: the window closes while the first worker is being spawned. The close
+    must reach the worker that spawn produces -- it read the process table before the spawn had
+    registered it, found it empty and terminated nothing -- and the start must say it was CLOSED,
+    not report "cannot schedule new futures after shutdown" as a failure to start. The worker
+    here takes 20 s to build its processor: nothing but a terminate ends it within the 5 s."""
+    import weakref
+    monkeypatch.setattr(processes, "_LIVE", weakref.WeakSet())
+    spawned = []
+    _slow_spawns(monkeypatch, 2.0, spawned)
+    closed = []
+    closer = threading.Timer(0.5, lambda: closed.append(processes.close_worker_pools(grace=0.0)))
+    closer.start()
+    t0 = time.monotonic()
+    with pytest.raises(processes.PoolStopped, match="closed"):
+        processes.WorkerPool.start(_slow_start_context(tmp_path), 3)
+    assert time.monotonic() - t0 < 5.0
+    closer.join(10)
+    assert len(spawned) == 1 and closed == [1], (spawned, closed)
+    assert not _gone_within(spawned, 5), f"a worker outlived the close: {spawned}"
+    assert len(processes._LIVE) == 0
+
+
+def test_a_close_breaks_the_warm_up_so_a_waiting_worker_leaves_without_its_grace(
+        tmp_path, processes, monkeypatch):
+    """Final review, I-1: a worker already waiting on the warm-up barrier -- the other still
+    starting -- is released by the close and leaves on its own at once, instead of sitting out
+    the close's grace to be terminated (or, with nothing to terminate it, its 120 s timeout).
+    Only the worker still starting needs terminating."""
+    import weakref
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.core.ingest_worker import context_for
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    monkeypatch.setattr(processes, "_LIVE", weakref.WeakSet())
+    models = tmp_path / "models" / "no_models"
+    models.parent.mkdir()
+    proc = worker_stubs.SecondWorkerSlowProcessor(config=Config(), snapshot=SpecSnapshot(),
+                                                 ml_storage_path=models)
+    closed = []
+
+    def close_once_one_waits():
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            pools = list(processes._LIVE)
+            if pools and pools[0]._barrier.n_waiting >= 1:
+                t = time.monotonic()
+                closed.append((processes.close_worker_pools(grace=3.0), time.monotonic() - t))
+                return
+            time.sleep(0.05)
+
+    closer = threading.Thread(target=close_once_one_waits, daemon=True)
+    closer.start()
+    with pytest.raises(processes.PoolStopped, match="closed"):
+        processes.WorkerPool.start(context_for(proc), 2)
+    closer.join(30)
+    assert closed and closed[0][0] == 1, f"(terminated, seconds) = {closed}"
+
+
+_CLOSE_WHILE_SPAWNING = """
+import sys, threading, time
+from pathlib import Path
+
+if __name__ == "__main__":
+    from concurrent.futures import process as _cfp
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.core import ingest_worker
+    from laser_trim_analyzer.core.ingest_worker import WorkerPool, context_for
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    import worker_stubs
+    real = _cfp.ProcessPoolExecutor._spawn_process
+
+    def slow(self):
+        time.sleep(2.0)
+        real(self)
+
+    _cfp.ProcessPoolExecutor._spawn_process = slow
+    proc = worker_stubs.StubProcessor(config=Config(), snapshot=SpecSnapshot(),
+                                      ml_storage_path=Path({models!r}))
+    said = []
+
+    def start():
+        try:
+            WorkerPool.start(context_for(proc), 3)
+            said.append("started")
+        except Exception as e:
+            said.append(type(e).__name__)
+
+    t = threading.Thread(target=start)
+    t.start()
+    time.sleep(0.5)
+    ingest_worker.close_worker_pools(grace=0.0)     # the window closes, mid-spawn
+    t.join(60)
+    print(said[0] if said else "no answer", flush=True)
+"""
+
+
+def test_a_process_closed_during_the_serial_spawn_exits_promptly(tmp_path):
+    """Final review, I-1, end to end: the window closes while the first worker is being spawned,
+    and the app's process must then exit -- it lived 125 s, because the worker the spawn produced
+    waited on the warm-up barrier and the interpreter's exit joined it."""
+    import subprocess
+    import sys
+    script = tmp_path / "close_while_spawning.py"
+    script.write_text(_CLOSE_WHILE_SPAWNING.format(models=str(tmp_path / "no_models")))
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1",
+               PYTHONPATH=os.pathsep.join([str(REPO / "src"), str(REPO / "tests")]))
+    t0 = time.monotonic()
+    parent = subprocess.Popen([sys.executable, "-B", str(script)], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env, cwd=tmp_path)
+    try:
+        out, err = parent.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        import psutil
+        kids = [c.pid for c in psutil.Process(parent.pid).children(recursive=True)]
+        _kill(parent, kids)
+        raise AssertionError("the process was still alive 30 s after its pool was closed")
+    assert out.strip() == "PoolStopped", (out, err[-2000:])
+    assert time.monotonic() - t0 < 12, "the process lived on after its pool was closed"
+
+
+def test_a_close_between_the_check_and_the_next_spawn_still_reads_as_closed(tmp_path, processes,
+                                                                            monkeypatch):
+    """Final review, I-1: the window closes just after the start asked whether it was closed and
+    just before it spawned the next worker -- the executor then refuses that spawn ("cannot
+    schedule new futures after shutdown"). The start was CLOSED: PoolStopped, saying so, never a
+    PoolFailed warning about the refusal."""
+    import weakref
+    from concurrent.futures import process as _cfp
+    monkeypatch.setattr(processes, "_LIVE", weakref.WeakSet())
+    real = _cfp.ProcessPoolExecutor.submit
+    calls = []
+
+    def submit(self, fn, /, *a, **k):
+        calls.append(fn)
+        if len(calls) == 2:
+            processes.close_worker_pools(grace=0.0)      # the window's close, in the gap
+        return real(self, fn, *a, **k)
+
+    monkeypatch.setattr(_cfp.ProcessPoolExecutor, "submit", submit)
+    with pytest.raises(processes.PoolStopped, match="closed"):
+        processes.WorkerPool.start(_stub_context(tmp_path), 2)
+    assert len(calls) == 2 and len(processes._LIVE) == 0
+
+
+def test_a_close_never_hangs_on_a_warm_up_waiter_that_was_killed(processes):
+    """A multiprocessing barrier's abort waits for every waiter to wake -- and a waiter KILLED while
+    it waited never does, so the abort would never return. The close breaks the warm-up barrier
+    (final review, I-1), so it must never wait on that abort for more than a moment."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    mp = multiprocessing.get_context("spawn")
+    barrier = mp.Barrier(2)
+    waiter = mp.Process(target=worker_stubs.wait_on, args=(barrier,), daemon=True)
+    waiter.start()
+    t0 = time.monotonic()
+    while barrier.n_waiting < 1 and time.monotonic() - t0 < 60:
+        time.sleep(0.05)
+    assert barrier.n_waiting == 1, "the waiter never reached the barrier"
+    waiter.kill()
+    waiter.join(10)
+    pool = processes.WorkerPool(ProcessPoolExecutor(max_workers=1, mp_context=mp),
+                                processes._LogListener(mp.Queue()), 2, barrier)
+    done = threading.Event()
+    threading.Thread(target=lambda: (pool.close(grace=0.0), done.set()), daemon=True).start()
+    assert done.wait(10), "the close hung on the warm-up barrier's abort"
+
+
+def test_a_pool_that_breaks_while_a_worker_waits_on_the_barrier_fails_its_start_promptly(
+        tmp_path, processes, monkeypatch):
+    """The case above as the ingest meets it: one worker dies as it starts while the other waits
+    on the warm-up barrier, and concurrent.futures terminates that one THERE. The start must fail
+    -- promptly, saying so -- not hang its folder on the close that follows.
+
+    The one that dies is the FIRST spawned (the spawns 2 s apart make it the first to build): the
+    executor watches only the workers it had when it last woke, and a later one dying unseen
+    leaves the start to its 120 s limit -- concurrent.futures' own, and not this test's point."""
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.core.ingest_worker import context_for
+    from laser_trim_analyzer.database.specs import SpecSnapshot
+    _slow_spawns(monkeypatch, 2.0, [])
+    models = tmp_path / "models" / "no_models"
+    models.parent.mkdir()
+    proc = worker_stubs.FirstWorkerDiesLateProcessor(config=Config(), snapshot=SpecSnapshot(),
+                                                    ml_storage_path=models)
+    said = []
+
+    def start():
+        try:
+            processes.WorkerPool.start(context_for(proc), 2)
+            said.append("started")
+        except Exception as e:
+            said.append(e)
+
+    t = threading.Thread(target=start, daemon=True)
+    t0 = time.monotonic()
+    t.start()
+    t.join(40)
+    assert said, "the start hung"
+    assert isinstance(said[0], processes.PoolFailed), said[0]
+    assert not isinstance(said[0], processes.PoolStopped), said[0]
+    assert "terminated abruptly" in str(said[0]), said[0]
+    assert time.monotonic() - t0 < 25
+
+
 # ---- a worker pool that keeps reaching for a database (review m-6) ----------------------------
 
 def test_worker_processes_that_keep_reaching_for_a_database_hand_the_folder_to_threads(
@@ -783,7 +1029,9 @@ def test_run_folder_in_process_mode_stores_exactly_what_v5s_loop_stored(db, tmp_
     v5_loop.build_v5_scenario(tmp_path)
     res = run_folder(str(tmp_path / "in"), db=db, config=_parallel_config(), incremental=True)
     assert res.ok, res.error
-    assert res.workers.startswith("2 processes"), res.workers
+    # worker processes from the first file to the last: a pool that broke at once and ran the
+    # folder on threads also "starts with 2 processes" (final review, I-2)
+    assert worker_stubs.ran_on_processes(res.workers, 2), res.workers
     got = v5_loop.v5_snapshot(db.database_path, tmp_path, [])["tables"]
     want = save_rows.load_golden(v5_loop.GOLDEN)["tables"]
     diffs = save_rows.differences(v5_loop.order_free(got), v5_loop.order_free(want))
@@ -807,7 +1055,7 @@ def test_internal_outcomes_are_errors_named_counted_and_new_again_next_run(
         res = ingest_run.run_folder(str(folder), db=db, config=_parallel_config(),
                                     incremental=True)
     assert res.ok, res.error
-    assert res.workers.startswith("2 processes"), res.workers
+    assert worker_stubs.ran_on_processes(res.workers, 2), res.workers
     assert res.unsaved == 2 and res.buckets.get("errors") == 4, (res.unsaved, res.buckets)
     assert _rows(db) == ["plain_1.xls", "plain_2.xls"]
     errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
@@ -857,7 +1105,8 @@ def test_with_trained_models_process_mode_stores_what_thread_mode_stores(
             save_rows.inject(d, monkeypatch)
             res = run_folder(str(folder), db=d, config=_parallel_config(), incremental=True)
             assert res.ok, res.error
-            assert res.workers.startswith("2 processes") == (label == "processes"), res.workers
+            assert worker_stubs.ran_on_processes(res.workers, 2) == (label == "processes"), \
+                res.workers
         finally:
             invalidate_shared_ml_manager()
             d.close()

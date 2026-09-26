@@ -33,6 +33,7 @@ Windows is the target: spawn everywhere, module-level worker code, picklable val
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import multiprocessing
@@ -62,6 +63,7 @@ RESERVE_GB = 4.0
 WORKER_GB = 0.5
 START_TIMEOUT = 120.0     # spec 4.6: a pool that is not up and warm by then is not coming
 CLOSE_GRACE = 5.0         # ruling 20: what a busy worker gets before it is terminated
+BARRIER_ABORT_WAIT = 1.0  # how long a close waits for the warm-up barrier to break (see close)
 
 # The folders a worker must REFUSE to load trained models from. Empty in the app. The test suite
 # sets it to a checkout's real data/ folders (tests/conftest.py), because its own guard -- no test
@@ -374,9 +376,10 @@ class WorkerPool:
     lookahead = 2
     in_process = False
 
-    def __init__(self, executor, listener, n: int):
+    def __init__(self, executor, listener, n: int, barrier=None):
         self._executor = executor
         self._listener = listener
+        self._barrier = barrier               # the warm-up's: a close breaks it (final review, I-1)
         self._lock = threading.Lock()
         self._closed_done = threading.Event()
         self.size = n
@@ -393,8 +396,15 @@ class WorkerPool:
         initializer refused (its words), a worker died, or the time ran out -- and leaves no
         process behind. Raises PoolStopped when `cancel` is set, or the pool is closed (the
         window's close), while the workers start: the pool is registered for closing BEFORE the
-        warm-up, and the wait asks both a few times a second (review m-1: a start an endpoint
-        scanner makes slow must not hold Stop, or the window, for up to `timeout`)."""
+        first worker is spawned, and both are asked before each spawn and a few times a second
+        while they warm (review m-1: a start an endpoint scanner makes slow must not hold Stop, or
+        the window, for up to `timeout`).
+
+        The workers are SPAWNED one at a time: concurrent.futures spawns one per submit, on
+        demand, holding its lock while the child starts and reads the context (~48 MB) -- seconds
+        each at work. So the warm-ups are submitted one at a time, Stop, the close and the
+        deadline asked before each (final review, I-1: asked only once all n were spawned, Stop
+        took 12.9 s for 4 workers, and a close landed on an empty process table)."""
         t0 = time.monotonic()
         try:
             blob = pickle.dumps(ctx, protocol=pickle.HIGHEST_PROTOCOL)
@@ -407,30 +417,46 @@ class WorkerPool:
         listener = _LogListener(log_queue)
         listener.start()
         executor = pool = None
+        deadline = t0 + timeout
+
+        def asked_to_stop():
+            if pool.closed:
+                raise PoolStopped("closed while the worker processes were starting")
+            if cancel is not None and cancel.is_set():
+                raise PoolStopped("stopped while the worker processes were starting")
+
+        def out_of_time():
+            if time.monotonic() > deadline:
+                raise PoolFailed(f"the {n} worker processes were not all up within "
+                                 f"{timeout:.0f} s")
+
         try:
+            barrier = mp.Barrier(n)
             executor = ProcessPoolExecutor(
                 max_workers=n, mp_context=mp, initializer=_init_worker,
-                initargs=(blob, log_queue, _parent_log_setup(), mp.Barrier(n), errors))
-            pool = cls(executor, listener, n)
+                initargs=(blob, log_queue, _parent_log_setup(), barrier, errors))
+            pool = cls(executor, listener, n, barrier)
             _LIVE.add(pool)                  # closable from now on -- the window's close too
-            futures = [executor.submit(_warm, timeout) for _ in range(n)]
-            deadline = t0 + timeout
+            futures = []
+            for _ in range(n):               # each submit spawns one worker (see above)
+                asked_to_stop()
+                out_of_time()
+                futures.append(executor.submit(_warm, timeout))
             while True:
                 done, not_done = wait(futures, timeout=0.2)
-                if pool.closed:
-                    raise PoolStopped("closed while the worker processes were starting")
-                if cancel is not None and cancel.is_set():
-                    raise PoolStopped("stopped while the worker processes were starting")
+                asked_to_stop()
                 if not not_done:
                     break
-                if time.monotonic() > deadline:
-                    raise PoolFailed(f"the {n} worker processes were not all up within "
-                                     f"{timeout:.0f} s")
+                out_of_time()
             pids = [f.result() for f in futures]
         except BaseException as e:
+            # Closed from outside -- the window's close -- while this start was under way: the
+            # start was STOPPED, whatever it met next (a submit refused "after shutdown", a
+            # warm-up the close broke), never a failure to start (final review, I-1).
+            closed = pool is not None and pool.closed
             why = None
             try:
-                if not isinstance(e, PoolStopped) and not errors.empty():
+                if not closed and not isinstance(e, PoolStopped) and not errors.empty():
                     why = errors.get()
             except Exception:
                 pass
@@ -440,6 +466,8 @@ class WorkerPool:
                 if executor is not None:
                     _stop_executor(executor, grace=0.0)
                 listener.stop()
+            if closed and isinstance(e, Exception) and not isinstance(e, PoolStopped):
+                raise PoolStopped("closed while the worker processes were starting") from e
             if isinstance(e, PoolFailed) and why is None:
                 raise
             if not isinstance(e, Exception):
@@ -463,7 +491,9 @@ class WorkerPool:
         default) to finish its file, then it is terminated. Returns how many were terminated.
         Idempotent -- and a second call, from another thread, returns only once the first has
         finished: whoever sees a pool closed sees it gone (the window closing while a start
-        waits, review m-1)."""
+        waits, review m-1). The warm-up barrier is broken first, while every worker waiting on
+        it is still alive to wake: one waiting there returns now, not at its 120 s timeout
+        (final review, I-1)."""
         grace = CLOSE_GRACE if grace is None else grace
         with self._lock:
             already = self.closed
@@ -472,6 +502,7 @@ class WorkerPool:
             self._closed_done.wait(max(grace, CLOSE_GRACE) + 10.0)
             return 0
         try:
+            _abort_barrier(self._barrier)
             return _stop_executor(self._executor, grace)
         finally:
             self._listener.stop()
@@ -479,11 +510,40 @@ class WorkerPool:
             self._closed_done.set()
 
 
+def _abort_barrier(barrier) -> None:
+    """Break the warm-up barrier, so a worker waiting on it returns at once. On a thread of its
+    own, waited for BARRIER_ABORT_WAIT at most: a multiprocessing barrier's abort waits for every
+    waiter to wake, and a waiter KILLED while it waited never does -- the abort then never returns
+    (seen here: a pool that breaks while it starts has its other workers terminated by
+    concurrent.futures, some of them waiting on this barrier). The close must go on regardless:
+    terminating the workers is what ends them; the abort only spares a live waiter the wait."""
+    if barrier is None:
+        return
+
+    def abort():
+        try:
+            barrier.abort()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=abort, name="ingest-warm-up-abort", daemon=True)
+    t.start()
+    t.join(BARRIER_ABORT_WAIT)
+
+
 def _stop_executor(executor, grace: float) -> int:
     """shutdown(cancel_futures), `grace` seconds for the workers to exit, then terminate (and kill)
-    the rest. The executor's own process table, copied first: shutdown drops it."""
-    procs = list((getattr(executor, "_processes", None) or {}).values())
+    the rest. The executor's own process table is read under the executor's own lock, before the
+    shutdown drops it: a spawn in progress holds that lock and enters its worker in the table
+    before it lets go (final review, I-1 -- read without the lock mid-spawn, the table was empty,
+    and the worker that spawn produced was never terminated). Read again after the shutdown, which
+    takes the lock too: a worker spawned between the two reads is in the same table."""
+    lock = getattr(executor, "_shutdown_lock", None)
+    with (lock if lock is not None else contextlib.nullcontext()):
+        table = getattr(executor, "_processes", None)
+        procs = list((table or {}).values())
     executor.shutdown(wait=False, cancel_futures=True)
+    procs += [p for p in list((table or {}).values()) if p not in procs]
     deadline = time.monotonic() + max(0.0, grace)
     for p in procs:
         p.join(max(0.0, deadline - time.monotonic()))

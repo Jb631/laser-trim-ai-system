@@ -154,7 +154,7 @@ def test_worker_processes_are_capped_the_same_way(tmp_path, monkeypatch, caplog)
     files = worker_stubs.make_files(tmp_path, [f"slow_{i:03d}.xls" for i in range(100)])
     with caplog.at_level(logging.INFO):
         most = _in_flight_per_chunk(monkeypatch, ingest_worker.WorkerPool, proc, files)
-    assert proc.last_workers.startswith("2 processes"), proc.last_workers
+    assert worker_stubs.ran_on_processes(proc.last_workers, 2), proc.last_workers
     changes = [r.getMessage() for r in caplog.records if r.getMessage().startswith("workers ")]
     assert changes == ["workers 2 → 1: memory at 91%", "workers 1 → 2: memory back to 79%"], changes
     # chunk 0 out whole; chunk 1 (taken at 91%) and chunk 2 one file at a time, once chunk 0 was

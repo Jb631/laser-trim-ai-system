@@ -3632,11 +3632,13 @@ def check_process_mode_ingest(raw=None) -> None:
     (--only process-mode). In the main sweep both databases carry the copy's REAL model specs
     and ML state (read from the copy, never written there), so a snapshot that did not reach the
     workers intact -- specs, thresholds, predictors -- stores different numbers; run alone, both
-    are spec-less. Two promises:
+    are spec-less. Three promises:
       1. the two runs store exactly the same rows -- every column but the clocks, in any order
          (a pool completes files in any order);
-      2. the process run really ran on worker processes (its mode says so), no file came back
-         `internal` (no worker reached for a database), and its buckets are the thread run's;
+      2. the process run really ran on worker processes, from its first file to its last -- its
+         mode is "2 processes (ready in X s)" and nothing after it: a pool that broke at once and
+         ran the folder on threads also STARTS "2 processes" (final review, I-2) -- no file came
+         back `internal` (no worker reached for a database), and its buckets are the thread run's;
       3. (A5, Task 12) a third process run under scripted memory pressure -- the in-flight cap
          drops to one and comes back, each change logged -- stores exactly the same rows too:
          the cap moves WHEN files run, never what is stored. Its chunks are 5 files, so 48 files
@@ -3644,6 +3646,8 @@ def check_process_mode_ingest(raw=None) -> None:
     `_post_batch` is off (this compares what the ingest SAVES), and so is the 2-second flush.
 
     Falsify before trusting (2026-09-26): the cap never coming back -- check 3 goes FAIL;
+    every worker exiting on its first file (the folder then runs on threads and stores the same
+    rows) -- checks 2 and 3 go FAIL, 3 on its mode alone with its cap clause taken out;
     build the worker's processor without its snapshot --
     check 2 goes FAIL (it asks get_database() for its ML state as it is built: the trap refuses
     the worker, and the folder runs on threads); without its snapshot AND with ML off -- both go
@@ -3739,7 +3743,7 @@ def check_process_mode_ingest(raw=None) -> None:
               f"{res_p.error or res_t.error or ''}; rows {counts}; identical={got == want}")
         check("process mode: it ran on worker processes, no worker reached for a database, and "
               "it counted what the thread run counted",
-              res_p.workers.startswith("2 processes") and not res_p.phases.get("internal")
+              _ran_on_processes(res_p.workers, 2) and not res_p.phases.get("internal")
               and Counter(res_p.buckets) == Counter(res_t.buckets),
               f"workers '{res_p.workers}' vs '{res_t.workers}'; internal "
               f"{res_p.phases.get('internal', 0)}; buckets {res_p.buckets} vs {res_t.buckets}")
@@ -3748,7 +3752,7 @@ def check_process_mode_ingest(raw=None) -> None:
         check("process mode: under memory pressure the in-flight cap drops and comes back, each "
               "change logged -- and what it stores does not move (A5)",
               runs["throttled"].ok and throttled == want
-              and runs["throttled"].workers.startswith("2 processes")
+              and _ran_on_processes(runs["throttled"].workers, 2)
               and changes == ["workers 2 → 1: memory at 91%", "workers 1 → 2: memory back to 79%"],
               f"changes {changes}; identical rows={throttled == want}; "
               f"workers '{runs['throttled'].workers}'")
@@ -3763,6 +3767,16 @@ def check_process_mode_ingest(raw=None) -> None:
             m.close()
         invalidate_shared_ml_manager()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _ran_on_processes(workers: str, n: int) -> bool:
+    """Did a folder run on `n` worker processes from its first file to its last? Its mode is then
+    exactly "N processes (ready in X s)"; "2 processes (ready in 0.9 s), then 4 threads (worker
+    processes broke after 0 files ...)" also STARTS "2 processes", and every file of it ran on
+    threads (final review, I-2)."""
+    import re
+    m = re.fullmatch(r"(\d+) process(?:es)? \(ready in \d+(?:\.\d+)? s\)", workers or "")
+    return bool(m) and int(m.group(1)) == n
 
 
 def _seed_specs_and_ml_state(raw, path: Path) -> dict:
