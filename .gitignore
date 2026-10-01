@@ -31,6 +31,8 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
+# ...except the one this repo keeps: the spec the packaged build is made from.
+!/packaging/laser_trim_v6.spec
 
 # Installer logs
 pip-log.txt

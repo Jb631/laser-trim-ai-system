@@ -29,7 +29,12 @@ if sys.platform == "darwin" and "TCL_LIBRARY" not in os.environ:
         os.environ["TK_LIBRARY"] = str(tk_path)
 
 
-def _log_handlers() -> list:
+# `--check` (laser_trim_analyzer.selfcheck): the app checks itself and exits. Known here, at
+# import, because it decides where this module may log -- see _log_handlers.
+_CHECK_ONLY = "--check" in sys.argv[1:]
+
+
+def _log_handlers(check_only: bool = False) -> list:
     """Where the app logs: the console when there is one, and the persistent log file.
 
     The log file lives in data/ next to the database so it's easy to find.
@@ -44,7 +49,14 @@ def _log_handlers() -> list:
     falls back to sys.stderr -- None as well -- so every record would raise
     inside logging and be dropped the slow way. No console, no console handler:
     the log file is then the whole record.
+
+    `--check` logs nowhere of its own (`check_only`): the build runs
+    `LaserTrimAnalyzer.exe --check` inside the very folder that is then handed
+    over, and that folder must never contain a `data` folder -- so no log file
+    and no data/ are made. The self-check prints what the loggers said itself.
     """
+    if check_only:
+        return [logging.NullHandler()]
     handlers = []
     if sys.stdout is not None:
         handlers.append(logging.StreamHandler(sys.stdout))
@@ -60,9 +72,9 @@ def _log_handlers() -> list:
 
 # Setup logging — console + persistent log file
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING if _CHECK_ONLY else logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=_log_handlers(),
+    handlers=_log_handlers(_CHECK_ONLY),
 )
 
 logger = logging.getLogger(__name__)
@@ -78,41 +90,39 @@ def main():
     # (The packaged launcher calls it too, before this module is even imported;
     # here it guards the entry point whichever script reaches it.)
     multiprocessing.freeze_support()
+    from laser_trim_analyzer import selfcheck
+    if "--check" in sys.argv[1:]:
+        # No window, no app database, nothing written beside the app but the
+        # result: every step a packaged build can be incomplete in, by name.
+        sys.exit(selfcheck.main(sys.argv[1:]))
     use_v6 = "--v6" in sys.argv
+    packaged = getattr(sys, "frozen", False)
 
     # Environment self-check (work incident 2026-07-10: a different pydantic
     # at work silently changed validation behavior and killed a full day of
     # processing). Two seconds at launch; failures land in the log in plain
-    # language BEFORE any file is touched.
+    # language BEFORE any file is touched. The check itself is
+    # selfcheck.environment() -- the one `--check` runs first.
     try:
-        import pydantic, numpy, pandas, sqlalchemy, matplotlib, customtkinter
-        from laser_trim_analyzer.core.models import TrackData, AnalysisStatus
-        # The coercion hook rightly WARNS when it drops a NaN (2026-08-31, the
-        # linearity-magnitude fix made that silencer loud). This probe feeds it
-        # a deliberate NaN, so mute the models logger for just this line —
-        # otherwise every launch opens with an alarming warning the self-check
-        # itself caused, and real drop warnings lose their signal value.
-        _models_logger = logging.getLogger("laser_trim_analyzer.core.models")
-        _models_logger.disabled = True
-        try:
-            _t = TrackData(track_id="_env", travel_length=1.0, linearity_spec=0.01,
-                           status=AnalysisStatus.PASS, linearity_error=float("nan"))
-        finally:
-            _models_logger.disabled = False
-        assert _t.linearity_error is None, "NaN coercion inactive"
-        logging.getLogger(__name__).info(
-            "Environment OK — pydantic %s, numpy %s, pandas %s, sqlalchemy %s, "
-            "matplotlib %s, customtkinter %s",
-            pydantic.VERSION, numpy.__version__, pandas.__version__,
-            sqlalchemy.__version__, matplotlib.__version__,
-            getattr(customtkinter, "__version__", "?"))
+        logging.getLogger(__name__).info("Environment OK — %s", selfcheck.environment())
     except Exception:
         logging.getLogger(__name__).critical(
-            "ENVIRONMENT SELF-CHECK FAILED — library versions on this machine "
-            "differ from the tested set. Reinstall with: pip install -r "
-            "requirements-pinned.txt  (delete .venv and relaunch run_v6.bat "
-            "to rebuild it pinned).", exc_info=True)
+            "ENVIRONMENT SELF-CHECK FAILED — "
+            + ("this packaged build is incomplete, or was built from library "
+               "versions other than the tested set. It cannot be repaired here: "
+               "it needs a new build (scripts\\build_exe.ps1, whose --check "
+               "names what is missing)." if packaged else
+               "library versions on this machine "
+               "differ from the tested set. Reinstall with: pip install -r "
+               "requirements-pinned.txt  (delete .venv and relaunch run_v6.bat "
+               "to rebuild it pinned)."), exc_info=True)
     logger.info(f"Starting Laser Trim Analyzer (UI: {'V6' if use_v6 else 'V5'})...")
+    # Which build this is, once, when it is a packaged one (build_info.txt
+    # beside the .exe, written by scripts/build_exe.ps1). From source there is
+    # no stamp and nothing is said.
+    stamp = selfcheck.build_line(selfcheck.read_build_info())
+    if stamp:
+        logger.info(stamp)
     try:
         from laser_trim_analyzer.config import get_config
         from laser_trim_analyzer.database.manager import allow_default_database
@@ -132,7 +142,10 @@ def main():
         app.run()
     except ImportError as e:
         logger.error(f"Import error: {e}")
-        logger.error("Make sure all dependencies are installed: pip install -e .")
+        logger.error("This packaged build is missing a module: it needs a new build "
+                     "(run LaserTrimAnalyzer.exe --check to see everything that is missing)."
+                     if packaged else
+                     "Make sure all dependencies are installed: pip install -e .")
         sys.exit(1)
     except Exception as e:
         logger.exception(f"Fatal error: {e}")

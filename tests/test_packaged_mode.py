@@ -198,9 +198,15 @@ FILE_USERS = {
                        "integrity key; nothing is read from it",
     "gui/v6/font_loader.py": "FONT_DIR: the bundled fonts -- the one thing read from beside "
                              "the code",
+    "selfcheck.py": "package_directory(): the app's own modules, walked FROM SOURCE only, and "
+                    "packaged_manifest.json, which the spec writes and bundles beside this "
+                    "module",
 }
-# The only folders/files the app reaches through its own directory (get_app_directory() / ...).
-APP_DIRECTORY_CHILDREN = {"data"}
+# The only folders/files the app reaches through its own directory: `data` (the database,
+# config.yaml, the log, the trained models), and beside the .exe of a packaged build the stamp
+# the build wrote (read) and the self-check's result (written by `--check` alone). `path_value`
+# is config.py resolving a RELATIVE database.path from config.yaml against the app's folder.
+APP_DIRECTORY_CHILDREN = {"data", "BUILD_INFO_NAME", "CHECK_RESULT_NAME", "path_value"}
 
 
 def _app_sources():
@@ -235,8 +241,9 @@ def test_the_app_reaches_only_its_data_folder_through_its_own_directory():
     else of the checkout."""
     joined = set()
     for _rel, path in _app_sources():
-        joined |= set(re.findall(r"get_app_directory\(\)\s*/\s*[\"']([^\"']+)[\"']",
-                                 path.read_text()))
+        joined |= set(re.findall(
+            r"(?:get_app_directory\(\)|app_directory\(\)|app_dir\b[^/\n]*\))\s*/\s*"
+            r"[\"']?(\w[\w.]*)", path.read_text()))
     assert joined == APP_DIRECTORY_CHILDREN, joined
 
 

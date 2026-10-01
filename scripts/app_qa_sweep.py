@@ -4480,6 +4480,31 @@ def check_packaged_build_runs_on_threads() -> None:
           f"packaged: {said or (r.stderr or r.stdout)[-300:]!r}; from source {here}")
 
 
+def check_self_check_passes_from_source() -> None:
+    """`python -m laser_trim_analyzer --check` -- the self-check a packaged build is held to
+    (laser_trim_analyzer/selfcheck.py) -- passes in THIS environment: every step ok, the last
+    line PACKAGED BUILD OK, exit 0. It opens no window and no app database (the `data` step only
+    LOOKS at which database the app would open), and writes nothing.
+
+    Not falsified by mutation (the controller's lean ruling, 2026-09-30); that each step can
+    fail, by name, is shown in tests/test_packaged_check.py. This check passes only on the
+    check's own verdict line AND its exit code AND no FAIL line -- never on having merely run.
+    """
+    import os
+    import subprocess
+    env = dict(os.environ, PYTHONPATH=str(REPO / "src"), PYTHONDONTWRITEBYTECODE="1")
+    r = subprocess.run([sys.executable, "-B", "-m", "laser_trim_analyzer", "--check"],
+                       cwd=REPO, env=env, capture_output=True, text=True, timeout=600)
+    lines = r.stdout.splitlines()
+    fails = [ln for ln in lines if ln.startswith("FAIL")]
+    steps = [ln for ln in lines if ln.startswith(("ok ", "note "))]
+    check("packaging: the app's self-check (--check) passes from source, every step",
+          r.returncode == 0 and bool(lines) and lines[-1] == "PACKAGED BUILD OK" and not fails
+          and len(steps) == 11,
+          f"exit {r.returncode}; {len(steps)} steps; last line "
+          f"{(lines[-1] if lines else r.stderr[-200:])!r}; " + "; ".join(f[:160] for f in fails))
+
+
 # Needles that are not a sentence: an exact heading/column literal (the key's own quotes are
 # dropped -- the tree has no quotes), or code, where a plain substring is the right test.
 _GLOSS_KINDS = {
@@ -5417,6 +5442,8 @@ def main() -> int:
         check_database_beside_the_app()
     with _guard("packaging: a packaged build runs on threads"):
         check_packaged_build_runs_on_threads()
+    with _guard("packaging: the self-check passes from source"):
+        check_self_check_passes_from_source()
 
     # ---- drift tab constructs against real drift state (2026-07-10) --------
     # The tab render at work failed with AttributeError inside _MetricRow and
@@ -5972,7 +5999,8 @@ STANDALONE = {"glosses": check_usability_glosses,
               "batched-ingest": check_batched_ingest,
               "process-mode": check_process_mode_ingest,
               "packaging": lambda: (check_database_beside_the_app(),
-                                    check_packaged_build_runs_on_threads())}
+                                    check_packaged_build_runs_on_threads(),
+                                    check_self_check_passes_from_source())}
 
 
 if __name__ == "__main__":
