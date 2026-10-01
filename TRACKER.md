@@ -908,6 +908,10 @@ beside it by hand; no special variant and no data-copying machinery. His own dep
       a real PyInstaller (it ran only against stand-ins); PyInstaller's handling of matplotlib, Tk,
       numpy, scipy, scikit-learn and pandas on the laptop's Python; the packaged window itself; what
       the IT scanner makes of it. If it stops, the last lines (or `check_result.txt`) say where.
+      *To fix in the same round as whatever the first build turns up (Claude):* her
+      `READ ME FIRST.txt` says "the Desktop or Documents is fine", which is wrong on a laptop where
+      OneDrive syncs those folders — a live 6 GB database must not sit in a synced folder.
+      `BRING_TO_WORK.md` step 4 already says where to put it (`C:\LaserTrimAnalyzer`).
 - Known and left as they are — say if you want any changed: a fatal start-up error in the windowed
   build shows nothing on screen (it is in `data\laser_trim.log`; the `-Console` build prints it);
   trained predictors do not load on another computer, so her Predictor panel says to train, and

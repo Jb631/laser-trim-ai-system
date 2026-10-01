@@ -23,11 +23,16 @@ downloaded there. Your first build at work is the real test; step 7 says what to
    **Zip that folder before you start the app from it** — a start creates a `data` folder in there,
    and the zip must not carry one. To try it yourself first, unzip it somewhere else on your laptop
    and do step 4 there: it opens the copy beside it, never your real database.
-4. **On her computer:** unzip it somewhere on her own disk (Desktop or Documents — not OneDrive, not
-   a network drive). Then make a folder called `data` beside `LaserTrimAnalyzer.exe` and copy two
-   files into it from your `C:\dev\laser-trim-ai-system\data\`, **with your app closed**:
-   `analysis.db` and `config.yaml` (the prices and open quantities live in `config.yaml`). Nothing
-   else is needed — not `ml_models`, not the logs.
+4. **On her computer:** unzip it into a plain folder on her C: drive, the way yours sits in
+   `C:\dev` — for example `C:\LaserTrimAnalyzer`. **Not her Desktop or Documents if OneDrive syncs
+   them** (on a work laptop it usually does), and not a network drive: OneDrive and a live 6 GB
+   database do not mix — it is how your copy came home as a mismatched set on 2026-09-22. (Her
+   `READ ME FIRST.txt` says "the Desktop or Documents is fine"; that line is only true where
+   OneDrive leaves them alone — TRACKER I5.) Then make a folder called `data` beside
+   `LaserTrimAnalyzer.exe` and copy two files into it from your
+   `C:\dev\laser-trim-ai-system\data\`, **with your app closed**: `analysis.db` and `config.yaml`
+   (the prices and open quantities live in `config.yaml`). Nothing else is needed — not
+   `ml_models`, not the logs.
    - With the app closed, `analysis.db-wal` beside your database should be 0 bytes (or absent). If
      it is not, do not copy by hand: `.venv\Scripts\python scripts\snapshot_db.py data\analysis.db
      C:\somewhere\analysis.db` writes one complete, checked file — copy that one instead.
