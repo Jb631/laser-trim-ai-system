@@ -30,12 +30,56 @@ def _is_foreign_absolute_db_path(raw: str) -> bool:
     resolved at run time (e.g. `C:\\dev\\laser-trim-ai-system\\data\\analysis.db`);
     read on the Mac, that string is a RELATIVE POSIX filename, so the app
     opened (and created) a junk database under the repo root instead of the
-    real one (verified 2026-09-23). A same-OS absolute path is left alone --
-    only a path from the other family is foreign here.
+    real one (verified 2026-09-23). Only a path from the other family is
+    foreign here; what a same-OS absolute path means on this computer is
+    `_database_on_this_computer`'s question, asked after this one.
     """
     if os.name == "nt":
         return raw.startswith("/")
     return bool(PureWindowsPath(raw).drive)
+
+
+def _database_on_this_computer(configured: Path, beside_app: Path, config_path) -> Path:
+    """Which database an ABSOLUTE, same-OS `database.path` means on THIS computer.
+
+    The app is handed to a coworker as a folder plus a copy of `data/`, config.yaml included --
+    and that file can still hold the absolute path the database has on the computer that wrote it
+    (`C:\\dev\\laser-trim-ai-system\\data\\analysis.db`: written before `save()` learned to write
+    app-relative paths, and never re-saved since). On another Windows PC that path is not foreign
+    (`_is_foreign_absolute_db_path` only catches the other OS's path family), so it was left
+    alone: the app built that folder tree and opened a NEW, EMPTY database inside it, ignoring the
+    copy sitting beside it -- a failure that looked like a result (found 2026-09-30, before it
+    happened). So, for a configured path that is absolute:
+
+      * its file exists                                   -> it is used. The owner's own computer:
+                                                             unchanged;
+      * it does not, and the one beside the app does      -> the one beside the app, said at
+                                                             WARNING with both paths;
+      * neither does, and the configured FOLDER is not
+        here either                                       -> the default beside the app, same
+                                                             WARNING. The path came from another
+                                                             computer, and a stranger's folder
+                                                             tree is never built;
+      * neither does, but the configured folder is here   -> the configured path: a deliberate
+                                                             outside location, or a fresh rebuild
+                                                             in place. As before.
+
+    Nothing is created here. `os.path.isfile` / `isdir` never raise: a drive or share this
+    computer cannot reach reads as "not here". The next `save()` writes whichever path was chosen
+    -- app-relative when it is the one beside the app.
+    """
+    if os.path.isfile(configured):
+        return configured
+    same = (os.path.normcase(os.path.abspath(configured))
+            == os.path.normcase(os.path.abspath(beside_app)))
+    if same:
+        return configured
+    if os.path.isfile(beside_app) or not os.path.isdir(configured.parent):
+        logger.warning(
+            "%s names a database at %s, which is not on this computer; using the one beside "
+            "the app, %s", config_path, configured, beside_app)
+        return beside_app
+    return configured
 
 
 def get_app_directory() -> Path:
@@ -313,6 +357,12 @@ class Config:
                                 path_value = Path(raw_path)
                                 if not path_value.is_absolute():
                                     path_value = get_app_directory() / path_value
+                                else:
+                                    # Absolute and same-OS: is it on THIS computer?
+                                    path_value = _database_on_this_computer(
+                                        path_value,
+                                        get_app_directory() / "data" / "analysis.db",
+                                        config_path)
                                 value = path_value
                             setattr(config.database, key, value)
 

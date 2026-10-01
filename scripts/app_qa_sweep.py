@@ -4386,6 +4386,56 @@ def check_usability_glosses() -> None:
         check(f"usability gloss: {what}", ok)
 
 
+def check_database_beside_the_app() -> None:
+    """The copy handed to a coworker (2026-09-30): her config.yaml still names the ABSOLUTE path
+    the database has on the owner's computer. The app must open the database BESIDE it, never
+    build the other computer's folder tree to put an empty database in, and still honour that
+    path on the computer where it is real.
+
+    Through `Config.load` itself, in a temp folder: the app directory is moved there for the
+    duration (the seam the tests use) and put back whatever happens.
+
+    Falsify before trusting (2026-09-30, each on a fresh copy of src/): the rule not applied in
+    `load` -- checks 1 and 2 go FAIL (the stranger's path is returned, and `ensure_directory`
+    builds its folders); `os.path.isfile(beside_app) or` taken out of the rule -- check 2 alone
+    goes FAIL; the first `isfile(configured)` test taken out -- check 3 alone goes FAIL.
+    """
+    import tempfile
+    import yaml
+    from laser_trim_analyzer import config as _cfg
+
+    saved = _cfg.get_app_directory
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        app = root / "her_pc" / "LaserTrimAnalyzer"
+        (app / "data").mkdir(parents=True)
+        beside = app / "data" / "analysis.db"
+        theirs = root / "his_pc" / "laser-trim-ai-system" / "data" / "analysis.db"
+        cfgp = app / "data" / "config.yaml"
+        cfgp.write_text(yaml.safe_dump({"database": {"path": str(theirs)}}))
+        _cfg.get_app_directory = lambda: app
+        try:
+            nothing_yet = _cfg.Config.load(cfgp)            # no database anywhere
+            nothing_yet.database.ensure_directory()         # what main() does next
+            built = (root / "his_pc").exists()
+            theirs.parent.mkdir(parents=True, exist_ok=True)   # the folder alone must not matter
+            beside.write_bytes(b"")
+            her_copy = _cfg.Config.load(cfgp)
+            theirs.write_bytes(b"")
+            on_his_own = _cfg.Config.load(cfgp)
+        finally:
+            _cfg.get_app_directory = saved
+        check("config: a database path from another computer falls back to the default beside "
+              "the app, and that computer's folder tree is never built",
+              nothing_yet.database.path == beside and not built,
+              f"path {nothing_yet.database.path}; his_pc created: {built}")
+        check("config: the database beside the app wins over a configured one that is not on "
+              "this computer",
+              her_copy.database.path == beside, f"path {her_copy.database.path}")
+        check("config: a configured database that IS on this computer is still the one used",
+              on_his_own.database.path == theirs, f"path {on_his_own.database.path}")
+
+
 # Needles that are not a sentence: an exact heading/column literal (the key's own quotes are
 # dropped -- the tree has no quotes), or code, where a plain substring is the right test.
 _GLOSS_KINDS = {
@@ -5318,6 +5368,10 @@ def main() -> int:
                   str(REPO / "Work Files") not in _bad and bool(_bad.get(_offline)),
                   f"{len(_bad)} unreachable of {len(_back)}: {_bad.get(_offline)}")
 
+    # ---- packaging for a coworker (2026-09-30) -----------------------------
+    with _guard("packaging: the database beside the app"):
+        check_database_beside_the_app()
+
     # ---- drift tab constructs against real drift state (2026-07-10) --------
     # The tab render at work failed with AttributeError inside _MetricRow and
     # the per-widget guard swallowed it -> blank tab on every model. Construct
@@ -5870,7 +5924,8 @@ STANDALONE = {"glosses": check_usability_glosses,
               "write-batch": check_write_batch_fixtures,
               "worker-outcomes": check_worker_outcomes,
               "batched-ingest": check_batched_ingest,
-              "process-mode": check_process_mode_ingest}
+              "process-mode": check_process_mode_ingest,
+              "packaging": lambda: check_database_beside_the_app()}
 
 
 if __name__ == "__main__":
