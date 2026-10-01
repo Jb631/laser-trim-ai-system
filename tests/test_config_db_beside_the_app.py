@@ -191,3 +191,76 @@ def test_a_relative_path_is_still_resolved_against_the_app_folder(tmp_path, monk
         loaded = cfg.Config.load(config_path)
     assert loaded.database.path == app / "data" / "analysis.db"
     assert _said_not_here(caplog) == []
+
+
+# ---- the packaged build: beside the exe ALWAYS wins ---------------------------------------------
+# James, 2026-09-30: "i dont want her reading my db". The four cases above keep his own laptop
+# unchanged (case 1 follows a configured path that EXISTS) -- which is also how a packaged build
+# would reach his database: on his own laptop, where C:\dev\...\analysis.db is there, or on her PC
+# if his config ever named a share she can reach. A packaged build therefore never follows the
+# configured path at all.
+
+PACKAGED = "packaged build"
+
+
+def _said_packaged(caplog):
+    return [r for r in caplog.records
+            if r.name == "laser_trim_analyzer.config" and PACKAGED in r.getMessage()]
+
+
+def test_a_packaged_build_opens_only_the_database_beside_its_exe(tmp_path, monkeypatch, caplog):
+    """The configured database EXISTS on this computer (case 1 would use it) -- the packaged
+    build still opens the one beside the exe, and says which it ignored."""
+    app = _app(tmp_path, monkeypatch)
+    (app / "data" / "analysis.db").write_bytes(b"beside the exe")
+    elsewhere = tmp_path / "the_owners_folder"
+    elsewhere.mkdir()
+    (elsewhere / "analysis.db").write_bytes(b"the owner's own database")
+    config_path = _config_naming(app, elsewhere / "analysis.db")
+    monkeypatch.setattr(cfg.sys, "frozen", True, raising=False)
+    with caplog.at_level(logging.WARNING):
+        loaded = cfg.Config.load(config_path)
+    assert loaded.database.path == app / "data" / "analysis.db"
+    said = _said_packaged(caplog)
+    assert len(said) == 1 and str(elsewhere / "analysis.db") in said[0].getMessage()
+    assert (elsewhere / "analysis.db").read_bytes() == b"the owner's own database"   # never touched
+
+
+def test_a_packaged_build_ignores_a_relative_path_that_leaves_its_folder(tmp_path, monkeypatch,
+                                                                        caplog):
+    """A relative path is resolved against the app folder -- and can still climb out of it."""
+    app = _app(tmp_path, monkeypatch)
+    outside = app.parent / "outside"
+    outside.mkdir()
+    (outside / "analysis.db").write_bytes(b"outside the app folder")
+    config_path = _config_naming(app, "../outside/analysis.db")
+    monkeypatch.setattr(cfg.sys, "frozen", True, raising=False)
+    with caplog.at_level(logging.WARNING):
+        loaded = cfg.Config.load(config_path)
+    assert loaded.database.path == app / "data" / "analysis.db"
+    assert len(_said_packaged(caplog)) == 1
+
+
+def test_a_packaged_build_says_nothing_when_the_config_already_means_beside_the_exe(
+        tmp_path, monkeypatch, caplog):
+    app = _app(tmp_path, monkeypatch)
+    (app / "data" / "analysis.db").write_bytes(b"beside the exe")
+    monkeypatch.setattr(cfg.sys, "frozen", True, raising=False)
+    for named in ("data/analysis.db", app / "data" / "analysis.db"):
+        config_path = _config_naming(app, named)
+        with caplog.at_level(logging.WARNING):
+            loaded = cfg.Config.load(config_path)
+        assert loaded.database.path == app / "data" / "analysis.db"
+    assert _said_packaged(caplog) == []
+
+
+def test_from_source_the_owners_configured_database_is_still_followed(tmp_path, monkeypatch):
+    """Not packaged (run_v6.bat): case 1 is unchanged -- his laptop opens what his config names."""
+    app = _app(tmp_path, monkeypatch)
+    (app / "data" / "analysis.db").write_bytes(b"beside the app")
+    elsewhere = tmp_path / "the_owners_folder"
+    elsewhere.mkdir()
+    (elsewhere / "analysis.db").write_bytes(b"the owner's own database")
+    config_path = _config_naming(app, elsewhere / "analysis.db")
+    monkeypatch.delattr(cfg.sys, "frozen", raising=False)
+    assert cfg.Config.load(config_path).database.path == elsewhere / "analysis.db"

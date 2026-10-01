@@ -82,6 +82,26 @@ def _database_on_this_computer(configured: Path, beside_app: Path, config_path) 
     return configured
 
 
+def _packaged_database(named: Path, beside_exe: Path, config_path) -> Path:
+    """A PACKAGED build opens only the database beside its exe -- whatever config.yaml names.
+
+    James, 2026-09-30, handing the app to a coworker with a copy of his `data` folder: "i dont
+    want her reading my db". `_database_on_this_computer` follows a configured path whose file
+    EXISTS (his own laptop must keep working from source) -- and that is exactly how a packaged
+    copy would reach his database: run on his own laptop, where `C:\\dev\\...\\analysis.db` is
+    there, or on her PC if his config ever named a share she can reach. So a packaged build never
+    follows the configured path: it uses the database beside the exe, and says at WARNING which
+    path it ignored when that is a different file. Running from source is unchanged.
+    """
+    same = (os.path.normcase(os.path.abspath(named))
+            == os.path.normcase(os.path.abspath(beside_exe)))
+    if not same:
+        logger.warning(
+            "%s names a database at %s; this is a packaged build, which only ever opens the "
+            "one beside it, %s", config_path, named, beside_exe)
+    return beside_exe
+
+
 def get_app_directory() -> Path:
     """
     Get the application directory.
@@ -354,15 +374,20 @@ class Config:
                                         config_path, raw_path, config.database.path,
                                     )
                                     continue
+                                beside_app = get_app_directory() / "data" / "analysis.db"
                                 path_value = Path(raw_path)
                                 if not path_value.is_absolute():
                                     path_value = get_app_directory() / path_value
+                                    if getattr(sys, "frozen", False):
+                                        path_value = _packaged_database(
+                                            path_value, beside_app, config_path)
+                                elif getattr(sys, "frozen", False):
+                                    path_value = _packaged_database(
+                                        path_value, beside_app, config_path)
                                 else:
                                     # Absolute and same-OS: is it on THIS computer?
                                     path_value = _database_on_this_computer(
-                                        path_value,
-                                        get_app_directory() / "data" / "analysis.db",
-                                        config_path)
+                                        path_value, beside_app, config_path)
                                 value = path_value
                             setattr(config.database, key, value)
 
