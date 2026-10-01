@@ -23,7 +23,8 @@ its PARENT resolved, the processor class), handed to each worker once. What this
   * the pool -- `WorkerPool.start` (spawn on every platform, ruling 17; warmed, 120 s limit;
     `PoolFailed` naming the cause when it cannot start), `submit`, and `close` (cancel, a grace
     for busy workers, then terminate -- safe, a worker holds no database handle; ruling 20);
-  * `worker_count` (ruling 14) and `close_worker_pools` (the window's close).
+  * `worker_count` (ruling 14; none in a packaged build) and `close_worker_pools` (the
+    window's close).
 
 The dispatch -- chunks, Stop, the in-flight cap, the fall back to threads -- is the processor's
 (`Processor._process_parallel`): one analysis body, two pools.
@@ -40,6 +41,7 @@ import multiprocessing
 import os
 import pickle
 import queue as _queue
+import sys
 import threading
 import time
 import traceback
@@ -123,10 +125,24 @@ def context_for(processor) -> WorkerContext:
     )
 
 
+# Why a packaged build (PyInstaller: `sys.frozen`) starts no worker process -- the reason its
+# batch line carries: "4 threads (the packaged build runs on threads)".
+PACKAGED_ON_THREADS = "the packaged build runs on threads"
+
+
 def worker_count(cpus: Optional[int] = None, free_gb: Optional[float] = None) -> Tuple[int, str]:
     """(how many worker processes, why not more) -- ruling 14:
     min(MAX_WORKERS, CPUs - 1, floor((free GB - RESERVE_GB) / WORKER_GB)). Zero or less means
-    none, and the reason says which limit it was."""
+    none, and the reason says which limit it was.
+
+    None at all in a PACKAGED build (2026-09-30), whatever the machine: a spawned worker is a
+    second run of `sys.executable`, and in a packaged build that is the app itself. The entry
+    point's `multiprocessing.freeze_support()` is what would turn that copy into a worker rather
+    than a second window -- but worker processes have never been run from a packaged build, and
+    that build is the one handed to someone who looks and analyses. So a folder processed there
+    is analysed on threads, and its batch line says so."""
+    if getattr(sys, "frozen", False):
+        return 0, PACKAGED_ON_THREADS
     if cpus is None:
         cpus = (getattr(os, "process_cpu_count", None) or os.cpu_count)() or 1
     if free_gb is None:

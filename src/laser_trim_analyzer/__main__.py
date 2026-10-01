@@ -7,6 +7,7 @@ Run with: python -m laser_trim_analyzer
 import sys
 import os
 import logging
+import multiprocessing
 import warnings
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -27,28 +28,41 @@ if sys.platform == "darwin" and "TCL_LIBRARY" not in os.environ:
     if tk_path.exists():
         os.environ["TK_LIBRARY"] = str(tk_path)
 
-# Setup logging — console + persistent log file
-# Log file lives in data/ next to the database so it's easy to find.
-# Anchored to the app directory, not the cwd: the launchers cd here first so
-# this is the same folder in production, but a bare Path("data") also made
-# `import laser_trim_analyzer.__main__` scribble a data/ dir into whatever
-# directory the importer happened to be sitting in (the test suite, notably —
-# test_spec3a_shell.py:232 and :250 import it).
-log_dir = get_app_directory() / "data"
-log_dir.mkdir(parents=True, exist_ok=True)
-log_file = log_dir / "laser_trim.log"
 
+def _log_handlers() -> list:
+    """Where the app logs: the console when there is one, and the persistent log file.
+
+    The log file lives in data/ next to the database so it's easy to find.
+    Anchored to the app directory, not the cwd: the launchers cd here first so
+    this is the same folder in production, but a bare Path("data") also made
+    `import laser_trim_analyzer.__main__` scribble a data/ dir into whatever
+    directory the importer happened to be sitting in (the test suite, notably —
+    test_spec3a_shell.py:232 and :250 import it).
+
+    A WINDOWED packaged build has no console: PyInstaller's windowed bootloader
+    leaves sys.stdout and sys.stderr as None. A StreamHandler built on None
+    falls back to sys.stderr -- None as well -- so every record would raise
+    inside logging and be dropped the slow way. No console, no console handler:
+    the log file is then the whole record.
+    """
+    handlers = []
+    if sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
+    log_dir = get_app_directory() / "data"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    # 5 MB per file, keep last 3 rotations (up to 20 MB total)
+    handlers.append(RotatingFileHandler(
+        log_dir / "laser_trim.log", maxBytes=5_000_000, backupCount=3,
+        encoding="utf-8",
+    ))
+    return handlers
+
+
+# Setup logging — console + persistent log file
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        # 5 MB per file, keep last 3 rotations (up to 20 MB total)
-        RotatingFileHandler(
-            log_file, maxBytes=5_000_000, backupCount=3,
-            encoding="utf-8",
-        ),
-    ]
+    handlers=_log_handlers(),
 )
 
 logger = logging.getLogger(__name__)
@@ -56,6 +70,14 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Entry point. Default = V5 LaserTrimApp; --v6 = V6App (Spec 3a+)."""
+    # FIRST, before anything is read, opened or built. In a packaged build
+    # (PyInstaller) a spawned child process is a second run of this same
+    # executable; freeze_support() recognises that run, becomes the worker it
+    # was meant to be, and exits -- so a stray spawn can never open a second
+    # window. From source, and in the app's own first run, it does nothing.
+    # (The packaged launcher calls it too, before this module is even imported;
+    # here it guards the entry point whichever script reaches it.)
+    multiprocessing.freeze_support()
     use_v6 = "--v6" in sys.argv
 
     # Environment self-check (work incident 2026-07-10: a different pydantic

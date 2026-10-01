@@ -4436,6 +4436,50 @@ def check_database_beside_the_app() -> None:
               on_his_own.database.path == theirs, f"path {on_his_own.database.path}")
 
 
+def _as_a_packaged_build(code: str, *args: str, timeout: int = 300):
+    """Run `code` in a child Python that sees itself as a PACKAGED build: `sys.frozen` set and
+    `sys.executable` a LaserTrimAnalyzer.exe in a temp folder (so the app's folder is that one,
+    never this checkout). A child, because both are process-wide and the sweep's own threads
+    read them. Returns (the CompletedProcess, that temp app folder -- already deleted)."""
+    import os
+    import subprocess
+    import tempfile
+    prelude = ("import sys\n"
+               "sys.frozen = True\n"
+               "sys.executable = sys.argv[1]\n"
+               "sys.argv = [sys.argv[1]] + sys.argv[2:]\n")
+    with tempfile.TemporaryDirectory() as td:
+        app = Path(td).resolve() / "LaserTrimAnalyzer"
+        app.mkdir()
+        env = dict(os.environ, PYTHONPATH=str(REPO / "src"), PYTHONDONTWRITEBYTECODE="1")
+        r = subprocess.run([sys.executable, "-B", "-c", prelude + code,
+                            str(app / "LaserTrimAnalyzer.exe"), *args],
+                           cwd=td, env=env, capture_output=True, text=True, timeout=timeout)
+        left = sorted(str(p.relative_to(app)) for p in app.rglob("*"))
+    return r, left
+
+
+def check_packaged_build_runs_on_threads() -> None:
+    """A packaged build starts no worker PROCESS (a spawned worker would be a second run of the
+    app's own executable): `worker_count()` says none there, with the reason the batch line then
+    carries -- and from source the same machine still gets its processes.
+
+    Falsify before trusting (2026-09-30, on a fresh copy of src/): the `sys.frozen` test taken
+    out of `worker_count` -- goes FAIL (the packaged child answers (8, '') too).
+    """
+    code = ("from laser_trim_analyzer.core.ingest_worker import worker_count\n"
+            "print('COUNT', repr(worker_count(cpus=14, free_gb=20.0)), repr(worker_count()))\n")
+    r, _left = _as_a_packaged_build(code)
+    said = next((ln for ln in r.stdout.splitlines() if ln.startswith("COUNT ")), "")
+    from laser_trim_analyzer.core.ingest_worker import worker_count
+    here = worker_count(cpus=14, free_gb=20.0)
+    none = "(0, 'the packaged build runs on threads')"
+    check("packaging: a packaged build starts no worker process and says why (from source the "
+          "same machine gets 8)",
+          r.returncode == 0 and said == f"COUNT {none} {none}" and here == (8, ""),
+          f"packaged: {said or (r.stderr or r.stdout)[-300:]!r}; from source {here}")
+
+
 # Needles that are not a sentence: an exact heading/column literal (the key's own quotes are
 # dropped -- the tree has no quotes), or code, where a plain substring is the right test.
 _GLOSS_KINDS = {
@@ -5371,6 +5415,8 @@ def main() -> int:
     # ---- packaging for a coworker (2026-09-30) -----------------------------
     with _guard("packaging: the database beside the app"):
         check_database_beside_the_app()
+    with _guard("packaging: a packaged build runs on threads"):
+        check_packaged_build_runs_on_threads()
 
     # ---- drift tab constructs against real drift state (2026-07-10) --------
     # The tab render at work failed with AttributeError inside _MetricRow and
@@ -5925,7 +5971,8 @@ STANDALONE = {"glosses": check_usability_glosses,
               "worker-outcomes": check_worker_outcomes,
               "batched-ingest": check_batched_ingest,
               "process-mode": check_process_mode_ingest,
-              "packaging": lambda: check_database_beside_the_app()}
+              "packaging": lambda: (check_database_beside_the_app(),
+                                    check_packaged_build_runs_on_threads())}
 
 
 if __name__ == "__main__":
