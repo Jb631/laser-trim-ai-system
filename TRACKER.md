@@ -4,11 +4,19 @@ What is open, in what order, and who holds the next move. Updated in the same
 commit as the work it describes. `BRING_TO_WORK.md` stays the place for
 step-by-step instructions at the work machine; this is the index above it.
 
-Last updated: 2026-09-24
+Last updated: 2026-09-30
 
-## ▶ Where things stand (Claude, 2026-09-26)
+## ▶ Where things stand (Claude, 2026-09-30)
 
-**On `main`: everything.** The /goal of 2026-09-23 — finish the redesign, every parse upgrade and fix,
+**New on 2026-09-30: the app can be packaged as an .exe for your coworker** (section I; the steps
+are at the top of `BRING_TO_WORK.md`). You asked for two things — "make sure the code is good for the
+database and instruction for me to package when im on my work computer" — and both are on `main`: a
+packaged copy opens only the database in the `data` folder beside its own `.exe`, whatever
+`config.yaml` names, and one command at work builds it and makes the built app check itself. **It has
+never been built** — that needs Windows, and nothing was downloaded on the Mac — so your first build
+at work is the test (I5). Your own way of running the app does not change.
+
+**On `main`: everything** (as of 2026-09-26, unchanged since). The /goal of 2026-09-23 — finish the redesign, every parse upgrade and fix,
 and the task list — is done on my side. At work: `git pull`, then read the top sections of
 `BRING_TO_WORK.md` down to the ones you have already done, and **refresh the findings once** (Settings →
 Database → Refresh process findings). Pushed across 2026-09-24/26, each after its reviews and the whole
@@ -31,6 +39,7 @@ that rested on a final-test verdict has been re-derived on it (B3).
 | **E. Backlog upload** | shipped (E1) | — |
 | **F. Facelift** | steps 1 and 2 shipped; F4 follow-ups shipped | F5 "Inactive" models (+ F4's review gaps) — Claude |
 | **G. Parse fixes** | all built, reviewed and pushed (`422da7a`) | — (the back-fill is yours, optional) |
+| **I. The app as an .exe for a coworker** | code, build script and steps on `main` (2026-09-30); never built — that needs Windows | James: the first build at work (I5) |
 
 ### One thing of mine to own (2026-09-24): the home database was written to
 
@@ -863,6 +872,48 @@ first and reviewed; the whole test suite is the gate.
       happened to be the last digits of a long measured decimal in a test baseline. A short PO
       now matches only as a whole number; the whole history stays clean.
 
+## I. The app as an .exe for a coworker — James, 2026-09-30
+
+A coworker needs the app — "Look and analyse only"; if she processes, "just the daily files, not
+large batches". James copies what she needs onto her computer himself: "i dont want her reading my
+db", and "i dont want to make her some other kind of copy i was just going to give her the app". So:
+the same app, packaged; a full copy of the database and his `config.yaml` (prices included) placed
+beside it by hand; no special variant and no data-copying machinery. His own deployment stays
+`git pull` + `run_v6.bat`. Steps: `BRING_TO_WORK.md`, 2026-09-30.
+
+- [x] **I1 · A copied `data` folder opens where it lands (`36be9ac`).** His `config.yaml` names
+      `C:\dev\laser-trim-ai-system\data\analysis.db`. On another Windows computer that file is not
+      there, and the app would have made an EMPTY database at that path and ignored the copy sitting
+      beside it. Now, from source: the named file if it exists; else the one beside the app, with a
+      warning; else the default beside the app.
+- [x] **I2 · A packaged build opens ONLY the database beside its exe (`804d289`).** I1 follows a
+      named file that exists — right for James from source, and exactly how a packaged copy started
+      on his own laptop would have opened his real database. Packaged, the path in `config.yaml` is
+      never followed (the log says so while it differs), and no V6 screen can choose a database.
+- [x] **I3 · The packaged build parses on threads and guards its entry point (`3a937aa`).** No
+      worker processes when packaged (the batch line says why); `freeze_support()` runs first, so a
+      stray spawn can never open a second window; a windowed build, which has no console, logs to
+      the file only.
+- [x] **I4 · A self-check, a launcher, a build file and a one-command build (`0e3b994`).**
+      `LaserTrimAnalyzer.exe --check` (`selfcheck.py`) tries every part a packaged build can lack —
+      every page and widget, the fonts, a chart to PNG/PDF/SVG, an `.xls` read, the estimators, Tk,
+      a scratch database — names what is missing, and says which database the app would open
+      without opening it. `packaging/laser_trim_v6.spec` builds a FOLDER (never one file, no UPX),
+      with its hidden imports taken from a from-source run of that same check.
+      `scripts\build_exe.ps1` installs PyInstaller if missing, builds, stamps `build_info.txt`, runs
+      the check, and copies no data. The customer-value guard reads `.spec` files since 2026-09-30
+      (its own test caught that it did not, once the build file was tracked).
+- [ ] **I5 · The first Windows build — James.** Everything in I4 was written on the Mac. NOT
+      VERIFIED until this runs: the PowerShell script (never parsed or run); the build file against
+      a real PyInstaller (it ran only against stand-ins); PyInstaller's handling of matplotlib, Tk,
+      numpy, scipy, scikit-learn and pandas on the laptop's Python; the packaged window itself; what
+      the IT scanner makes of it. If it stops, the last lines (or `check_result.txt`) say where.
+- Known and left as they are — say if you want any changed: a fatal start-up error in the windowed
+  build shows nothing on screen (it is in `data\laser_trim.log`; the `-Console` build prints it);
+  trained predictors do not load on another computer, so her Predictor panel says to train, and
+  ones she trains stop loading if her folder is moved or renamed; her copy is a snapshot and does
+  not follow his.
+
 ## Housekeeping
 
 - [x] **H1 · `CLAUDE.md` step 1 breaks the git remote — FIXED (`fce84ee`):** the step now runs
@@ -919,6 +970,10 @@ first and reviewed; the whole test suite is the gate.
   (`scripts/atp_spec_audit.py`).
 
 ## Done recently
+
+**2026-09-30:** the app packaged for a coworker (section I) — the database rules for a copied
+`data` folder and for a packaged build, the self-check, the build file and the one-command build.
+Not built yet: that is I5, at work.
 
 **2026-09-24 night:** facelift step 2 (F3) — the other six pages, and the Units chart redrawn after
 James's "that chart looks horrible"; three streams ran at once in separate worktrees after James

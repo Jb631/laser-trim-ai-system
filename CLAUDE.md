@@ -88,9 +88,17 @@ src/laser_trim_analyzer/
 2. **All features must work** - No partial implementations
 3. **Self-contained deployment** - No external config files
 4. **Keep it simple** - Avoid over-engineering
-5. **No packaged EXE** (James, 2026-07-16): deployment stays git pull +
-   pinned venv (run_v6.bat). Single user; an EXE would need IT whitelisting.
-   Do not re-suggest PyInstaller packaging.
+5. **James's own deployment stays git pull + pinned venv** (run_v6.bat; James,
+   2026-07-16) — do not propose replacing it. **A packaged .exe exists for a
+   coworker only** (James, 2026-09-30): he builds it AT WORK with
+   `scripts\build_exe.ps1` (PyInstaller, a folder, never onefile) and hands it
+   over with a COPY of `data\analysis.db` + `data\config.yaml`. Rules that came
+   with it: a packaged build opens ONLY the database beside its exe
+   (`config._packaged_database` — "i dont want her reading my db"), parses on
+   threads (`ingest_worker.worker_count`), and checks itself with
+   `LaserTrimAnalyzer.exe --check` (`selfcheck.py`). The build copies no data and
+   makes no special variant ("i was just going to give her the app"). Nothing is
+   built or downloaded on the Mac. Steps: `BRING_TO_WORK.md`, 2026-09-30.
 
 ### The test suite is the gate (2026-09-20)
 

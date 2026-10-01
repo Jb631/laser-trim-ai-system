@@ -1,5 +1,80 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-30 — the app as an .exe for your coworker (you build it at work)
+
+Nothing here changes how YOU run the app: you keep `git pull` + `run_v6.bat`. This makes a second
+copy of the app, as a folder with `LaserTrimAnalyzer.exe` in it, that runs on a computer with no
+Python. **It has never been built** — the Mac cannot build a Windows program, and nothing was
+downloaded there. Your first build at work is the real test; step 7 says what to send back if it stops.
+
+1. **`git pull`** in `C:\dev\laser-trim-ai-system`.
+2. **Build it** — in PowerShell, in that folder:
+
+       powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
+
+   The first time, it installs PyInstaller into the app's own `.venv` — **that is a download from
+   PyPI**, the only one. Then it builds (a few minutes), and the built app checks itself with no
+   window: it imports every page, draws a chart, reads an `.xls`, trains a small model and opens a
+   scratch database — the parts a packaged copy most often lacks. It ends with
+   **`BUILT AND CHECKED`**, or it stops and names the reason. It copies no data anywhere and never
+   opens your database.
+3. **What you get:** `dist\LaserTrimAnalyzer\` — a FOLDER, not one file (`LaserTrimAnalyzer.exe`,
+   an `_internal` folder, `READ ME FIRST.txt` for her, `build_info.txt` naming the commit and date).
+   **Zip that folder before you start the app from it** — a start creates a `data` folder in there,
+   and the zip must not carry one. To try it yourself first, unzip it somewhere else on your laptop
+   and do step 4 there: it opens the copy beside it, never your real database.
+4. **On her computer:** unzip it somewhere on her own disk (Desktop or Documents — not OneDrive, not
+   a network drive). Then make a folder called `data` beside `LaserTrimAnalyzer.exe` and copy two
+   files into it from your `C:\dev\laser-trim-ai-system\data\`, **with your app closed**:
+   `analysis.db` and `config.yaml` (the prices and open quantities live in `config.yaml`). Nothing
+   else is needed — not `ml_models`, not the logs.
+   - With the app closed, `analysis.db-wal` beside your database should be 0 bytes (or absent). If
+     it is not, do not copy by hand: `.venv\Scripts\python scripts\snapshot_db.py data\analysis.db
+     C:\somewhere\analysis.db` writes one complete, checked file — copy that one instead.
+5. **Her copy opens only her copy.** A packaged build opens the `data\analysis.db` beside its own
+   `.exe` and nothing else, whatever `config.yaml` says, and no screen in it can choose another.
+   Your `config.yaml` names `C:\dev\laser-trim-ai-system\data\analysis.db`; her app ignores that
+   line and says so in her `data\laser_trim.log`. That holds on your laptop too: the `.exe` started
+   there cannot reach your real database. To see which database a copy would open without opening
+   it: `LaserTrimAnalyzer.exe --check`, then read the `data` line of `check_result.txt` beside the
+   `.exe`.
+6. **What she has:** the whole app, on her own snapshot of the data — it does not follow yours.
+   - She can process the daily files herself: your `config.yaml` carries the four share folders, so
+     the Process page works if her login can read that share, and everything lands in HER copy. The
+     packaged app parses on threads, not worker processes — fine for daily files, slow for a big
+     batch.
+   - To refresh her from yours instead: close both apps, delete her `analysis.db` and any
+     `analysis.db-wal` / `analysis.db-shm` beside it, then copy yours in (as in step 4).
+   - Her Predictor panel says there is no predictor: trained predictors only load on the computer
+     and folder they were trained in. Nothing she looks at needs them. Files she processes herself
+     get no model-based scores (trim risk, failure probability) unless she trains there.
+7. **If something stops:**
+   - The build stops: its last lines say why — send me those. If it got as far as
+     `THE BUILD IS INCOMPLETE`, send `dist\LaserTrimAnalyzer\check_result.txt` (each `FAIL` line
+     names a missing part).
+   - PowerShell will not run the script at all ("running scripts is disabled"): the same build by
+     hand is four commands, from the repo folder —
+
+         .venv\Scripts\python -m pip install pyinstaller
+         .venv\Scripts\python -m PyInstaller packaging\laser_trim_v6.spec --noconfirm --clean
+         .venv\Scripts\python packaging\build_support.py stamp dist\LaserTrimAnalyzer
+         dist\LaserTrimAnalyzer\LaserTrimAnalyzer.exe --check
+
+     then read `dist\LaserTrimAnalyzer\check_result.txt` (give it a minute): its last line must be
+     `PACKAGED BUILD OK`.
+   - The `.exe` builds but nothing appears when it is double-clicked: a windowed program shows no
+     error, so read `data\laser_trim.log` beside it — or build the debug version (add ` -Console`
+     to the command in step 2) and start that `.exe` from PowerShell, where the error is printed.
+8. **Updating her later** (after you change the app): `git pull`, run step 2 again, zip. On her
+   computer: close the app, delete everything in her folder EXCEPT `data`, move the new files in.
+   Her data is never touched and the app upgrades her database on the next start. `build_info.txt`
+   (and the first lines of her log) say which build she is on.
+
+**Not checked, because it needs Windows:** the build script itself (written on the Mac, never
+run), PyInstaller's handling of this app's libraries, the packaged app's window, and what your IT
+scanner makes of it. The build is a plain folder with no compression, which is the form scanners
+mind least — but that is a prediction, not a result.
+
 ## ⚡ 2026-09-26 — worker processes (the big speed step), and station limits that hold still
 
 No schema change. After pulling, refresh the findings once (Settings → Database → Refresh process
