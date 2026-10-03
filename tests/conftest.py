@@ -6,6 +6,46 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
+def _hide_test_windows() -> None:
+    """No test window ever shows on screen (James, 2026-10-02: "why does the test need to flash
+    the app on screen, cant we hide it so can continue to work while its running").
+
+    CustomTkinter maps a new window the moment it is created, and V6App then built every page
+    with its window on screen until make_app's withdraw() -- every test file that builds the app
+    flashed it. Measured on the Mac: mapped at creation, still mapped once V6App is built. Now
+    every CTk root is withdrawn and fully transparent the instant it exists (on macOS CTk never
+    re-shows a window withdrawn before its first update -- only Windows does), and every
+    CTkToplevel is transparent: kept MAPPED, because a dialog may grab or be measured. A test
+    that needs a really mapped window still deiconifies it (test_blocks, test_render_pages_audit):
+    transparent and off-screen, so that stays invisible too. Keyboard focus was already never
+    taken (the frontmost app stayed the same, measured)."""
+    import customtkinter as ctk
+
+    real_root_init = ctk.CTk.__init__
+    real_toplevel_init = ctk.CTkToplevel.__init__
+
+    def _transparent(window) -> None:
+        try:
+            window.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+
+    def root_init(self, *args, **kwargs):
+        real_root_init(self, *args, **kwargs)
+        _transparent(self)
+        self.withdraw()
+
+    def toplevel_init(self, *args, **kwargs):
+        real_toplevel_init(self, *args, **kwargs)
+        _transparent(self)
+
+    ctk.CTk.__init__ = root_init
+    ctk.CTkToplevel.__init__ = toplevel_init
+
+
+_hide_test_windows()
+
+
 def _checkout_data_dirs():
     """A checkout's real data/ folders: this tree's, and the one the package was imported from
     (they differ in a worktree) -- computed from files, never from the app directory the
