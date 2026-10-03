@@ -1266,6 +1266,30 @@ def test_model_page_empty_state_when_no_model(make_app):
     assert page._empty_label.winfo_ismapped() or page._empty_label.winfo_exists()
 
 
+def test_the_empty_page_points_at_the_overview_and_nothing_on_it_names_triage(make_app):
+    """Triage is retired (the Graphite redesign): the Overview's cards are what open a model now.
+    Every text the page can show -- its empty state, and every label and button in its tabs and
+    folds -- is read off the real widgets."""
+    import tkinter
+    app = make_app()
+    app.show_page("model")                      # no route set: the empty state
+    page = app.page_container.get_page("model")
+    assert page._empty_label.cget("text") == "Pick a model above, or click one on the Overview."
+
+    def texts(widget):
+        out = []
+        for child in tkinter.Misc.winfo_children(widget):
+            try:
+                out.append(str(child.cget("text")))
+            except Exception:
+                pass
+            out.extend(texts(child))
+        return out
+    page._set_findings_open(True)
+    page._set_signals_open(True)
+    assert not [x for x in texts(page) if "triage" in x.lower()]
+
+
 def test_model_page_focus_series_uses_shifted_linearity(make_app):
     """Q4: requesting linearity_error reads final_linearity_error_shifted."""
     from datetime import datetime

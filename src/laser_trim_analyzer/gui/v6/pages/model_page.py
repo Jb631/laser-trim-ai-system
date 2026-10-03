@@ -411,7 +411,7 @@ class ModelPage(PageBase):
     def build_content(self, parent):
         t = self.theme
         self._empty_label = ctk.CTkLabel(
-            parent, text="Pick a model above, or open one from the Overview, to see how it is running.",
+            parent, text="Pick a model above, or click one on the Overview.",
             font=t.font(t.SIZE_HEADING), text_color=t.TEXT_SECONDARY)
         # A plain frame: the header line, then the tab view filling the rest of the page. Each tab
         # scrolls on its own (layout C). The old page scrolled as a whole, with the tab view at its
