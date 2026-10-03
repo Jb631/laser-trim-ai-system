@@ -527,3 +527,78 @@ def test_the_inactive_model_resolver_picks_an_inactive_model_with_the_most_findi
     assert rp.resolve_inactive_model(db) == "OLD-B"                   # never the active LIVE
     assert rp.resolve_inactive_model(db, exclude=("OLD-B",)) == "OLD-C"
     db.close()
+
+
+# ---- Layout C (2026-10-02): the Model page's folds, and naming the models ---------------------------
+
+def test_the_model_sweep_measures_summary_again_with_its_folds_open(monkeypatch):
+    """A folded part is never laid out, so never measured: after every tab, Summary is walked once
+    more with "All 12 signals" and the findings fold open -- and both are put back as they were."""
+    from scripts import render_pages as rp
+
+    class Tabs:
+        _name_list = ["Summary", "Units", "Final test", "History"]
+
+        def __init__(self):
+            self.current = "Summary"
+
+        def set(self, name):
+            self.current = name
+
+    class Page:
+        def __init__(self):
+            self._tabs, self._findings_open, self._signals_open = Tabs(), False, True
+
+        def _set_findings_open(self, v):
+            self._findings_open = v
+
+        def _set_signals_open(self, v):
+            self._signals_open = v
+
+    page = Page()
+
+    class App:
+        page_container = type("PC", (), {"get_page": staticmethod(lambda key: page)})()
+
+        def show_page(self, key):
+            pass
+
+        def set_model_route(self, model, *a, **k):
+            pass
+
+        def update_idletasks(self):
+            pass
+
+    walked = []
+    monkeypatch.setattr(rp, "_pump", lambda app, seconds=0: None)
+    monkeypatch.setattr(rp, "find_clipped_text_widgets", lambda p, page="", window_size="": (
+        walked.append((page, p._tabs.current, p._findings_open, p._signals_open)) or []))
+    rp._sweep_model_tabs(App(), "INVENTED-1", "model", "1280x720", [])
+    assert [w[0] for w in walked] == ["model:Summary", "model:Units", "model:Final test",
+                                      "model:History", "model:Summary, unfolded"]
+    assert walked[-1][1:] == ("Summary", True, True)
+    assert (page._findings_open, page._signals_open) == (False, True)       # as they were
+
+
+def test_models_named_on_the_command_line_reach_the_audit(tmp_path, monkeypatch):
+    from scripts import render_pages as rp
+
+    seen = {}
+    copy = tmp_path / "copy.db"
+    copy.write_bytes(b"")
+    monkeypatch.setattr(rp, "_run_audit_mode",
+                        lambda db, out, models=None: seen.update(models=models) or 0)
+    monkeypatch.setattr(rp._db_guard, "is_production_db", lambda *a, **k: False)
+    assert rp.main([str(copy), str(tmp_path / "out"), "--audit", "--models", "M-1, M-2,M-3"]) == 0
+    assert seen == {"models": ["M-1", "M-2", "M-3"]}
+    for bad in (["--audit", "--models"], ["--audit", "--models", "A,B,C,D"], ["--models", "A"]):
+        assert rp.main([str(copy), str(tmp_path / "out"), *bad]) == 2
+
+
+def test_the_audit_header_says_when_the_models_were_named_not_resolved(tmp_path):
+    from scripts import render_pages as rp
+
+    rp._write_audit(tmp_path, [], [], 2, "M-1", "M-2", inactive_model="M-3", chosen=True)
+    header = (tmp_path / "audit.txt").read_text().splitlines()[0]
+    assert "model: 'M-1'; model2: 'M-2'; model3: 'M-3' (named with --models)" in header
+    assert "most findings" not in header

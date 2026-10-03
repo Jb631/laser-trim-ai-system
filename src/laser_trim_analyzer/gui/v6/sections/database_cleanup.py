@@ -283,7 +283,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                 shown = ", ".join(names[:8]) + (" …" if len(names) > 8 else "")
                 return (f"{msg} — but {len(failed):,} model(s) could not be worked out at all and "
                         f"{len(partial):,} had an analyzer fail ({shown}). The log has the details; "
-                        f"each model's Findings tab names what failed.")
+                        f"each model's page names what failed, under Worth changing.")
             finally:
                 # Posted, not called: the run registry is Tk-thread state
                 # and this `finally` runs on the worker -- mirrors the

@@ -26,7 +26,9 @@ class SmoothnessTab(RowBudgetMixin, ctk.CTkFrame):
                                          text_color=theme.TEXT_SECONDARY, anchor="w",
                                          justify="left", wraplength=950)
         self._models_hint.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
-        self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        # As tall as its rows: it sits under the unit list on the Model page's Units tab, which
+        # scrolls (units_tab.py says why).
+        self._list = ctk.CTkFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
         self._rows: List[ctk.CTkFrame] = []
         self._records: List[Dict] = []

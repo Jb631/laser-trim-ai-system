@@ -1,13 +1,18 @@
-"""Model page tab: what the process data says about THIS model, and what to do about it.
+"""What the process data says about THIS model, and what to do about it.
 
 Facts first (always shown -- they are measurements), then findings (only where
 there is something a person could act on), then the recipe history and the rest of
 what the analyzers measured -- the station limits, the laser comparison, the rework
-count and, last, where the loss is made, directly above the Model page's Predictor
-panel: spec ruling 2 (2026-09-24) sets loss_origin's AUC beside the predictor's, and
-the predictor's stored AUC is quoted with it. A model with no findings reads as
-"nothing to act on", never as a gap. Text only: no chart in v1, so nothing here
-touches matplotlib or the chart QA harness.
+count and, last, where the loss is made: spec ruling 2 (2026-09-24) sets loss_origin's
+AUC beside the final-test predictor's, and the predictor's stored AUC is quoted with
+it. A model with no findings reads as "nothing to act on", never as a gap. Text only:
+no chart in v1, so nothing here touches matplotlib or the chart QA harness.
+
+Layout C (Graphite redesign, 2026-10-02): this was the Model page's seventh tab. It is now
+folded under the Summary tab's "Worth changing", which draws the actionable groups itself --
+so the page builds it with `shown_elsewhere` naming them, and it draws only the rest (one
+view of the findings, not two). It is a plain frame, as tall as its text: the Summary tab
+scrolls.
 
 The section texts are built by the module's `*_lines` functions -- pure, so every
 rule they follow is tested without a window.
@@ -23,11 +28,12 @@ worked out yet by this version", naming what -- `not_worked_out`. The other keys
 tab reads kept their shape through the pull.
 """
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.core.models import laser_label
+from laser_trim_analyzer.findings import presentation as P
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
@@ -226,7 +232,8 @@ def predictor_line(data: Dict[str, Any]) -> Optional[str]:
         return ("No final-test predictor is trained for this model, so there is no predictor AUC "
                 "to set beside these.")
     return (f"The final-test predictor's own AUC, for comparison: {auc:.2f} -- how well it ranks "
-            "units at final test (the Predictor panel below), not where the loss starts.")
+            "units at final test (the Predictor panel on the Final test tab), not where the loss "
+            "starts.")
 
 
 def _loss_reading() -> str:
@@ -237,10 +244,15 @@ def _loss_reading() -> str:
 
 
 class FindingsTab(ctk.CTkFrame):
-    def __init__(self, master, theme: ThemeManager, **kwargs):
+    def __init__(self, master, theme: ThemeManager, *, shown_elsewhere: Sequence[str] = (),
+                 **kwargs):
+        """`shown_elsewhere`: the finding groups (presentation's keys) the host already draws -- the
+        Model page's "Worth changing" draws yield, laser time and check. They are left out here,
+        and so is "What to do about it" with its "Nothing to act on": the host answers that."""
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
-        self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._shown_elsewhere = frozenset(shown_elsewhere)
+        self._body = ctk.CTkFrame(self, fg_color="transparent")
         self._body.pack(fill="both", expand=True)
         self.set_data(None)
 
@@ -275,6 +287,21 @@ class FindingsTab(ctk.CTkFrame):
             return
         self._heading("What was measured")
         self._facts(facts)
+        if self._shown_elsewhere:
+            # Under "Worth changing": only the groups it does not draw (history, other) -- each
+            # under its own group header, and nothing at all when there are none.
+            rest = [f for f in findings if P.group_key(f) not in self._shown_elsewhere]
+            if rest:
+                view = FindingsView(self._body, t, on_open=None, include_empty=False)
+                view.pack(fill="x")
+                view.set_findings(rest, inactive=inactive)
+        else:
+            self._what_to_do(findings, inactive)
+        self._rest_of_the_facts(facts, data)
+
+    def _what_to_do(self, findings, inactive) -> None:
+        """'What to do about it': every finding, or the EMPTY state's own sentence."""
+        t = self.theme
         self._heading("What to do about it")
         if findings:
             # Same widget the Findings page uses (Task 7): no Open button -- we are already
@@ -285,6 +312,10 @@ class FindingsTab(ctk.CTkFrame):
         else:
             self._line("Nothing to act on. No analyzer found a lever worth pulling on this model — "
                        "that is a result, not a gap.", muted=True)
+
+    def _rest_of_the_facts(self, facts: Dict[str, Any], data: Optional[Dict[str, Any]]) -> None:
+        """The fact sections under the findings: limit tables, cuts, recipe history, then the four
+        newer analyzers' sections, loss origin last."""
         tables = facts.get("limit_tables") or []
         if len(tables) > 1:             # one table is the unremarkable case; two is something to look at
             self._group_heading("Limit tables this model has been graded against", len(tables))
@@ -341,7 +372,7 @@ class FindingsTab(ctk.CTkFrame):
         loss = fresh("loss_origin") or {}
         said = predictor_line(data or {})
         if loss:
-            # Last: directly above the Model page's Predictor panel (spec ruling 2).
+            # Last, with the predictor's own AUC beside it (spec ruling 2).
             lines = loss_origin_lines(loss)
             self._group_heading("Where the loss is made (last year)", len(lines))
             for line in lines:

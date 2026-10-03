@@ -54,8 +54,8 @@ def show_all_label(total: int, noun: str, expanded: bool) -> str:
 class RowBudgetMixin:
     """First `INITIAL_ROWS` rows + one "show all" control — see module docstring.
 
-    The host widget provides `self.theme`, `self._list` (the scrollable frame
-    the rows go in) and a `_render()` that rebuilds `self._rows` under
+    The host widget provides `self.theme`, `self._list` (the frame the rows go
+    in) and a `_render()` that rebuilds `self._rows` under
     `self._rows_host`; `_ROW_NOUN` is what the button counts.
     """
 
@@ -144,7 +144,11 @@ class UnitsTab(RowBudgetMixin, ctk.CTkFrame):
                              text_color=theme.TEXT_SECONDARY)
             h.pack(side="left", expand=True, fill="x", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
             h.bind("<Button-1>", lambda e, k=key: self._sort_by(k))
-        self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        # A plain frame, as tall as its rows (layout C, 2026-10-02): the list sits in the Model page's
+        # Units tab under the stats table, and the TAB scrolls. A scrolling list inside a scrolling
+        # tab moved both at once under the wheel (each CTkScrollableFrame answers every wheel event
+        # over its own content) -- the render budget below is what keeps a long list cheap.
+        self._list = ctk.CTkFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
         # Rows live in their own frame so a refresh is ONE native teardown
         # instead of N: destroying 200 row widgets one at a time cost as much

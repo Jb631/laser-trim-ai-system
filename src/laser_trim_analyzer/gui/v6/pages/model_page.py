@@ -1,17 +1,35 @@
-"""Spec 3c — ModelPage: per-model investigation (selector + window + Copy/Export header,
-8 pills, SPC focus chart, 3 tabs, demoted predictor). Foundations §3 + D4."""
+"""The Model page: one model, in James's layout C (Graphite redesign, 2026-10-02).
+
+"there is so much going on its hard to see what is what" (James) -- the page stacked twelve metric
+pills, a stats table, a chart and seven tabs. He picked layout C ("i like c") from three drawn on
+8504-2's real runs: the header's controls, then a HEADER LINE -- the model, a status word (Drifting /
+Steady / Inactive), its 90-day linearity pass % with its units, the lasers it ran on -- over FOUR tabs:
+
+  * Summary    -- the verdict in one sentence; the run chart of the moving signal (Lots / Units);
+                  "Also moving", every OTHER signal above stable; "Worth changing", the model's
+                  findings (with the rest of what the analyzers measured folded under it); and
+                  "All 12 signals", the drift table, folded.
+  * Units      -- the stats table (the run menu drives it), the unit list, smoothness.
+  * Final test -- the final-test units, trim vs final test, the predictor.
+  * History    -- the measurement history.
+
+The pills and their one-line σ key are gone -- their numbers are in "All 12 signals" and the Units
+tab -- and nothing else was lost: it moved one level down. Each tab scrolls on its own; the header
+line and the tabs stay put. Every loader runs on a worker (CLAUDE.md rule 5); Tk only in apply()."""
 import logging
 import threading
+import tkinter
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import customtkinter as ctk
 
 logger = logging.getLogger(__name__)
 
-from laser_trim_analyzer.core.activity import inactive_caption, load_activity
+from laser_trim_analyzer.core.activity import inactive_tag, load_activity, trusted_until
 from laser_trim_analyzer.core.model_stats import (
     compute_lot_verdicts, compute_model_stats, default_lot_index, model_lots)
+from laser_trim_analyzer.core.models import LASER_ORDER, laser_label
 from laser_trim_analyzer.core.spec_alignment import compare_station_specs
 from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
@@ -24,7 +42,6 @@ from laser_trim_analyzer.gui.v6.widgets.findings_tab import (
 from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
 from laser_trim_analyzer.gui.v6.widgets.history_tab import HistoryTab
-from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
 from laser_trim_analyzer.gui.v6.widgets.predictor_panel import PredictorPanel
 from laser_trim_analyzer.gui.v6.widgets.smoothness_tab import SmoothnessTab
 from laser_trim_analyzer.gui.v6.widgets.stats_table import StatsTableZone
@@ -34,9 +51,10 @@ from laser_trim_analyzer.gui.v6.widgets.ft_units_tab import FtUnitsTab
 from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import UnitChartModal
 from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
 from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS, drift_exclusions
-from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
+from laser_trim_analyzer.ml.drift_types import (
+    WATCHED_METRICS, DriftTier, format_metric_value, metric_label)
 from laser_trim_analyzer.ml.manager import get_model_drift_status, list_known_models
-from laser_trim_analyzer.ml.spc import compute_spc_series
+from laser_trim_analyzer.ml.spc import compute_focus_list, compute_spc_series
 
 _WINDOW_DAYS = {"30d": 30, "90d": 90, "365d": 365, "All": None}
 # The window control's own default -- what the page opens on, before anyone picks.
@@ -59,11 +77,197 @@ _ALL_HISTORY = "All history (no lot)"
 # watched — see drift_types.WATCHED_METRICS / the D-SIGMA rationale).
 _DEFAULT_METRIC = "untrimmed_sigma_gradient"
 
-# The Findings tab's registered name in the CTkTabview below (self._tabs.add("Findings")) --
-# the target of a tab= route from the Findings page's opened-row button (Task 7). Route
-# values are compared case-insensitively: callers choose a plain word ("findings"), not the
-# tab view's own Title Case label.
-_FINDINGS_TAB_NAME = "Findings"
+# The four tabs, in James's order (layout C).
+TAB_SUMMARY, TAB_UNITS, TAB_FINAL_TEST, TAB_HISTORY = "Summary", "Units", "Final test", "History"
+TAB_NAMES = (TAB_SUMMARY, TAB_UNITS, TAB_FINAL_TEST, TAB_HISTORY)
+
+# Where `set_model_route(model, tab=...)` lands: {route word: (tab, the part to open or scroll to)}.
+# Route words are plain and compared case-insensitively. Seven are the names of the tabs this page
+# had before layout C, and each lands where its content went -- the brief's map: findings -> Summary
+# at "Worth changing", its fold open; drift -> Summary with "All 12 signals" open. The callers today
+# (findings_page.py, home_page.py) both pass "findings"; tests/test_spec3c_model.py greps the source
+# for every tab= route and fails on one this map does not know.
+_ROUTES: Dict[str, Tuple[str, Optional[str]]] = {
+    "summary": (TAB_SUMMARY, None),
+    "findings": (TAB_SUMMARY, "findings"),
+    "worth changing": (TAB_SUMMARY, "findings"),
+    "drift": (TAB_SUMMARY, "signals"),
+    "drift metrics": (TAB_SUMMARY, "signals"),
+    "signals": (TAB_SUMMARY, "signals"),
+    "units": (TAB_UNITS, None),
+    "smoothness": (TAB_UNITS, "smoothness"),
+    "final test": (TAB_FINAL_TEST, None),
+    "final test units": (TAB_FINAL_TEST, None),
+    "trim vs final test": (TAB_FINAL_TEST, "trim vs final test"),
+    "history": (TAB_HISTORY, None),
+}
+
+
+def route_destination(name) -> Optional[Tuple[str, Optional[str]]]:
+    """(tab, part) a route word lands on, or None for a word the page does not know -- which is
+    ignored, never raised: a stale route must never crash the page."""
+    return _ROUTES.get(str(name or "").strip().lower())
+
+
+# The two folds on Summary, by their words.
+_SIGNALS_FOLD = f"All {len(WATCHED_METRICS)} signals"
+_FINDINGS_FOLD = "What the analyzers measured"
+
+# The verdict's clauses are joined by this (_compute_verdict); the first is Summary's headline.
+_CLAUSE = "  ·  "
+
+# ---- the header line's 90-day pass rate ---------------------------------------------------------
+# The Overview's definition, so a model reads the same number on its card and on its page: the
+# app's headline yield (core/yield_stats.compute_yield's linearity_yield) -- PASS or WARNING out of
+# PASS + WARNING + FAIL; ERROR, PROCESSING_FAILED and UNTRIMMED are not graded -- over the 90 days
+# ending at the newest graded trim file in the database (one clock for every model, so an inactive
+# model reads "no units", never its last 90 days of 2019). Future-dated files (core/activity's
+# trusted_until) and files marked suspect are left out, the rule the drift watch and the FOCUS list
+# follow since 2026-10-02.
+HEADER_DAYS = 90
+_GRADED = (StatusType.PASS, StatusType.WARNING, StatusType.FAIL)
+
+
+def _graded_counts(rows) -> Tuple[int, int]:
+    """(graded, passed) from (status, count) rows -- summed, as a status can come once per laser. A
+    WARNING ships: sigma is a watch, not a reject."""
+    by: Dict[str, int] = {}
+    for st, n in rows:
+        name = getattr(st, "name", str(st))
+        by[name] = by.get(name, 0) + (n or 0)
+    graded = sum(by.get(k, 0) for k in ("PASS", "WARNING", "FAIL"))
+    return graded, by.get("PASS", 0) + by.get("WARNING", 0)
+
+
+def header_facts(db, model: str, *, now: Optional[datetime] = None) -> dict:
+    """What the header line says about `model`'s last 90 days, from the database (a worker call).
+
+    {"end": the window's end (None: no graded trim on file at all), "basis": "trim" | "final test"
+    | None, "units": graded units, "passed": of them, "lasers": laser_label()s in laser order,
+    "lasers_in_window": whether those are the window's lasers (else all its graded trims')}. A
+    model with no trims in the window but final tests in it (8506: its trims are stored as
+    8506A/B) is graded on those -- the Overview's rule."""
+    from sqlalchemy import func, or_
+    from laser_trim_analyzer.database.models import FinalTestResult as DBFT
+    horizon = trusted_until(now)
+    clean = or_(DBAR.data_quality.is_(None), DBAR.data_quality != "suspect")
+    out = {"end": None, "basis": None, "units": 0, "passed": 0, "lasers": [],
+           "lasers_in_window": False}
+    with db.session() as s:
+        end = (s.query(func.max(DBAR.file_date))
+               .filter(DBAR.overall_status.in_(_GRADED), DBAR.model.isnot(None),
+                       DBAR.file_date <= horizon, clean)
+               .scalar())
+        if isinstance(end, str):                       # raw SQLite text, as _window_cutoff sees it
+            end = datetime.fromisoformat(end[:19])
+        if end is None:
+            return out
+        start = end - timedelta(days=HEADER_DAYS)
+        mine = (DBAR.model == model, DBAR.overall_status.in_(_GRADED), DBAR.file_date <= horizon,
+                clean)
+        window = (s.query(DBAR.overall_status, DBAR.system, func.count(DBAR.id))
+                  .filter(*mine, DBAR.file_date >= start)
+                  .group_by(DBAR.overall_status, DBAR.system).all())
+        units, passed = _graded_counts([(st, n) for st, _sys, n in window])
+        systems = {getattr(sys_, "value", sys_) for _st, sys_, _n in window}
+        out.update(end=end, lasers_in_window=bool(units))
+        if units:
+            out.update(basis="trim", units=units, passed=passed)
+        else:
+            ft = (s.query(DBFT.overall_status, func.count(DBFT.id))
+                  .filter(DBFT.model == model, DBFT.overall_status.in_(_GRADED),
+                          DBFT.file_date >= start, DBFT.file_date <= horizon)
+                  .group_by(DBFT.overall_status).all())
+            ft_units, ft_passed = _graded_counts(ft)
+            if ft_units:
+                out.update(basis="final test", units=ft_units, passed=ft_passed)
+            systems = {getattr(r[0], "value", r[0])
+                       for r in s.query(DBAR.system).filter(*mine).distinct().all()}
+    order = {letter: i for i, letter in enumerate(LASER_ORDER)}
+    out["lasers"] = [laser_label(x) for x in sorted((x for x in systems if x),
+                                                    key=lambda x: (order.get(x, 99), str(x)))]
+    return out
+
+
+def _pct_text(passed: int, units: int) -> str:
+    """The pass rate as the header shows it: whole percent -- but never "100%" while a unit
+    failed (linearity is zero-tolerance; 299 of 300 reads "99.7%")."""
+    pct = 100.0 * passed / units
+    text = f"{pct:.0f}%"
+    return f"{pct:.1f}%" if (text == "100%" and passed < units) else text
+
+
+def header_texts(facts: Optional[dict]) -> Tuple[str, str]:
+    """(the pass % in large type, the words after it) for the header line. ("", "") when the load
+    failed: the page's banner names it, and no number stands in for one."""
+    if not facts:
+        return "", ""
+    lasers = ", ".join(facts.get("lasers") or [])
+    if facts.get("units"):
+        units = facts["units"]
+        parts = ["linearity pass" if facts.get("basis") == "trim" else "final-test pass",
+                 f"{units:,} unit{'s' if units != 1 else ''} in the last {HEADER_DAYS} days"]
+        if lasers:
+            parts.append(lasers if facts.get("lasers_in_window") else f"last ran on {lasers}")
+        return _pct_text(facts["passed"], units), " · ".join(parts)
+    parts = [f"No units in the last {HEADER_DAYS} days"]
+    if lasers:
+        parts.append(f"last ran on {lasers}")
+    return "", " · ".join(parts)
+
+
+def status_word(*, detector_flagged: Optional[bool], on_focus_list: Optional[bool],
+                inactive: Optional[bool], last_trimmed: Optional[datetime]) -> Optional[str]:
+    """The header's status word. "Drifting" when the drift detector flags the model (a tier above
+    stable) or it is on the "Drifting now" list (ml/spc.compute_focus_list) -- the two lists the
+    Overview's cards are made of; else "Inactive · last trimmed Mon YYYY" (core/activity); else
+    "Steady". Each input is None when its load failed, and then no word is claimed (None) unless
+    "Drifting" is known anyway: "Steady" over a crashed load is a failure looking like a result."""
+    if detector_flagged or on_focus_list:
+        return "Drifting"
+    if detector_flagged is None or on_focus_list is None or inactive is None:
+        return None
+    if inactive:
+        return inactive_tag(last_trimmed)
+    return "Steady"
+
+
+def also_moving(status, charted: Optional[str], recent_means: Optional[dict] = None,
+                fmt=None) -> List[Tuple[str, str]]:
+    """Summary's "Also moving": [(metric, "baseline → last lot  ↑")] for every signal above stable
+    other than the charted one, worst tier first, then the furthest moved. "Last lot" is the page's
+    recent mean where it has one, else the detector's -- the drift table's own rule (_MetricRow)."""
+    recent_means = recent_means or {}
+    rows = []
+    for metric, ms in (getattr(status, "per_metric", None) or {}).items():
+        if metric == charted or ms.tier <= DriftTier.STABLE:
+            continue
+        recent = recent_means.get(metric)
+        recent = recent if recent is not None else ms.recent_mean
+        base = ms.baseline_mean
+        moved = (abs(recent - base) / ms.baseline_std
+                 if (recent is not None and base is not None and ms.baseline_std) else 0.0)
+        arrow = ("" if recent is None or base is None or recent == base
+                 else "↑" if recent > base else "↓")
+        text = (f"{format_metric_value(metric, base, fmt)} → "
+                f"{format_metric_value(metric, recent, fmt)}" + (f"  {arrow}" if arrow else ""))
+        rows.append((-int(ms.tier), -moved, metric, text))
+    return [(metric, text) for _t, _m, metric, text in sorted(rows)]
+
+
+def _scroll_into_view(frame, widget) -> None:
+    """Scroll the CTkScrollableFrame `frame` so `widget`, somewhere inside it, sits at the top of
+    its view (or as near as the content's height allows). `_parent_canvas` is CustomTkinter's own
+    canvas -- private API, safe under the pinned 5.2.2 (requirements-pinned.txt)."""
+    try:
+        frame.update_idletasks()
+        height = frame.winfo_height()
+        if height <= 1:
+            return
+        offset = widget.winfo_rooty() - frame.winfo_rooty()
+        frame._parent_canvas.yview_moveto(max(0.0, min(1.0, offset / height)))
+    except (tkinter.TclError, AttributeError):
+        pass                                 # destroyed, or not laid out yet
 
 # "recent" window for the baseline-vs-recent comparison shown in the Drift table.
 _RECENT_DAYS = 30
@@ -86,7 +290,7 @@ def _unit_row(r) -> dict:
 # The three groups the page's "Worth changing on this model" section shows (design doc
 # 2026-09-24-facelift-step2-pages-design.md §1, ruling 1 item 3). "history" (recipe changes,
 # already happened -- nothing to decide) and "other" (an analyzer this page does not know) stay
-# off it; both are still on the Findings tab, one click away.
+# off it; both are in the fold under it ("What the analyzers measured"), one click away.
 _WORTH_CHANGING_GROUPS = ("yield", "laser_time", "check")
 
 
@@ -124,6 +328,15 @@ class ModelPage(PageBase):
         self._lot_label: Optional[str] = None
         self._lots: List = []
         self._lot_default_applied_for: Optional[str] = None
+        # Summary's "Also moving" lines, by metric -- rebuilt with the section on every apply().
+        self._also_lines: Dict[str, ctk.CTkFrame] = {}
+        # The two folds' state. They survive reloads and model switches: unfolding one is the
+        # reader's choice, and a tab= route ("findings", "drift") opens one on purpose.
+        self._findings_open = False
+        self._signals_open = False
+        self._findings_fold_shown = False   # is there anything under "Worth changing" to unfold?
+        # A route's scroll target, for the reload it came with: (part, reload generation).
+        self._scroll_target: Optional[Tuple[str, int]] = None
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     @staticmethod
@@ -192,55 +405,98 @@ class ModelPage(PageBase):
     def build_content(self, parent):
         t = self.theme
         self._empty_label = ctk.CTkLabel(
-            parent, text="Pick a model above, or click one from Triage, to see its drift profile.",
+            parent, text="Pick a model above, or open one from the Overview, to see how it is running.",
             font=t.font(t.SIZE_HEADING), text_color=t.TEXT_SECONDARY)
-        # SCROLLABLE body (James live report 2026-07-13: "cant scroll down on
-        # some of the pages" — the zone headers + grouped pill bands made the
-        # page taller than the window, and a plain frame just clips). Wheel
-        # over the matplotlib chart won't page-scroll (the chart canvas owns
-        # its events); wheel anywhere else, or the scrollbar, works.
-        self._body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        # ---- Banners (design doc item 2): a failed loader, and a trim-vs-final-test spec
-        # mismatch. Check tone (blocks.banner) -- replacing the old TIER_WARNING captions --
-        # packed only when they have something to say, directly above "Worth changing", which
-        # this and every other zone in the body now follows (facelift step 2, 2026-09-24: the
-        # findings move from the seventh tab to the top of the page). _worth_section is created
-        # FIRST and packed immediately so the banners have a stable, always-present `before=`
-        # anchor to pack themselves against (see _set_spec_banner / _set_load_banner).
-        self._worth_section = ctk.CTkFrame(self._body, fg_color="transparent")
-        self._worth_section.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
-        self._spec_banner = blocks.banner(self._body, t, "", wrap_to=self._body)
-        self._load_banner = blocks.banner(self._body, t, "", wrap_to=self._body)
-        # ---- "How it's running" (design doc item 4): the per-metric pills (the evidence
-        # behind the caption's verdict sentence), a one-line σ key, and the stats table.
-        self._zone_header(self._body, "How it's running",
-                          "the metric pills, the σ key, and this model's stats — click a "
-                          "pill to chart it below")
-        self._pill_row = MetricPillRow(self._body, theme=t, on_pill_click=self._on_pill_click)
-        self._pill_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-        # Plain-language key for the pill numbers, ONE line (facelift step 2, 2026-09-24): the
-        # full three-sentence explanation this used to be moved to the Drift metrics tab
-        # (DriftMetricsTab), next to the baseline/recent numbers it is actually explaining.
-        self._sigma_key = ctk.CTkLabel(
-            self._body,
-            text=("σ = how far the last lot sits from this model's history of lots — a "
-                  "drift signal, not a spec."),
-            font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
-            anchor="w", justify="left")
-        self._sigma_key.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
-        # self._body is built once, right here, and never destroyed/rebuilt for the page's
-        # whole lifetime -- so this binds exactly once (blocks.wrap_to_width: call it once per
-        # (label, container) lifetime, never from inside a re-render/apply path).
-        blocks.wrap_to_width(self._sigma_key, self._body)
-        self._stats_table = StatsTableZone(self._body, theme=t)
-        self._stats_table.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
-        # ---- ZONE 2: the data itself — where the read above is verified.
-        self._zone_header(self._body, "What you're looking at",
-                          "the measurements — chart the pill you clicked; units & final tests in the tabs")
-        # Chart card header: the view toggle sits with the chart it controls.
-        # Same segmented-button styling as the Triage scope toggle so the two
-        # "this switches what you're looking at" controls read as one thing.
-        chart_head = ctk.CTkFrame(self._body, fg_color="transparent")
+        # A plain frame: the header line, then the tab view filling the rest of the page. Each tab
+        # scrolls on its own (layout C). The old page scrolled as a whole, with the tab view at its
+        # foot -- which is how a tab got squeezed to nothing once the parts above it outgrew the
+        # window (render_pages.py --audit, 6607's Smoothness tab at 1280x720).
+        self._body = ctk.CTkFrame(parent, fg_color="transparent")
+        self._build_header_line(self._body)
+        self._tabs = ThemedTabView(self._body, theme=t)
+        self._tabs.pack(side="top", fill="both", expand=True)
+        # add() order is the tab order: Summary, Units, Final test, History.
+        self._summary = self._scrolling_tab(TAB_SUMMARY)
+        self._units_scroll = self._scrolling_tab(TAB_UNITS)
+        self._ft_scroll = self._scrolling_tab(TAB_FINAL_TEST)
+        self._history_tab = HistoryTab(self._tabs.add(TAB_HISTORY), theme=t)
+        self._history_tab.pack(fill="both", expand=True)
+        self._build_summary(self._summary)
+        self._build_units(self._units_scroll)
+        self._build_final_test(self._ft_scroll)
+        self._show_empty()
+
+    def _scrolling_tab(self, name: str) -> ctk.CTkScrollableFrame:
+        frame = ctk.CTkScrollableFrame(self._tabs.add(name), fg_color="transparent")
+        frame.pack(fill="both", expand=True)
+        return frame
+
+    def _build_header_line(self, parent) -> None:
+        """The model, its status word, its 90-day pass % and the words after it (units, lasers).
+        Set by _set_header; the words wrap in whatever room the three before them leave."""
+        t = self.theme
+        self._header_line = ctk.CTkFrame(parent, fg_color="transparent")
+        self._header_line.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._model_title = ctk.CTkLabel(self._header_line, text="", anchor="w",
+                                         font=t.font(t.SIZE_TITLE, "bold"),
+                                         text_color=t.TEXT_PRIMARY)
+        self._model_title.pack(side="left", padx=(0, t.SPACE_MD))
+        self._status_word = ctk.CTkLabel(self._header_line, text="", anchor="w",
+                                         font=t.font(t.SIZE_BODY, "bold"),
+                                         text_color=t.TEXT_SECONDARY)
+        self._status_word.pack(side="left", padx=(0, t.SPACE_MD))
+        self._pass_pct = ctk.CTkLabel(self._header_line, text="", anchor="w",
+                                      font=t.mono(t.SIZE_HEADING, "bold"),
+                                      text_color=t.TEXT_PRIMARY)
+        self._pass_pct.pack(side="left", padx=(0, t.SPACE_SM))
+        self._header_detail = ctk.CTkLabel(self._header_line, text="", anchor="w",
+                                           justify="left", font=t.font(t.SIZE_BODY),
+                                           text_color=t.TEXT_SECONDARY)
+        self._header_detail.pack(side="left", fill="x", expand=True)
+        # Built once with the page, so this binds once (blocks.wrap_to_width's rule).
+        self._header_line.bind("<Configure>", lambda _e: self._rewrap_header(), add="+")
+
+    def _rewrap_header(self) -> None:
+        """Wrap the header's words to the room beside the model, status word and pass % -- the
+        units blocks.wrap_to_width explains: widths are real pixels, wraplength CustomTkinter's."""
+        try:
+            width = self._header_line.winfo_width()
+            if width <= 1:
+                return                                  # not laid out yet
+            t, label = self.theme, self._header_detail
+            unscale = label._reverse_widget_scaling
+            beside = sum(unscale(w.winfo_reqwidth())
+                         for w in (self._model_title, self._status_word, self._pass_pct))
+            room = unscale(width) - beside - (2 * t.SPACE_MD + t.SPACE_SM)
+            label.configure(wraplength=int(max(120, room)))
+        except (tkinter.TclError, AttributeError):
+            pass
+
+    def _build_summary(self, s) -> None:
+        t = self.theme
+        # Banners at the top of Summary (design doc item 2): a failed loader, and a trim-vs-final-
+        # test spec mismatch -- check tone, packed only when they have something to say, directly
+        # above the headline (_set_load_banner / _set_spec_banner pack them before=_headline_box).
+        self._load_banner = blocks.banner(s, t, "", wrap_to=s)
+        self._spec_banner = blocks.banner(s, t, "", wrap_to=s)
+        # (1) The verdict in ONE sentence -- the first clause of _compute_verdict's line -- and the
+        # evidence clauses after it, quieter, beneath. `s` lives as long as the page, so each
+        # wrap binds once.
+        self._headline_box = ctk.CTkFrame(s, fg_color="transparent")
+        self._headline_box.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        self._headline = ctk.CTkLabel(self._headline_box, text="—", anchor="w", justify="left",
+                                      font=t.font(t.SIZE_HEADING, "bold"),
+                                      text_color=t.TEXT_PRIMARY)
+        self._headline.pack(side="top", fill="x")
+        self._headline_detail = ctk.CTkLabel(self._headline_box, text="", anchor="w",
+                                             justify="left", font=t.font(t.SIZE_BODY),
+                                             text_color=t.TEXT_SECONDARY)
+        self._headline_detail.pack(side="top", fill="x")
+        blocks.wrap_to_width(self._headline, s)
+        blocks.wrap_to_width(self._headline_detail, s)
+        # (2) The run chart of the moving signal. The view toggle sits with the chart it controls,
+        # styled like every other "this switches what you're looking at" control.
+        chart_head = ctk.CTkFrame(s, fg_color="transparent")
         chart_head.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
         self._chart_toggle = ctk.CTkSegmentedButton(
             chart_head, values=[_VIEW_LOTS, _VIEW_UNITS], width=200,
@@ -255,52 +511,70 @@ class ModelPage(PageBase):
                            "model's own history. Units = every measurement."),
                      font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
                      anchor="w").pack(side="left")
-        self._focus_chart = FocusChart(self._body, theme=t)
+        self._focus_chart = FocusChart(s, theme=t)
         self._focus_chart.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
-        # CTkTabview does not propagate its tabs' own content size upward (`_configure_grid`
-        # grids each tab frame `sticky="nsew"` into a `weight=1` row, so the CURRENTLY
-        # SELECTED tab gets exactly however tall pack() allocates `self._tabs` -- nothing
-        # about its content). `expand=True` (below) fills any LEFTOVER room in the scrollable
-        # body once every other child has its natural size -- which used to always be
-        # positive, since the tabs were the last, tallest thing on the page. The new "Worth
-        # changing" section (design doc item 3) can make everything ABOVE the tabs alone
-        # exceed the window's viewport, leaving zero leftover: pack then falls back to
-        # CTkTabview's own un-set default (~250px), which is too short for its button row
-        # PLUS a usable content row, and the selected tab's frame collapses to 0 and
-        # disappears -- found by render_pages.py --audit (6607, Smoothness, 1280x720: the
-        # tab's own content vanished, not just shrank). A minimum height keeps `expand=True`'s
-        # "grow when there's room" behaviour while giving every tab a floor it can never be
-        # squeezed under; 520 comfortably fit every tab's content in the audited data
-        # (measured 404-684px per tab, several of which are themselves scrollable and so are
-        # not limited to it either).
-        self._tabs = ThemedTabView(self._body, theme=t, height=520)
-        self._tabs.pack(side="top", fill="both", expand=True)
-        self._drift_tab = DriftMetricsTab(self._tabs.add("Drift metrics"), theme=t,
+        # (3) "Also moving" and (4) "Worth changing": rebuilt on every apply. Each always keeps a
+        # child, even when it has nothing to say -- a Tk frame whose last child goes keeps its old
+        # height, so an emptied section would leave a blank gap (measured).
+        self._also_section = ctk.CTkFrame(s, fg_color="transparent")
+        self._also_section.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        ctk.CTkFrame(self._also_section, height=1, fg_color="transparent").pack(fill="x")
+        self._worth_section = ctk.CTkFrame(s, fg_color="transparent")
+        self._worth_section.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        # ...and folded under it, the rest of what the Findings tab showed: what was measured, what
+        # changed, the station and laser comparisons -- never the rows already drawn above.
+        self._findings_fold = ctk.CTkFrame(s, fg_color="transparent")
+        self._findings_fold.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        ctk.CTkFrame(self._findings_fold, height=1, fg_color="transparent").pack(fill="x")
+        self._findings_toggle = blocks.link_button(self._findings_fold, t, f"{_FINDINGS_FOLD} ▸",
+                                                   lambda: self._set_findings_open(
+                                                       not self._findings_open))
+        self._findings_tab = FindingsTab(self._findings_fold, theme=t,
+                                         shown_elsewhere=_WORTH_CHANGING_GROUPS)
+        # (5) "All 12 signals", folded: the drift table, with the σ key, what the drift check left
+        # out, and "Requalify baseline…".
+        self._signals_fold = ctk.CTkFrame(s, fg_color="transparent")
+        self._signals_fold.pack(side="top", fill="x")
+        ctk.CTkFrame(self._signals_fold, height=1, fg_color="transparent").pack(fill="x")
+        self._signals_toggle = ctk.CTkButton(
+            self._signals_fold, text=f"{_SIGNALS_FOLD} ▸", anchor="w",
+            command=lambda: self._set_signals_open(not self._signals_open),
+            font=t.font(t.SIZE_HEADING, "bold"), fg_color="transparent", hover_color=t.CARD,
+            text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM, height=32)
+        self._signals_toggle.pack(side="top", fill="x")
+        self._drift_tab = DriftMetricsTab(self._signals_fold, theme=t,
                                           on_requalify=self._on_requalify,
-                                          on_metric_select=self._on_pill_click)
-        self._drift_tab.pack(fill="both", expand=True)
-        self._smoothness_tab = SmoothnessTab(self._tabs.add("Smoothness"), theme=t)
-        self._smoothness_tab.pack(fill="both", expand=True)
-        self._units_tab = UnitsTab(self._tabs.add("Units"), theme=t,
+                                          on_metric_select=self._on_metric_select)
+
+    def _build_units(self, s) -> None:
+        t = self.theme
+        self._stats_table = StatsTableZone(s, theme=t)
+        self._stats_table.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
+        blocks.group_header(s, t, "Unit list", None).pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._units_tab = UnitsTab(s, theme=t,
                                    on_unit_click=self._on_unit_click, on_export=self._on_export,
                                    on_export_charts=self._on_export_charts,
                                    on_search=self._on_unit_search)
-        self._units_tab.pack(fill="both", expand=True)
-        self._ft_units_tab = FtUnitsTab(self._tabs.add("Final test units"), theme=t,
-                                        on_unit_click=self._on_ft_unit_click,
+        self._units_tab.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
+        self._smoothness_heading = blocks.group_header(s, t, "Smoothness", None)
+        self._smoothness_heading.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._smoothness_tab = SmoothnessTab(s, theme=t)
+        self._smoothness_tab.pack(side="top", fill="x")
+
+    def _build_final_test(self, s) -> None:
+        t = self.theme
+        blocks.group_header(s, t, "Final-test units", None).pack(side="top", fill="x",
+                                                                 pady=(0, t.SPACE_SM))
+        self._ft_units_tab = FtUnitsTab(s, theme=t, on_unit_click=self._on_ft_unit_click,
                                         on_export_charts=self._on_export_ft_charts)
-        # pack was missing — the tab constructed but never mapped, so it
-        # rendered permanently EMPTY (code-review finding #5, 2026-07-13).
-        self._ft_units_tab.pack(fill="both", expand=True)
-        self._trimft_tab = TrimFtTab(self._tabs.add("Trim vs final test"), theme=t)
-        self._trimft_tab.pack(fill="both", expand=True)
-        self._history_tab = HistoryTab(self._tabs.add("History"), theme=t)
-        self._history_tab.pack(fill="both", expand=True)
-        self._findings_tab = FindingsTab(self._tabs.add("Findings"), theme=t)
-        self._findings_tab.pack(fill="both", expand=True)
-        self._predictor = PredictorPanel(self._body, theme=t, db=self.app.db)
-        self._predictor.pack(side="top", fill="x", pady=(t.SPACE_MD, 0))
-        self._show_empty()
+        self._ft_units_tab.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
+        self._trimft_heading = blocks.group_header(s, t, "Trim vs final test", None)
+        self._trimft_heading.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._trimft_tab = TrimFtTab(s, theme=t)
+        self._trimft_tab.pack(side="top", fill="x")
+        # It predicts final test, so it lives with it.
+        self._predictor = PredictorPanel(s, theme=t, db=self.app.db)
+        self._predictor.pack(side="top", fill="x", pady=(t.SPACE_LG, 0))
 
     # ---- visibility ----
     def _show_empty(self):
@@ -325,7 +599,6 @@ class ModelPage(PageBase):
         threading.Thread(target=self._refresh_selector_values, daemon=True).start()
         if self._current_model:
             self._show_body()
-            self._pill_row.set_selected(self._current_metric)
             self._predictor.set_model(self._current_model)
             self._reload()
             if tab:
@@ -334,12 +607,69 @@ class ModelPage(PageBase):
             self._show_empty()
 
     def _select_tab(self, name: str) -> None:
-        """Select a tab by its route name, case-insensitively. A name that matches
-        nothing the page has is ignored, not raised — a stale or unrecognised route
-        value must never crash the page (CTkTabview.set() raises ValueError on a
-        name it does not have)."""
-        if name.strip().lower() == _FINDINGS_TAB_NAME.lower():
-            self._tabs.set(_FINDINGS_TAB_NAME)
+        """Land where a tab= route asks (route_destination): select its tab, open its fold, and
+        scroll its part into view -- now, and again once the reload it came with has drawn, since
+        that is when the part's position is known. A word the page does not know is ignored, never
+        raised (CTkTabview.set() raises on a name it does not have)."""
+        dest = route_destination(name)
+        if dest is None:
+            return
+        tab, part = dest
+        self._tabs.set(tab)
+        if part == "findings":
+            self._set_findings_open(True)
+        elif part == "signals":
+            self._set_signals_open(True)
+        if part is not None:
+            self._scroll_target = (part, self._reload_gen)
+            self.after_idle(lambda: self._scroll_to(part))
+
+    def _scroll_to(self, part: str) -> None:
+        frame, widget = {"findings": (self._summary, self._worth_section),
+                         "signals": (self._summary, self._signals_fold),
+                         "smoothness": (self._units_scroll, self._smoothness_heading),
+                         "trim vs final test": (self._ft_scroll, self._trimft_heading)}[part]
+        _scroll_into_view(frame, widget)
+
+    def _apply_pending_scroll(self, gen: int) -> None:
+        """apply()'s last step: the route that came with THIS reload scrolls once its parts are
+        drawn. A target from an older reload is dropped -- never scroll a page the reader has been
+        using since."""
+        target, self._scroll_target = self._scroll_target, None
+        if target is not None and target[1] == gen:
+            self.after_idle(lambda: self._scroll_to(target[0]))
+
+    # ---- the two folds ----
+    def _set_signals_open(self, open_: bool) -> None:
+        """'All 12 signals': the drift table, unfolded in place under its toggle."""
+        self._signals_open = bool(open_)
+        self._signals_toggle.configure(text=f"{_SIGNALS_FOLD} {'▾' if self._signals_open else '▸'}")
+        if self._signals_open:
+            if self._drift_tab.winfo_manager() == "":
+                self._drift_tab.pack(side="top", fill="x", pady=(self.theme.SPACE_XS, 0))
+        else:
+            self._drift_tab.pack_forget()
+
+    def _set_findings_open(self, open_: bool) -> None:
+        self._findings_open = bool(open_)
+        self._render_findings_fold()
+
+    def _set_findings_fold(self, findings_data, findings_error) -> None:
+        """Show the fold under 'Worth changing' when it has something the section does not: the
+        facts of a computed model, or the error of a failed load. Not for NOT COMPUTED -- the
+        section already says so, and the fold would only say it again."""
+        self._findings_fold_shown = bool(findings_error) or bool((findings_data or {}).get("facts"))
+        self._render_findings_fold()
+
+    def _render_findings_fold(self) -> None:
+        self._findings_toggle.configure(
+            text=f"{_FINDINGS_FOLD} {'▾' if self._findings_open else '▸'}")
+        self._findings_toggle.pack_forget()
+        self._findings_tab.pack_forget()
+        if self._findings_fold_shown:
+            self._findings_toggle.pack(side="top", anchor="w")
+            if self._findings_open:
+                self._findings_tab.pack(side="top", fill="x")
 
     def _refresh_selector_values(self):
         try:
@@ -446,9 +776,19 @@ class ModelPage(PageBase):
             except Exception:
                 logger.exception("Model %s: final-test units failed", model)
                 failed.append("final-test units")
+            on_focus, focus_entry = None, None   # None: the "Drifting now" list failed to load
+            try:
+                # The list itself, not a re-derivation of its rule: the header's "Drifting" must
+                # agree with the Overview's cards, which are built from it.
+                focus_entry = next((e for e in compute_focus_list(self.app.db).focus
+                                    if e.model == model), None)
+                on_focus = focus_entry is not None
+            except Exception:
+                logger.exception("Model %s: drifting-now list failed", model)
+                failed.append("drifting-now list")
             verdict = None
             try:
-                verdict = self._compute_verdict(model, cutoff, status, recent)
+                verdict = self._compute_verdict(model, cutoff, status, recent, focus=focus_entry)
             except Exception:
                 logger.exception("Model %s: verdict failed", model)
                 failed.append("verdict")
@@ -503,19 +843,34 @@ class ModelPage(PageBase):
                 failed.append("process findings")
                 findings_error = f"{type(exc).__name__}: {exc}"
             inactive = {}                  # {model: newest trim file, or None} when it is inactive
+            is_inactive = None             # None: could not be worked out (the header says nothing)
             try:
                 # Worked out on every load, never read from cached findings (F5, James 2026-09-25):
                 # a model turns inactive when OTHER models' newer files move the fleet forward.
                 activity = load_activity(self.app.db)
-                if activity.is_inactive(model):
+                is_inactive = activity.is_inactive(model)
+                if is_inactive:
                     inactive = {model: activity.last_trimmed(model)}   # None: no trims on record
             except Exception:
                 logger.exception("Model %s: last-trimmed date failed", model)
                 failed.append("last-trimmed date")
+            # ---- the header line (layout C): the status word and the 90-day pass rate ----------
+            # (on_focus, loaded with the verdict above.)
+            facts = None
+            try:
+                facts = header_facts(self.app.db, model)
+            except Exception:
+                logger.exception("Model %s: 90-day pass rate failed", model)
+                failed.append("90-day pass rate")
+            flagged = (None if (status is None or "drift status" in failed)
+                       else status.overall_tier > DriftTier.STABLE)
+            word = status_word(detector_flagged=flagged, on_focus_list=on_focus,
+                               inactive=is_inactive, last_trimmed=inactive.get(model))
+            pct_text, detail_text = header_texts(facts)
             if findings_data is not None:
-                # The final-test predictor's own AUC, set beside loss_origin's on the Findings
-                # tab (spec ruling 2). Its own guard: a failed read is named on the tab, and it
-                # must not cost the tab the findings themselves.
+                # The final-test predictor's own AUC, set beside loss_origin's in the fold under
+                # "Worth changing" (spec ruling 2). Its own guard: a failed read is named there,
+                # and it must not cost the fold the findings themselves.
                 try:
                     findings_data["predictor_auc"] = self.app.db.get_predictor_auc(model)
                 except Exception as exc:
@@ -536,34 +891,31 @@ class ModelPage(PageBase):
                         logger.exception("Model %s: %s render failed", model, what)
 
                 if status:
-                    _try("pills", lambda: self._pill_row.set_status(status, recent_means=recent))
                     _try("drift tab", lambda: self._drift_tab.set_status(status, recent_means=recent))
                 else:
                     # The drift-status loader failed (or genuinely has nothing
                     # yet) — reset to the just-constructed look rather than
-                    # skipping the update, or the PREVIOUS model's pills and
-                    # drift rows would keep showing under this model's name.
-                    _try("pills", lambda: self._pill_row.clear())
+                    # skipping the update, or the PREVIOUS model's drift rows
+                    # would keep showing under this model's name.
                     _try("drift tab", lambda: self._drift_tab.clear())
                 _try("baseline info", lambda: self._drift_tab.set_baseline_info(requal))
                 _try("left out", lambda: self._drift_tab.set_exclusions(left_out))
-                _try("pill select", lambda: self._pill_row.set_selected(chosen))
+                _try("header", lambda: self._set_header(model, word, pct_text, detail_text))
                 # Always set — never left showing a PREVIOUS model's verdict when this
-                # model's verdict failed to compute (M1). The old `_verdict` label is gone;
-                # its text is now the page CAPTION (design doc item 1: "Caption = the
-                # drift-watch verdict sentence").
-                # ...and never a verdict built on a drift status that FAILED to load:
-                # _compute_verdict does not raise on status=None, it answers "NOT TRAINED --
-                # run drift training in Settings" -- confident, specific, and false when the
-                # real reason is a crashed query. The banner below says what happened.
+                # model's verdict failed to compute (M1). The verdict is Summary's
+                # headline now (layout C; it was the page caption, and before that the
+                # _verdict label) -- and never a verdict built on a drift status that
+                # FAILED to load: _compute_verdict does not raise on status=None, it
+                # answers "NOT TRAINED -- run drift training in Settings" -- confident,
+                # specific, and false when the real reason is a crashed query. The banner
+                # below says what happened. (An inactive model's "Inactive · last trimmed"
+                # is the header's status word, set above.)
                 shown = verdict if (verdict and "drift status" not in failed) else None
-                caption = shown[0] if shown else "—"
-                if inactive:
-                    # Starts with it (James: labelled, never hidden) -- the verdict still follows.
-                    caption = inactive_caption(inactive[model]) + (f"  ·  {shown[0]}" if shown else "")
-                _try("caption", lambda: self.set_caption(caption))
+                _try("headline", lambda: self._set_headline(shown))
+                _try("also moving", lambda: self._set_also_moving(
+                    status if "drift status" not in failed else None, chosen, recent))
                 # Load banner first, spec banner second: both pack with
-                # before=self._worth_section (a fixed anchor, never each other -- see
+                # before=self._headline_box (a fixed anchor, never each other -- see
                 # _set_load_banner / _set_spec_banner), and pack(before=X) always lands a
                 # widget immediately next to X -- so calling load then spec puts spec
                 # (packed second) closer to X, i.e. load (an error) leads and spec follows
@@ -572,6 +924,8 @@ class ModelPage(PageBase):
                 _try("spec banner", lambda: self._set_spec_banner(spec))
                 _try("worth changing", lambda: self._set_findings_section(findings_data, failed,
                                                                           inactive=inactive))
+                _try("findings fold", lambda: self._set_findings_fold(findings_data,
+                                                                      findings_error))
                 _try("lot selector", lambda: self._set_lot_choices(lots, lot_label))
                 _try("stats table", lambda: self._stats_table.set_stats(
                     stats, lot_stats=lot_stats, verdicts=verdicts,
@@ -588,6 +942,8 @@ class ModelPage(PageBase):
                 # computed yet" line under the banner that names the crash (facelift F4).
                 _try("findings tab", lambda: self._findings_tab.set_data(
                     findings_data, failed=findings_error, inactive=inactive))
+                # Last: a tab= route's part is in place only now that everything above is drawn.
+                _try("route", lambda: self._apply_pending_scroll(gen))
             if sync:
                 apply()                 # already on the Tk thread — post nothing
             else:
@@ -639,13 +995,12 @@ class ModelPage(PageBase):
         needs no banner, the other is an unanswered question, and dressing an
         unanswered question as a warning is how a warning stops being believed.
 
-        `before=self._worth_section`: a fixed, always-present sibling (never
-        `self._verdict` -- that label is gone, its text is the page caption
-        now) so pack() re-inserts this banner in the same place -- directly
-        above "Worth changing" -- every time it is shown again, instead of
-        re-appending it at the bottom of the body. See the load-then-spec
-        call order in apply() for how the two banners end up ordered
-        load-first when both fire on the same pass.
+        `before=self._headline_box`: a fixed, always-present sibling at the top
+        of Summary, so pack() re-inserts this banner in the same place --
+        directly above the verdict it qualifies -- every time it is shown
+        again, instead of re-appending it at the foot of the tab. See the
+        load-then-spec call order in apply() for how the two banners end up
+        ordered load-first when both fire on the same pass.
         """
         if comparison is None or comparison.status != "differs":
             self._spec_banner.pack_forget()
@@ -659,7 +1014,7 @@ class ModelPage(PageBase):
                   "positions."))
         self._spec_banner.pack(side="top", fill="x",
                                pady=(0, self.theme.SPACE_SM),
-                               before=self._worth_section)
+                               before=self._headline_box)
 
     def _set_load_banner(self, failed) -> None:
         """Name every loader that raised this pass, so a crash never reads as
@@ -667,9 +1022,10 @@ class ModelPage(PageBase):
         see the module docstring / code review 2026-09-20). `failed` is a
         plain list built on the worker thread; this method only reads it.
 
-        `before=self._worth_section`, same anchor as `_set_spec_banner` and
-        the same reason: pack() would otherwise re-append the label at the
-        bottom of the body every time it is shown again.
+        At the top of Summary (layout C), `before=self._headline_box` -- same
+        anchor as `_set_spec_banner` and the same reason: pack() would
+        otherwise re-append the label at the foot of the tab every time it is
+        shown again.
         """
         if not failed:
             self._load_banner.pack_forget()
@@ -680,15 +1036,16 @@ class ModelPage(PageBase):
                   "error, not an absence of data. The log has the details."))
         self._load_banner.pack(side="top", fill="x",
                                pady=(0, self.theme.SPACE_SM),
-                               before=self._worth_section)
+                               before=self._headline_box)
 
     def _set_findings_section(self, findings_data, failed, *, inactive=None) -> None:
-        """"Worth changing on this model" (design doc item 3): the model's findings, in
-        the same FindingsView the Findings page and the Findings tab draw, capped to 3
+        """"Worth changing on this model" (design doc item 3; Summary's, since layout C): the
+        model's findings, in the same FindingsView the Findings page draws, capped to 3
         rows across the three ACTIONABLE groups (_WORTH_CHANGING_GROUPS) -- "history"
-        (recipe changes, already happened) and "other" stay off it, one click away on
-        the Findings tab. `findings_data` is the SAME dict the Findings tab gets (built
-        once in _reload's work()); this is a second consumer of it, not a second load.
+        (recipe changes, already happened) and "other" stay off it, one click away in the
+        fold under it, which draws ONLY them (FindingsTab's shown_elsewhere): one view of
+        the findings, not two. `findings_data` is the SAME dict the fold gets (built once
+        in _reload's work()); this is a second consumer of it, not a second load.
 
         Rebuilt whole on every apply(), same as FindingsView._render() and
         FindingsTab.set_data() do -- the header's count can only ever agree with the
@@ -723,6 +1080,9 @@ class ModelPage(PageBase):
             child.destroy()
         self._worth_view = None
         if "process findings" in (failed or []):
+            # Nothing to say -- but one child, so the section collapses instead of keeping the
+            # height of what it last drew (a Tk frame whose last child goes keeps its size).
+            ctk.CTkFrame(self._worth_section, height=1, fg_color="transparent").pack(fill="x")
             return
         body = ctk.CTkFrame(self._worth_section, fg_color="transparent")
         body.pack(fill="x")
@@ -759,10 +1119,88 @@ class ModelPage(PageBase):
                             rows_per_group=3, groups=_WORTH_CHANGING_GROUPS)
         view.pack(fill="x")
         view.set_findings(findings, inactive=inactive)        # {model: last trimmed} when inactive
-        blocks.link_button(body, t, "See all in the Findings tab",
-                           lambda: self._select_tab(_FINDINGS_TAB_NAME)
-                           ).pack(anchor="w", padx=t.SPACE_XS, pady=(t.SPACE_XS, 0))
         self._worth_view = view
+
+    # ---- the header line, the headline, "Also moving" (layout C) ----
+    def _set_header(self, model, word, pct_text, detail_text) -> None:
+        """The header line, from the worker's results. A word the page could not work out is
+        blank (status_word), never a guess; Drifting carries the worse/fail colour WITH its word."""
+        t = self.theme
+        tone = {"Drifting": t.CHECK, "Steady": t.TEXT_PRIMARY}.get(word, t.TEXT_SECONDARY)
+        self._model_title.configure(text=model)
+        self._status_word.configure(text=word or "", text_color=tone)
+        self._pass_pct.configure(text=pct_text)
+        self._header_detail.configure(text=detail_text)
+        self.after_idle(self._rewrap_header)        # the words beside it may have changed width
+
+    def _set_headline(self, shown) -> None:
+        """Summary's first line: the verdict's first clause, in ONE sentence -- the page's own
+        verdict wording (_compute_verdict) -- and its evidence clauses, quieter, beneath. "—"
+        when there is no verdict to show (it failed, or rests on a load that did)."""
+        t = self.theme
+        text, color = shown if shown else ("—", t.TEXT_PRIMARY)
+        head, _sep, rest = text.partition(_CLAUSE)
+        self._headline.configure(text=head, text_color=color)
+        self._headline_detail.configure(text=rest)
+
+    def _set_also_moving(self, status, charted, recent) -> None:
+        """'Also moving': one line per OTHER signal above stable (also_moving) -- label, baseline →
+        last lot, ↑/↓ -- each a click that charts it above. Nothing at all when nothing else moves,
+        or when the drift status did not load (the banner names that; "nothing moving" over a
+        crashed load would be a failure looking like a result). Rebuilt on every apply()."""
+        t = self.theme
+        for child in self._also_section.winfo_children():
+            child.destroy()
+        self._also_lines = {}
+        body = ctk.CTkFrame(self._also_section, fg_color="transparent", height=1)
+        body.pack(fill="x")           # one child always: an emptied frame keeps its old height
+        moving = also_moving(status, charted, recent, t.fmt_measure) if status is not None else []
+        if not moving:
+            return
+        blocks.group_header(body, t, "Also moving", len(moving)).pack(fill="x",
+                                                                      pady=(0, t.SPACE_XS))
+        key = ctk.CTkLabel(body, text="Baseline → last lot. Click a signal to chart it above.",
+                           font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w",
+                           justify="left")
+        key.pack(fill="x", padx=t.SPACE_SM, pady=(0, t.SPACE_XS))
+        blocks.wrap_to_width(key, body, padding=2 * t.SPACE_SM)   # `body` is rebuilt with it
+        for metric, text in moving:
+            self._also_lines[metric] = self._also_line(body, metric, text)
+
+    def _also_line(self, parent, metric: str, text: str) -> ctk.CTkFrame:
+        t = self.theme
+        line = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=t.RADIUS_SM)
+        line.pack(fill="x")
+        name = ctk.CTkLabel(line, text=metric_label(metric), font=t.font(t.SIZE_BODY),
+                            text_color=t.TEXT_PRIMARY, anchor="w")
+        name.pack(side="left", padx=(t.SPACE_SM, t.SPACE_MD), pady=t.SPACE_XS)
+        moved = ctk.CTkLabel(line, text=text, font=t.mono(t.SIZE_BODY),
+                             text_color=t.TEXT_SECONDARY, anchor="w")
+        moved.pack(side="left", pady=t.SPACE_XS)
+
+        def click(_event=None) -> None:
+            self._on_metric_select(metric)
+
+        def hover(on: bool) -> None:
+            line.configure(fg_color=t.ELEVATED if on else "transparent")
+
+        def leave(event) -> None:
+            # <Leave> fires when the pointer moves onto a CHILD label too (blocks.row's rule).
+            under = line.winfo_containing(event.x_root, event.y_root)
+            own = str(line)
+            if under is None or not (str(under) == own or str(under).startswith(own + ".")):
+                hover(False)
+
+        for w in (line, name, moved):
+            w.bind("<Button-1>", click, add="+")
+            w.bind("<Enter>", lambda _e: hover(True), add="+")
+            w.bind("<Leave>", leave, add="+")
+            try:
+                w.configure(cursor="hand2")
+            except Exception:             # some CTk widgets refuse a cursor; clicks still work
+                pass
+        line._on_click = click            # test hook: the real bound handler
+        return line
 
     # ---- headline chart: two views over ONE load ----
     def _set_chart_data(self, metric, spc, dates, values, baseline):
@@ -906,12 +1344,18 @@ class ModelPage(PageBase):
             baseline = (ms.baseline_mean, ms.baseline_std) if ms else (None, None)
         return [p[0] for p in pairs], [p[1] for p in pairs], baseline
 
-    def _compute_verdict(self, model, cutoff, status, recent_means) -> tuple:
+    def _compute_verdict(self, model, cutoff, status, recent_means, focus=None) -> tuple:
         """One-line answer to the daily question: (text, color).
 
         Drift state from the trained detectors; direction = window linearity
         yield vs the model's lifetime; difficulty = lifetime yield in plain
         words. Everything shown is verifiable on the tabs below it.
+
+        `focus`: the model's row on the "Drifting now" list (ml/spc.compute_focus_list),
+        or None. A model on it reads "Drifting" in the header (layout C) whatever the
+        detectors say, so when none of them is above stable -- or none is trained --
+        the state says what the LIST saw, in its own words: never "Holding" under a
+        "Drifting" header.
         """
         from sqlalchemy import case as _case, func as _f
         t = self.theme
@@ -956,6 +1400,10 @@ class ModelPage(PageBase):
             shift_txt = f"{worst[1]:+.1f}σ" if worst[1] is not None else "flagged"
             state_txt = f"Drifting — {_ml(worst[0])}: last lot {shift_txt} vs baseline lots"
             color = t.TIER_OOC if worst[3] == "OUT_OF_CONTROL" else t.TIER_DRIFT
+        if focus is not None and worst is None:
+            state_txt = (f"Drifting — lot fail rate {focus.p_base * 100:.0f}% → "
+                         f"{focus.p_recent * 100:.0f}%, {focus.verdict}")
+            color = t.TIER_OOC
 
         parts = [state_txt]
         try:
@@ -1216,10 +1664,15 @@ class ModelPage(PageBase):
         render()
         pop.after(50, search.focus_set)
 
-    def _on_pill_click(self, metric):
+    def _on_metric_select(self, metric):
+        """A signal clicked -- an "Also moving" line, or a row of "All 12 signals": chart it. Back
+        to the top of Summary, where the chart is."""
         self._user_picked_metric = True        # explicit choice; don't auto-override it
         self._current_metric = metric
-        self._pill_row.set_selected(metric)
+        try:
+            self._summary._parent_canvas.yview_moveto(0.0)    # CTk 5.2.2's own canvas (pinned)
+        except (tkinter.TclError, AttributeError):
+            pass
         self._reload()
 
     def _on_window_change(self, choice):

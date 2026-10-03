@@ -18,62 +18,78 @@ def test_consume_model_route_full_without_focus(make_app):
     assert app.consume_model_route_full() == ("M2", None)
 
 
-def test_showing_a_model_selects_the_requested_tab(make_app):
-    """Task 7: the Findings page's opened-row button routes here with tab="findings" --
-    the page must land on its Findings tab, not whichever tab was last selected."""
+# ---- Layout C (Graphite redesign, 2026-10-02): a header over four tabs ----------------------------
+# James picked layout C ("i like c") from three layouts drawn on 8504-2's real runs: Summary · Units ·
+# Final test · History. These keep what the seven-tab routing tests proved -- a route lands where it
+# asks, a page with no tab request is left alone, an unknown name is ignored, never raised -- with
+# each of the old tab names mapped to where its content went.
+
+def _open_on(make_app, model="HOT", tab=None):
+    """The Model page shown for `model` through the real route, its background reload suppressed."""
     app = make_app()
-    app.set_model_route("HOT", tab="findings")
+    app.set_model_route(model, tab=tab)
     page = app.page_container.get_page("model")
     page._reload = lambda **kw: None            # suppress the background DB reload -- irrelevant here
     app.show_page("model")
     del page._reload
-    assert page._tabs.get() == "Findings"
+    return app, page
 
 
-def test_showing_a_model_without_a_tab_request_leaves_the_tab_alone(make_app):
-    app = make_app()
-    app.set_model_route("HOT")
-    page = app.page_container.get_page("model")
-    page._reload = lambda **kw: None
-    app.show_page("model")
-    del page._reload
-    assert page._tabs.get() == "Drift metrics"   # CTkTabview's own default: the first tab added
-
-
-def test_an_unknown_tab_name_is_ignored_not_a_crash(make_app):
-    app = make_app()
-    app.set_model_route("HOT", tab="no-such-tab")
-    page = app.page_container.get_page("model")
-    page._reload = lambda **kw: None
-    app.show_page("model")                       # must not raise
-    del page._reload
-    assert page._tabs.get() == "Drift metrics"
-
-
-def test_the_seven_tabs_are_sentence_case_in_their_established_order(make_app):
-    """Facelift step 2 Task 3, design doc §1 item 6: sentence case, same order as before --
-    only the multi-word Title Case names change ("Units"/"History"/"Findings" are already
-    one word, so sentence case leaves them alone). _name_list is CTkTabview's own record of
-    tab names in the order add() was called, which is the order the segmented button shows
-    them in."""
-    app = make_app()
-    app.set_model_route("HOT")
-    page = app.page_container.get_page("model")
-    page._reload = lambda **kw: None
-    app.show_page("model")
-    del page._reload
-    assert page._tabs._name_list == [
-        "Drift metrics", "Smoothness", "Units", "Final test units",
-        "Trim vs final test", "History", "Findings"]
-    # Step 1(b): the rename must not disturb the Findings-tab route (consume_model_tab ->
-    # _select_tab) -- already pinned by test_showing_a_model_selects_the_requested_tab
-    # above ("Findings" is one word, untouched by sentence-casing), re-asserted here so this
-    # test alone documents both halves of the step 1(b) requirement in one place.
-    app.set_model_route("HOT", tab="findings")
+def _route_again(app, page, tab, model="HOT"):
+    """Route the ALREADY-OPEN page (PageContainer.show() no-ops on the current page)."""
+    app.set_model_route(model, tab=tab)
     page._reload = lambda **kw: None
     page.on_show()
     del page._reload
-    assert page._tabs.get() == "Findings"
+
+
+def test_the_four_tabs_are_summary_units_final_test_history_in_that_order(make_app):
+    """_name_list is CTkTabview's own record of tab names in the order add() was called -- the
+    order the segmented button shows them in."""
+    app, page = _open_on(make_app)
+    assert page._tabs._name_list == ["Summary", "Units", "Final test", "History"]
+
+
+def test_showing_a_model_without_a_tab_request_leaves_the_tab_alone(make_app):
+    app, page = _open_on(make_app)
+    assert page._tabs.get() == "Summary"         # CTkTabview's own default: the first tab added
+    page._tabs.set("History")
+    _route_again(app, page, None)
+    assert page._tabs.get() == "History"
+
+
+def test_an_unknown_tab_name_is_ignored_not_a_crash(make_app):
+    app, page = _open_on(make_app, tab="no-such-tab")        # must not raise
+    assert page._tabs.get() == "Summary"
+
+
+@pytest.mark.parametrize("route, tab", [
+    ("findings", "Summary"), ("Findings", "Summary"), ("drift", "Summary"),
+    ("Drift metrics", "Summary"), ("summary", "Summary"), ("units", "Units"),
+    ("smoothness", "Units"), ("final test", "Final test"), ("Final test units", "Final test"),
+    ("Trim vs final test", "Final test"), ("history", "History")])
+def test_every_old_tab_name_lands_on_the_tab_its_content_moved_to(make_app, route, tab):
+    """The seven old tab names and the four new ones, any case: Findings and Drift metrics moved into
+    Summary, Smoothness under Units, Final test units and Trim vs final test into Final test."""
+    app, page = _open_on(make_app)
+    page._tabs.set("History" if tab != "History" else "Units")     # somewhere else first
+    _route_again(app, page, route)
+    assert page._tabs.get() == tab
+
+
+def test_every_tab_route_in_the_code_is_one_the_model_page_knows():
+    """Every `set_model_route(..., tab="...")` anywhere in the app names a route the page maps -- a
+    caller written for the old seven tabs, or a new one, cannot fall through to "ignored"."""
+    import pathlib
+    import re
+    from laser_trim_analyzer.gui.v6.pages import model_page as mp
+    root = pathlib.Path(mp.__file__).resolve().parents[3]          # src/laser_trim_analyzer
+    names = set()
+    for path in root.rglob("*.py"):
+        names |= set(re.findall(r'set_model_route\([^)]*tab="([^"]+)"', path.read_text()))
+    assert names, "found no tab= route at all -- the search itself is broken"
+    assert {n: mp.route_destination(n) for n in names if mp.route_destination(n) is None} == {}
+    assert mp.route_destination("no-such-tab") is None
 
 
 def test_track_metric_columns_public_and_linearity_maps_to_shifted():
@@ -95,7 +111,7 @@ def test_themed_tab_view(tk_root):
     assert tv.get() == "Units"
 
 
-# ---- Task 3: MetricPillRow ------------------------------------------------
+# ---- Drift status fixtures (the MetricPillRow they were written for is gone: layout C) -----------
 
 def _status(model="M1", **tiers):
     """Build a ModelDriftStatus; pass metric=Tier kwargs to override specific metrics."""
@@ -113,35 +129,13 @@ def _status(model="M1", **tiers):
                             worst_alert_type=None, per_metric=per, last_processed=datetime.now())
 
 
-def test_pill_row_has_eight_pills(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
-    from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
-    row = MetricPillRow(tk_root, theme=ThemeManager(), on_pill_click=lambda _: None)
-    row.set_status(_status())
-    assert set(row._pills) == set(WATCHED_METRICS)
-
-
-def test_pill_shows_readable_label(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
-    row = MetricPillRow(tk_root, theme=ThemeManager(), on_pill_click=lambda _: None)
-    row.set_status(_status())
-    assert row._pills["untrimmed_resistance"]._name_label.cget("text") == "Untrimmed resistance"
-
-
-def test_pill_click_and_select(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
-    got = []
-    row = MetricPillRow(tk_root, theme=ThemeManager(), on_pill_click=got.append)
-    row.set_status(_status())
-    # DEVIATION: sigma_gradient is no longer a watched metric (replaced by
-    # untrimmed_sigma_gradient + composite_trim_risk_score). Use a real pill key.
-    row._pills["untrimmed_sigma_gradient"]._on_click()
-    assert got == ["untrimmed_sigma_gradient"]
-    row.set_selected("linearity_error")
-    assert row._selected_metric == "linearity_error"
+def _drifting(model="HOT", worst="linearity_error", **tiers):
+    """A ModelDriftStatus the detector FLAGS: `tiers` as in _status, the overall tier the worst of
+    them, and `worst` the metric the page charts."""
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    status = _status(model, **{worst: DriftTier.OUT_OF_CONTROL, **tiers})
+    status.overall_tier, status.worst_metric = DriftTier.OUT_OF_CONTROL, worst
+    return status
 
 
 # ---- Task 4: FocusChart ---------------------------------------------------
@@ -822,8 +816,12 @@ def test_drift_tab_metric_names_fit_their_column_at_every_scaling(tk_root, scale
     ctk.set_widget_scaling(scale)
     tk_root._set_scaled_min_max()          # a live window is pinned for a second otherwise
     try:
-        tab = DriftMetricsTab(tk_root, theme=ThemeManager(), on_metric_select=lambda _: None)
-        tab.pack(fill="both", expand=True)
+        # In a scrolling frame, as on the page (layout C: the table unfolds inside the Summary
+        # tab's scroll): the table is as tall as its rows, and this test is about their WIDTH.
+        host = ctk.CTkScrollableFrame(tk_root)
+        host.pack(fill="both", expand=True)
+        tab = DriftMetricsTab(host, theme=ThemeManager(), on_metric_select=lambda _: None)
+        tab.pack(fill="x")
         tab.set_status(_status())
         try:
             tk_root.attributes("-alpha", 0.0)
@@ -837,6 +835,49 @@ def test_drift_tab_metric_names_fit_their_column_at_every_scaling(tk_root, scale
         hits = [h for h in find_clipped_text_widgets(tab)
                 if h.text.startswith(("Escape rate", "Sigma gradient", "Final-test fail"))]
         assert not hits, [h.line() for h in hits]
+    finally:
+        ctk.set_widget_scaling(1.0)
+        tk_root._set_scaled_min_max()
+        tk_root.withdraw()
+
+
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_an_old_lots_alert_fits_its_column_at_every_scaling(tk_root, scale):
+    """2026-10-02: a metric whose newest lot is too old to alarm says "No lot since Sep 2016" in
+    the Alert column; render_pages.py --audit found it cut at 1280x720 (asked 141-144 px, given
+    138) -- the column had only an even share of what the name and baseline columns leave. At the
+    1000 units the table gets on the page at 1280x720, at each scaling."""
+    import pathlib
+    import sys
+    import customtkinter as ctk
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    from render_pages import find_clipped_text_widgets
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
+
+    status = _status()
+    for ms in status.per_metric.values():
+        ms.is_recent, ms.newest_lot = False, datetime(2016, 9, 1)
+    ctk.set_widget_scaling(scale)
+    tk_root._set_scaled_min_max()
+    try:
+        host = ctk.CTkScrollableFrame(tk_root)
+        host.pack(fill="both", expand=True)
+        tab = DriftMetricsTab(host, theme=ThemeManager(), on_metric_select=lambda _: None)
+        tab.pack(fill="x")
+        tab.set_status(status)
+        try:
+            tk_root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        tk_root.geometry(f"{round(1000 * scale)}x600+20000+20000")
+        tk_root.deiconify()
+        for _ in range(3):
+            tk_root.update_idletasks()
+            tk_root.update()
+        texts = [h for h in find_clipped_text_widgets(tab) if h.text.startswith("No lot since")]
+        assert not texts, [h.line() for h in texts]
+        assert any(r.winfo_viewable() for r in tab._rows.values())    # it really was drawn
     finally:
         ctk.set_widget_scaling(1.0)
         tk_root._set_scaled_min_max()
@@ -878,8 +919,11 @@ def test_the_drift_tabs_columns_follow_a_live_change_of_scaling(tk_root):
             tk_root.update_idletasks()
             tk_root.update()
 
-    tab = dm.DriftMetricsTab(tk_root, theme=ThemeManager(), on_metric_select=lambda _: None)
-    tab.pack(fill="both", expand=True)
+    # Hosted as on the page (layout C): inside a scrolling frame, as tall as its rows.
+    host = ctk.CTkScrollableFrame(tk_root)
+    host.pack(fill="both", expand=True)
+    tab = dm.DriftMetricsTab(host, theme=ThemeManager(), on_metric_select=lambda _: None)
+    tab.pack(fill="x")
     tab.set_status(_status())                          # rows built at 100%
     try:
         tk_root.attributes("-alpha", 0.0)
@@ -1260,11 +1304,12 @@ def test_model_page_banners_a_trim_vs_ft_spec_mismatch(make_app):
         "cross-station numbers (escapes, Gap) compare different "
         "requirements at those positions.")
     assert page._spec_banner.winfo_manager() == "pack"
-    # It qualifies the page's verdict (now the caption, not a body label), so it must
-    # stay pinned directly above "Worth changing" -- pack() would otherwise re-append
-    # it at the bottom of the body when re-shown.
+    # It qualifies the page's verdict, so it stays pinned at the top of Summary, directly above
+    # the verdict sentence (layout C) -- pack() would otherwise re-append it at the bottom of the
+    # tab when re-shown.
     slaves = page._spec_banner.master.pack_slaves()
-    assert slaves.index(page._spec_banner) == slaves.index(page._worth_section) - 1
+    assert page._spec_banner.master is page._summary
+    assert slaves.index(page._spec_banner) == slaves.index(page._headline_box) - 1
 
 
 def test_model_page_says_nothing_when_the_stations_agree_or_are_unknown(make_app):
@@ -1651,13 +1696,20 @@ def test_selecting_a_lot_adds_this_lot_lines_and_a_verdict(make_app):
 
 
 def test_existing_model_page_content_is_still_there(make_app):
-    """Nothing currently reachable may be lost (app-shape spec §2)."""
+    """Nothing currently reachable may be lost (app-shape spec §2) -- layout C moves it one level
+    down: every part is still built, each on the tab its content belongs to."""
     app, page = _stats_app(make_app)
-    for attr in ("_focus_chart", "_pill_row", "_drift_tab", "_smoothness_tab",
-                 "_units_tab", "_ft_units_tab", "_trimft_tab", "_history_tab",
-                 "_predictor", "_worth_section"):
-        assert getattr(page, attr) is not None
-    # The old _verdict label is gone -- its text is the page caption now (Task 2).
+    homes = {"Summary": ("_load_banner", "_spec_banner", "_headline", "_chart_toggle",
+                         "_focus_chart", "_also_section", "_worth_section", "_findings_tab",
+                         "_drift_tab"),
+             "Units": ("_stats_table", "_units_tab", "_smoothness_tab"),
+             "Final test": ("_ft_units_tab", "_trimft_tab", "_predictor"),
+             "History": ("_history_tab",)}
+    for tab, attrs in homes.items():
+        for attr in attrs:
+            widget = getattr(page, attr)
+            assert str(widget).startswith(str(page._tabs.tab(tab)) + "."), (attr, tab)
+    # The old _verdict label is gone (Task 2); its text is Summary's headline now (layout C).
     assert not hasattr(page, "_verdict")
 
 
@@ -1883,26 +1935,30 @@ def _worth_app(make_app, model="HOT", *, finding=True):
     return app, page
 
 
-def test_caption_carries_the_verdict_sentence(make_app, monkeypatch):
-    """The old _verdict body label is gone; its text is now the page caption
-    (PageBase.set_caption), so it inherits set_caption's rule: configured on every
-    apply, "—" when the verdict could not be computed (M1, unchanged)."""
+def test_summary_opens_on_the_verdict_in_one_sentence(make_app, monkeypatch):
+    """Layout C: the verdict leaves the page caption for the top of Summary -- its first clause is
+    the headline, ONE sentence; the evidence clauses after it are a quieter line beneath. Configured
+    on every apply, "—" when the verdict could not be computed (M1, unchanged)."""
     app, page = _worth_app(make_app, finding=False)
     monkeypatch.setattr(page, "_compute_verdict", lambda *a, **k: (
-        "Holding — invented verdict sentence for the test", page.theme.TEXT_PRIMARY))
+        "Holding — invented verdict sentence for the test  ·  invented evidence  ·  more of it",
+        page.theme.TEXT_PRIMARY))
     page.reload_now()
-    assert page._caption.cget("text") == "Holding — invented verdict sentence for the test"
+    assert page._headline.cget("text") == "Holding — invented verdict sentence for the test"
+    assert page._headline_detail.cget("text") == "invented evidence  ·  more of it"
+    assert page._summary.pack_slaves()[0] is page._headline_box     # first on Summary (no banner)
+    assert page._caption.cget("text") == "" and page._caption.winfo_manager() == ""
     assert not hasattr(page, "_verdict")
 
 
-def test_worth_changing_header_precedes_pills_and_stats_table(make_app):
+def test_worth_changing_is_on_summary_after_the_chart(make_app):
     app, page = _worth_app(make_app)
     texts = [w.cget("text") for w in _all_labels(page._worth_section)]
     assert any("Worth changing on this model" in t for t in texts)
 
-    slaves = page._body.pack_slaves()
-    assert slaves.index(page._worth_section) < slaves.index(page._pill_row)
-    assert slaves.index(page._worth_section) < slaves.index(page._stats_table)
+    slaves = page._summary.pack_slaves()
+    assert slaves.index(page._focus_chart) < slaves.index(page._also_section) \
+        < slaves.index(page._worth_section) < slaves.index(page._signals_fold)
 
     view = page._worth_view
     assert view is not None
@@ -2025,16 +2081,20 @@ def test_a_failed_findings_load_banners_never_the_quiet_line(make_app, monkeypat
 def test_one_teal_button_on_the_model_page_whichever_tab_is_open(make_app):
     """I4 (final review, 2026-09-24): with the Units tab open the page drew THREE teal-filled
     buttons -- the header's "Export model to Excel" plus the tab's own "Export to Excel" and
-    "Search". At most one per screen: the header's stays teal, the tab's are outlined."""
+    "Search". At most one per screen: the header's stays teal, the tab's are outlined. Layout C
+    adds two folds to Summary; checked folded and unfolded."""
     import customtkinter as ctk
     app, page = _worth_app(make_app)
     t = page.theme
-    for name in list(page._tabs._name_list):
-        page._tabs.set(name)
-        app.update_idletasks()
-        teal = [w.cget("text") for w in _all_labels(page)
-                if isinstance(w, ctk.CTkButton) and w.cget("fg_color") == t.ACCENT]
-        assert teal == ["Export model to Excel"], f"{name}: {teal}"
+    for unfolded in (False, True):
+        page._set_findings_open(unfolded)
+        page._set_signals_open(unfolded)
+        for name in list(page._tabs._name_list):
+            page._tabs.set(name)
+            app.update_idletasks()
+            teal = [w.cget("text") for w in _all_labels(page)
+                    if isinstance(w, ctk.CTkButton) and w.cget("fg_color") == t.ACCENT]
+            assert teal == ["Export model to Excel"], f"{name}, unfolded={unfolded}: {teal}"
 
 
 def test_spec_and_load_banners_are_check_tone_blocks_hidden_when_quiet(make_app):
@@ -2046,35 +2106,36 @@ def test_spec_and_load_banners_are_check_tone_blocks_hidden_when_quiet(make_app)
         assert banner.winfo_manager() == ""        # nothing to say on a healthy load
 
 
-def test_sigma_key_is_one_line_full_explanation_moved_to_drift_tab(make_app):
+def test_the_pills_and_their_one_line_key_are_gone_the_full_key_is_in_all_12_signals(make_app):
+    """Layout C removes the twelve metric pills and the one-line σ key under them; their numbers
+    live in "All 12 signals" (and the Units tab), which carries the full key."""
+    import importlib.util
     app, page = _worth_app(make_app, finding=False)
-    assert page._sigma_key.cget("text") == (
-        "σ = how far the last lot sits from this model's history of lots — a "
-        "drift signal, not a spec.")
-    slaves = page._body.pack_slaves()
-    assert slaves.index(page._sigma_key) == slaves.index(page._pill_row) + 1
-
+    assert not hasattr(page, "_pill_row") and not hasattr(page, "_sigma_key")
+    assert importlib.util.find_spec("laser_trim_analyzer.gui.v6.widgets.metric_pill_row") is None
     full = page._drift_tab._sigma_key_lbl.cget("text")
     assert "baseline of historical lot medians" in full
     assert "Drift signal, not a spec." in full
+    assert str(page._drift_tab).startswith(str(page._signals_fold) + ".")
 
 
-def test_tabs_have_a_minimum_height_so_a_selected_tab_never_collapses(make_app):
-    """render_pages.py --audit found 6607's Smoothness tab SQUEEZED OUT (unmapped) at
-    1280x720 once "Worth changing" made everything above the tabs taller than the window.
-    CTkTabview does not propagate the selected tab's own content size upward
-    (customtkinter's ctk_tabview.py: `_configure_grid` grids the tab frame `sticky="nsew"`
-    into a `weight=1` row, so it gets exactly however tall pack() allocates the tabview
-    itself -- nothing about its content). `expand=True` only fills LEFTOVER room in the
-    scrollable body once every other child has its natural size, which used to always be
-    positive; once it is not, pack falls back to CTkTabview's own un-set default
-    (measured ~250px), too short for even its button row plus a usable content row.
-    A minimum height keeps expand=True's "grow when there's room" behaviour while giving
-    every tab a floor it can never be squeezed under -- 520 comfortably held every tab's
-    content in the audited data (measured 404-684px per tab)."""
-    app = make_app()
-    page = app.page_container.get_page("model")
-    assert page._tabs.cget("height") >= 520
+def test_no_tab_can_be_squeezed_the_tab_view_fills_the_page(make_app):
+    """render_pages.py --audit once found 6607's Smoothness tab SQUEEZED OUT at 1280x720: the
+    tab view sat inside the page's scrolling body, under everything else, and CTkTabview gives its
+    selected tab only the height it is itself given. Layout C puts the tab view directly under the
+    header line, filling the page, and scrolls INSIDE each tab -- so every tab, selected, has the
+    page's height whatever it holds. Measured on a mapped window at 1280x720."""
+    import customtkinter as ctk
+    app, page = _worth_app(make_app)
+    _mapped_offscreen(app, 1280, 720)
+    try:
+        for name in page._tabs._name_list:
+            page._tabs.set(name)
+            _pump(app)
+            assert page._tabs.tab(name).winfo_height() >= 400, (name, page._tabs.tab(name).winfo_height())
+    finally:
+        app.withdraw()
+    assert not isinstance(page._tabs.master, ctk.CTkScrollableFrame)
 
 
 # ---- F4 (2026-09-25): switching tabs ---------------------------------------------------------
@@ -2302,24 +2363,25 @@ def _inactive_model_app(make_app):
     return app, page
 
 
-def test_an_inactive_models_caption_says_so_first_and_its_findings_carry_the_tag(make_app):
+def test_an_inactive_models_header_says_so_and_its_findings_carry_the_tag(make_app):
+    """Layout C: "Inactive · last trimmed Mon YYYY" is the header's status word (it led the page
+    caption before); the verdict is still Summary's headline, and the findings rows are tagged."""
     app, page = _inactive_model_app(make_app)
-    caption = page._caption.cget("text")
-    assert caption.startswith("Inactive — last trimmed Mar 2023"), caption
-    assert len(caption) > len("Inactive — last trimmed Mar 2023")       # the verdict still follows
     tag = "Inactive · last trimmed Mar 2023"
+    assert page._status_word.cget("text") == tag
+    assert page._headline.cget("text") not in ("", "—")               # the verdict still follows
     assert tag in _worth_texts(page)
-    assert tag in [w.cget("text") for w in _all_labels(page._findings_tab)]
     assert "last-trimmed date" not in page._load_banner.cget("text")
 
 
 def test_an_active_models_page_carries_no_inactive_label(make_app):
     app, page = _worth_app(make_app)
-    assert not page._caption.cget("text").startswith("Inactive")
+    assert not page._status_word.cget("text").startswith("Inactive")
     assert not any(str(t).startswith("Inactive") for t in _worth_texts(page))
 
 
 def test_when_the_last_trimmed_date_cannot_be_read_the_page_says_so(make_app, monkeypatch):
+    """...and the header claims no status at all: Steady would hide an Inactive it could not see."""
     import laser_trim_analyzer.gui.v6.pages.model_page as mp
 
     def boom(db):
@@ -2327,10 +2389,10 @@ def test_when_the_last_trimmed_date_cannot_be_read_the_page_says_so(make_app, mo
     monkeypatch.setattr(mp, "load_activity", boom)
     app, page = _inactive_model_app(make_app)
     assert "last-trimmed date" in page._load_banner.cget("text")
-    assert not page._caption.cget("text").startswith("Inactive")
+    assert page._status_word.cget("text") == ""
 
 
-def test_a_model_never_trimmed_says_so_first_in_its_caption(make_app):
+def test_a_model_never_trimmed_says_so_in_its_header(make_app):
     from test_model_activity import NEWEST, _file
     app = make_app()
     _file(app.db, "LIVE", NEWEST)
@@ -2343,5 +2405,300 @@ def test_a_model_never_trimmed_says_so_first_in_its_caption(make_app):
     app.show_page("model")
     del page._reload
     page.reload_now()
-    assert page._caption.cget("text").startswith("Inactive — no trims on record")
+    assert page._status_word.cget("text") == "Inactive · no trims on record"
     assert "Inactive · no trims on record" in _worth_texts(page)
+
+
+# ---- Layout C (Graphite redesign, 2026-10-02): the header line ----------------------------------
+# Under the controls: the model, a status word (Drifting / Steady / Inactive · last trimmed Mon
+# YYYY), its 90-day linearity pass % with its units, and the lasers it ran on. The 90 days end at
+# the newest graded trim file in the database (the Overview's clock); a pass is PASS or WARNING out
+# of PASS + WARNING + FAIL (the app's headline yield), with ERROR / UNTRIMMED, future-dated files and
+# files marked suspect left out. Invented data throughout.
+
+_HDR_END = datetime(2026, 6, 30, 10, 0)
+
+
+def _hdr_file(db, model, when, status, system="B", quality=None, n=[0]):
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR, StatusType, SystemType
+    n[0] += 1
+    with db.session() as s:
+        s.add(DBAR(model=model, serial=f"{n[0]}", system=getattr(SystemType, system),
+                   filename=f"{model}_{n[0]}_{when:%m-%d-%Y}.xls", file_date=when,
+                   overall_status=getattr(StatusType, status),
+                   **({"data_quality": quality} if quality else {})))
+
+
+def _hdr_seed(db, model="HDR"):
+    """Nine graded trims in the window (8 pass, 1 fail; lasers 1 and 2) and six that must not count."""
+    for days, status, system in ((0, "PASS", "B"), (10, "PASS", "B"), (20, "PASS", "B"),
+                                 (31, "WARNING", "B"), (41, "FAIL", "B"), (51, "PASS", "A"),
+                                 (60, "PASS", "A"), (71, "WARNING", "A"), (81, "PASS", "A")):
+        _hdr_file(db, model, _HDR_END - timedelta(days=days), status, system)
+    _hdr_file(db, model, _HDR_END - timedelta(days=15), "FAIL", "B", quality="suspect")
+    _hdr_file(db, model, _HDR_END - timedelta(days=91), "FAIL", "C")          # before the window
+    _hdr_file(db, model, _HDR_END - timedelta(days=29), "ERROR", "B")         # not graded
+    _hdr_file(db, model, _HDR_END - timedelta(days=28), "UNTRIMMED", "B")     # not graded
+    _hdr_file(db, model, datetime.now() + timedelta(days=30), "FAIL", "B")    # future-dated
+    _hdr_file(db, model, _HDR_END + timedelta(days=15), "PASS", "B", quality="suspect")  # not the clock
+
+
+def test_the_90_day_pass_rate_counts_graded_trims_and_nothing_else(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.gui.v6.pages import model_page as mp
+    db = DatabaseManager(tmp_path / "hdr.db")
+    _hdr_seed(db)
+    facts = mp.header_facts(db, "HDR")
+    assert facts["end"] == _HDR_END
+    assert (facts["basis"], facts["units"], facts["passed"]) == ("trim", 9, 8)
+    assert facts["lasers"] == ["Laser 1 (LTS)", "Laser 2 (DLTS)"] and facts["lasers_in_window"]
+    assert mp.header_texts(facts) == (
+        "89%", "linearity pass · 9 units in the last 90 days · Laser 1 (LTS), Laser 2 (DLTS)")
+
+
+def test_the_header_line_shows_the_model_its_status_its_pass_rate_and_its_lasers(make_app):
+    app = make_app()
+    _hdr_seed(app.db)
+    app.set_model_route("HDR")
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    assert page._model_title.cget("text") == "HDR"
+    assert page._status_word.cget("text") == "Steady"
+    assert page._pass_pct.cget("text") == "89%"
+    assert page._header_detail.cget("text") == (
+        "linearity pass · 9 units in the last 90 days · Laser 1 (LTS), Laser 2 (DLTS)")
+    assert page._header_line.master is page._body                    # over the tabs, not in one
+    assert page._body.pack_slaves().index(page._header_line) < page._body.pack_slaves().index(page._tabs)
+
+
+def test_a_model_with_only_final_tests_shows_its_final_test_pass(tmp_path):
+    """The Overview's rule for 8506 (its trims are stored as 8506A/B): no trims, so the header's
+    number is its FINAL-TEST pass rate, and says so."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import FinalTestResult as DBFT, StatusType
+    from laser_trim_analyzer.gui.v6.pages import model_page as mp
+    db = DatabaseManager(tmp_path / "ft.db")
+    _hdr_file(db, "OTHER", _HDR_END, "PASS")                          # the trim clock
+    with db.session() as s:
+        for i, (days, status) in enumerate(((1, "PASS"), (5, "PASS"), (9, "PASS"), (13, "FAIL"),
+                                            (120, "FAIL"))):
+            s.add(DBFT(filename=f"ft_{i}.xls", model="FTONLY", serial=str(i),
+                       file_date=_HDR_END - timedelta(days=days),
+                       overall_status=getattr(StatusType, status)))
+    facts = mp.header_facts(db, "FTONLY")
+    assert (facts["basis"], facts["units"], facts["passed"]) == ("final test", 4, 3)
+    assert mp.header_texts(facts) == ("75%", "final-test pass · 4 units in the last 90 days")
+
+
+def test_a_model_with_nothing_in_the_last_90_days_says_so_and_where_it_last_ran(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.gui.v6.pages import model_page as mp
+    db = DatabaseManager(tmp_path / "old.db")
+    _hdr_file(db, "OTHER", _HDR_END, "PASS")
+    _hdr_file(db, "OLDM", _HDR_END - timedelta(days=400), "PASS", "C")
+    facts = mp.header_facts(db, "OLDM")
+    assert facts["units"] == 0
+    assert mp.header_texts(facts) == ("", "No units in the last 90 days · last ran on Laser 3 (LTS3)")
+
+
+def test_a_pass_rate_short_of_every_unit_never_rounds_up_to_100(tmp_path):
+    """Linearity is zero-tolerance: 299 of 300 is not "100%"."""
+    from laser_trim_analyzer.gui.v6.pages import model_page as mp
+    facts = {"basis": "trim", "units": 300, "passed": 299, "lasers": [], "lasers_in_window": True}
+    assert mp.header_texts(facts)[0] == "99.7%"
+    assert mp.header_texts(dict(facts, passed=300))[0] == "100%"
+    assert mp.header_texts(dict(facts, passed=263))[0] == "88%"
+
+
+@pytest.mark.parametrize("flagged, focus, inactive, word", [
+    (True, False, False, "Drifting"), (False, True, False, "Drifting"),
+    (True, None, None, "Drifting"),                   # known to drift, whatever failed beside it
+    (False, False, False, "Steady"),
+    (False, False, True, "Inactive · last trimmed Mar 2023"),
+    (None, False, False, None), (False, None, False, None), (False, False, None, None)])
+def test_the_status_word_never_claims_what_a_failed_load_could_not_see(flagged, focus, inactive, word):
+    from laser_trim_analyzer.gui.v6.pages import model_page as mp
+    assert mp.status_word(detector_flagged=flagged, on_focus_list=focus, inactive=inactive,
+                          last_trimmed=datetime(2023, 3, 20)) == word
+
+
+def test_a_model_on_the_drifting_now_list_is_drifting(make_app):
+    """Its last lot blew out (the FOCUS list's own rule), with no drift detector trained at all."""
+    app = make_app()
+    _seed(app.db, "HOT", fails_last=12)
+    page = _open_and_load(app, "HOT")
+    assert page._status_word.cget("text") == "Drifting"
+    assert page._status_word.cget("text_color") == page.theme.CHECK
+    # ...and the headline under it says what the list saw -- never "Holding" (or "Not trained")
+    # under a "Drifting" header.
+    headline = page._headline.cget("text")
+    assert headline.startswith("Drifting — lot fail rate 10% → 60%, failing ~"), headline
+
+
+def test_a_model_the_detector_flags_is_drifting(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+    monkeypatch.setattr(mp, "get_model_drift_status", lambda db, model: _drifting(model))
+    app = make_app()
+    _seed(app.db, "HOT")                                   # a steady fail rate: not on the list
+    page = _open_and_load(app, "HOT")
+    assert page._status_word.cget("text") == "Drifting"
+    assert page._headline.cget("text").startswith("Drifting — Linearity error: last lot")
+
+
+def test_a_steady_model_says_steady(make_app):
+    app = make_app()
+    _seed(app.db, "COOL")
+    page = _open_and_load(app, "COOL")
+    assert page._status_word.cget("text") == "Steady"
+
+
+@pytest.mark.parametrize("broken, named", [("get_model_drift_status", "drift status"),
+                                           ("compute_focus_list", "drifting-now list")])
+def test_a_status_the_page_could_not_work_out_is_blank_and_named(make_app, monkeypatch, broken, named):
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+
+    def boom(*a, **k):
+        raise RuntimeError("invented crash")
+    monkeypatch.setattr(mp, broken, boom)
+    app = make_app()
+    _seed(app.db, "COOL")
+    page = _open_and_load(app, "COOL")
+    assert page._status_word.cget("text") == ""
+    assert named in page._load_banner.cget("text")
+
+
+def _open_and_load(app, model):
+    app.set_model_route(model)
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    return page
+
+
+# ---- Layout C: Summary ----------------------------------------------------------------------------
+
+def test_also_moving_lists_exactly_the_other_signals_above_stable(make_app, monkeypatch):
+    """One line per OTHER signal above stable -- the charted one is the chart -- worst first, each
+    with its baseline → last lot; a click charts it above."""
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    status = _drifting("HOT", untrimmed_resistance=DriftTier.WARNING,
+                       resistance_change_percent=DriftTier.DRIFT)
+    monkeypatch.setattr(mp, "get_model_drift_status", lambda db, model: status)
+    app, page = _stats_app(make_app)
+    assert page._current_metric == "linearity_error"                 # the worst is charted
+    assert list(page._also_lines) == ["resistance_change_percent", "untrimmed_resistance"]
+    text = " | ".join(w.cget("text") for w in _all_labels(page._also_section))
+    assert "Also moving" in text and "Resistance change %" in text and "Untrimmed resistance" in text
+    assert "→" in text and "Linearity error" not in text
+    reloads = []
+    monkeypatch.setattr(page, "_reload", lambda **kw: reloads.append(page._current_metric))
+    page._also_lines["untrimmed_resistance"]._on_click()
+    assert page._current_metric == "untrimmed_resistance" and page._user_picked_metric
+    assert reloads == ["untrimmed_resistance"]
+
+
+def test_nothing_else_moving_draws_no_also_moving_section(make_app, monkeypatch):
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+    monkeypatch.setattr(mp, "get_model_drift_status", lambda db, model: _drifting(model))
+    app, page = _stats_app(make_app)
+    assert page._also_lines == {}
+    assert not [w.cget("text") for w in _all_labels(page._also_section) if w.cget("text")]
+    page.update_idletasks()
+    assert page._also_section.winfo_reqheight() <= 2                 # no gap where it would be
+
+
+def test_all_12_signals_is_folded_by_default_and_unfolds_in_place(make_app):
+    """Today's drift table, under one fold: the σ key, the "Left out of the drift check" line and
+    "Requalify baseline…" come with it."""
+    app, page = _worth_app(make_app, finding=False)
+    assert page._signals_toggle.cget("text") == "All 12 signals ▸"
+    assert page._drift_tab.winfo_manager() == ""                     # folded
+    page._signals_toggle.invoke()
+    assert page._drift_tab.winfo_manager() == "pack"
+    assert page._signals_toggle.cget("text") == "All 12 signals ▾"
+    slaves = page._signals_fold.pack_slaves()
+    assert slaves.index(page._drift_tab) == slaves.index(page._signals_toggle) + 1   # right under it
+    texts = [w.cget("text") for w in _all_labels(page._drift_tab)]
+    assert any(t.startswith("Left out of the drift check") for t in texts), texts
+    assert any("Drift signal, not a spec." in t for t in texts)
+    assert "Requalify baseline…" in texts
+    page._signals_toggle.invoke()
+    assert page._drift_tab.winfo_manager() == ""
+
+
+def test_worth_changing_is_one_view_the_fold_under_it_never_repeats_its_rows(make_app):
+    """Today's "Worth changing" section and Findings tab become ONE view: the section's rows, and
+    under them, folded, the rest of what the Findings tab showed -- what was measured, what changed
+    -- without the rows already drawn above."""
+    history = {"model": "HOT", "analyzer": "recipe_change", "category": "Recipe", "lever": "recipe",
+               "title": "Laser 1 (LTS): recipe changed from 4000 to 4100", "summary": "invented",
+               "n_units": 10, "tracks_per_year": None, "evidence": {}}
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {}},
+                           findings=[_WORTH_CHANGING_FINDING, history])
+    assert any("Incoming resistance: aim lower" in t for t in _worth_texts(page))
+    assert not any("What changed" in t for t in _worth_texts(page))
+    assert page._findings_toggle.winfo_manager() == "pack"
+    assert page._findings_tab.winfo_manager() == ""                  # folded
+    page._findings_toggle.invoke()
+    assert page._findings_tab.winfo_manager() == "pack"
+    fold = [w.cget("text") for w in _all_labels(page._findings_tab)]
+    assert not any("Incoming resistance: aim lower" in t for t in fold)    # one view, not two
+    assert "What was measured" in fold and "What changed" in fold
+    assert any("4000 → 4100" in t for t in fold)
+
+
+def test_a_model_never_worked_out_has_no_fold_to_open(make_app):
+    """NOT COMPUTED: the section already says so; a fold would only say it again."""
+    app, page = _worth_app(make_app, finding=False)
+    assert page._findings_toggle.winfo_manager() == ""
+
+
+def test_a_findings_route_lands_on_worth_changing_with_the_findings_unfolded(make_app):
+    """The Findings page's "Open" and Home's finding rows route with tab="findings": Summary, its
+    fold open, scrolled so "Worth changing" is in view -- pushed below the fold first."""
+    import customtkinter as ctk
+    app, page = _facts_app(make_app, {"tracks": 1, "errors": {}}, findings=[_WORTH_CHANGING_FINDING])
+    spacer = ctk.CTkFrame(page._summary, height=1500, fg_color="transparent")
+    spacer.pack(side="top", fill="x", before=page._headline_box)
+    _mapped_offscreen(app, 1280, 720)
+    try:
+        page._tabs.set("History")
+        _pump(app)
+        _route_again(app, page, "findings")
+        page.reload_now()
+        _pump(app)
+        assert page._tabs.get() == "Summary"
+        assert page._findings_open and page._findings_tab.winfo_manager() == "pack"
+        canvas = page._summary._parent_canvas
+        top = page._worth_section.winfo_rooty() - canvas.winfo_rooty()
+        assert 0 <= top < canvas.winfo_height() - 40, (top, canvas.winfo_height())
+    finally:
+        app.withdraw()
+
+
+def test_a_drift_route_lands_on_summary_with_all_12_signals_unfolded(make_app):
+    app, page = _open_on(make_app, tab="drift")
+    assert page._tabs.get() == "Summary"
+    assert page._signals_open and page._drift_tab.winfo_manager() == "pack"
+
+
+# ---- Layout C: Units · Final test · History -------------------------------------------------------
+
+def test_each_tab_holds_its_parts_in_order(make_app):
+    """Units: the stats table (the run menu drives it), the unit list, smoothness. Final test: the
+    final-test units, trim vs final test, the predictor. History: the history."""
+    app, page = _stats_app(make_app)
+    for host, parts in ((page._units_scroll, (page._stats_table, page._units_tab, page._smoothness_tab)),
+                        (page._ft_scroll, (page._ft_units_tab, page._trimft_tab, page._predictor))):
+        slaves = host.pack_slaves()
+        order = [slaves.index(w) for w in parts]
+        assert order == sorted(order), [str(w) for w in parts]
+    assert str(page._units_scroll).startswith(str(page._tabs.tab("Units")) + ".")
+    assert str(page._ft_scroll).startswith(str(page._tabs.tab("Final test")) + ".")
+    assert page._history_tab.master is page._tabs.tab("History")
