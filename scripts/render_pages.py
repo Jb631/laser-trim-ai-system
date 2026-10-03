@@ -4,6 +4,7 @@
     python scripts/render_pages.py <copy.db> <outdir> --audit    # clipped-text widget audit, no capture
     python scripts/render_pages.py <copy.db>          --show     # open on screen, mainloop, no capture
     ... --scaling 1.5                                            # any mode, as Windows at 150%
+    ... --audit --models 8504-2,6607,8232-1                      # the Model page for THESE (up to 3)
 
 --scaling S (final review, 2026-09-24): CustomTkinter scales every widget AND every window size by
 the Windows display-scaling factor (1.25 at 125%, 1.5 at 150%); on a Mac the factor is always 1.0.
@@ -18,9 +19,10 @@ window to its own screen (1512x917 px here) and would silently audit a smaller p
 Every audit.txt header names the scaling it ran at.
 
 PNG capture and --show use `build_views`: every page in `Sidebar.ITEMS`, plus the Model page loaded
-for the model with the most cached process findings, with its Findings tab selected (Task 7's own
-navigation: `app.set_model_route(model, tab="findings"); app.show_page("model")`) -- the Sidebar.ITEMS
-pass alone only ever shows the Model page's EMPTY state (no route is set).
+for the model with the most cached process findings, routed as the Findings page routes it (Task 7's
+own navigation: `app.set_model_route(model, tab="findings"); app.show_page("model")` -- since layout C,
+2026-10-02, that lands on Summary at "Worth changing") -- the Sidebar.ITEMS pass alone only ever shows
+the Model page's EMPTY state (no route is set).
 
 --audit uses its OWN, richer procedure (`run_audit`), extended in a pre-review fix round (2026-09-24)
 after the first cut only ever saw whichever Model-page TAB happened to already be mapped (see point 2
@@ -31,8 +33,11 @@ unchanged layout:
   * the Model page for TWO independently-resolved models -- `resolve_findings_model` (most cached
     findings) and `resolve_ft_heavy_model` (most final-test rows linked to a trim: a deliberately
     different data shape, so the sweep is not one model's UI state twice) -- each with EVERY tab its
-    ThemedTabView has registered selected in turn, by NAME, labeled "model:<tab>" / "model2:<tab>";
-  * the Findings PAGE (not the Model page's Findings tab) with its first row opened, the densest
+    ThemedTabView has registered selected in turn, by NAME, labeled "model:<tab>" / "model2:<tab>",
+    and Summary once more with both of its folds open ("model:Summary, unfolded" -- layout C folds
+    "All 12 signals" and what the analyzers measured, and a fold nobody opens is never measured);
+    `--models a,b,c` names the models instead (up to three, in those three slots);
+  * the Findings PAGE (not the Model page's "Worth changing") with its first row opened, the densest
     layout on that page: a narrative, a settings table, and the "Open <model>" teal button -- opened
     by `_open_first_row`, which VERIFIES the row ends open rather than assuming a toggle worked (a
     review round, same date, found the naive version silently CLOSED an already-open row at the
@@ -447,9 +452,10 @@ View = Tuple[str, str, str, Callable]
 
 
 def build_views(target_model: Optional[str]) -> List[View]:
-    """Every Sidebar.ITEMS page, plus the Model page for `target_model` with its
-    Findings tab selected -- see the module docstring for why the second one
-    is a separate view rather than folded into the Sidebar.ITEMS pass.
+    """Every Sidebar.ITEMS page, plus the Model page for `target_model` routed
+    as the Findings page routes it (tab="findings": Summary at "Worth
+    changing") -- see the module docstring for why the second one is a
+    separate view rather than folded into the Sidebar.ITEMS pass.
 
     Order matters: `PageContainer.show()` no-ops when the requested page is
     already current, so the extra Model-page view MUST come after some other
@@ -466,7 +472,7 @@ def build_views(target_model: Optional[str]) -> List[View]:
         def _model_findings(app, model=target_model):
             app.set_model_route(model, tab="findings")
             app.show_page("model")
-        views.append((f"model ({target_model}) — Findings tab", "model-findings",
+        views.append((f"model ({target_model}) — Summary, at Worth changing", "model-findings",
                       "model", _model_findings))
     return views
 
@@ -494,9 +500,15 @@ def _sweep_model_tabs(app, model: str, label_prefix: str, size_label: str,
     tab (`.set()` grids the new one and grid_forgets the rest 100ms later), so a tab
     never selected is a tab never measured -- and the spec names the Model page, not
     any one tab of it, as the most likely overflow. `page._tabs.set(name)` is
-    CTkTabview's own public API (the same call `ModelPage._select_tab` makes for the
-    one name it knows, "Findings"); calling it directly for every registered name
-    exercises the identical mechanism for all seven.
+    CTkTabview's own public API (the same call `ModelPage._select_tab` makes for a
+    tab= route); calling it directly for every registered name exercises the
+    identical mechanism for every tab.
+
+    Then Summary once more with both of its folds open (layout C, 2026-10-02):
+    "All 12 signals" (the drift table) and what the analyzers measured are
+    folded by default, and a folded part is never laid out, so never measured --
+    the drift table's columns are where the 150% clips were found. Labeled
+    "<label_prefix>:Summary, unfolded"; the folds are put back as they were.
 
     Always detours through Home first: `PageContainer.show()` no-ops when the
     requested page is already current, so calling this twice in a row (a second
@@ -515,6 +527,19 @@ def _sweep_model_tabs(app, model: str, label_prefix: str, size_label: str,
         app.update_idletasks()
         clipped.extend(find_clipped_text_widgets(
             page, page=f"{label_prefix}:{name}", window_size=size_label))
+    folds = getattr(page, "_set_signals_open", None)
+    if folds is not None:
+        was = (page._findings_open, page._signals_open)
+        page._tabs.set(page._tabs._name_list[0])
+        page._set_findings_open(True)
+        page._set_signals_open(True)
+        _pump(app, 1.0)
+        app.update_idletasks()
+        clipped.extend(find_clipped_text_widgets(
+            page, page=f"{label_prefix}:{page._tabs._name_list[0]}, unfolded",
+            window_size=size_label))
+        page._set_findings_open(was[0])
+        page._set_signals_open(was[1])
 
 
 def _open_first_row(view) -> bool:
@@ -731,9 +756,11 @@ def _force_one_loader_failure(app, model: str, size_label: str,
     non-empty and the banner renders real text -- restored in a `finally` no
     matter what, so the patch can never leak into any other page or model this
     script still has to audit. `_load_units` feeds "unit list" into `failed`
-    (gui/v6/pages/model_page.py:371) and is only otherwise called from a
-    search-box handler this audit never triggers (:907), so patching it here
-    does not disturb anything else this run measures.
+    (gui/v6/pages/model_page.py, `_reload`) and is only otherwise called from a
+    search-box handler this audit never triggers, so patching it here does not
+    disturb anything else this run measures. The banner lives at the top of the
+    Summary tab (layout C), so the route lands there -- walked on any other tab,
+    the banner would be hidden and skipped, and the check would pass on nothing.
 
     Returns an AUDIT FAILURE line when the banner never showed "unit list" -- the walk would then
     have checked nothing -- and None when it did and was walked.
@@ -747,7 +774,7 @@ def _force_one_loader_failure(app, model: str, size_label: str,
     ModelPage._load_units = _always_fails
     try:
         app.show_page("home")
-        app.set_model_route(model)
+        app.set_model_route(model, tab="summary")
         app.show_page("model")
         _pump(app)
         app.update_idletasks()
@@ -788,9 +815,22 @@ def _effective_scaling(app) -> float:
         return 1.0
 
 
-def _run_audit_mode(db_path: Path, outdir: Path) -> int:
+def _run_audit_mode(db_path: Path, outdir: Path, models: Optional[List[str]] = None) -> int:
+    """`models` (--models): the Model page's three sweeps on THESE models, in order, instead of the
+    three resolved by query."""
     app, db = _build_app(db_path)
     try:
+        if models:
+            target_model, ft_model, inactive_model = (list(models) + [None, None, None])[:3]
+            print(f"note: the Model page is swept for the models named with --models: {models}")
+            app.withdraw()
+            clipped, failures = run_audit(app, target_model, ft_model,
+                                          inactive_model=inactive_model)
+            _write_audit(outdir, clipped, failures, len(_audit_sizes(app)), target_model,
+                         ft_model, scaling=_effective_scaling(app),
+                         inactive_model=inactive_model, chosen=True)
+            _settle_before_destroy(app)
+            return 1 if (clipped or failures) else 0
         target_model = resolve_findings_model(db)
         ft_model = resolve_ft_heavy_model(db, exclude=target_model)
         inactive_model = resolve_inactive_model(db, exclude=(target_model, ft_model))
@@ -822,17 +862,22 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
 
 
 def _write_audit(outdir: Path, clipped, failures, n_sizes, target_model, ft_model,
-                 scaling: float = 1.0, inactive_model: Optional[str] = None) -> None:
+                 scaling: float = 1.0, inactive_model: Optional[str] = None,
+                 chosen: bool = False) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     # Failures first: a state this script could not verify at all outranks a
     # confirmed clip -- and either one means the run is not clean, so both
     # count toward the exit code together (never "0 clipped" alone).
     lines = list(failures) + [c.line() for c in clipped]
+    if chosen:                                    # --models: say so, never a resolver's reason
+        named = (f"model: {target_model!r}; model2: {ft_model!r}; model3: {inactive_model!r} "
+                 f"(named with --models)")
+    else:
+        named = (f"model (most findings): {target_model!r}; "
+                 f"model2 (most linked final-test rows): {ft_model!r}; "
+                 f"model3 (inactive, most findings): {inactive_model!r}")
     header = (f"{len(clipped)} clipped widget(s), {len(failures)} audit failure(s), "
-              f"across {n_sizes} window size(s) at {scaling:.0%} scaling; "
-              f"model (most findings): {target_model!r}; "
-              f"model2 (most linked final-test rows): {ft_model!r}; "
-              f"model3 (inactive, most findings): {inactive_model!r}")
+              f"across {n_sizes} window size(s) at {scaling:.0%} scaling; {named}")
     (outdir / "audit.txt").write_text(header + "\n" + "\n".join(lines) + ("\n" if lines else ""))
     print(header, flush=True)
     for line in lines:
@@ -944,6 +989,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
         argv = argv[:i] + argv[i + 2:]
 
+    models: Optional[List[str]] = None
+    if "--models" in argv:
+        i = argv.index("--models")
+        raw = argv[i + 1] if i + 1 < len(argv) else ""
+        models = [m.strip() for m in raw.split(",") if m.strip()]
+        if not 1 <= len(models) <= 3 or "--audit" not in argv:
+            print("usage: --audit --models <one to three model names, comma-separated>, "
+                  "e.g. --models 8504-2,6607,8232-1")
+            return 2
+        argv = argv[:i] + argv[i + 2:]
+
     mode = "capture"
     if "--audit" in argv and "--show" in argv:
         print("usage: --audit and --show are mutually exclusive")
@@ -984,7 +1040,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     outdir = Path(argv[1])
 
     if mode == "audit":
-        return _run_audit_mode(db_path, outdir)
+        return (_run_audit_mode(db_path, outdir) if models is None
+                else _run_audit_mode(db_path, outdir, models=models))
     return _run_capture_mode(db_path, outdir)
 
 

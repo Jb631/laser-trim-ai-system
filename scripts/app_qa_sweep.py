@@ -4306,6 +4306,46 @@ def check_screens_count_what_they_draw(db) -> None:
         model_page.FindingsView = saved_view
 
 
+def check_model_page_tabs() -> None:
+    """The Model page is a header over exactly four tabs, in James's order (layout C, 2026-10-02:
+    "i like c"): Summary · Units · Final test · History. Built headless through the page's own
+    build_content, with a tab view that records every tab it is asked to add; the parts that fill
+    the tabs are left out (headless, a widget that draws itself has nothing to draw on). Standalone:
+    `--only model-page`.
+
+    Falsify before trusting (2026-10-02, on a fresh copy of src/): swap the Units and Final test
+    lines in ModelPage.build_content, or add a fifth tab -- each FAILs the line below."""
+    from types import SimpleNamespace
+    from laser_trim_analyzer.gui.v6.pages import model_page
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    class _Tabs(_Recorder):
+        def __init__(self, *a, **k):
+            super().__init__()
+            self.added = []
+
+        def add(self, name):
+            self.added.append(name)
+            return _Recorder()
+
+    saved = model_page.ThemedTabView, model_page.HistoryTab
+    try:
+        model_page.ThemedTabView, model_page.HistoryTab = _Tabs, _Recorder
+        page = model_page.ModelPage.__new__(model_page.ModelPage)
+        page.theme, page.app = ThemeManager(), SimpleNamespace(db=None)
+        for name in ("_build_header_line", "_build_summary", "_build_units", "_build_final_test"):
+            setattr(page, name, lambda *a, **k: None)
+        page.build_content(_Recorder())
+        added = page._tabs.added
+        check("model page: exactly four tabs, in order -- Summary, Units, Final test, History",
+              added == ["Summary", "Units", "Final test", "History"]
+              and tuple(added) == model_page.TAB_NAMES, f"{added}")
+    except Exception as e:
+        check("model page: exactly four tabs, in order", False, f"{type(e).__name__}: {e}")
+    finally:
+        model_page.ThemedTabView, model_page.HistoryTab = saved
+
+
 def check_failed_loads_are_never_zero(db) -> None:
     """Drive a loader to raise and read what the page would say: a failure is NAMED, never drawn
     as "0 worth changing", "0 drifting now" or "Needs a look · 0" (final review, 2026-09-24).
@@ -4410,9 +4450,11 @@ def check_usability_glosses() -> None:
         ("src/laser_trim_analyzer/gui/v6/widgets/focus_list_zone.py",
          "outside its own control limits", "FOCUS list states its membership rule"),
         # 2026-09-24 (facelift step 2, T2): the three-sentence σ key moved to the Drift metrics
-        # tab, beside the numbers it explains; the model page keeps a ONE-line key. Both pinned.
+        # tab, beside the numbers it explains. Layout C (2026-10-02) removed the model page's
+        # one-line key with the pills it explained; the numbers left on Summary are "Also
+        # moving"'s, and its own key says what they are.
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "history of lots", "model page explains σ in lot language (one line)"),
+         "Baseline → last lot", "model page says what 'Also moving' shows (baseline → last lot)"),
         ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
          "historical lot medians", "drift tab explains σ in lot language (in full)"),
         ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
@@ -4451,18 +4493,21 @@ def check_usability_glosses() -> None:
         # sentence case app-wide -- the zone-marking obligation this check exists to pin is
         # unchanged, only the literal casing is, so the string here tracks the page, not the
         # other way round.
-        # 2026-09-24 (T2): the model page's app's-read zone is now "How it's running" (the
-        # verdict moved into the caption; findings got their own "Worth changing" group).
+        # 2026-09-24 (T2): the model page's app's-read zone was "How it's running". Layout C
+        # (2026-10-02): the zones are its TABS -- Summary is the app's read (verdict, chart,
+        # what moved, what is worth changing); Units, Final test and History are the data.
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "How it's running", "model page marks the app's-read zone"),
+         "Summary", "model page marks the app's-read zone (its Summary tab)"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "What you're looking at", "model page marks the data zone"),
+         "Final test", "model page marks the data zones (Units · Final test · History tabs)"),
         # 2026-09-24 (T7): Triage's app's-read zone is the "Needs a look" group (the focus list);
         # the data zone is "All models" (the browse list).
         ("src/laser_trim_analyzer/gui/v6/pages/triage_page.py",
          "Needs a look", "triage marks the app's-read zone"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/metric_pill_row.py",
-         "Outcomes — trim linearity · final test", "pills grouped process vs outcomes"),
+        # The pills that grouped process vs outcomes are gone (layout C); the drift table -- "All
+        # 12 signals" -- draws the same three groups, from METRIC_GROUPS.
+        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
+         "METRIC_GROUPS", "signals grouped process vs outcomes (the drift table)"),
         ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
          "format_metric_value", "drift tab renders fail rates as percent"),
         ("src/laser_trim_analyzer/gui/v6/sections/alert_thresholds.py",
@@ -4615,8 +4660,9 @@ _GLOSS_KINDS = {
     '"Sigma gradient"': ("exact", "Sigma gradient"),
     '"Linearity error"': ("exact", "Linearity error"),
     '"newest file, any kind"': ("exact", "newest file, any kind"),
-    "How it's running": ("exact", None),
-    "What you're looking at": ("exact", None),
+    "Summary": ("exact", None),
+    "Final test": ("exact", None),
+    "METRIC_GROUPS": ("code", None),
     "Needs a look": ("exact", None),
     "format_metric_value": ("code", None),
     "on_unit_click": ("code", None),
@@ -4910,6 +4956,8 @@ def main() -> int:
         check_screens_count_what_they_draw(db)
     with _guard("screens: a failed load is never a zero"):
         check_failed_loads_are_never_zero(db)
+    with _guard("model page: the four tabs"):
+        check_model_page_tabs()
 
     # ---- every sidebar row points at a page that exists --------------------
     # A nav row whose key was never registered is a dead click with no error;
@@ -6096,6 +6144,7 @@ def _tally() -> int:
 # can be run on a machine that has no copy of the real data:
 #     python scripts/app_qa_sweep.py --only ft-fastpath
 STANDALONE = {"glosses": check_usability_glosses,
+              "model-page": check_model_page_tabs,
               "ft-fastpath": check_ft_incremental_fastpath,
               "ft-silence": check_ft_parser_console_silence,
               "ft-window": check_ft_graded_window,
