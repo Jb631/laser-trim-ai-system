@@ -37,6 +37,7 @@ from laser_trim_analyzer.core.parser import (
     ExcelParser, NonTrimWorkbookError, detect_file_type)
 from laser_trim_analyzer.core.analyzer import Analyzer
 from laser_trim_analyzer.core.ft_regrade import grade_ft_track
+from laser_trim_analyzer.core.model_names import suspect_error_factor
 from laser_trim_analyzer.core.models import (
     FileMetadata,
     TrackData,
@@ -703,8 +704,9 @@ class Processor:
             # Determine overall status
             overall_status = self._determine_overall_status(analyzed_tracks)
 
-            # Validate track data quality
-            quality_issues = self._validate_track_data(analyzed_tracks)
+            # Validate track data quality (the scale line depends on the model: hand-trim models
+            # carry real errors up to 20x their band -- core/model_names)
+            quality_issues = self._validate_track_data(analyzed_tracks, model=metadata.model)
             # Future-dated file (mistyped date in the filename, or a wrong
             # station clock): one such FT record dated 5 months ahead skewed
             # the dashboard trend (2026-07-08). Flag it at the source.
@@ -1689,7 +1691,7 @@ class Processor:
         return percent is not None and percent > MEMORY_CRITICAL_PERCENT
 
     @staticmethod
-    def _validate_track_data(tracks: List[TrackData]) -> List[str]:
+    def _validate_track_data(tracks: List[TrackData], model: Optional[str] = None) -> List[str]:
         """
         Validate analyzed track data for quality issues.
 
@@ -1732,11 +1734,14 @@ class Processor:
             # scale corruption, not a real measurement (observed in production:
             # error=10.007 against a ±0.05 band — ~380σ — which alone set a
             # +16σ drift headline on a stable model). Flag, don't reject.
+            # 20x on the hand-trim models (James, 2026-10-02: "yes those are hand
+            # trim models and we should use 20X"): their laser-stage errors run to
+            # 5-10x routinely, and 10-20x is the real tail, not a fault.
             band_vals = [abs(v) for v in ((track.upper_limits or []) +
                                           (track.lower_limits or [])) if v is not None]
             band = max(band_vals) if band_vals else None
             if band and band > 0 and track.linearity_error is not None:
-                if track.linearity_error > 10.0 * band:
+                if track.linearity_error > suspect_error_factor(model) * band:
                     issues.append(
                         f"{tid}: scale-anomalous linearity error "
                         f"({track.linearity_error:.4g} vs spec band ±{band:.4g})"

@@ -18,6 +18,7 @@ import numpy as np
 from laser_trim_analyzer.core.parser import _read_once, _workbook
 from laser_trim_analyzer.utils.hashing import hash_bytes_for, shares_one_stat
 from laser_trim_analyzer.core.analyzer import max_abs_measured
+from laser_trim_analyzer.core.model_names import canonical_model
 from laser_trim_analyzer.utils.constants import (
     FINAL_TEST_FORMAT1_COLUMNS,
     FINAL_TEST_FORMAT2_COLUMNS,
@@ -82,15 +83,20 @@ class FinalTestParser:
 
             # Parse according to format - all methods now receive xl object
             if format_type == "format2":
-                return self._parse_format2(xl, file_path, file_hash)
+                result = self._parse_format2(xl, file_path, file_hash)
             elif format_type == "format3_multitrack":
-                return self._parse_format3_multitrack(xl, file_path, file_hash)
+                result = self._parse_format3_multitrack(xl, file_path, file_hash)
             elif format_type == "format4_parameters":
-                return self._parse_format4_parameters(xl, file_path, file_hash)
+                result = self._parse_format4_parameters(xl, file_path, file_hash)
             elif format_type == "format_shop_test":
-                return self._parse_format_shop_test(xl, file_path, file_hash)
+                result = self._parse_format_shop_test(xl, file_path, file_hash)
             else:
-                return self._parse_format1(xl, file_path, file_hash)
+                result = self._parse_format1(xl, file_path, file_hash)
+        # One stored spelling per part (core/model_names), whichever format named it.
+        meta = result.get("metadata") if isinstance(result, dict) else None
+        if isinstance(meta, dict) and meta.get("model"):
+            meta["model"] = canonical_model(meta["model"])
+        return result
 
     # ---- The graded window: which sweep rows the station actually judged ----
     #

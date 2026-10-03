@@ -1113,6 +1113,53 @@ def check_drift_trust_rules(db, raw) -> None:
           not better, f"{len(flags)} flagged" + (f"; better side: {better[:6]}" if better else ""))
 
 
+def check_model_names_and_hand_trim(raw) -> None:
+    """James, 2026-10-02: "yea you can mearge 7953A with 7953-A. and 7953B with 7953-B" and, of
+    8232-1 and 8340-1, "yes those are hand trim models and we should use 20X" (core/model_names).
+    Read straight off the copy, independent of the migration that applies them: no row in any
+    model-keyed table, and no unit id, still carries a glued name; and no hand-trim file is
+    suspect for nothing but a linearity error within 20x its band. Fails on a copy taken before
+    the app's next start (the migration has not run there yet) -- that is the point."""
+    import json as _json
+    from laser_trim_analyzer.core.model_names import HAND_TRIM_MODELS, MODEL_ALIASES
+    glued = list(MODEL_ALIASES)
+    marks = ", ".join("?" * len(glued))
+    tables = [r[0] for r in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    left = {}
+    for t in tables:
+        if "model" in [r[1] for r in raw.execute(f"PRAGMA table_info({t})")]:
+            n = raw.execute(f"SELECT COUNT(*) FROM {t} WHERE model IN ({marks})", glued).fetchone()[0]
+            if n:
+                left[t] = n
+    units = sum(raw.execute("SELECT COUNT(*) FROM analysis_results WHERE unit_id LIKE ?",
+                            (f"{a}/%",)).fetchone()[0] for a in glued)
+    check("model names: no glued 7953A/7953B left in any table or unit id",
+          not left and not units, f"left={left} unit_ids={units}")
+    hand = sorted(HAND_TRIM_MODELS)
+    rows = raw.execute(
+        "SELECT a.id, a.data_quality_issues, t.final_linearity_error_shifted, t.upper_limits,"
+        " t.lower_limits FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id"
+        f" WHERE a.data_quality = 'suspect' AND a.model IN ({', '.join('?' * len(hand))})",
+        hand).fetchall()
+    worst, only_scale = {}, {}
+    for rec, issues, err, up, lo in rows:
+        try:
+            listed = _json.loads(issues) if issues else []
+            band = max(abs(float(v)) for v in (_json.loads(up or "[]") + _json.loads(lo or "[]"))
+                       if v is not None)
+            ratio = float(err) / band
+        except (TypeError, ValueError):
+            continue
+        only_scale[rec] = bool(listed) and all("scale-anomalous" in str(i) for i in listed)
+        worst[rec] = max(worst.get(rec, 0.0), ratio)
+    wrong = [r for r, ratio in worst.items() if only_scale[r] and ratio <= 20.0]
+    if not worst:
+        warn("hand trim: no suspect hand-trim file on this copy to test the 20x line against")
+    else:
+        check("hand trim: no file is suspect only for an error within 20x its band",
+              not wrong, f"{len(worst)} suspect hand-trim files, {len(wrong)} within 20x")
+
+
 def _month_minus(d, n):
     k = d.year * 12 + (d.month - 1) - n
     return f"{k // 12:04d}-{k % 12 + 1:02d}"
@@ -5009,6 +5056,8 @@ def main() -> int:
         check_inactive_models_on_database(db, raw)
     with _guard("drift: the trust rules"):
         check_drift_trust_rules(db, raw)
+    with _guard("model names and the hand-trim line"):
+        check_model_names_and_hand_trim(raw)
 
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with _guard("stale model: anchored 90d window"):

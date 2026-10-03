@@ -35,7 +35,11 @@ join, because their old suspect fails no longer inflate their baselines; 8340-1 
 readings from files marked suspect", on 8340-1), and a signal with no recent run says *No lot
 since Mon YYYY* instead of a tier.
 
-Two things for you to decide (TRACKER J): the hand-trim models' 10–20× errors, and the 7953 names.
+**Your two answers of 2026-10-02 are in too**, applied once at that same start: **7953A is now
+7953-A and 7953B is 7953-B** (every stored row renamed; new files are stored under the hyphenated
+name whatever they are called), and on **8232-1 and 8340-1 a linearity error up to 20× the band
+counts as a real measurement**, not "suspect" — 359 files of 8232-1 and 50 of 8340-1 come back into
+the counts (on the 30 Sep copy). The drift flags stay the same 7.
 
 ## ⚡ 2026-09-30 — the app as an .exe for your coworker (you build it at work)
 

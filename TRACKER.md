@@ -941,14 +941,21 @@ the pages but removed nothing; this one removes.
       (the headline in a sentence, the moving signal's run chart, "Also moving", "Worth changing",
       all 12 signals folded away) · **Units** (with smoothness) · **Final test** (with trim vs
       final test) · **History**. Today's seven tabs fold into those four; nothing is lost.
-- [ ] **J5 · Model names — James confirms.** Merge 7953A → 7953-A (116 files into 1,109) and 7953B →
-      7953-B (86 into 1,254)? Then "Unknown" (381 files) and about 25 one-off names (0001, 0003,
-      1010, 1111, 1122, …) — each listed with its file names for you to say what it is.
-- [ ] **J6 · Decision: the hand-trim models' big laser-stage errors.** "Suspect" means a linearity
-      error more than 10× the band. On most models that is a scale fault (20× to over 200×), but on
-      8232-1 (359 tracks at 10–20×) and 8340-1 (49) it cuts into a continuous tail of their normal
-      errors (they run up to 5–10× routinely) — real units, now left out of drift with the rest.
-      Raise the line to 20× for drift on hand-trim models, or leave it?
+- [x] **J5 · 7953A → 7953-A and 7953B → 7953-B — DONE** (James, 2026-10-02: "yea you can mearge
+      7953A with 7953-A. and 7953B with 7953-B"). One stored spelling from now on
+      (`core/model_names.MODEL_ALIASES`, applied by every parser and every save); the stored rows
+      are renamed once at the next start (unit ids too), and the glued names' per-model state is
+      rebuilt for the merged model. On the 30 Sep copy: 7953-A 1,109 → 1,225, 7953-B 1,254 →
+      1,340, no final tests under either name. **Still open:** "Unknown" (381 files) and about 25
+      one-off names (0001, 0003, 1010, 1111, 1122, …) — each to be listed with its file names for
+      you to say what it is.
+- [x] **J6 · The hand-trim models' line is 20× — DONE** (James, 2026-10-02: "yes those are hand
+      trim models and we should use 20X"). On 8232-1 and 8340-1 a linearity error up to 20× its
+      band is a real laser-stage error, not "suspect" — everywhere, not only in drift
+      (`core/model_names.suspect_error_factor`); files stored as suspect for nothing but such an
+      error are re-judged once at the next start. On the 30 Sep copy: 8232-1 484 → 125 suspect
+      files, 8340-1 922 → 872; the drift flags stay the same 7, and 8232-1's baseline fail rate
+      rises from 34 % to 36 % now that its real fails count.
 - [ ] **J7 · Option: the composite risk score is empty on every stored track.** 37 of the 260
       composite risk models are deployed, but no stored file was processed while they were loaded
       (they were trained after the rebuild). New files are scored from now on; a back-fill would
