@@ -1073,6 +1073,23 @@ def check_overview_on_database(db, raw) -> None:
           f"{len(drawn)} models drawn, SQL {len(truth)}; differ: "
           + ", ".join(f"{m} app={drawn.get(m)} sql={truth.get(m)}" for m in wrong[:4]))
 
+    # Every model on file, exactly once (re-review, 2026-10-02: models with no trim file at all --
+    # smoothness records only -- were in the Models picker and nowhere on the page). "On file" is
+    # what the Models picker can open: a laser file or a smoothness file (a name found only on final
+    # tests is a naming question, TRACKER J5). The truth is this file's own SQL; the page's four
+    # places are read from what it would draw.
+    on_file = {r[0] for r in raw.execute(
+        "SELECT model FROM analysis_results UNION SELECT model FROM smoothness_results") if r[0]}
+    places = ([c.model for c in ov.cards] + [r.model for r in ov.others]
+              + list(ov.quiet or {}) + list(ov.inactive or {}))
+    twice = sorted({m for m in places if places.count(m) > 1})
+    missing = sorted(on_file - set(places))
+    check("overview: every model on file is on the page exactly once (a card, the list, the other "
+          "models, inactive)",
+          ov.quiet is not None and ov.inactive is not None and not twice and not missing,
+          f"{len(on_file)} on file, {len(places)} placed; missing={missing[:6]} twice={twice[:6]}"
+          + ("" if ov.quiet is not None and ov.inactive is not None else "; a place is unknown"))
+
     ft_cards = [c for c in ov.cards if c.final_test]
     if not ft_cards:
         warn("overview: no card shows final-test numbers on this copy -- that path is checked on nothing")

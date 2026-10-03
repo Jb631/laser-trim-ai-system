@@ -952,7 +952,8 @@ the pages but removed nothing; this one removes.
       the Model page was named on Summary only, so the Final test tab could read "no records"
       over a crash; a fail-rate card opened on whatever the previous model had charted; and
       models trimmed 3–24 months ago appeared nowhere — now "Other models on file (N) ▸", folded,
-      above "Inactive models". **Not brought back:** the "Chronically high" strip — on the 30 Sep
+      above "Inactive models" (with the 9 that have smoothness records but no trim file: every
+      model the Models picker opens, 333, is on the page exactly once — a sweep check). **Not brought back:** the "Chronically high" strip — on the 30 Sep
       data 4 of its 5 models passed 100% in the last 90 days (it judges them on old runs); the
       one real case, 8914 (0 of 5), is in "Everything else". Say if you want steady high-fail
       models called out another way (for instance "Everything else" sorted by failing units).
@@ -976,7 +977,12 @@ the pages but removed nothing; this one removes.
       rebuilt for the merged model. On the 30 Sep copy: 7953-A 1,109 → 1,225, 7953-B 1,254 →
       1,340, no final tests under either name. **Still open:** "Unknown" (381 files) and about 25
       one-off names (0001, 0003, 1010, 1111, 1122, …) — each to be listed with its file names for
-      you to say what it is.
+      you to say what it is. **And 138 names found only on final tests** (30 Sep data; found while
+      making the Overview list every model, 2026-10-02): no laser or smoothness file carries them,
+      so the Models picker cannot open them. Some may be the same part spelled another way —
+      **2475-08** (358 final tests, newest Aug 2026) beside the trim model 2475-8 — and some are
+      big: 8084 (8,989, last 2012), 8491-1 (5,414, newest Jul 2025), 8491-14 (1,772, newest Sep
+      2026). To list with the J5 names for you to say which is which.
 - [x] **J6 · The hand-trim models' line is 20× — DONE** (James, 2026-10-02: "yes those are hand
       trim models and we should use 20X"). On 8232-1 and 8340-1 a linearity error up to 20× its
       band is a real laser-stage error, not "suspect" — everywhere, not only in drift

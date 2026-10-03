@@ -557,13 +557,17 @@ def _overview_scratch(tmp_path):
     jumps (the drift watch, real training); CALM carries WARNINGs and suspect files; all invented."""
     from datetime import timedelta
     from test_drift_trust_rules import _history, _lot, _train
-    from test_overview_data import ANCHOR, _trims
+    from test_overview_data import ANCHOR, _final_tests, _trims
     db = _scratch_db(tmp_path)
     start = ANCHOR - timedelta(days=77)
     for k in range(11):
         _trims(db, "HOT", start + timedelta(days=7 * k), passes=18, fails=2)
     _trims(db, "HOT", ANCHOR, passes=8, fails=12)
     _trims(db, "CALM", ANCHOR - timedelta(days=2), passes=40, warnings=5, fails=1, suspect_fails=9)
+    db.save_smoothness_result({"filename": "SMONLY-1.xls", "file_path": "/invented/SMONLY-1.xls",
+                               "model": "SMONLY", "serial": "1", "file_date": ANCHOR,
+                               "test_date": ANCHOR}, [], file_hash="sm-SMONLY-1")   # no trim file
+    _final_tests(db, "FTNAME", ANCHOR - timedelta(days=3), passes=2)     # a name on final tests only
     day = _history(db, "M1", start=ANCHOR - timedelta(days=7 * 14))
     _lot(db, "M1", day, [0.5] * 5, tag="x")
     _lot(db, "M1", day + timedelta(days=7), [0.5] * 5, tag="y")
@@ -625,3 +629,29 @@ def test_the_overview_check_never_passes_on_nothing(tmp_path):
     results = _run_overview_check(_scratch_db(tmp_path), tmp_path)
     assert not any(v == "PASS" and ("cards are" in n or "pass %" in n) for v, n, _ in results), results
     assert any(v == "WARN" for v, _, _ in results), results
+
+
+
+def test_the_overview_check_fails_when_a_model_on_file_is_nowhere_on_the_page(tmp_path):
+    results = _run_overview_check(
+        _overview_scratch(tmp_path), tmp_path,
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "od._models_on_file = lambda db: set()")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any(n.startswith("overview: every model on file is on the page") and "SMONLY" in d
+               for n, d in failed), results
+
+
+def test_the_overview_check_fails_when_a_model_is_on_the_page_twice(tmp_path):
+    results = _run_overview_check(
+        _overview_scratch(tmp_path), tmp_path,
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "_real = od.load_overview\n"
+              "def _twice(db, **k):\n"
+              "    ov = _real(db, **k)\n"
+              "    ov.quiet[ov.cards[0].model] = None\n"
+              "    return ov\n"
+              "od.load_overview = _twice")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any(n.startswith("overview: every model on file is on the page") and "twice" in d
+               for n, d in failed), results

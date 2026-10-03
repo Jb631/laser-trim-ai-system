@@ -41,7 +41,7 @@ from laser_trim_analyzer.core.ft_regrade import legacy_ft_count
 from laser_trim_analyzer.core.ingest_run import unreadable_count
 from laser_trim_analyzer.gui.v6.focus_data import focus_failed, load_focus
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
-from laser_trim_analyzer.ml.drift_types import format_metric_value, metric_label
+from laser_trim_analyzer.ml.drift_types import RECENT_LOT_DAYS, format_metric_value, metric_label
 from laser_trim_analyzer.ml.manager import (
     drift_reference_date, get_drifting_models, get_model_drift_status)
 from laser_trim_analyzer.ml.spc import RECENT_K
@@ -64,6 +64,7 @@ PART_DRIFT = "the drift watch's flags"
 PART_RATES = "the pass rates"
 PART_FT = "the final-test pass rates"     # read only for a card with no trim to show
 PART_ACTIVITY = "which models are inactive"
+PART_ON_FILE = "the other models on file"
 
 # The signal a fail-rate card is about: the FOCUS list is a p-chart of each run's linearity fail
 # fraction (ml/spc.compute_focus_list), and a click opens the Model page charting it.
@@ -73,8 +74,8 @@ FOCUS_METRIC = "linearity_fail_fraction"
 # model was on it and when it left (final review of the redesign, 2026-10-02). RECENT_K, not a
 # written 5: the sentence can only promise the window the computation uses.
 CARD_RULE = (f"A model is on a card while one of its last {RECENT_K} runs failed more often than "
-             "its own history allows, or a watched signal has moved from its baseline — each "
-             "card says which.")
+             "its own history allows, or a watched signal has moved from its baseline — in a run "
+             f"of the last {RECENT_LOT_DAYS} days. Each card says which.")
 
 _GRADED = ("PASS", "WARNING", "FAIL")
 _ACCEPTED = ("PASS", "WARNING")
@@ -118,9 +119,10 @@ class Overview:
     others: List[Row] = field(default_factory=list)
     # {model: its newest trim file, or None for "no trims on record"}; None = could not be worked out
     inactive: Optional[Dict[str, Optional[datetime]]] = None
-    # {model: its newest trim file} for every OTHER model on file -- trimmed, but on no card, in no
-    # list and not inactive (most: no trim in the 90 days, none in two years); None = unknown
-    quiet: Optional[Dict[str, datetime]] = None
+    # {model: its newest trim file} for every OTHER model on file -- on no card, in no list and not
+    # inactive: most were trimmed before the 90 days; a value of None is a model with no trim file
+    # at all (smoothness records only). The field None = could not be worked out.
+    quiet: Optional[Dict[str, Optional[datetime]]] = None
     legacy_ft: int = 0
     unreadable: int = 0
     failed: Dict[str, str] = field(default_factory=dict)    # part -> "ExcType: message"
@@ -283,21 +285,44 @@ def load_overview(db, *, now: Optional[datetime] = None) -> Overview:
                              hand_trim=model in HAND_TRIM_MODELS))
     ov.others.sort(key=lambda r: (-r.units, r.model))
 
+    activity = None
     try:
         activity = load_activity(db, now=now)
         ov.inactive = activity.inactive()
-        # Every other model on file, so none is on file and nowhere on the page (F5, James: "i dont
-        # want to hide them"). Unknown without the pass rates: then no model is known to be active.
-        if PART_RATES not in ov.failed:
-            shown = {c.model for c in ov.cards} | {r.model for r in ov.others} | set(ov.inactive)
-            ov.quiet = {m: d for m, d in activity.newest.items() if m not in shown}
     except Exception as exc:
         logger.exception("Overview: could not work out which models are inactive")
         ov.failed[PART_ACTIVITY] = _why(exc)
+    # Every other model on file, so no model is on file and nowhere on the page (F5, James: "i dont
+    # want to hide them"): each one exactly once, on a card, in the list, here, or inactive. Unknown
+    # without the pass rates (then no model is known to be active) or without the activity.
+    if activity is not None and PART_RATES not in ov.failed:
+        try:
+            shown = {c.model for c in ov.cards} | {r.model for r in ov.others} | set(ov.inactive)
+            quiet: Dict[str, Optional[datetime]] = {m: d for m, d in activity.newest.items()
+                                                    if m not in shown}
+            # ...and a model the Models picker lists with no trim file at all: smoothness records
+            # (and final tests) only -- 8213-1 and 8508 on the work data of 30 Sep, each with over
+            # a thousand final tests.
+            quiet.update({m: None for m in _models_on_file(db) if m not in shown and m not in quiet})
+            ov.quiet = quiet
+        except Exception as exc:
+            logger.exception("Overview: could not work out the other models on file")
+            ov.failed[PART_ON_FILE] = _why(exc)
 
     ov.legacy_ft = legacy_ft_count(db)            # both never raise: a count must never break a page
     ov.unreadable = unreadable_count(db)
     return ov
+
+
+def _models_on_file(db) -> set:
+    """Every model the Models picker can open: one with a laser file or a smoothness file. A name
+    found ONLY on final tests is not one of them (138 on the 30 Sep data -- 2475-08 beside the trim
+    model 2475-8, among them): a naming question, TRACKER J5, not a model to list here."""
+    from sqlalchemy import text
+    with db.session() as s:
+        rows = s.execute(text("SELECT DISTINCT model FROM analysis_results "
+                              "UNION SELECT DISTINCT model FROM smoothness_results")).fetchall()
+    return {r[0] for r in rows if r[0]}
 
 
 def _why(exc: BaseException) -> str:

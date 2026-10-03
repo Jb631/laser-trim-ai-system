@@ -506,3 +506,45 @@ def test_the_overview_never_pays_for_a_last_processed_stamp_it_does_not_show(tmp
     monkeypatch.setattr(mlm, "list_known_models", lambda *a, **k: calls.append(1) or [])
     ov = od.load_overview(db)
     assert calls == [] and ov.failed == {}
+
+
+
+def test_no_model_is_on_the_page_twice_and_none_on_file_is_missing(tmp_path, monkeypatch):
+    """Every model on file, in exactly one place: a card, "Everything else", "Other models on
+    file" or "Inactive models". A model with no trim file at all -- smoothness records only (8213-1
+    and 8508 on the work data, each with over a thousand final tests too) -- was in the Models
+    picker and nowhere on the page (re-review, 2026-10-02); it reads "no trim file on record". A
+    name found only on final tests is not a model the picker opens: not listed."""
+    from test_model_activity import NEWEST, _file
+    db = _db(tmp_path)
+    _file(db, "LIVE", NEWEST)
+    _file(db, "CARDED", NEWEST - timedelta(days=200))      # a real laser file -- and on a card
+    _file(db, "QUIET", NEWEST - timedelta(days=200))
+    _file(db, "OLD", NEWEST - timedelta(days=900))
+    db.save_smoothness_result({"filename": "SMONLY-1.xls", "file_path": str(tmp_path / "SMONLY-1.xls"),
+                               "model": "SMONLY", "serial": "1", "file_date": NEWEST,
+                               "test_date": NEWEST}, [], file_hash="sm-SMONLY-1")   # no trim file
+    _final_tests(db, "FTNAME", NEWEST - timedelta(days=5), passes=3)     # a name on final tests only
+    _fake_sources(monkeypatch, focus=[_focus_entry("CARDED", 0.1, 0.5)])
+    ov = od.load_overview(db)
+    placed = ([c.model for c in ov.cards] + [r.model for r in ov.others] + list(ov.quiet)
+              + list(ov.inactive))
+    assert sorted(placed) == ["CARDED", "LIVE", "OLD", "QUIET", "SMONLY"]       # each once
+    assert ov.quiet == {"QUIET": NEWEST - timedelta(days=200), "SMONLY": None}
+
+
+def test_when_the_models_on_file_cannot_be_read_the_line_is_unknown_and_named(tmp_path, monkeypatch):
+    from test_model_activity import NEWEST, _file
+    db = _db(tmp_path)
+    _file(db, "LIVE", NEWEST)
+    monkeypatch.setattr(od, "_models_on_file", _boom)
+    ov = od.load_overview(db)
+    assert ov.quiet is None and ov.failed == {od.PART_ON_FILE: "RuntimeError: invented crash"}
+    assert [r.model for r in ov.others] == ["LIVE"]              # the rest still loads
+
+
+def test_the_card_rule_names_its_ninety_days():
+    """The FOCUS half drops a model whose newest bad run is over 90 days old, and the drift half
+    flags only on a run within 90 days: the printed rule says so (re-review, 2026-10-02)."""
+    from laser_trim_analyzer.ml.drift_types import RECENT_LOT_DAYS
+    assert f"a run of the last {RECENT_LOT_DAYS} days" in od.CARD_RULE

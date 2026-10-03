@@ -109,6 +109,10 @@ class ProcessPage(PageBase):
 
     def on_show(self):
         self._new_files.refresh_folders()
+        # A refusal's note says another job runs; once none does, the next look drops it.
+        if not getattr(self.app, "active_run_name", lambda: None)():
+            self._busy_note.configure(text="")
+            self._busy_note.pack_forget()
 
         def work():
             try:

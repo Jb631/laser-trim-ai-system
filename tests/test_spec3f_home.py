@@ -618,3 +618,12 @@ def test_the_last_runs_line_opens_its_tally_without_starting_a_run(make_app, mon
     assert order.index(page._run_line) + 1 == order.index(page._run_link)    # right under it
     page._run_link.invoke()
     assert app.page_container.current_page == "process" and started == []
+
+
+
+def test_a_model_with_no_trim_file_is_listed_with_the_other_models_and_says_so(make_app, monkeypatch):
+    page = _show(make_app(), monkeypatch, _ov(others=[_row()],
+                                              quiet={"Q1": datetime(2025, 6, 2), "FT1": None}))
+    page._quiet_toggle.invoke()
+    lines = "\n".join(_labels(page._quiet_list)).split("\n")
+    assert lines == ["Q1 · last trimmed Jun 2025", "FT1 · no trim file on record"]

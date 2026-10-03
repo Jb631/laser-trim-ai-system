@@ -508,8 +508,13 @@ def test_a_specific_folder_never_starts_beside_another_run(make_app, monkeypatch
     assert page._busy_note.winfo_manager() == "pack"
     assert page._busy_note.cget("text").startswith("A re-grade is running — stop it first")
     assert page._cancel is None                          # nothing was set going
-    # ...and once nothing else runs, it starts, and the note goes.
+    # The other job ends: the next look at the page no longer says it runs (re-review).
     monkeypatch.setattr(app, "active_run_name", lambda: None)
+    page.on_show()
+    assert page._busy_note.winfo_manager() == ""
+    # ...and once nothing else runs, it starts, and the note stays gone.
+    page._busy_note.configure(text="stale")
+    page._busy_note.pack()
     page._start()
     assert len([a for target, a in _NoThread.started if target == page._run]) == 1
     assert page._busy_note.winfo_manager() == ""

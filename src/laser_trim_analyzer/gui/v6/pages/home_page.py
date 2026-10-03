@@ -285,7 +285,8 @@ class HomePage(PageBase):
             below = self._inactive_toggle if self._inactive_toggle.winfo_manager() else self._links
             self._quiet_toggle.pack(side="top", anchor="w", pady=(self.theme.SPACE_MD, 0),
                                     before=below)
-        self._fill_folded(self._quiet_list, ov.quiet, self._quiet_open, after=self._quiet_toggle)
+        self._fill_folded(self._quiet_list, ov.quiet, self._quiet_open, after=self._quiet_toggle,
+                          none_text="no trim file on record")
 
     def _toggle_quiet(self) -> None:
         self._quiet_open = not self._quiet_open
@@ -313,7 +314,8 @@ class HomePage(PageBase):
         if self._ov is not None:
             self._draw_inactive(self._ov)
 
-    def _fill_folded(self, frame, models, is_open: bool, *, after) -> None:
+    def _fill_folded(self, frame, models, is_open: bool, *, after,
+                     none_text: str = "no trims on record") -> None:
         """A folded line's list, expanded in place under its toggle: every model with its last
         trim, newest first, in INACTIVE_COLUMNS columns."""
         t = self.theme
@@ -322,7 +324,7 @@ class HomePage(PageBase):
         if not is_open:
             frame.pack_forget()
             return
-        lines = _inactive_lines(models)
+        lines = _inactive_lines(models, none_text)
         per = -(-len(lines) // INACTIVE_COLUMNS)              # ceiling division
         for i in range(INACTIVE_COLUMNS):
             chunk = lines[i * per:(i + 1) * per]
@@ -366,13 +368,15 @@ def _failure_text(ov: od.Overview) -> str:
     return "\n".join(lines)
 
 
-def _inactive_lines(inactive) -> List[str]:
-    """"8150 · last trimmed Mar 2016", newest first; "no trims on record" last."""
+def _inactive_lines(inactive, none_text: str = "no trims on record") -> List[str]:
+    """"8150 · last trimmed Mar 2016", newest first; a model with no date last, with `none_text`
+    ("no trims on record" for an inactive one: laser files, never cut; "no trim file on record"
+    for one of the other models: smoothness records only)."""
     dated = sorted(((m, d) for m, d in inactive.items() if d is not None),
                    key=lambda md: (md[1], md[0]), reverse=True)
     never = sorted(m for m, d in inactive.items() if d is None)
     return ([f"{m} · last trimmed {d:%b %Y}" for m, d in dated]
-            + [f"{m} · no trims on record" for m in never])
+            + [f"{m} · {none_text}" for m in never])
 
 
 def _bind_click(widget, on_click: Callable[[], None]) -> None:
