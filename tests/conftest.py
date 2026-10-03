@@ -10,37 +10,36 @@ def _hide_test_windows() -> None:
     """No test window ever shows on screen (James, 2026-10-02: "why does the test need to flash
     the app on screen, cant we hide it so can continue to work while its running").
 
-    CustomTkinter maps a new window the moment it is created, and V6App then built every page
+    CustomTkinter maps a new window during its own constructor, and V6App then built every page
     with its window on screen until make_app's withdraw() -- every test file that builds the app
-    flashed it. Measured on the Mac: mapped at creation, still mapped once V6App is built. Now
-    every CTk root is withdrawn and fully transparent the instant it exists (on macOS CTk never
-    re-shows a window withdrawn before its first update -- only Windows does), and every
-    CTkToplevel is transparent: kept MAPPED, because a dialog may grab or be measured. A test
-    that needs a really mapped window still deiconifies it (test_blocks, test_render_pages_audit):
-    transparent and off-screen, so that stays invisible too. Keyboard focus was already never
-    taken (the frontmost app stayed the same, measured)."""
-    import customtkinter as ctk
-
-    real_root_init = ctk.CTk.__init__
-    real_toplevel_init = ctk.CTkToplevel.__init__
+    flashed it. Every Tk root and toplevel is now made fully TRANSPARENT the moment Tk creates it,
+    before CustomTkinter's constructor maps it, so it never shows at all -- while still mapped
+    exactly as before. Mapped matters: withdrawing it at birth instead (the first try, a4480f7)
+    left a window Tk had never shown, and on macOS `update()` then never returned -- the
+    September hang again, in tests/test_dashboard.py. Keyboard focus was never taken (the
+    frontmost app stayed the same, measured). A test that deiconifies a window on purpose
+    (test_blocks, test_render_pages_audit) still gets a transparent one."""
+    import tkinter
 
     def _transparent(window) -> None:
-        try:
-            window.attributes("-alpha", 0.0)
-        except Exception:
+        try:                        # the raw Tcl call: CustomTkinter's own overrides of
+            window.tk.call("wm", "attributes", window._w, "-alpha", 0.0)   # attributes()
+        except Exception:           # are not set up yet at this point
             pass
 
-    def root_init(self, *args, **kwargs):
-        real_root_init(self, *args, **kwargs)
+    real_tk_init = tkinter.Tk.__init__
+    real_toplevel_init = tkinter.Toplevel.__init__
+
+    def tk_init(self, *args, **kwargs):
+        real_tk_init(self, *args, **kwargs)
         _transparent(self)
-        self.withdraw()
 
     def toplevel_init(self, *args, **kwargs):
         real_toplevel_init(self, *args, **kwargs)
         _transparent(self)
 
-    ctk.CTk.__init__ = root_init
-    ctk.CTkToplevel.__init__ = toplevel_init
+    tkinter.Tk.__init__ = tk_init
+    tkinter.Toplevel.__init__ = toplevel_init
 
 
 _hide_test_windows()
