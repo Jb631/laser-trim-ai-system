@@ -4,7 +4,7 @@ James's week (app-shape spec, 2026-08-29): export a model to Excel just to work
 out historical avg / min / max for resistance and electrical angle, all units
 versus lin-passing units. This zone puts that on the page.
 
-Split the way `widgets/focus_list_zone.py` is split, for the same reason: the
+Split the way the retired `widgets/focus_list_zone.py` was split, for the same reason: the
 TEXT is a set of pure functions (testable without a Tk root, and the same
 strings the Excel sheet prints), and the widget below is a thin render of them.
 Every number and every sentence is written by `core/model_stats.py` — nothing

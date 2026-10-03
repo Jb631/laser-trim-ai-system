@@ -411,3 +411,39 @@ def test_a_failed_final_test_read_is_named_on_its_own_and_spoils_nothing_else(tm
     assert card.pass_pct is None and card.final_test is False
     assert [r.model for r in ov.others] == ["OTHER"] and ov.anchor == ANCHOR
     assert od.card_count(ov) == 1                    # the cards themselves are all known
+
+
+def test_the_model_page_header_and_the_overview_count_the_same_90_days(tmp_path):
+    # One window, two screens (2026-10-02 merge): the Overview counts the 90 CALENDAR days ending
+    # on the newest file's day; the Model page's header counted 90 days to the minute before the
+    # newest file -- so files on the day before the Overview's first day, later in the day than the
+    # newest file, counted on the header only. Same model, two different pass rates.
+    from datetime import time as _time
+    from laser_trim_analyzer.gui.v6.overview_data import load_overview
+    from laser_trim_analyzer.gui.v6.pages.model_page import header_facts
+    db = _db(tmp_path)
+    _trims(db, "M1", ANCHOR, passes=5)
+    _trims(db, "M1", datetime.combine((ANCHOR - timedelta(days=89)).date(), _time(9, 0)), passes=2)
+    _trims(db, "M1", datetime.combine((ANCHOR - timedelta(days=90)).date(), _time(20, 0)), fails=3)
+    overview = load_overview(db)
+    row = next(r for r in list(overview.cards) + list(overview.others) if r.model == "M1")
+    facts = header_facts(db, "M1")
+    assert (facts["units"], facts["passed"]) == (row.units, round(row.pass_pct * row.units / 100))
+    assert row.units == 7
+
+
+def test_a_final_test_after_the_newest_trim_counts_on_neither_screen(tmp_path, monkeypatch):
+    # A model graded on final test (no trims of its own in the window): the Overview stops at the
+    # newest TRIM file's day, so the header must too -- a final test dated after it counted on the
+    # header only.
+    from laser_trim_analyzer.gui.v6.pages.model_page import header_facts
+    db = _db(tmp_path)
+    _trims(db, "OTHER", ANCHOR, passes=5)
+    _final_tests(db, "FTONLY", ANCHOR - timedelta(days=3), passes=8, fails=2)
+    _final_tests(db, "FTONLY", ANCHOR + timedelta(hours=10), fails=4)     # the next morning
+    _fake_sources(monkeypatch, flags=[_flag("FTONLY", DriftTier.DRIFT, 1.0, "ft_fail_fraction")],
+                  statuses={"FTONLY": _status("FTONLY", "ft_fail_fraction", 0.02, 0.2)})
+    (card,) = od.load_overview(db).cards
+    facts = header_facts(db, "FTONLY", now=ANCHOR + timedelta(days=1))
+    assert card.final_test is True and facts["basis"] == "final test"
+    assert (facts["units"], facts["passed"]) == (card.units, 8) == (10, 8)

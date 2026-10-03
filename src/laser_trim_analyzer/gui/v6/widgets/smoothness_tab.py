@@ -34,7 +34,7 @@ class SmoothnessTab(RowBudgetMixin, ctk.CTkFrame):
         self._records: List[Dict] = []
         self._expanded = False        # render budget — see units_tab docstring
         # One frame holding every row: a refresh is one teardown, not N.
-        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent")
+        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent", height=1)
         self._rows_host.pack(side="top", fill="x")
         # Persistent — never destroyed from inside its own command.
         self._show_all_btn = ctk.CTkButton(self._list, text="", command=self._toggle_expand,

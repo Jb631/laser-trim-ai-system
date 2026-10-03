@@ -19,7 +19,7 @@ line and the tabs stay put. Every loader runs on a worker (CLAUDE.md rule 5); Tk
 import logging
 import threading
 import tkinter
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import customtkinter as ctk
@@ -123,8 +123,10 @@ _CLAUSE = "  ·  "
 # ending at the newest graded trim file in the database (one clock for every model, so an inactive
 # model reads "no units", never its last 90 days of 2019). Future-dated files (core/activity's
 # trusted_until) and files marked suspect are left out, the rule the drift watch and the FOCUS list
-# follow since 2026-10-02.
-HEADER_DAYS = 90
+# follow since 2026-10-02. The window is the Overview's own: the 90 CALENDAR days ending on the
+# newest file's day (overview_data.WINDOW_DAYS) -- counted to the minute, a file late on the day
+# before them counted here and not on the card (caught at the 2026-10-02 merge).
+from laser_trim_analyzer.gui.v6.overview_data import WINDOW_DAYS as HEADER_DAYS  # noqa: E402
 _GRADED = (StatusType.PASS, StatusType.WARNING, StatusType.FAIL)
 
 
@@ -162,7 +164,7 @@ def header_facts(db, model: str, *, now: Optional[datetime] = None) -> dict:
             end = datetime.fromisoformat(end[:19])
         if end is None:
             return out
-        start = end - timedelta(days=HEADER_DAYS)
+        start = datetime.combine(end.date() - timedelta(days=HEADER_DAYS - 1), time.min)
         mine = (DBAR.model == model, DBAR.overall_status.in_(_GRADED), DBAR.file_date <= horizon,
                 clean)
         window = (s.query(DBAR.overall_status, DBAR.system, func.count(DBAR.id))
@@ -174,9 +176,13 @@ def header_facts(db, model: str, *, now: Optional[datetime] = None) -> dict:
         if units:
             out.update(basis="trim", units=units, passed=passed)
         else:
+            # ...and stops at the end of the newest TRIM file's day, as the Overview does: a final
+            # test dated after it is past the window (no trim can be -- `end` is their newest).
+            stop = datetime.combine(end.date() + timedelta(days=1), time.min)
             ft = (s.query(DBFT.overall_status, func.count(DBFT.id))
                   .filter(DBFT.model == model, DBFT.overall_status.in_(_GRADED),
-                          DBFT.file_date >= start, DBFT.file_date <= horizon)
+                          DBFT.file_date >= start, DBFT.file_date < stop,
+                          DBFT.file_date <= horizon)
                   .group_by(DBFT.overall_status).all())
             ft_units, ft_passed = _graded_counts(ft)
             if ft_units:

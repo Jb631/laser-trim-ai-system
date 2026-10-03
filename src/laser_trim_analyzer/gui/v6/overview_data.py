@@ -47,9 +47,9 @@ from laser_trim_analyzer.ml.manager import (
 
 logger = logging.getLogger(__name__)
 
-# James's list so far (2026-09): these are hand-trimmed AFTER the laser, so a laser PASS on them is
-# hand-trim workload, not yield -- their cards and rows carry a "hand trim" tag. He may add to it.
-HAND_TRIM_MODELS = frozenset({"8232-1", "8340-1"})
+# Hand-trimmed AFTER the laser, so a laser PASS on them is hand-trim workload, not yield: their cards
+# and rows carry a "hand trim" tag. ONE list, core/model_names (it also sets their 20x suspect line).
+from laser_trim_analyzer.core.model_names import HAND_TRIM_MODELS  # noqa: E402
 
 WINDOW_DAYS = 90        # "Last 90 days": what every card and row is about
 PRIOR_DAYS = 365        # "was X%": the year before those 90 days

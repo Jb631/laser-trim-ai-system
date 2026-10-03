@@ -8,7 +8,7 @@ RENDER BUDGET (2026-09-02). A CTk row-frame is not cheap: building one per recor
 froze the Tk thread for the whole model switch — measured on an M-series Mac,
 200 units = 545 ms and the FT tab's 500 rows = 1,419 ms, with a re-set (destroy
 + rebuild) costing 2,105 ms. The work laptop is slower still. So the tabs render
-`INITIAL_ROWS` and put the rest behind one button, exactly as `FocusListZone`
+`INITIAL_ROWS` and put the rest behind one button, exactly as the retired `FocusListZone`
 does — including its rule that new data collapses the view again, because "show
 all" describes a list that no longer exists once the model changed.
 """
@@ -65,7 +65,7 @@ class RowBudgetMixin:
         """Drop the whole list in one native teardown, then start fresh."""
         self._show_all_btn.pack_forget()      # re-packed last, below the rows
         self._rows_host.destroy()
-        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent")
+        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent", height=1)
         self._rows_host.pack(side="top", fill="x")
         self._rows = []
 
@@ -153,9 +153,9 @@ class UnitsTab(RowBudgetMixin, ctk.CTkFrame):
         # Rows live in their own frame so a refresh is ONE native teardown
         # instead of N: destroying 200 row widgets one at a time cost as much
         # as building them (2,105 ms on the FT tab's 500).
-        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent")
+        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent", height=1)
         self._rows_host.pack(side="top", fill="x")
-        # Persistent, never destroyed — the FocusListZone reason: CTkButton
+        # Persistent, never destroyed — the retired FocusListZone's reason: CTkButton
         # schedules a click animation on itself, so destroying it from inside
         # its own command leaves a pending `after` on a dead widget. Packed and
         # unpacked instead.

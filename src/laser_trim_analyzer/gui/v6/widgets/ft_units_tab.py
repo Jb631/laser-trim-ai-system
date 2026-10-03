@@ -55,7 +55,7 @@ class FtUnitsTab(RowBudgetMixin, ctk.CTkFrame):
         self._list = ctk.CTkFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
         # One frame for every row: a refresh destroys this, not 500 widgets.
-        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent")
+        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent", height=1)
         self._rows_host.pack(side="top", fill="x")
         # Persistent (never destroyed from inside its own command) — see the
         # RowBudgetMixin it belongs to.

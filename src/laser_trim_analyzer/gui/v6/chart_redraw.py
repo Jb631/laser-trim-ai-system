@@ -17,7 +17,7 @@ What this deliberately does NOT touch:
   * `canvas.draw()` — a synchronous, blocking render. The export paths and
     `scripts/chart_qa_render_all.py` call it and then read pixels, so it must
     keep rendering immediately, and nothing here gates it.
-  * `focus_list_zone`'s sparklines. Those canvases are a fixed 260px, never
+  * the retired FOCUS list's sparklines (`focus_list_zone`, removed with Triage, 2026-10-02). Those canvases are a fixed 260px, never
     resize with the window, and are destroyed on every refresh — an `after`
     aimed at one is the dead-widget Tcl error that widget's comment already
     warns about.
