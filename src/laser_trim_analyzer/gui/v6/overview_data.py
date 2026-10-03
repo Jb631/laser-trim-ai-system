@@ -61,6 +61,7 @@ STILL_PASSING = 99.0    # a signal that moved on a model passing >= 99% says it 
 PART_FOCUS = "the drifting-now list"
 PART_DRIFT = "the drift watch's flags"
 PART_RATES = "the pass rates"
+PART_FT = "the final-test pass rates"     # read only for a card with no trim to show
 PART_ACTIVITY = "which models are inactive"
 
 _GRADED = ("PASS", "WARNING", "FAIL")
@@ -223,7 +224,7 @@ def load_overview(db, *, now: Optional[datetime] = None) -> Overview:
             ft_rates = _ft_rates_by_day(db, no_trims, anchor_day, now)
         except Exception as exc:
             logger.exception("Overview: the final-test pass rates could not be worked out")
-            ov.failed[PART_RATES] = _why(exc)
+            ov.failed[PART_FT] = _why(exc)
 
     for model, entry in order:
         days, final_test = rates.get(model), False

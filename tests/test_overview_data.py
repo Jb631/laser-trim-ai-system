@@ -396,3 +396,18 @@ def test_an_empty_database_has_no_cards_no_rows_and_says_so(tmp_path):
     assert ov.failed == {} and ov.cards == [] and ov.others == [] and ov.anchor is None
     assert od.card_count(ov) == 0
     assert od.window_caption(ov) == "No trim files on record yet"
+
+
+def test_a_failed_final_test_read_is_named_on_its_own_and_spoils_nothing_else(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _trims(db, "OTHER", ANCHOR, passes=5)
+    _final_tests(db, "FTONLY", ANCHOR, passes=8, fails=2)
+    _fake_sources(monkeypatch, flags=[_flag("FTONLY", DriftTier.DRIFT, 1.0, "ft_fail_fraction")],
+                  statuses={"FTONLY": _status("FTONLY", "ft_fail_fraction", 0.02, 0.2)})
+    monkeypatch.setattr(od, "_ft_rates_by_day", _boom)
+    ov = od.load_overview(db)
+    assert ov.failed == {od.PART_FT: "RuntimeError: invented crash"}
+    (card,) = ov.cards
+    assert card.pass_pct is None and card.final_test is False
+    assert [r.model for r in ov.others] == ["OTHER"] and ov.anchor == ANCHOR
+    assert od.card_count(ov) == 1                    # the cards themselves are all known
