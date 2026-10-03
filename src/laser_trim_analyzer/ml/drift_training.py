@@ -6,9 +6,10 @@ and per-tier thresholds, and writes/upserts model_metric_state rows.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime, timedelta
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -20,6 +21,7 @@ from laser_trim_analyzer.database.models import (
 )
 from laser_trim_analyzer.ml.drift_types import (
     DriftTier,
+    RECENT_LOT_DAYS,
     TrainingSummary,
     WATCHED_METRICS,
     target_fp_for_tier,
@@ -40,6 +42,84 @@ MIN_BASELINE_SAMPLES: int = 30
 # 0.70; escapes tolerate more distance because assembly dwell is months and
 # a wrong-unit link at the same model still measures the model's escape rate.
 ESCAPE_MIN_CONFIDENCE: float = 0.5
+
+
+# ---- what may feed drift (2026-10-02) -------------------------------------------------------
+# The rules the stored drift state was built under. Bump it whenever a change here would give a
+# different state from the same data: `ensure_drift_rules` then retrains every model once, at the
+# next start (about 11 s on the home copy), so nobody has to remember to.
+DRIFT_RULES_VERSION = "2026-10-02"
+DRIFT_RULES_KEY = "drift_rules"
+
+# A reading that cannot be real never feeds drift, and is counted (drift_exclusions). From the
+# home copy, 2026-10-02: 37 untrimmed resistances >= 10 MOhm or <= 0 on files that did NOT fail
+# processing, and 31 resistance changes computed from such a resistance (up to 5.6e10 %); 4
+# electrical angles above 400 degrees. The ceiling is the one the findings use (ink_target MAX_R).
+FAILED_READING_MARKER = 999.999     # the analyser's sentinel (core/model_stats.py)
+RESISTANCE_CEILING_OHMS = 1e7
+ANGLE_CEILING_DEG = 400.0
+# NOT a floor at 0 degrees: the 2,416 negative angles on the home copy are -0.1 on the 8340
+# family and 7715, whose angles all sit near zero (0.4-3.3 on average), and core/model_stats.py
+# protects them for the same reason. The angle is evidence-only (not a trigger) either way.
+
+LEFT_OUT_REASONS = ("suspect", "impossible")
+
+
+def _impossible_resistance(r) -> bool:
+    return r is not None and not (0.0 < r < RESISTANCE_CEILING_OHMS)
+
+
+def reading_is_impossible(metric: str, value, untrimmed_r=None, trimmed_r=None) -> bool:
+    """Can `value` not be a real reading of `metric`? NaN is MISSING, not impossible (the lot
+    builder drops it uncounted, as before); +-inf and the 999.999 marker are impossible
+    everywhere."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return False
+    if math.isinf(value) or value == FAILED_READING_MARKER:
+        return True
+    if metric == "measured_electrical_angle":
+        return value > ANGLE_CEILING_DEG
+    if metric == "untrimmed_resistance":
+        return _impossible_resistance(value)
+    if metric == "resistance_change_percent":
+        # A change is only as real as the two resistances it is made from.
+        return _impossible_resistance(untrimmed_r) or _impossible_resistance(trimmed_r)
+    return False
+
+
+def _left_out_reason(metric: str, value, data_quality, untrimmed_r=None, trimmed_r=None):
+    """Why a sample is left out of drift ("suspect", "impossible"), or None to keep it."""
+    if data_quality == "suspect":
+        return "suspect"
+    if reading_is_impossible(metric, value, untrimmed_r, trimmed_r):
+        return "impossible"
+    return None
+
+
+def _count(left_out, reason) -> None:
+    if left_out is not None:
+        left_out[reason] = left_out.get(reason, 0) + 1
+
+
+def drift_exclusions(db, model: str) -> Dict[str, Dict[str, int]]:
+    """How many of `model`'s samples each watched metric left out, and why: {metric:
+    {"suspect": n, "impossible": n}} for EVERY watched metric (zeros included). Counted over the
+    window drift itself reads (after a baseline requalification, when there is one)."""
+    floor = None
+    try:
+        req = db.get_baseline_requalification(model)
+        if req:
+            floor = datetime.fromisoformat(str(req[0])[:19])
+    except Exception:
+        logger.exception("baseline requalification lookup failed for %s", model)
+    out: Dict[str, Dict[str, int]] = {}
+    for metric in WATCHED_METRICS:
+        counts = {reason: 0 for reason in LEFT_OUT_REASONS}
+        _load_samples_with_dates(db, model, metric,
+                                 after=(floor - timedelta(seconds=1)) if floor else None,
+                                 left_out=counts)
+        out[metric] = counts
+    return out
 
 
 def _coerce_dt(d):
@@ -87,6 +167,8 @@ def train_drift_detector(
       4. Upsert into model_metric_state.
     """
     start = time.time()
+    # Captured now: the loop below rebinds `model` to each model's name in turn.
+    full_run = model is None
 
     # Discover models that have data. FINAL-TEST models are included since
     # the FT watch (2026-07-13): a model tested-but-never-trimmed in this DB
@@ -139,6 +221,10 @@ def train_drift_detector(
 
         if model_had_any_training:
             models_trained += 1
+
+    if full_run:
+        # Every model's state is now built under the current rules.
+        _record_drift_rules(db)
 
     return TrainingSummary(
         models_trained=models_trained,
@@ -193,7 +279,7 @@ def _train_one_metric(
     """
     from laser_trim_analyzer.ml.lots import (
         LOT_GAP_DAYS, MIN_LOT_BASELINE_N, MIN_LOTS_TRAIN, REPLAY_LOTS,
-        get_model_lots)
+        get_model_lots, judged_lots)
 
     lots = get_model_lots(db, model, metric, after=baseline_start)
     closed = [l for l in lots if not l.is_open()]
@@ -213,7 +299,12 @@ def _train_one_metric(
     baseline_lots = [l for l in closed[:split] if l.n >= MIN_LOT_BASELINE_N]
     if len(baseline_lots) < 5:
         baseline_lots = closed[:split]        # tiny-lot model: use what exists
-    replay_lots = closed[split:]
+    # Replayed: the lots the detector JUDGES (a small lot pooled with the one after it, the
+    # newest small lot left waiting -- lots.judged_lots) among the newest closed lots.
+    from laser_trim_analyzer.ml.lots import MEAN_AGGREGATED_METRICS as _MEAN
+    baseline_cutoff = closed[split - 1].end
+    replay_lots = [l for l in judged_lots(closed, use_mean=metric in _MEAN)
+                   if l.end > baseline_cutoff]
 
     arr = np.asarray([l.median for l in baseline_lots], dtype=float)
     baseline_mean = float(np.mean(arr))
@@ -243,8 +334,7 @@ def _train_one_metric(
     clip_hi = baseline_mean + SUSPECT_SIGMA_GATE * baseline_std
     det = _build_detector(metric, baseline_mean, baseline_std, len(baseline_lots),
                           thresholds_dict=thresholds)
-    for l in replay_lots:
-        det.update(min(max(float(l.median), clip_lo), clip_hi))
+    _feed(det, replay_lots, baseline_cutoff, clip_lo, clip_hi)
 
     _upsert_metric_state(
         db, model, metric,
@@ -252,11 +342,56 @@ def _train_one_metric(
         baseline_count=len(baseline_lots), is_trained=True, thresholds=thresholds,
         cusum_pos=det.cusum_pos, cusum_neg=det.cusum_neg, ewma_state=det.ewma_state,
         baseline_cutoff_date=baseline_lots[-1].end if baseline_lots else None,
-        # The lot watermark: advance feeds only CLOSED lots ending after this.
-        last_sample_date=closed[-1].end,
+        # The lot watermark: advance feeds only JUDGED lots ending after this. A newest small
+        # lot still waiting for company ends after it, so it is pooled and judged later.
+        last_sample_date=replay_lots[-1].end if replay_lots else baseline_cutoff,
         last_row_id=None,
         recent_window=list(det.recent_window),
     )
+    return True
+
+
+def _feed(det, lots, previous_end, clip_lo, clip_hi) -> None:
+    """Feed judged lots to a detector, oldest first. Winsorized at the suspect gate, so one
+    corrupt lot is one bounded push. After a pause of more than RECENT_LOT_DAYS the detector
+    starts again from the baseline (2026-10-02): lots that far apart do not add up -- 6952's
+    escape alarm was built from lots spread over 2021-2026."""
+    for lot in lots:
+        if previous_end is not None and (lot.start - previous_end).days > RECENT_LOT_DAYS:
+            det.reset_runtime()
+        det.update(min(max(float(lot.median), clip_lo), clip_hi))
+        previous_end = lot.end
+
+
+def _record_drift_rules(db) -> None:
+    meta_set = getattr(db, "_meta_set", None)
+    if meta_set is None:
+        return
+    with db.session() as s:
+        meta_set(s, DRIFT_RULES_KEY, DRIFT_RULES_VERSION)
+
+
+def ensure_drift_rules(db, sensitivity_preset: str = "standard",
+                       progress_callback: Optional[Callable[[str, int, int], None]] = None) -> bool:
+    """Retrain every model's drift state once if it was built under other rules than these
+    (DRIFT_RULES_VERSION); True when it retrained. A database with no drift state has nothing
+    to retrain -- what is trained later is trained under these rules -- so the version is just
+    recorded. Called at startup, before the catch-up advance."""
+    meta_get = getattr(db, "_meta_get", None)
+    if meta_get is None:
+        return False
+    with db.session() as s:
+        recorded = meta_get(s, DRIFT_RULES_KEY)
+        has_state = s.query(ModelMetricState.id).first() is not None
+    if recorded == DRIFT_RULES_VERSION:
+        return False
+    if not has_state:
+        _record_drift_rules(db)
+        return False
+    logger.info("Drift rules changed (%s -> %s): retraining every model's drift state",
+                recorded, DRIFT_RULES_VERSION)
+    train_drift_detector(db, sensitivity_preset=sensitivity_preset,
+                         progress_callback=progress_callback)
     return True
 
 
@@ -346,8 +481,13 @@ def _upsert_metric_state(
 
 
 def _load_samples_with_dates(db, model: str, metric: str, after=None,
-                             after_row_id=None):
+                             after_row_id=None, left_out: Optional[Dict[str, int]] = None):
     """Return [(file_date, value, row_id)] for a model+metric, oldest first.
+
+    Never a sample from a file marked SUSPECT, nor a reading that cannot be real
+    (`reading_is_impossible`); each one left out is counted into `left_out[reason]` when a dict
+    is given (drift_exclusions). 7539-2's newest lot was four suspect files at 6.8 against a
+    0.02 band; 8902's alarm was one suspect unit at 9.93 against 0.1 (2026-10-02).
 
     row_id is the source row's autoincrement id (smoothness_results.id for
     max_smoothness_value, track_results.id otherwise) — the advance watermark.
@@ -365,7 +505,7 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
         # UNTRIMMED records are not gradeable and are excluded.
         from laser_trim_analyzer.database.models import StatusType
         with db.session() as s:
-            q = (s.query(DBAR.file_date, DBAR.overall_status, DBAR.id)
+            q = (s.query(DBAR.file_date, DBAR.overall_status, DBAR.id, DBAR.data_quality)
                  .filter(DBAR.model == model,
                          DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING,
                                                   StatusType.FAIL])))
@@ -374,8 +514,15 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
             elif after is not None:
                 q = q.filter(DBAR.file_date > after)
             rows = q.order_by(DBAR.file_date).all()
-        return [(d, 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
-                for (d, st_, rid) in rows if d is not None]
+        out = []
+        for d, st_, rid, dq in rows:
+            if d is None:
+                continue
+            if dq == "suspect":            # its verdict rests on the reading that is suspect
+                _count(left_out, "suspect")
+                continue
+            out.append((d, 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid))
+        return out
 
     if metric == "ft_fail_fraction":
         # Per-FT-RECORD fail flag on final_test_results, clustered on the
@@ -417,7 +564,7 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
         floor_2000 = datetime(2000, 1, 1)
         ft_date = _fn.coalesce(DBFT.test_date, DBFT.file_date)
         with db.session() as s:
-            q = (s.query(ft_date, DBFT.overall_status, DBFT.id)
+            q = (s.query(ft_date, DBFT.overall_status, DBFT.id, DBAR.data_quality)
                  .join(DBAR, DBFT.linked_trim_id == DBAR.id)
                  .filter(DBFT.model == model,
                          ft_date.isnot(None),
@@ -430,8 +577,16 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
             elif after is not None:
                 q = q.filter(ft_date > after)
             rows = q.order_by(ft_date).all()
-        return [(_coerce_dt(d), 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
-                for (d, st_, rid) in rows if d is not None]
+        out = []
+        for d, st_, rid, trim_dq in rows:
+            if d is None:
+                continue
+            if trim_dq == "suspect":       # the trim verdict it tests rests on a suspect file
+                _count(left_out, "suspect")
+                continue
+            out.append((_coerce_dt(d), 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0,
+                        rid))
+        return out
 
     out = []
     if metric == "max_smoothness_value":
@@ -455,7 +610,8 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
         # columns, not a reading. A lot median usually shrugs one off -- but 8856's lot of
         # 2024-08-06 is 4 markers out of 7 tracks, so its median WAS 999.999.
         from laser_trim_analyzer.core.model_stats import failed_processing_statuses
-        q = (s.query(DBAR.file_date, col, DBTR.id)
+        q = (s.query(DBAR.file_date, col, DBTR.id, DBAR.data_quality,
+                     DBTR.untrimmed_resistance, DBTR.trimmed_resistance)
              .join(DBTR, DBTR.analysis_id == DBAR.id)
              .filter(DBAR.model == model, col.isnot(None),
                      DBAR.overall_status.notin_(failed_processing_statuses())))
@@ -463,9 +619,14 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
             q = q.filter(DBTR.id > after_row_id)
         elif after is not None:
             q = q.filter(DBAR.file_date > after)
-        for d, v, rid in q.order_by(DBAR.file_date).all():
-            if d is not None and v is not None:
-                out.append((d, v, rid))
+        for d, v, rid, dq, r_untrimmed, r_trimmed in q.order_by(DBAR.file_date).all():
+            if d is None or v is None:
+                continue
+            reason = _left_out_reason(metric, v, dq, r_untrimmed, r_trimmed)
+            if reason:
+                _count(left_out, reason)
+                continue
+            out.append((d, v, rid))
     return out
 
 
@@ -544,10 +705,13 @@ def advance_drift_state(db, model: Optional[str] = None) -> int:
                         floor = datetime.fromisoformat(str(req[0])[:19])
                 except Exception:
                     pass
+                from laser_trim_analyzer.ml.lots import (
+                    MEAN_AGGREGATED_METRICS as _MEAN, judged_lots)
                 lots = get_model_lots(db, mdl, metric, after=floor)
-                new_lots = [l for l in lots
-                            if not l.is_open()
-                            and (row.last_updated is None or l.end > row.last_updated)]
+                judged = judged_lots([l for l in lots if not l.is_open()],
+                                     use_mean=metric in _MEAN)
+                new_lots = [l for l in judged
+                            if row.last_updated is None or l.end > row.last_updated]
                 if not new_lots:
                     continue
                 new_samples = [(l.end, l.median, None) for l in new_lots]
@@ -578,8 +742,12 @@ def advance_drift_state(db, model: Optional[str] = None) -> int:
             from laser_trim_analyzer.ml.drift_types import SUSPECT_SIGMA_GATE
             c_lo = row.baseline_mean - SUSPECT_SIGMA_GATE * row.baseline_std
             c_hi = row.baseline_mean + SUSPECT_SIGMA_GATE * row.baseline_std
-            for _d, v, _r in new_samples:
-                det.update(min(max(float(v), c_lo), c_hi))
+            if lot_mode:
+                # Judged lots, with a fresh start after a long pause (_feed).
+                _feed(det, new_lots, row.last_updated, c_lo, c_hi)
+            else:
+                for _d, v, _r in new_samples:
+                    det.update(min(max(float(v), c_lo), c_hi))
             row.cusum_pos = det.cusum_pos
             row.cusum_neg = det.cusum_neg
             row.ewma_state = det.ewma_state

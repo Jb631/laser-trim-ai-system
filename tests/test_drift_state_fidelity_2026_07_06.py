@@ -88,10 +88,10 @@ def test_step_change_flaggable_after_restart(tmp_path):
     from datetime import datetime
 
     db = DatabaseManager(tmp_path / "s.db")
-    _seed(db, "STEP", [0.010 + (i % 3) * 0.0002 for i in range(50)])
+    _seed(db, "STEP", [0.010 + (i % 3) * 0.0002 for i in range(50)], units=3)
     train_drift_detector(db, sensitivity_preset="standard")
 
-    _seed(db, "STEP", [0.05] * 6, start=datetime(2026, 6, 1))
+    _seed(db, "STEP", [0.05] * 6, start=datetime(2026, 6, 1), units=3)
     advance_drift_state(db, model="STEP")
 
     # Fresh hydration == app restart.

@@ -1502,6 +1502,27 @@ class MLManager:
         return recommendations
 
 
+def drift_reference_date(db):
+    """What "recent" is measured against (drift_types.RECENT_LOT_DAYS): the newest trim file in
+    the database -- anchored to the data, not the wall clock, like `active_model_set`, so a
+    historical copy still reads sensibly -- or the newest final test when there are no trims.
+    A file dated in the future is ignored: one mistyped date must not make every alarm stale."""
+    from datetime import datetime as _dt, timedelta
+    from sqlalchemy import func
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT)
+    horizon = _dt.now() + timedelta(days=1)
+    with db.session() as s:
+        newest = (s.query(func.max(DBAR.file_date))
+                  .filter(DBAR.file_date <= horizon).scalar())
+        if newest is None:
+            ft_date = func.coalesce(DBFT.test_date, DBFT.file_date)
+            newest = s.query(func.max(ft_date)).filter(ft_date <= horizon).scalar()
+    if isinstance(newest, str):
+        newest = _dt.fromisoformat(newest[:19])
+    return newest
+
+
 def get_drifting_models(db, sensitivity_preset: str = "standard"):
     """Return sorted list of currently-flagged models.
 
@@ -1532,8 +1553,9 @@ def get_drifting_models(db, sensitivity_preset: str = "standard"):
             r[0] for r in s.query(ModelMetricState.model).distinct().all()
         ]
 
+    reference = drift_reference_date(db)          # once, not once per model
     for model in models:
-        status = get_model_drift_status(db, model)
+        status = get_model_drift_status(db, model, reference_date=reference)
         if status.overall_tier > DriftTier.STABLE:
             summaries.append(ModelAlertSummary(
                 model=model,
@@ -1577,12 +1599,19 @@ def active_model_set(db, recent_days: int = 90, mps_models=None) -> set:
     return active
 
 
-def get_model_drift_status(db, model: str):
+_UNSET = object()
+
+
+def get_model_drift_status(db, model: str, reference_date=_UNSET):
     """Return full per-metric breakdown for one model.
 
     Hydrates MetricDetector instances from model_metric_state rows and
-    asks the container for its current status.
+    asks the container for its current status. `reference_date` is what
+    "recent" is measured against (drift_reference_date when not given; None
+    turns the recency gate off).
     """
+    if reference_date is _UNSET:
+        reference_date = drift_reference_date(db)
     from laser_trim_analyzer.database.models import ModelMetricState
     from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
     from laser_trim_analyzer.ml.multi_metric_drift_detector import (
@@ -1666,6 +1695,8 @@ def get_model_drift_status(db, model: str):
                 recent_window=deque(
                     [float(v) for v in (row["recent_window"] or [])],
                     maxlen=STEP_CHANGE_WINDOW),
+                # The newest judged lot (the advance watermark): the recency gate reads it.
+                newest_lot=_as_datetime(row["last_updated"]) if row["is_trained"] else None,
             )
             metrics[metric_name] = det
 
@@ -1686,8 +1717,17 @@ def get_model_drift_status(db, model: str):
         ):
             metrics[COMPOSITE_METRIC].represents_family = False
 
-    container = MultiMetricDriftDetector(model=model, metrics=metrics)
+    container = MultiMetricDriftDetector(model=model, metrics=metrics,
+                                         reference_date=reference_date)
     return container.get_status()
+
+
+def _as_datetime(value):
+    """model_metric_state.last_updated as a datetime (SQLite can hand back a string)."""
+    if isinstance(value, str):
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(value[:19])
+    return value
 
 
 def preview_alert_count(db, sensitivity_preset: str) -> dict:
@@ -1710,6 +1750,8 @@ def preview_alert_count(db, sensitivity_preset: str) -> dict:
         models = [
             r[0] for r in s.query(ModelMetricState.model).distinct().all()
         ]
+    # The same recency gate as get_drifting_models, or the preview counts stale alarms.
+    reference = drift_reference_date(db)
 
     for model in models:
         # Build detectors with candidate-preset thresholds in place of cached ones
@@ -1735,6 +1777,7 @@ def preview_alert_count(db, sensitivity_preset: str) -> dict:
                     # (app_qa_sweep caught 92 vs 97 after the first retrain
                     # that persisted windows).
                     "recent_window": r.recent_window,
+                    "last_updated": r.last_updated,
                 })
 
         for row in row_data:
@@ -1766,9 +1809,11 @@ def preview_alert_count(db, sensitivity_preset: str) -> dict:
                 recent_window=deque(
                     [float(v) for v in (row["recent_window"] or [])],
                     maxlen=STEP_CHANGE_WINDOW),
+                newest_lot=_as_datetime(row["last_updated"]),
             )
 
-        container = MultiMetricDriftDetector(model=model, metrics=metrics)
+        container = MultiMetricDriftDetector(model=model, metrics=metrics,
+                                             reference_date=reference)
         status = container.get_status()
         if status.overall_tier == DriftTier.WARNING:
             counts["warning"] += 1

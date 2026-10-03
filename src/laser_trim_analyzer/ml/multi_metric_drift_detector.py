@@ -10,10 +10,11 @@ retires the UI that uses it.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Deque, Dict, Optional
 
 import numpy as np
@@ -25,8 +26,10 @@ from laser_trim_analyzer.ml.drift_types import (
     MetricStatus,
     ModelAlertSummary,
     ModelDriftStatus,
+    RECENT_LOT_DAYS,
     TRIGGER_METRICS,
     WATCHED_METRICS,
+    WORSE_DIRECTION,
 )
 
 
@@ -91,6 +94,23 @@ COMPOSITE_FAMILY = frozenset({
 })
 
 
+def toward_worse(delta: float, direction: int) -> float:
+    """How far `delta` (a value minus the baseline) goes the WORSE way: |delta| for a two-sided
+    metric (direction 0), else the part of it that points `direction`, never negative. An
+    improvement on a one-sided metric is 0 -- it cannot trip anything (2026-10-02)."""
+    if direction == 0:
+        return abs(delta)
+    return max(0.0, direction * delta)
+
+
+def is_recent(newest_lot: Optional[datetime], reference: Optional[datetime]) -> bool:
+    """Is evidence ending at `newest_lot` recent enough to alarm, against the newest file in the
+    database (`reference`)? Unknown either way counts as recent: no gate without the dates."""
+    if newest_lot is None or reference is None:
+        return True
+    return (reference - newest_lot) <= timedelta(days=RECENT_LOT_DAYS)
+
+
 def compute_thresholds(sigma: float, target_fp: float) -> tuple[float, float, float]:
     """Compute (h, L, z) thresholds for a target false-positive rate.
 
@@ -137,6 +157,10 @@ class MetricDetector:
     # no longer being produced, e.g. un-deployed after a retrain) so it must
     # NOT silence its input family. Set at hydrate time; harmless elsewhere.
     represents_family: bool = True
+
+    # The end of the newest lot this detector has judged (model_metric_state.last_updated),
+    # set at hydrate time. The container gates alarms on it (RECENT_LOT_DAYS).
+    newest_lot: Optional[datetime] = None
 
     # Last computed status (for get_status without re-processing)
     _last_status: Optional[MetricStatus] = None
@@ -223,6 +247,16 @@ class MetricDetector:
                 is_trained=True,
             )
 
+        # One-sided where the metric has a better direction (WORSE_DIRECTION, 2026-10-02):
+        # only the worse side of each check counts, so an improvement can never trip a tier.
+        # Two-sided metrics (direction 0) read both sides, as every metric used to.
+        direction = WORSE_DIRECTION.get(self.metric, 0)
+        cusum_stat = max(self.cusum_pos if direction >= 0 else 0.0,
+                         -self.cusum_neg if direction <= 0 else 0.0)
+        ewma_dev = toward_worse(ewma_value - mu, direction)
+        step_dev = (toward_worse(recent_mean - mu, direction)
+                    if recent_mean is not None else 0.0)
+
         # Test each tier from strictest to loosest; pick the highest tier
         # that any check trips at.
         winning_tier = DriftTier.STABLE
@@ -237,15 +271,13 @@ class MetricDetector:
             if h is None or L is None or z is None:
                 continue
 
-            cusum_trip = self.cusum_pos > h or self.cusum_neg < -h
-            ewma_trip = (
-                abs(ewma_value - mu) > L * sigma_ewma
-            )
+            cusum_trip = cusum_stat > h
+            ewma_trip = ewma_dev > L * sigma_ewma
             step_trip = False
             step_magnitude = 0.0
             if recent_mean is not None and recent_n >= STEP_CHANGE_WINDOW:
                 step_magnitude = (
-                    abs(recent_mean - mu) * math.sqrt(recent_n) / sigma
+                    step_dev * math.sqrt(recent_n) / sigma
                     if sigma > 0 else 0.0
                 )
                 step_trip = step_magnitude > z
@@ -263,9 +295,9 @@ class MetricDetector:
                 # 50-sample ramp reads as SLOW_DRIFT (CUSUM has integrated
                 # past h faster than the recent window can shift).
                 step_norm = (step_magnitude / z) if (step_trip and z > 0) else 0.0
-                cusum_norm = (max(self.cusum_pos, -self.cusum_neg) / h) if (cusum_trip and h > 0) else 0.0
+                cusum_norm = (cusum_stat / h) if (cusum_trip and h > 0) else 0.0
                 ewma_norm = (
-                    abs(ewma_value - mu) / (L * sigma_ewma)
+                    ewma_dev / (L * sigma_ewma)
                     if (ewma_trip and (L * sigma_ewma) > 0) else 0.0
                 )
                 slow_norm = max(cusum_norm, ewma_norm)
@@ -320,6 +352,10 @@ class MultiMetricDriftDetector:
     model: str
     metrics: Dict[str, MetricDetector]
     last_processed: Optional[datetime] = None
+    # The newest file in the database: a metric whose newest judged lot is more than
+    # RECENT_LOT_DAYS older cannot raise the tier. None = no recency gate (unit tests, callers
+    # that have no database).
+    reference_date: Optional[datetime] = None
 
     def update(self, sample: Dict[str, float]) -> ModelDriftStatus:
         """Process a per-metric sample dict.  Returns the new model status.
@@ -341,9 +377,19 @@ class MultiMetricDriftDetector:
         Overall tier = max of metric tiers.  Worst-metric and alert-type
         come from the metric driving the max tier.
         """
-        per_metric = {
-            name: det.get_status() for name, det in self.metrics.items()
-        }
+        per_metric = {}
+        for name, det in self.metrics.items():
+            ms = det.get_status()
+            recent = is_recent(det.newest_lot, self.reference_date)
+            if recent:
+                ms = dataclasses.replace(ms, newest_lot=det.newest_lot, is_recent=True)
+            else:
+                # Old evidence is not an alarm today (2026-10-02): the stored state is left as
+                # it is, but the tier reads STABLE and the status says why.
+                ms = dataclasses.replace(ms, tier=DriftTier.STABLE, alert_type=None,
+                                         magnitude=0.0, newest_lot=det.newest_lot,
+                                         is_recent=False)
+            per_metric[name] = ms
 
         # Find the worst metric.  Sort by (tier, recent σ-shift) descending.
         # We use |recent_mean - baseline_mean| / baseline_std as the tier

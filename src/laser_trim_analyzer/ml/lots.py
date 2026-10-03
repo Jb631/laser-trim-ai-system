@@ -13,8 +13,12 @@ them, and consistent with the daily-median line the charts already draw.
 
 An OPEN lot (last unit newer than LOT_GAP_DAYS ago) may still be receiving
 units — it is previewed in the UI but never fed to the detector state.
+
+A SMALL lot (fewer than MIN_LOT_BASELINE_N units) is shown like any other, but the detector
+judges it only together with the lot after it (`judged_lots`, 2026-10-02): one or two units are
+not a lot's verdict. 8902 was flagged on one unit, 8415-1 on one, 7953-1A on two.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from statistics import median, pstdev
 from typing import List, Optional, Tuple
@@ -32,6 +36,9 @@ class Lot:
     median: float
     n: int
     unit_std: float          # within-lot spread (context, not alarm basis)
+    # The unit values themselves: a small lot is pooled with the next one (judged_lots), and
+    # a pooled lot's median is the median of ALL its units, not a median of medians.
+    values: List[float] = field(default_factory=list, repr=False)
 
     def is_open(self, now: Optional[datetime] = None) -> bool:
         """Still receiving units? A lot only closes once the changeover gap
@@ -79,9 +86,47 @@ from laser_trim_analyzer.ml.drift_types import FRACTION_METRICS as MEAN_AGGREGAT
 
 
 def _finish(days: List[datetime], vals: List[float], use_mean: bool = False) -> Lot:
+    return _lot_of(days[0], days[-1], vals, use_mean)
+
+
+def _lot_of(start: datetime, end: datetime, vals: List[float], use_mean: bool = False) -> Lot:
     center = (sum(vals) / len(vals)) if use_mean else float(median(vals))
-    return Lot(start=days[0], end=days[-1], median=center,
-               n=len(vals), unit_std=float(pstdev(vals)) if len(vals) > 1 else 0.0)
+    return Lot(start=start, end=end, median=center, n=len(vals),
+               unit_std=float(pstdev(vals)) if len(vals) > 1 else 0.0, values=list(vals))
+
+
+def judged_lots(lots: List[Lot], use_mean: bool = False,
+                max_gap_days: Optional[int] = None,
+                min_n: int = MIN_LOT_BASELINE_N) -> List[Lot]:
+    """The lots the drift detector JUDGES, oldest first, from CLOSED lots (2026-10-02).
+
+    A lot of fewer than `min_n` units cannot raise an alarm on its own. It is pooled with the
+    lot after it when that lot starts within `max_gap_days` (default RECENT_LOT_DAYS) of its
+    end -- two small lots in a row pool into one, and one judged lot can be made of several.
+    A small lot whose next lot comes later than that is not judged at all (too long ago to
+    count with it), and the newest small lot waits: it is left out here and pooled once the
+    next lot arrives. Every lot is still SHOWN (get_model_lots); this is only what is judged.
+    """
+    from laser_trim_analyzer.ml.drift_types import RECENT_LOT_DAYS
+    gap = RECENT_LOT_DAYS if max_gap_days is None else max_gap_days
+    judged: List[Lot] = []
+    waiting: Optional[Lot] = None
+    for lot in lots:
+        if waiting is not None:
+            if (lot.start - waiting.end).days <= gap:
+                lot = _lot_of(waiting.start, lot.end,
+                              _values_of(waiting) + _values_of(lot), use_mean)
+            waiting = None                  # pooled into `lot`, or too old to pool: dropped
+        if lot.n < min_n:
+            waiting = lot
+        else:
+            judged.append(lot)
+    return judged
+
+
+def _values_of(lot: Lot) -> List[float]:
+    """A lot's unit values -- or, for a Lot built without them, its centre once per unit."""
+    return list(lot.values) if lot.values else [lot.median] * lot.n
 
 
 def get_model_lots(db, model: str, metric: str, after: Optional[datetime] = None,

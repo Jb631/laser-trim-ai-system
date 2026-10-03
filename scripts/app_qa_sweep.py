@@ -1009,6 +1009,97 @@ def check_inactive_models_on_database(db, raw) -> None:
               + (f"; differ: {wrong[:8]}" if wrong else ""))
 
 
+def check_drift_trust_rules(db, raw) -> None:
+    """The drift watch raises no alarm the data cannot support (James, 2026-10-02: "im also
+    concerned about dirty data and accuracy of the app telling me things are drifting"). On the
+    copy, each rule read against independent SQL or its own definition -- each check fails if its
+    rule is taken out (tests/test_drift_trust_rules.py mutates each one):
+      1. no reading from a file marked suspect, and no impossible reading, feeds drift;
+      2. no lot of fewer than 3 units is judged on its own;
+      3. every flagged model's worst metric has a judged lot within 90 days of the newest file;
+      4. no one-sided metric is flagged while its recent lots sit on the better side.
+    A rule with nothing on the copy to test it against is a WARN, never a PASS."""
+    from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import describe_exclusions
+    from laser_trim_analyzer.ml.drift_training import (
+        RESISTANCE_CEILING_OHMS, _load_samples_with_dates, drift_exclusions)
+    from laser_trim_analyzer.ml.drift_types import RECENT_LOT_DAYS, WORSE_DIRECTION
+    from laser_trim_analyzer.ml.lots import MEAN_AGGREGATED_METRICS, get_model_lots, judged_lots
+    from laser_trim_analyzer.ml.manager import drift_reference_date, get_drifting_models
+
+    # 1a. suspect files: the model with the most of them, every track metric
+    row = raw.execute(
+        "SELECT a.model, COUNT(*) FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id"
+        " WHERE a.data_quality = 'suspect' AND t.final_linearity_error_shifted IS NOT NULL"
+        " GROUP BY a.model ORDER BY 2 DESC LIMIT 1").fetchone()
+    if not row:
+        warn("drift: no suspect file on this copy to test the suspect rule against")
+    else:
+        model = row[0]
+        suspect_tracks = {r[0] for r in raw.execute(
+            "SELECT t.id FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id"
+            " WHERE a.model = ? AND a.data_quality = 'suspect'", (model,))}
+        fed = {rid for _d, _v, rid in _load_samples_with_dates(db, model, "linearity_error")}
+        leaked = fed & suspect_tracks
+        check("drift: no reading from a file marked suspect feeds the linearity watch",
+              not leaked, f"{model}: {len(suspect_tracks)} suspect tracks, {len(leaked)} fed")
+        said = describe_exclusions(drift_exclusions(db, model))
+        check("drift tab: says how many suspect readings it left out",
+              "marked suspect" in said, f"{model}: {said[:110]}")
+
+    # 1b. impossible resistance
+    row = raw.execute(
+        "SELECT a.model FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id"
+        " WHERE t.untrimmed_resistance >= ? AND a.overall_status NOT IN ('ERROR','PROCESSING_FAILED')"
+        "   AND (a.data_quality IS NULL OR a.data_quality != 'suspect')"
+        " GROUP BY a.model ORDER BY COUNT(*) DESC LIMIT 1", (RESISTANCE_CEILING_OHMS,)).fetchone()
+    if not row:
+        warn("drift: no impossible resistance on this copy to test the rule against")
+    else:
+        vals = [v for _d, v, _r in _load_samples_with_dates(db, row[0], "untrimmed_resistance")]
+        bad = [v for v in vals if not (0 < v < RESISTANCE_CEILING_OHMS)]
+        check("drift: no impossible resistance feeds the resistance watch", not bad,
+              f"{row[0]}: {len(vals)} readings fed, {len(bad)} impossible")
+
+    # 2. small lots: the model with the most lots of one or two units
+    row = raw.execute(
+        "SELECT a.model, COUNT(DISTINCT substr(a.file_date, 1, 10)) FROM analysis_results a"
+        " WHERE a.overall_status NOT IN ('ERROR','PROCESSING_FAILED') GROUP BY a.model"
+        " ORDER BY 2 DESC LIMIT 40").fetchall()
+    small_seen = judged_small = 0
+    for model, _days in row:
+        lots = [l for l in get_model_lots(db, model, "linearity_error") if not l.is_open()]
+        small_seen += sum(1 for l in lots if l.n < 3)
+        judged_small += sum(1 for l in judged_lots(lots, use_mean=False) if l.n < 3)
+    if not small_seen:
+        warn("drift: no lot of fewer than 3 units among the 40 busiest models to test pooling")
+    else:
+        check("drift: no lot of fewer than 3 units is judged on its own", judged_small == 0,
+              f"{small_seen} small lots on the 40 busiest models, {judged_small} judged alone")
+
+    # 3 and 4. every flag recent, and on the worse side
+    reference = drift_reference_date(db)
+    flags = get_drifting_models(db)
+    if not flags:
+        warn("drift: nothing flagged on this copy -- the recency and direction rules are untested")
+        return
+    from laser_trim_analyzer.ml.manager import get_model_drift_status
+    stale, better = [], []
+    for f in flags:
+        st = get_model_drift_status(db, f.model, reference_date=reference)
+        ms = st.per_metric[f.worst_metric]
+        if ms.newest_lot is None or (reference - ms.newest_lot).days > RECENT_LOT_DAYS:
+            stale.append(f"{f.model}/{f.worst_metric}")
+        for name, m in st.per_metric.items():
+            d = WORSE_DIRECTION.get(name, 0)
+            if int(m.tier) and d and m.recent_mean is not None \
+                    and (m.recent_mean - m.baseline_mean) * d < 0:
+                better.append(f"{f.model}/{name}")
+    check("drift: every flagged model's worst metric has a judged lot in the last 90 days",
+          not stale, f"{len(flags)} flagged" + (f"; stale: {stale[:6]}" if stale else ""))
+    check("drift: no one-sided metric is flagged with its recent lots on the better side",
+          not better, f"{len(flags)} flagged" + (f"; better side: {better[:6]}" if better else ""))
+
+
 def _month_minus(d, n):
     k = d.year * 12 + (d.month - 1) - n
     return f"{k // 12:04d}-{k % 12 + 1:02d}"
@@ -4898,6 +4989,8 @@ def main() -> int:
         check_new_findings_on_database(db)
     with _guard("inactive models"):
         check_inactive_models_on_database(db, raw)
+    with _guard("drift: the trust rules"):
+        check_drift_trust_rules(db, raw)
 
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with _guard("stale model: anchored 90d window"):

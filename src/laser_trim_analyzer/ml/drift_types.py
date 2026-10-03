@@ -107,6 +107,36 @@ TRIGGER_METRICS: frozenset = frozenset({
     "escape_fraction",             # trim verdict losing predictive power
 })
 
+# Which way is WORSE, per watched metric (2026-10-02, James: "im also concerned about dirty data
+# and accuracy of the app telling me things are drifting"). +1: higher is worse -- more error, more
+# fails, more escapes, more trim effort, more risk. 0: both ways are a change in the process --
+# resistance and electrical angle have no "better" side. A move the BETTER way on a one-sided
+# metric is good news, never an alarm: 8877 was flagged because its untrimmed error FELL from
+# 0.11 to 0.05. (-1, lower is worse, is allowed; no metric needs it today.)
+WORSE_DIRECTION: Dict[str, int] = {
+    "untrimmed_error_max": 1,
+    "untrimmed_sigma_gradient": 1,
+    "untrimmed_resistance": 0,
+    "linearity_error": 1,
+    "measured_electrical_angle": 0,
+    "trim_pass_count": 1,
+    "resistance_change_percent": 0,
+    "max_smoothness_value": 1,
+    "composite_trim_risk_score": 1,
+    "linearity_fail_fraction": 1,
+    "ft_fail_fraction": 1,
+    "escape_fraction": 1,
+}
+assert set(WORSE_DIRECTION) == set(WATCHED_METRICS), \
+    "every watched metric needs a WORSE_DIRECTION"
+
+# Only RECENT evidence raises an alarm (2026-10-02). Lots more than this many days apart do not
+# add up -- after such a pause the detector starts again from the baseline -- and a metric whose
+# newest judged lot is more than this many days older than the newest file in the database
+# cannot raise the model's tier. 2511 was flagged on final-test lots from 2020-21; 6952 on escape
+# lots spread over 2021-2026.
+RECENT_LOT_DAYS = 90
+
 # Fraction-valued metrics (0..1). Their lot observation is the MEAN (a rate,
 # not a median — the median of 0/1 flags is uselessly 0 or 1) and every
 # display renders them as PERCENT. Single source: lots.py aliases this as
@@ -169,6 +199,11 @@ class MetricStatus:
     recent_mean: Optional[float]
     recent_count: int
     is_trained: bool
+    # The end of the newest lot this metric's detector has JUDGED (its advance watermark), and
+    # whether that is recent enough to alarm (RECENT_LOT_DAYS). A stale metric reads STABLE
+    # whatever its state says; `newest_lot` lets a page say how old its evidence is.
+    newest_lot: Optional[datetime] = None
+    is_recent: bool = True
 
 
 @dataclass

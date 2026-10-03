@@ -33,7 +33,7 @@ from laser_trim_analyzer.gui.v6.widgets.trim_ft_tab import TrimFtTab
 from laser_trim_analyzer.gui.v6.widgets.ft_units_tab import FtUnitsTab
 from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import UnitChartModal
 from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
-from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS
+from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS, drift_exclusions
 from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
 from laser_trim_analyzer.ml.manager import get_model_drift_status, list_known_models
 from laser_trim_analyzer.ml.spc import compute_spc_series
@@ -392,6 +392,12 @@ class ModelPage(PageBase):
             except Exception:
                 logger.exception("Model %s: drift status failed", model)
                 failed.append("drift status")
+            left_out = None                     # None = the count failed (said on the tab)
+            try:
+                left_out = drift_exclusions(self.app.db, model)
+            except Exception:
+                logger.exception("Model %s: drift exclusion count failed", model)
+                failed.append("drift exclusions")
             try:
                 dates, values, baseline = self._load_focus_series(model, chosen)
             except Exception:
@@ -540,6 +546,7 @@ class ModelPage(PageBase):
                     _try("pills", lambda: self._pill_row.clear())
                     _try("drift tab", lambda: self._drift_tab.clear())
                 _try("baseline info", lambda: self._drift_tab.set_baseline_info(requal))
+                _try("left out", lambda: self._drift_tab.set_exclusions(left_out))
                 _try("pill select", lambda: self._pill_row.set_selected(chosen))
                 # Always set — never left showing a PREVIOUS model's verdict when this
                 # model's verdict failed to compute (M1). The old `_verdict` label is gone;

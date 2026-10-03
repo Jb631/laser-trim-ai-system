@@ -15,6 +15,38 @@ from laser_trim_analyzer.ml.drift_types import (
 
 _COLUMNS = ["Metric", "Tier", "Alert", "Baseline (lot mean±σ)", "Last lot", "Shift (σ)"]
 
+
+def alert_text(ms) -> str:
+    """The Alert cell. Humanized -- the raw enum value ("slow_drift") once leaked into this table
+    while the Triage cards humanized it (2026-07-07 sweep) -- and, for a metric whose newest
+    judged lot is too old to alarm (drift_types.RECENT_LOT_DAYS), how old its evidence is."""
+    if not getattr(ms, "is_recent", True) and getattr(ms, "newest_lot", None) is not None:
+        return f"No lot since {ms.newest_lot:%b %Y}"
+    if ms.alert_type is None:
+        return "—"
+    return "Step change" if ms.alert_type == AlertType.STEP_CHANGE else "Slow drift"
+
+
+def describe_exclusions(left_out) -> str:
+    """One sentence on what the drift check left out for this model (2026-10-02, James: "im
+    also concerned about dirty data"). `left_out` is drift_training.drift_exclusions' result,
+    or None when counting it failed -- which is said, never shown as "nothing left out"."""
+    if left_out is None:
+        return "Could not count the readings left out of the drift check (see the log)."
+    suspect = max((c.get("suspect", 0) for c in left_out.values()), default=0)
+    impossible = {m: c.get("impossible", 0) for m, c in left_out.items() if c.get("impossible")}
+    if not suspect and not impossible:
+        return "Left out of the drift check: nothing — every reading on file feeds it."
+    parts = []
+    if suspect:
+        parts.append(f"{suspect} reading{'s' if suspect != 1 else ''} from files marked suspect")
+    if impossible:
+        n = sum(impossible.values())
+        names = ", ".join(f"{metric_label(m)} {k}" for m, k in sorted(impossible.items()))
+        parts.append(f"{n} that cannot be real ({names})")
+    return ("Left out of the drift check: " + " · ".join(parts)
+            + ". They stay on file; only the drift check ignores them.")
+
 # Two of the six uniform columns need more than an even 1/6 share once the row is
 # squeezed into a narrower window: column 0 (the metric NAME -- "Escape rate (trim
 # PASS -> FT FAIL)", 225px at SIZE_BODY, the longest of drift_types.METRIC_LABELS)
@@ -84,6 +116,12 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         # lifetime, so this binds exactly once (blocks.wrap_to_width: call it once per
         # (label, container) lifetime, never from inside a re-render/apply path).
         blocks.wrap_to_width(self._sigma_key_lbl, self)
+        # What the drift check left out, and why (set_exclusions). Built once, like the key.
+        self._left_out_lbl = ctk.CTkLabel(
+            self, text="", font=theme.font(theme.SIZE_CAPTION), text_color=theme.TEXT_SECONDARY,
+            anchor="w", justify="left")
+        self._left_out_lbl.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
+        blocks.wrap_to_width(self._left_out_lbl, self)
         header = _Columns(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
         for i, col in enumerate(_COLUMNS):
@@ -120,6 +158,11 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         else:
             txt = "Baseline period: full history (no requalification on record)"
         self._baseline_lbl.configure(text=txt)
+
+    def set_exclusions(self, left_out) -> None:
+        """drift_training.drift_exclusions' counts for this model, or None when they failed."""
+        if "_left_out_lbl" in self.__dict__:
+            self._left_out_lbl.configure(text=describe_exclusions(left_out))
 
     def set_status(self, status: ModelDriftStatus, recent_means: dict = None) -> None:
         recent_means = recent_means or {}
@@ -184,10 +227,7 @@ class _MetricRow(_Columns):
         shift = ((recent_val - ms.baseline_mean) / ms.baseline_std
                  if (recent_val is not None and ms.baseline_std) else None)
         shift_txt = f"{shift:+.2f}σ" if shift is not None else "—"
-        # Humanized alert type — the raw enum value ("slow_drift") leaked into
-        # this table while the Triage cards humanized it (2026-07-07 sweep).
-        alert_txt = ("Step change" if ms.alert_type == AlertType.STEP_CHANGE
-                     else "Slow drift") if ms.alert_type else "—"
+        alert_txt = alert_text(ms)
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
                  alert_txt,
                  f"{_fmt(ms.baseline_mean)} ± {_fmt(ms.baseline_std)}", recent, shift_txt]
