@@ -15,40 +15,50 @@ from laser_trim_analyzer.ml.drift_types import DriftTier
 
 @dataclass
 class ThemeManager:
-    # Surfaces (refined dark, spec 2026-09-23)
-    BG: str = "#111a28"; SURFACE: str = "#172233"; CARD: str = "#1c2a3e"; ELEVATED: str = "#243550"
-    # Sidebar
-    SIDEBAR_BG: str = "#111a28"; SIDEBAR_ACTIVE: str = "#1c2a3e"; SIDEBAR_STRIPE: str = "#4fd6b8"
-    # Accent -- teal means "act here"
-    ACCENT: str = "#4fd6b8"; ACCENT_HOVER: str = "#74e0c8"; ACCENT_PRESSED: str = "#36b99c"
-    ACCENT_TINT: str = "#123a37"
+    # GRAPHITE (James, 2026-10-02: "i like dark mode" -- picked from three dark options): a
+    # neutral near-black, white text, ONE blue accent; no navy, no teal. The approved mockup's
+    # colours are bg / card / border / text / secondary / accent / chart highlight / history
+    # bars / worse / better; every other token below is derived from them and measured by
+    # tests/test_theme_contrast.py.
+    # Surfaces
+    BG: str = "#0c0c0e"; SURFACE: str = "#111114"; CARD: str = "#151518"; ELEVATED: str = "#1c1c20"
+    # The navigation bar (was the sidebar; the names are kept for the widgets that read them)
+    SIDEBAR_BG: str = "#0c0c0e"; SIDEBAR_ACTIVE: str = "#151518"; SIDEBAR_STRIPE: str = "#3b82f6"
+    # Accent -- blue means "act here", on ONE primary button per screen. Text on it is dark:
+    # white on #3b82f6 is 3.7:1, below the 4.5 minimum.
+    ACCENT: str = "#3b82f6"; ACCENT_HOVER: str = "#60a5fa"; ACCENT_PRESSED: str = "#2563eb"
+    ACCENT_TINT: str = "#0f1a2e"
     # A selected tab or segment. CTkSegmentedButton (and so every CTkTabview) draws ALL its
     # segments' text in ONE colour, so the selected fill must carry the same light text as the
-    # unselected CARD segments: TEXT_PRIMARY on ACCENT was 1.66:1. On this darker teal it is
-    # 4.8:1, and the fill is still 2.8:1 away from CARD, so the selection shows. The hover steps
-    # DARKER (more contrast for light text), as ACCENT_HOVER steps lighter for dark text: 5.4:1
-    # text, 2.5:1 from CARD. Measured with tests/test_theme_contrast.py's own contrast().
-    SEGMENT_SELECTED: str = "#1d7a68"; SEGMENT_SELECTED_HOVER: str = "#1b7161"
-    # Text
-    TEXT_PRIMARY: str = "#f3f6fa"; TEXT_SECONDARY: str = "#b6c2d2"
-    TEXT_DISABLED: str = "#93a1b6"; TEXT_INVERSE: str = "#0b1f1b"   # INVERSE = text on teal
+    # unselected CARD segments: a deeper blue, 5.7:1 with TEXT_PRIMARY and 2.7:1 from CARD; the
+    # hover steps darker still (7.5:1 text, 2.1:1 from CARD). Measured with
+    # tests/test_theme_contrast.py's own contrast().
+    SEGMENT_SELECTED: str = "#1d4ed8"; SEGMENT_SELECTED_HOVER: str = "#1e40af"
+    # Text. DISABLED is used for real information too (chart ticks, the volume axis), so it
+    # clears 4.5:1 on every surface like the rest.
+    TEXT_PRIMARY: str = "#ededed"; TEXT_SECONDARY: str = "#8b8b93"
+    TEXT_DISABLED: str = "#85858e"; TEXT_INVERSE: str = "#0c0c0e"   # INVERSE = text on the accent
     # Borders
-    DIVIDER: str = "#26344b"; BORDER: str = "#34465f"
-    # "Check this" -- coral
-    CHECK: str = "#ff8f7a"; CHECK_TINT: str = "#3e2522"
-    # Verdicts -- always drawn WITH their word, never colour alone
-    PASS_FG: str = "#9bd66f"; PASS_BG: str = "#1f3322"
-    FAIL_FG: str = "#ff8f7a"; FAIL_BG: str = "#3e2522"
-    NEUTRAL_FG: str = "#c3cedb"; NEUTRAL_BG: str = "#243550"
-    WATCH_FG: str = "#f5b544"; WATCH_BG: str = "#3a2f16"
-    # Tiers (preserved V5 semantic; OOC brightened -- #ef4444 was 4.2:1 on its own background)
-    TIER_STABLE: str = "#172233"
-    TIER_WARNING_BG: str = "#3d2f1a"; TIER_WARNING: str = "#f59e0b"
-    TIER_DRIFT_BG: str = "#3d2418"; TIER_DRIFT: str = "#f97316"
-    TIER_OOC_BG: str = "#3d1818"; TIER_OOC: str = "#ff7a7a"
-    # Charts. SERIES_* are keyed by the code's system letter; the UI still says "Laser 2 (DLTS)".
-    CHART_REFERENCE: str = "#8a9bb3"
-    SERIES_A: str = "#6aa8ff"; SERIES_B: str = "#b39cff"; SERIES_C: str = "#f28dc6"
+    DIVIDER: str = "#1d1d21"; BORDER: str = "#26262b"
+    # "Check this" -- the worse/fail red, on its own tint
+    CHECK: str = "#f87171"; CHECK_TINT: str = "#2a1414"
+    # Verdicts -- always drawn WITH their word, never colour alone. Better = green, worse = red.
+    PASS_FG: str = "#4ade80"; PASS_BG: str = "#0f2417"
+    FAIL_FG: str = "#f87171"; FAIL_BG: str = "#2a1414"
+    NEUTRAL_FG: str = "#b4b4bc"; NEUTRAL_BG: str = "#1c1c20"
+    WATCH_FG: str = "#fbbf24"; WATCH_BG: str = "#2a2210"
+    # Tiers: amber, orange, red, each on its own dark tint
+    TIER_STABLE: str = "#151518"
+    TIER_WARNING_BG: str = "#2a2210"; TIER_WARNING: str = "#fbbf24"
+    TIER_DRIFT_BG: str = "#2a1a0e"; TIER_DRIFT: str = "#fb923c"
+    TIER_OOC_BG: str = "#2a1414"; TIER_OOC: str = "#f87171"
+    # Charts. HIGHLIGHT is the data line a chart is about, HISTORY its past bars (the approved
+    # mockup's monthly pass bars). SERIES_* are keyed by the code's system letter -- the UI still
+    # says "Laser 2 (DLTS)" -- and keep 30 degrees of hue from every colour that means something
+    # (the blue accent, pass green, fail red, watch amber): violet, fuchsia, pink.
+    CHART_REFERENCE: str = "#8b8b93"
+    CHART_HIGHLIGHT: str = "#60a5fa"; CHART_HISTORY: str = "#2a3a58"
+    SERIES_A: str = "#a78bfa"; SERIES_B: str = "#e879f9"; SERIES_C: str = "#f472b6"
     CHART_FONT_SMALL: float = 8.0; CHART_FONT: float = 9.0; CHART_FONT_LARGE: float = 10.0
     # Typography. On Windows (GDI) Plex Medium is its OWN family, not a weight of Plex Sans,
     # so "bold" is mapped onto it in font()/mono() when it is available.

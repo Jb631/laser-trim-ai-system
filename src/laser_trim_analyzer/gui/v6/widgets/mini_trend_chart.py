@@ -64,7 +64,7 @@ class MiniTrendChart(ctk.CTkFrame):
             ax.tick_params(axis="y", length=0, pad=1)
             for gy in (0, 50, 100):
                 ax.axhline(gy, color=t.TEXT_DISABLED, lw=0.5, alpha=0.22, zorder=1)
-            ax.plot(range(len(ys_ds)), ys_ds, lw=1.5, color=t.ACCENT, zorder=3)
+            ax.plot(range(len(ys_ds)), ys_ds, lw=1.5, color=t.CHART_HIGHLIGHT, zorder=3)
             ax.set_ylim(-14, 112)   # headroom for the labels below/above
             # Latest value, marked and named — the number the eye wants.
             ax.plot([len(ys_ds) - 1], [ys_ds[-1]], marker="o", ms=4, color=t.ACCENT_HOVER)

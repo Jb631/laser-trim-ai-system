@@ -128,14 +128,14 @@ class CompanyTrendChart(ctk.CTkFrame):
                     label=laser_label(sys_name), zorder=3)
         comp_rates = [r["linearity_yield"] for r in company]
         ax.plot(x, comp_rates, lw=2.2, marker="o", ms=3.5,
-                color=t.ACCENT, label="Company", zorder=4)
+                color=t.CHART_HIGHLIGHT, label="Company", zorder=4)
 
         # Partial-period honesty: the newest bucket is still filling — draw its
         # company point hollow and say so, or a month-start "yield crash" is
         # the first thing every review meeting argues about.
         if partial_last and comp_rates and comp_rates[-1] is not None:
             ax.plot([x[-1]], [comp_rates[-1]], marker="o", ms=7, mew=1.6,
-                    mfc="none", mec=t.ACCENT, zorder=5)
+                    mfc="none", mec=t.CHART_HIGHLIGHT, zorder=5)
             ax.annotate("partial", (x[-1], comp_rates[-1]),
                         textcoords="offset points", xytext=(6, 8),
                         fontsize=t.CHART_FONT_SMALL, color=t.TEXT_SECONDARY)

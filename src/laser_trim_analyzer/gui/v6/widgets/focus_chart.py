@@ -210,7 +210,7 @@ class FocusChart(ctk.CTkFrame):
                 for k in (3, -3):
                     ax.axhline(baseline_mean + k * baseline_std, color=t.TIER_OOC, ls=":", lw=1)
         if recent_batch_start is not None:
-            ax.axvspan(recent_batch_start, dates[-1], color=t.ACCENT, alpha=0.10)
+            ax.axvspan(recent_batch_start, dates[-1], color=t.CHART_HIGHLIGHT, alpha=0.10)
 
         # ---- Robust y-window. Computed BEFORE anything drawn below needs to
         # know it (the rolling median clips to it; the header text needs to
@@ -273,13 +273,13 @@ class FocusChart(ctk.CTkFrame):
             # points with a line reads as jagged noise and implies a
             # continuity that isn't there (the "charts are all over the
             # place" complaint).
-            ax.scatter(dates, values, s=12, color=t.ACCENT, alpha=0.8)
+            ax.scatter(dates, values, s=12, color=t.CHART_HIGHLIGHT, alpha=0.8)
         else:
             # Near-invisible dots -- context, not ink (round 2: round 1's
             # alpha=0.22 still let a sparse-day model's daily-median line read
             # as a solid teal wall over 12 months). Every unit still draws;
             # none are dropped, just faint.
-            ax.scatter(dates, values, s=5, color=t.ACCENT, alpha=0.16, edgecolors="none", zorder=2)
+            ax.scatter(dates, values, s=5, color=t.CHART_HIGHLIGHT, alpha=0.16, edgecolors="none", zorder=2)
 
             # TIME-based rolling median (round 2), replacing the old
             # per-CALENDAR-DAY median, which zigzagged hard whenever a day
@@ -328,7 +328,7 @@ class FocusChart(ctk.CTkFrame):
                     prev_d = d
                 median_drawn = any(np.isfinite(v) for v in mvals)
                 if median_drawn:
-                    ax.plot(mx, mvals, lw=2.2, color=t.ACCENT, zorder=4)
+                    ax.plot(mx, mvals, lw=2.2, color=t.CHART_HIGHLIGHT, zorder=4)
 
         # ---- In-window vs off-scale. An in-window point beyond the limits is
         # real news AT ITS OWN POSITION and is drawn there, one small dot per
