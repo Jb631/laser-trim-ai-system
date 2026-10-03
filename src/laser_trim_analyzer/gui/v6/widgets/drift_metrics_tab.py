@@ -2,7 +2,11 @@
 
 Rows render in METRIC_GROUPS order under three plain-language group headers
 (process signals / trim outcome / final-test outcome) so the 12-metric list
-reads as three questions, not a wall (James, 2026-07-13)."""
+reads as three questions, not a wall (James, 2026-07-13).
+
+Layout C (2026-10-02): this is "All 12 signals", folded at the foot of the Model page's Summary tab.
+A plain frame, as tall as its rows -- it unfolds inside the tab's own scroll, and a scrolling table
+inside a scrolling tab would move both at once under the wheel."""
 from typing import Callable, Dict, List
 
 import customtkinter as ctk
@@ -65,7 +69,10 @@ def describe_exclusions(left_out) -> str:
 # so _Columns below scales it (_apply_widget_scaling). Unscaled, the name column stayed
 # 240 real px at 150% Windows scaling while its text grew to 318 px, and every long metric name
 # was cut (render_pages.py --audit --scaling 1.5, final review 2026-09-24).
-_COL_MINSIZE = {0: 240, 3: 175}
+# Column 2 (the Alert) since 2026-10-02: a metric whose newest lot is too old to alarm says
+# "No lot since Sep 2016" there (alert_text), which needs 141-144 px at SIZE_BODY -- the even share
+# gave it 138 at 1280x720 (render_pages.py --audit, an inactive model's drift table).
+_COL_MINSIZE = {0: 240, 2: 165, 3: 175}
 
 
 class _Columns(ctk.CTkFrame):
@@ -92,7 +99,7 @@ class _Columns(ctk.CTkFrame):
         self._size_columns()
 
 
-class DriftMetricsTab(ctk.CTkScrollableFrame):
+class DriftMetricsTab(ctk.CTkFrame):
     def __init__(self, master, theme: ThemeManager, on_metric_select: Callable[[str], None],
                  on_requalify: Callable[[], None] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -101,10 +108,10 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         self._rows: Dict[str, _MetricRow] = {}
         self._group_headers: List = []
         self._on_requalify = on_requalify
-        # The full σ explanation (facelift step 2, 2026-09-24): the model page's own key,
-        # right under its pills, is now a single line pointing here -- this is where the
-        # baseline/recent/shift numbers below actually live. Built once, here, and never
-        # rebuilt: set_status()/clear() only ever touch _rows and _group_headers.
+        # The σ explanation (facelift step 2, 2026-09-24), beside the baseline/recent/shift numbers
+        # it explains -- since layout C the only one: the one-line key under the pills went with
+        # them. Built once, here, and never rebuilt: set_status()/clear() only ever touch _rows and
+        # _group_headers.
         self._sigma_key_lbl = ctk.CTkLabel(
             self, text=("σ = how far the last LOT's median sits from this model's baseline "
                         "of historical lot medians (lot = production run; new lot after "

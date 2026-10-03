@@ -4,6 +4,9 @@ Test-pass vs trim-pass, escapes (passed trim but failed final test — a bad uni
 through), overkills (failed trim but passed final test — unnecessarily rejected), agreement,
 and the trim-pass-count distribution ('how many trim passes'). This is the Job-2 "are we
 catching the problem at the right station?" view. Fed from db.get_model_trim_ft_agreement.
+
+A plain frame, as tall as what it says (layout C, 2026-10-02): it sits under the final-test units
+on the Model page's Final test tab, and the tab scrolls.
 """
 from typing import Dict, List
 
@@ -12,7 +15,7 @@ import customtkinter as ctk
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
-class TrimFtTab(ctk.CTkScrollableFrame):
+class TrimFtTab(ctk.CTkFrame):
     def __init__(self, master, theme: ThemeManager, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme

@@ -90,7 +90,32 @@ def test_the_model_page_loads_the_tab_from_the_cache(make_app):
     app.show_page("model")
     del page._reload
     page.reload_now()                      # the synchronous path
-    assert "Incoming resistance: aim lower" in " | ".join(_texts(page._findings_tab))
+    # Layout C (2026-10-02): the finding's row is drawn ONCE, in Summary's "Worth changing"; the
+    # tab's content, folded under it, carries what was measured without repeating the row.
+    assert "Incoming resistance: aim lower" in " | ".join(_texts(page._worth_section))
+    assert "Incoming resistance: aim lower" not in " | ".join(_texts(page._findings_tab))
+    assert "What was measured" in _texts(page._findings_tab)
+
+
+def test_under_worth_changing_the_tab_draws_only_the_groups_shown_nowhere_else(tk_root):
+    """Hosted under the Model page's "Worth changing" (layout C), which draws the yield, laser-time
+    and check groups itself: the tab draws the rest -- here "What changed" -- and never says
+    "Nothing to act on" when everything it holds back is drawn above it."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.findings_tab import FindingsTab
+    history = {"model": "HOT", "analyzer": "recipe_change", "category": "Recipe", "lever": "recipe",
+               "title": "Laser 1 (LTS): recipe changed from 4000 to 4100", "summary": "invented",
+               "n_units": 10, "tracks_per_year": None, "evidence": {}}
+    tab = FindingsTab(tk_root, theme=ThemeManager(), shown_elsewhere=("yield", "laser_time", "check"))
+    tab.set_data({"facts": FACTS, "findings": [FINDING, history]})
+    texts = _texts(tab)
+    assert "What was measured" in texts and "What changed" in texts
+    assert not any("Incoming resistance: aim lower" in t for t in texts)
+    assert "What to do about it" not in texts
+    tab.set_data({"facts": FACTS, "findings": [FINDING]})
+    texts = _texts(tab)
+    assert not any("Incoming resistance" in t or "Nothing to act on" in t for t in texts), texts
+    assert "Recipe history" in texts                                  # the facts are all still there
 
 
 # ---- appended by fix round 1: a value that is not there, and an analyzer that crashed ----

@@ -51,7 +51,8 @@ class FtUnitsTab(RowBudgetMixin, ctk.CTkFrame):
                          text_color=theme.TEXT_SECONDARY)\
                 .pack(side="left", expand=True, fill="x",
                       padx=theme.SPACE_SM, pady=theme.SPACE_XS)
-        self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        # As tall as its rows: the Model page's Final test tab scrolls (units_tab.py says why).
+        self._list = ctk.CTkFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
         # One frame for every row: a refresh destroys this, not 500 widgets.
         self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent")

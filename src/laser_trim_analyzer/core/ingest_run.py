@@ -925,7 +925,8 @@ def _post_batch(db, models_in_batch: Set[str], new_trims: int, phases: dict,
             if failed or partial:
                 names = sorted(set(failed) | set(partial))
                 logger.error("Process findings: %d of %d models could not be worked out at all and %d "
-                             "had an analyzer fail (%s%s). Each model's Findings tab names what failed.",
+                             "had an analyzer fail (%s%s). Each model's page names what failed, under "
+                             "Worth changing.",
                              len(failed), len(models_in_batch), len(partial), ", ".join(names[:8]),
                              " …" if len(names) > 8 else "")
                 _say(on_phase, f"Process findings: {len(failed):,} model(s) could not be worked out, "

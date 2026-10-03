@@ -1,5 +1,5 @@
 """M-1 — a failed Model-page load must never render as "no data", and one
-model's verdict/pills must never linger under another model's name.
+model's verdict/signals must never linger under another model's name.
 
 The design is the M1 brief, summarised in docs/decisions/2026-09-ledger-decisions.md. Seeding and the synchronous
 open pattern come from test_spec3c_model.py / test_findings_tab.py (tests/ is
@@ -84,16 +84,16 @@ def test_the_banner_clears_when_the_next_load_succeeds(make_app, monkeypatch):
 
 
 def test_model_b_never_shows_model_a_verdict(make_app, monkeypatch):
-    """The verdict text lives on the page CAPTION now (Task 2: the old _verdict body
-    label is gone), so it is this -- not a body widget -- that must never leak
-    model A's read under model B's name."""
+    """The verdict is Summary's HEADLINE now (layout C; it was the page caption, and before that
+    the _verdict body label), so it is this that must never leak model A's read under model B's
+    name -- nor the evidence line beneath it."""
     from test_spec3c_model import _seed
     app = make_app()
     _seed(app.db, "AAA")
     _seed(app.db, "BBB")
 
     page = _open(app, "AAA")
-    aaa_text = page._caption.cget("text")
+    aaa_text = page._headline.cget("text")
     assert aaa_text and aaa_text != "—"
 
     def _boom(*a, **kw):
@@ -101,22 +101,28 @@ def test_model_b_never_shows_model_a_verdict(make_app, monkeypatch):
     monkeypatch.setattr(page, "_compute_verdict", _boom)
 
     _route(app, page, "BBB")
-    assert page._caption.cget("text") == "—"
-    assert page._caption.cget("text") != aaa_text
+    assert page._headline.cget("text") == "—"
+    assert page._headline.cget("text") != aaa_text
+    assert page._headline_detail.cget("text") == ""
     assert "verdict" in page._load_banner.cget("text")
 
 
-def test_model_b_never_shows_model_a_pills(make_app, monkeypatch):
+def test_model_b_never_shows_model_a_signals(make_app, monkeypatch):
+    """The twelve pills are gone (layout C); a model's per-signal readings now live in "All 12
+    signals", "Also moving" and the header's status word. When BBB's drift status fails to load,
+    none of them may still be AAA's."""
     import laser_trim_analyzer.gui.v6.pages.model_page as mp
-    from test_spec3c_model import _seed, _status
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
+    from test_spec3c_model import _drifting, _seed
+    from laser_trim_analyzer.ml.drift_types import DriftTier
     app = make_app()
     _seed(app.db, "AAA")
     _seed(app.db, "BBB")
+    monkeypatch.setattr(mp, "get_model_drift_status", lambda db, model: _drifting(
+        model, untrimmed_resistance=DriftTier.WARNING))
 
     page = _open(app, "AAA")
-    page._pill_row.set_status(_status("AAA"))     # give AAA's pills real content
+    assert page._drift_tab._rows and page._also_lines                # AAA's readings, drawn
+    assert page._status_word.cget("text") == "Drifting"
 
     def _boom(*a, **kw):
         raise RuntimeError("drift status boom")
@@ -124,13 +130,9 @@ def test_model_b_never_shows_model_a_pills(make_app, monkeypatch):
 
     _route(app, page, "BBB")
 
-    # A freshly constructed row's pills, never touched by set_status — the
-    # target "just constructed" look (brief: read _Pill for what that is).
-    fresh = MetricPillRow(app, theme=ThemeManager(), on_pill_click=lambda _: None)
-    fresh_texts = {m: p._summary_label.cget("text") for m, p in fresh._pills.items()}
-    actual_texts = {m: p._summary_label.cget("text")
-                    for m, p in page._pill_row._pills.items()}
-    assert actual_texts == fresh_texts
+    assert page._drift_tab._rows == {}                              # the just-constructed table
+    assert page._also_lines == {}
+    assert page._status_word.cget("text") == ""                     # unknown, never AAA's word
     assert "drift status" in page._load_banner.cget("text")
 
 
@@ -138,7 +140,7 @@ def test_a_failed_drift_status_never_reads_as_not_trained(make_app, monkeypatch)
     """M-1 review. `_compute_verdict` does not raise on status=None -- it treats a CRASHED drift-status
     load exactly like a model that was never trained, and returns the confident, specific and false
     instruction "Not trained — run drift training in Settings". The verdict rests on the drift status,
-    so when that load failed the headline (the page CAPTION, since Task 2) must say nothing ("—")
+    so when that load failed the headline (Summary's, since layout C) must say nothing ("—")
     and leave the talking to the banner."""
     import laser_trim_analyzer.gui.v6.pages.model_page as mp
     from test_spec3c_model import _seed
@@ -150,7 +152,7 @@ def test_a_failed_drift_status_never_reads_as_not_trained(make_app, monkeypatch)
         raise RuntimeError("database is locked")
     monkeypatch.setattr(mp, "get_model_drift_status", _boom)
     page.reload_now()
-    said = page._caption.cget("text")
+    said = page._headline.cget("text")
     assert said == "—", said
     assert "not trained" not in said.lower()
     assert "drift status" in page._load_banner.cget("text")
