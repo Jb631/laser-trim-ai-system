@@ -27,6 +27,7 @@ imports of each other in that order every time, because
 reach this module directly.
 """
 
+import json
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -34,12 +35,22 @@ from typing import Optional
 from sqlalchemy import func, text
 from sqlalchemy.exc import OperationalError
 
+from laser_trim_analyzer.core.model_names import (
+    HAND_TRIM_MODELS, MODEL_ALIASES, canonical_model, suspect_error_factor)
 from laser_trim_analyzer.database.manager import (
     INCREMENT_VOLTS_SINCE_KEY,
     UNKNOWN_REPARSE_COUNT_KEY,
     compute_unit_id,
     logger,
 )
+
+
+# app_meta records of the two one-time steps of 2026-10-02 (`_once`). Bump a version to run its
+# step again, e.g. when an alias or a hand-trim model is added in core/model_names.
+MODEL_ALIASES_KEY = "model_aliases"
+MODEL_ALIASES_VERSION = "2026-10-02: " + ", ".join(f"{a}>{c}" for a, c in sorted(MODEL_ALIASES.items()))
+HAND_TRIM_SUSPECT_KEY = "hand_trim_suspect_line"
+HAND_TRIM_SUSPECT_VERSION = "2026-10-02: 20x on " + ", ".join(sorted(HAND_TRIM_MODELS))
 
 
 class MigrationsMixin:
@@ -281,6 +292,7 @@ class MigrationsMixin:
                     for row in unknown_records:
                         rec_id, filename = row[0], row[1]
                         model, serial = self._reparse_filename(filename)
+                        model = canonical_model(model)      # one stored spelling per part
                         if model != "Unknown":
                             session.execute(text(
                                 "UPDATE analysis_results SET model = :model, serial = :serial WHERE id = :id"
@@ -1105,6 +1117,106 @@ class MigrationsMixin:
                 logger.info(f"Post-cleanup FT rematch: {stats}")
             except Exception as e:
                 logger.warning(f"FT rematch after cleanup failed: {e}")
+
+        # Two decisions James made on 2026-10-02, each applied once to what is already stored
+        # (core/model_names). Each in its own transaction: a failure is logged and retried at the
+        # next start, never half-applied.
+        self._once(MODEL_ALIASES_KEY, MODEL_ALIASES_VERSION, self._merge_model_aliases)
+        self._once(HAND_TRIM_SUSPECT_KEY, HAND_TRIM_SUSPECT_VERSION,
+                   self._reassess_hand_trim_suspects)
+
+    def _once(self, key: str, version: str, step) -> None:
+        """Run `step(session)` unless app_meta[key] already records `version`; record it after
+        the step commits. Never raises (a failed step is logged; the next start tries again)."""
+        try:
+            with self.session() as session:
+                if self._meta_get(session, key) == version:
+                    return
+                step(session)
+                session.commit()
+                self._meta_set(session, key, version)
+        except Exception:
+            logger.exception("one-time migration %s failed; the next start tries again", key)
+
+    @staticmethod
+    def _merge_model_aliases(session) -> None:
+        """James, 2026-10-02: "yea you can mearge 7953A with 7953-A. and 7953B with 7953-B".
+
+        The stored rows of each glued name move to its hyphenated twin: trims (their unit ids
+        carry the name as their first part), final tests, smoothness. Per-model state computed
+        from the glued name's share of the data goes -- drift state, ML state, process facts and
+        findings -- because it is rebuilt for the merged model (the drift state at this start,
+        DRIFT_RULES_VERSION; findings at the next refresh). A spec or a baseline requalification
+        moves over only when the hyphenated name has none: its own always wins."""
+        for alias, canonical in MODEL_ALIASES.items():
+            p = {"a": alias, "c": canonical}
+            n = session.execute(text(
+                "UPDATE analysis_results SET model = :c WHERE model = :a"), p).rowcount
+            session.execute(text(
+                "UPDATE analysis_results SET unit_id = :c || substr(unit_id, length(:a) + 1) "
+                "WHERE model = :c AND unit_id LIKE :a || '/%'"), p)
+            for table in ("final_test_results", "smoothness_results"):
+                session.execute(text(f"UPDATE {table} SET model = :c WHERE model = :a"), p)
+            for table in ("model_metric_state", "model_ml_state", "model_process_facts",
+                          "process_findings"):
+                session.execute(text(f"DELETE FROM {table} WHERE model = :a"), p)
+            for table in ("model_specs", "baseline_requalifications"):
+                session.execute(text(
+                    f"UPDATE {table} SET model = :c WHERE model = :a "
+                    f"AND NOT EXISTS (SELECT 1 FROM {table} WHERE model = :c)"), p)
+                session.execute(text(f"DELETE FROM {table} WHERE model = :a"), p)
+            if n:
+                logger.info("Model names merged: %s -> %s (%d trim files)", alias, canonical, n)
+
+    @staticmethod
+    def _reassess_hand_trim_suspects(session) -> None:
+        """James, 2026-10-02, of 8232-1 and 8340-1: "yes those are hand trim models and we should
+        use 20X". A file stored as suspect ONLY for a scale-anomalous linearity error, on a
+        hand-trim model, is a real measurement when every track's error is within 20x its band:
+        re-judged as good. A file with any other issue, or a track beyond 20x, stays suspect."""
+        models = sorted(HAND_TRIM_MODELS)
+        if not models:
+            return
+        marks = ", ".join(f":m{i}" for i in range(len(models)))
+        rows = session.execute(text(
+            "SELECT id, data_quality_issues FROM analysis_results "
+            f"WHERE data_quality = 'suspect' AND model IN ({marks})"),
+            {f"m{i}": m for i, m in enumerate(models)}).fetchall()
+        cleared = 0
+        for rec_id, issues in rows:
+            try:
+                listed = json.loads(issues) if issues else []
+            except (TypeError, ValueError):
+                continue
+            if (not isinstance(listed, list) or not listed
+                    or not all("scale-anomalous linearity error" in str(i) for i in listed)):
+                continue
+            tracks = session.execute(text(
+                "SELECT t.final_linearity_error_shifted, t.upper_limits, t.lower_limits, a.model "
+                "FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
+                "WHERE t.analysis_id = :id"), {"id": rec_id}).fetchall()
+            if not tracks:
+                continue
+            within = True
+            for error, upper, lower, model in tracks:
+                try:
+                    limits = (json.loads(upper) if isinstance(upper, str) else (upper or [])) + \
+                             (json.loads(lower) if isinstance(lower, str) else (lower or []))
+                    band = max(abs(float(v)) for v in limits if v is not None)
+                except (TypeError, ValueError):
+                    within = False
+                    break
+                if error is None or band <= 0 or float(error) > suspect_error_factor(model) * band:
+                    within = False
+                    break
+            if within:
+                session.execute(text(
+                    "UPDATE analysis_results SET data_quality = 'good', "
+                    "data_quality_issues = '[]' WHERE id = :id"), {"id": rec_id})
+                cleared += 1
+        if cleared:
+            logger.info("Hand-trim models: %d files re-judged as real measurements at the 20x line",
+                        cleared)
 
     def _backfill_unit_ids(self, session) -> None:
         """Populate analysis_results.unit_id for rows that don't have one yet.

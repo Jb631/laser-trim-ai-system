@@ -20,6 +20,7 @@ import numpy as np
 
 from laser_trim_analyzer.utils.hashing import hash_bytes_for, shares_one_stat, stat_once
 from laser_trim_analyzer.core.models import SystemType, FileMetadata, laser_label
+from laser_trim_analyzer.core.model_names import canonical_model
 from laser_trim_analyzer.core import trim_passes as _tp
 from laser_trim_analyzer.core import trim_setup as _ts
 from laser_trim_analyzer.utils.constants import (
@@ -301,8 +302,9 @@ class ExcelParser:
         has_multi_tracks: bool, test_date: Optional[datetime]
     ) -> FileMetadata:
         """Build file metadata from already-extracted values."""
-        # Parse filename for model and serial
+        # Parse filename for model and serial; one stored spelling per part (core/model_names).
         model, serial = self._parse_filename(file_path.name)
+        model = canonical_model(model)
 
         # Get file modification time as fallback
         file_stat = stat_once(file_path)

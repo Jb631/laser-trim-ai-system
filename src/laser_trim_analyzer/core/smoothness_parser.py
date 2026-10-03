@@ -18,6 +18,7 @@ import numpy as np
 
 from laser_trim_analyzer.core.parser import _read_once, _workbook
 from laser_trim_analyzer.utils.hashing import hash_bytes_for, shares_one_stat
+from laser_trim_analyzer.core.model_names import canonical_model
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,8 @@ class SmoothnessParser:
 
         file_hash = self._calculate_hash(file_path)
         metadata = self._parse_filename(file_path.name)
+        # One stored spelling per part (core/model_names).
+        metadata["model"] = canonical_model(metadata.get("model"))
         metadata["filename"] = file_path.name
         metadata["file_path"] = str(file_path)
 

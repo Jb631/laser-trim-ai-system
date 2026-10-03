@@ -50,6 +50,7 @@ from laser_trim_analyzer.core.models import (
     RiskCategory,
 )
 from laser_trim_analyzer.core.model_stats import failed_processing, failed_processing_statuses
+from laser_trim_analyzer.core.model_names import canonical_model
 from laser_trim_analyzer.config import get_config
 from laser_trim_analyzer.utils.hashing import calculate_file_hash, stat_once
 
@@ -2827,7 +2828,7 @@ class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceM
             filename=analysis.metadata.filename,
             file_path=str(analysis.metadata.file_path),
             file_date=analysis.metadata.file_date,
-            model=analysis.metadata.model,
+            model=canonical_model(analysis.metadata.model),
             serial=analysis.metadata.serial,
             system=system_type,
             has_multi_tracks=analysis.metadata.has_multi_tracks,
@@ -3335,7 +3336,7 @@ class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceM
         if existing:
             # Update ALL fields including model/serial (parsing may have changed)
             existing.file_path = str(analysis.metadata.file_path)
-            existing.model = analysis.metadata.model
+            existing.model = canonical_model(analysis.metadata.model)
             existing.serial = analysis.metadata.serial
             existing.file_date = analysis.metadata.file_date
             existing.unit_id = compute_unit_id(
@@ -4858,7 +4859,7 @@ class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceM
                     file_date=metadata.get("file_date"),
                     file_size=file_size,
                     file_modified_date=file_modified_date,
-                    model=metadata.get("model", "unknown"),
+                    model=canonical_model(metadata.get("model", "unknown")),
                     serial=metadata.get("serial", "unknown"),
                     test_date=metadata.get("test_date"),
                     overall_status=overall_status,
@@ -5985,7 +5986,7 @@ class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceM
                         file_date=metadata.get("file_date"),
                         file_size=file_size,
                         file_modified_date=file_modified_date,
-                        model=metadata.get("model", "unknown"),
+                        model=canonical_model(metadata.get("model", "unknown")),
                         serial=metadata.get("serial", "unknown"),
                         element_label=metadata.get("element_label"),
                         test_date=metadata.get("test_date"),

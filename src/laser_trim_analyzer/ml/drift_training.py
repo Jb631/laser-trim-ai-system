@@ -48,7 +48,7 @@ ESCAPE_MIN_CONFIDENCE: float = 0.5
 # The rules the stored drift state was built under. Bump it whenever a change here would give a
 # different state from the same data: `ensure_drift_rules` then retrains every model once, at the
 # next start (about 11 s on the home copy), so nobody has to remember to.
-DRIFT_RULES_VERSION = "2026-10-02"
+DRIFT_RULES_VERSION = "2026-10-02b"   # b: the 7953-A/-B merge and the hand-trim 20x line
 DRIFT_RULES_KEY = "drift_rules"
 
 # A reading that cannot be real never feeds drift, and is counted (drift_exclusions). From the

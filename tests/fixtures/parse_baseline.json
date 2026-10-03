@@ -770,7 +770,7 @@
   "untr_sigma": 0.017481
  },
  "Work Files/Sample_Base_2026-04-10/DLTS/7953B/7953B_0_TEST DATA_8-26-2016_1-59 PM.xls": {
-  "model": "7953B",
+  "model": "7953-B",
   "n_points": 35,
   "n_tracks": 1,
   "post_sigma": 0.060827,
