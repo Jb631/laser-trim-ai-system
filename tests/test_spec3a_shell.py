@@ -1,4 +1,4 @@
-"""Spec 3a — V6 shell + sidebar + theme + PageBase.
+"""Spec 3a — V6 shell + top bar (the sidebar until 2026-10-02) + theme + PageBase.
 Foundations: docs/superpowers/plans/2026-06-01-spec3-rewrite-foundations.md (§2).
 Spec: docs/superpowers/specs/2026-05-30-spec3-ui-shell-design.md (Sub-spec 3a).
 Shared fixtures (tk_root, make_app) live in tests/conftest.py.
@@ -10,24 +10,25 @@ import pytest
 def test_theme_exposes_color_tokens():
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     t = ThemeManager()
-    # Refined-dark palette (spec 2026-09-23, section 1).
-    assert (t.BG, t.SURFACE, t.CARD, t.ELEVATED) == ("#111a28", "#172233", "#1c2a3e", "#243550")
-    assert (t.SIDEBAR_BG, t.SIDEBAR_ACTIVE, t.SIDEBAR_STRIPE) == ("#111a28", "#1c2a3e", "#4fd6b8")
-    assert (t.ACCENT, t.ACCENT_HOVER, t.ACCENT_PRESSED) == ("#4fd6b8", "#74e0c8", "#36b99c")
+    # Graphite (James, 2026-10-02: "i like dark mode"; spec 2026-10-02-graphite-redesign).
+    assert (t.BG, t.SURFACE, t.CARD, t.ELEVATED) == ("#0c0c0e", "#111114", "#151518", "#1c1c20")
+    # The top bar reads the old sidebar tokens (theme.py keeps the names).
+    assert (t.SIDEBAR_BG, t.SIDEBAR_ACTIVE, t.SIDEBAR_STRIPE) == ("#0c0c0e", "#151518", "#3b82f6")
+    assert (t.ACCENT, t.ACCENT_HOVER, t.ACCENT_PRESSED) == ("#3b82f6", "#60a5fa", "#2563eb")
     assert (t.TEXT_PRIMARY, t.TEXT_SECONDARY, t.TEXT_DISABLED, t.TEXT_INVERSE) == \
-        ("#f3f6fa", "#b6c2d2", "#93a1b6", "#0b1f1b")
-    assert (t.DIVIDER, t.BORDER) == ("#26344b", "#34465f")
+        ("#ededed", "#8b8b93", "#85858e", "#0c0c0e")
+    assert (t.DIVIDER, t.BORDER) == ("#1d1d21", "#26262b")
+    assert (t.CHART_HIGHLIGHT, t.CHART_HISTORY) == ("#60a5fa", "#2a3a58")
 
 
 def test_theme_exposes_tier_color_tokens():
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     t = ThemeManager()
-    # TIER_STABLE tracks SURFACE; TIER_OOC brightened to #ff7a7a (spec 2026-09-23: #ef4444
-    # was only 4.2:1 on its own background). WARNING/DRIFT keep their old values.
-    assert t.TIER_STABLE == "#172233"
-    assert (t.TIER_WARNING_BG, t.TIER_WARNING) == ("#3d2f1a", "#f59e0b")
-    assert (t.TIER_DRIFT_BG, t.TIER_DRIFT) == ("#3d2418", "#f97316")
-    assert (t.TIER_OOC_BG, t.TIER_OOC) == ("#3d1818", "#ff7a7a")
+    # TIER_STABLE is the card; amber, orange and red each on its own dark tint (Graphite).
+    assert t.TIER_STABLE == "#151518"
+    assert (t.TIER_WARNING_BG, t.TIER_WARNING) == ("#2a2210", "#fbbf24")
+    assert (t.TIER_DRIFT_BG, t.TIER_DRIFT) == ("#2a1a0e", "#fb923c")
+    assert (t.TIER_OOC_BG, t.TIER_OOC) == ("#2a1414", "#f87171")
 
 
 def test_theme_spacing_and_radii():
@@ -49,10 +50,10 @@ def test_theme_tier_color_pairs():
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.ml.drift_types import DriftTier
     t = ThemeManager()
-    assert t.tier_color(DriftTier.STABLE) == ("#172233", "#f3f6fa")
-    assert t.tier_color(DriftTier.WARNING) == ("#3d2f1a", "#f59e0b")
-    assert t.tier_color(DriftTier.DRIFT) == ("#3d2418", "#f97316")
-    assert t.tier_color(DriftTier.OUT_OF_CONTROL) == ("#3d1818", "#ff7a7a")
+    assert t.tier_color(DriftTier.STABLE) == ("#151518", "#ededed")
+    assert t.tier_color(DriftTier.WARNING) == ("#2a2210", "#fbbf24")
+    assert t.tier_color(DriftTier.DRIFT) == ("#2a1a0e", "#fb923c")
+    assert t.tier_color(DriftTier.OUT_OF_CONTROL) == ("#2a1414", "#f87171")
 
 
 def test_theme_tier_dot_color_stable_is_visible():
@@ -135,35 +136,91 @@ def test_font_and_mono_bold_uses_bold_weight_when_no_medium_family_exists(tk_roo
     assert (m_bold.cget("family"), m_bold.cget("weight")) == ("IBM Plex Mono", "bold")
 
 
-# ---- Task 2: Sidebar ------------------------------------------------------
+# ---- Task 2: the top bar (it replaced the sidebar -- Graphite redesign, 2026-10-02) -------------
+# James: "there is so much going on its hard to see what is what". Three destinations and one blue
+# button: Overview, Models, Settings, and "Process new files". The KEYS never change -- FOCUS rows,
+# set_model_route and every deep link navigate by key, and a label change must not break them.
 
-def test_sidebar_items_in_order():
-    """Reordered 2026-08-31 (app-shape spec): Home · Investigate · Settings
-    lead, the older views follow behind a separator. Keys are unchanged —
-    "model" is still "model" and only its LABEL reads "Investigate".
-    Findings added 2026-09-20 (process-findings engine), deliberately, after Investigate."""
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-    assert Sidebar.ITEMS == [("home", "Home"), ("model", "Investigate"), ("findings", "Findings"),
-                             ("settings", "Settings"), ("dashboard", "Dashboard"),
-                             ("triage", "Triage"), ("process", "Process")]
+def _walk(widget):
+    import tkinter
+    yield widget
+    for child in tkinter.Misc.winfo_children(widget):
+        yield from _walk(child)
 
 
-def test_sidebar_emits_selection(tk_root):
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+def _bar(tk_root, selected=None, pressed=None):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.topbar import TopBar
+    return TopBar(tk_root, on_select=(selected.append if selected is not None else lambda _k: None),
+                  on_process=(lambda: pressed.append("pressed")) if pressed is not None else (lambda: None),
+                  theme=ThemeManager())
+
+
+def test_the_top_bar_has_three_destinations_by_key():
+    from laser_trim_analyzer.gui.v6.topbar import TopBar
+    assert TopBar.ITEMS == [("home", "Overview"), ("model", "Models"), ("settings", "Settings")]
+    # The pages with no item stay one click away -- Process by the blue button, Findings and
+    # Dashboard by the two links at the foot of the Overview.
+    assert TopBar.OFF_BAR == ("process", "findings", "dashboard")
+
+
+def test_the_sidebar_is_gone():
+    import importlib.util
+    assert importlib.util.find_spec("laser_trim_analyzer.gui.v6.sidebar") is None
+
+
+def test_the_bar_says_the_apps_name_and_its_three_destinations(tk_root):
+    import customtkinter as ctk
+    bar = _bar(tk_root)
+    texts = [w.cget("text") for w in _walk(bar) if isinstance(w, (ctk.CTkLabel, ctk.CTkButton))]
+    assert texts[0] == "Laser Trim Analyzer"
+    assert [t for t in texts if t in ("Overview", "Models", "Settings")] == ["Overview", "Models", "Settings"]
+
+
+def test_a_destination_emits_its_key_not_its_label(tk_root):
     got = []
-    sb = Sidebar(tk_root, on_select=got.append, theme=ThemeManager())
-    sb._row_frames["model"]._on_click()
-    assert got == ["model"]
+    bar = _bar(tk_root, selected=got)
+    bar._items["model"]._on_click()
+    bar._items["home"]._on_click()
+    assert got == ["model", "home"]
 
 
-def test_sidebar_set_active(tk_root):
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    sb = Sidebar(tk_root, on_select=lambda _: None, theme=ThemeManager())
-    sb.set_active("triage"); assert sb._active_name == "triage"
-    sb.set_active("settings"); assert sb._active_name == "settings"
-    sb.set_active("bogus"); assert sb._active_name == "settings"  # unknown no-op
+def test_the_active_destination_is_bright_with_an_accent_underline(tk_root):
+    bar = _bar(tk_root)
+    t = bar.theme
+    bar.set_active("settings")
+    assert bar._active_name == "settings"
+    for key, item in bar._items.items():
+        on = key == "settings"
+        assert item._label.cget("text_color") == (t.TEXT_PRIMARY if on else t.TEXT_SECONDARY), key
+        assert item._underline.cget("fg_color") == (t.SIDEBAR_STRIPE if on else t.SIDEBAR_BG), key
+
+
+def test_a_page_with_no_item_lights_none(tk_root):
+    bar = _bar(tk_root)
+    t = bar.theme
+    bar.set_active("home")
+    for key in ("process", "findings", "dashboard", "bogus"):
+        bar.set_active(key)
+        assert bar._active_name is None, key
+        assert all(i._label.cget("text_color") == t.TEXT_SECONDARY for i in bar._items.values())
+        assert all(i._underline.cget("fg_color") == t.SIDEBAR_BG for i in bar._items.values())
+    bar.set_active("model")
+    assert bar._active_name == "model"
+
+
+def test_the_bar_holds_one_blue_button_and_it_processes_new_files(tk_root):
+    import customtkinter as ctk
+    pressed = []
+    bar = _bar(tk_root, pressed=pressed)
+    t = bar.theme
+    blue = [w for w in _walk(bar) if isinstance(w, ctk.CTkButton) and w.cget("fg_color") == t.ACCENT]
+    assert blue == [bar._process_button]
+    b = bar._process_button
+    assert b.cget("text") == "Process new files"
+    assert (b.cget("hover_color"), b.cget("text_color")) == (t.ACCENT_HOVER, t.TEXT_INVERSE)
+    b.invoke()
+    assert pressed == ["pressed"]
 
 
 # ---- Task 3: PageBase + PageContainer -------------------------------------
@@ -379,7 +436,7 @@ def test_page_base_set_caption_shows_and_clears(tk_root):
     """set_caption packs a caption line under the title bar on text, and clears it on "".
 
     winfo_manager(), NOT winfo_ismapped(): under the withdrawn test root nothing is ever
-    mapped, so an ismapped assertion would pass vacuously (test_focus_list_zone.py). And even
+    mapped, so an ismapped assertion would pass vacuously. And even
     in the real app "is it on screen" is the wrong question -- PageContainer switches pages
     with grid() + tkraise() (stacking order only), so a page it has switched away from stays
     winfo_ismapped() == 1, not 0. "Is the caption packed" is the actual question, and
@@ -492,14 +549,17 @@ def test_page_container_add_get_show(tk_root):
 def test_v6app_starts_on_home(make_app):
     app = make_app()
     assert app.page_container.current_page == "home"
-    assert app.sidebar._active_name == "home"
+    assert app.topbar._active_name == "home"
 
 
 def test_v6app_show_page(make_app):
     app = make_app()
     app.show_page("settings")
     assert app.page_container.current_page == "settings"
-    assert app.sidebar._active_name == "settings"
+    assert app.topbar._active_name == "settings"
+    app.show_page("findings")                    # a page with no item: the bar lights none
+    assert app.page_container.current_page == "findings"
+    assert app.topbar._active_name is None
 
 
 def test_v6app_show_unknown_no_op(make_app):
@@ -509,11 +569,36 @@ def test_v6app_show_unknown_no_op(make_app):
     assert app.page_container.current_page == before
 
 
-def test_v6app_has_all_pages(make_app):
-    """Findings added 2026-09-20 (process-findings engine), deliberately, after Investigate."""
+def test_v6app_puts_the_bar_above_the_pages(make_app):
     app = make_app()
-    assert set(app.page_container._pages) == {"home", "dashboard", "triage",
-                                              "process", "model", "settings", "findings"}
+    assert not hasattr(app, "sidebar")
+    assert int(app.topbar.grid_info()["row"]) == 0 and app.topbar.grid_info()["sticky"] == "ew"
+    assert int(app.page_container.grid_info()["row"]) == 1
+    assert int(app.grid_rowconfigure(1)["weight"]) == 1 and int(app.grid_rowconfigure(0)["weight"]) == 0
+    assert int(app.grid_columnconfigure(0)["weight"]) == 1
+
+
+def test_v6app_has_all_pages(make_app):
+    """Findings added 2026-09-20 (process-findings engine). Triage retired 2026-10-02 (Graphite
+    redesign): the Overview's cards and list are what it showed."""
+    app = make_app()
+    assert set(app.page_container._pages) == {"home", "dashboard", "process", "model",
+                                              "settings", "findings"}
+
+
+def test_the_page_titles_say_what_the_bar_says(make_app):
+    app = make_app()
+    pages = app.page_container
+    assert pages.get_page("home").page_title == "Overview"
+    assert pages.get_page("model").page_title == "Models"
+    assert pages.get_page("settings").page_title == "Settings"
+
+
+def test_every_key_on_the_bar_and_off_it_is_a_page(make_app):
+    from laser_trim_analyzer.gui.v6.topbar import TopBar
+    app = make_app()
+    keys = [k for k, _ in TopBar.ITEMS] + list(TopBar.OFF_BAR)
+    assert sorted(keys) == sorted(app.page_container._pages)
 
 
 def test_v6app_auto_train_off_does_not_offer(make_app):

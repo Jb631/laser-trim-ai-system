@@ -2,7 +2,7 @@
 database and assert cross-feature invariants.
 
 Companion to chart_qa_render_all.py (visuals). This one covers features:
-dashboard aggregates, triage, model-page loaders, unit modal, settings
+dashboard aggregates, the Overview, model-page loaders, unit modal, settings
 actions, exports, and the processing pipeline — each check is PASS/FAIL/WARN
 with the number that failed, so regressions surface without a human clicking
 through the app.
@@ -946,7 +946,9 @@ def _newest_trim_file(db, model):
 def check_inactive_models_on_database(db, raw) -> None:
     """Every model the app calls INACTIVE matches the definition, read by independent SQL (F5,
     James 2026-09-25: labelled, never hidden). The app's answers: core/activity.load_activity,
-    and what the Findings page, Home and Triage each hand their lists from their OWN load. The
+    and what the Findings page and the Overview each hand their lists from their OWN load (the
+    Overview replaced Home's list and Triage's on 2026-10-02 -- one check for the screen that
+    shows them now). The
     truth is its own formulation, not the app's query: every believable laser file (A/B/C, nothing
     dated more than a day ahead), "cut" read from its own tracks' statuses -- one that did not fail
     processing and is not a sweep with no cut (controller ruling, 2026-09-25) -- and the gap
@@ -960,9 +962,8 @@ def check_inactive_models_on_database(db, raw) -> None:
     from types import SimpleNamespace
     from laser_trim_analyzer.core.activity import load_activity
     from laser_trim_analyzer.core.model_stats import failed_processing_statuses
-    from laser_trim_analyzer.gui.v6.pages import triage_page
+    from laser_trim_analyzer.gui.v6.overview_data import load_overview
     from laser_trim_analyzer.gui.v6.pages.findings_page import FindingsPage
-    from laser_trim_analyzer.gui.v6.pages.home_page import HomePage
     not_a_trim = ", ".join([f"'{s.name}'" for s in failed_processing_statuses()] + ["'UNTRIMMED'"])
     horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
     failed = ", ".join(f"'{s.name}'" for s in failed_processing_statuses())
@@ -988,17 +989,12 @@ def check_inactive_models_on_database(db, raw) -> None:
     fp = FindingsPage.__new__(FindingsPage)
     fp.app = SimpleNamespace(db=db)
     answers["the Findings page's own load"] = fp._query()["inactive"]
-    hp = HomePage.__new__(HomePage)
-    hp.app = SimpleNamespace(db=db)
-    answers["Home's own load"] = hp._query_findings()["inactive"]
-    tp = triage_page.TriagePage.__new__(triage_page.TriagePage)
-    tp.app = SimpleNamespace(db=db, config=SimpleNamespace(active_models=None))
-    saved = triage_page.load_focus
-    triage_page.load_focus = lambda _db, models=None: (None, None)   # FOCUS is checked in section 2
-    try:
-        answers["Triage's own load"] = tp._query()[5]
-    finally:
-        triage_page.load_focus = saved
+    overview = load_overview(db)
+    if overview.inactive is None:
+        check("inactive models: the Overview's own load works them out", False,
+              f"failed: {overview.failed}")
+    else:
+        answers["the Overview's own load"] = overview.inactive
     for who, got in answers.items():
         got = {m: (f"{d:%Y-%m-%d %H:%M:%S}" if d is not None else "no trims on record")
                for m, d in got.items()}
@@ -4180,6 +4176,12 @@ class _ViewRecorder:
         self.rows = list(rows or [])
         self.inactive = dict(inactive or {})        # F5: which models' rows the page marks
 
+    def pack_forget(self):
+        pass
+
+    def winfo_manager(self):
+        return "pack"
+
 
 def _rows_handed(view) -> int:
     """Rows a page handed its FindingsView, grouped the way the view groups them (arrange(), and
@@ -4193,18 +4195,17 @@ def _rows_handed(view) -> int:
                if keys is None or g.spec.key in keys)
 
 
-def _headless_home(db):
-    """(HomePage on stand-in widgets over `db`, the list its captions are written to)."""
+def _headless_findings(db):
+    """(FindingsPage on stand-in widgets over `db`, the list its captions are written to). Its
+    yield group is what Home's "Worth changing" showed until the Overview replaced Home's content
+    (2026-10-02); "All findings", at the foot of the Overview, opens it."""
     from types import SimpleNamespace
-    from laser_trim_analyzer.gui.v6.pages.home_page import HomePage
+    from laser_trim_analyzer.gui.v6.pages.findings_page import FindingsPage
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    page = HomePage.__new__(HomePage)
+    page = FindingsPage.__new__(FindingsPage)
     page.app = SimpleNamespace(db=db)
     page.theme = ThemeManager()
-    for name in ("_worth_section", "_worth_banner", "_focus_banner", "_focus"):
-        setattr(page, name, _Recorder())
-    page._worth_view, page._worth_count, page._focus_count = None, None, 0
-    page._last_processed = datetime(2026, 1, 5)      # invented: the caption needs a stamp to exist
+    page._notices, page._view, page._rows = _Recorder(), _ViewRecorder(None, None), []
     captions: list = []
     page.set_caption = captions.append
     return page, captions
@@ -4224,17 +4225,20 @@ class _FailingDb:
 
 
 def check_screens_count_what_they_draw(db) -> None:
-    """Home's "N worth changing" and the Model page's "Worth changing on this model" count, each
-    against the presentation layer's own arrange() of the cached findings -- with the groups the
-    design doc rules for each (Home: yield; Model page: yield, laser time, check), written here,
-    not read from the pages -- and against the rows each section actually hands its view.
+    """The Findings page's "N changes worth testing" and the Model page's "Worth changing on this
+    model" count, each against the presentation layer's own arrange() of the cached findings --
+    with the groups the design doc rules for each (the Findings page's caption: yield; Model page:
+    yield, laser time, check), written here, not read from the pages -- and against the rows each
+    page actually hands its view. (Home's "N worth changing" stood here until the Overview replaced
+    Home's content, 2026-10-02: its yield list is the Findings page's, one click away.)
 
-    Falsify before trusting (2026-09-24): make home_page._yield_findings_count sum every group, or
-    add "history" to model_page._WORTH_CHANGING_GROUPS -- each FAILs its line below."""
+    Falsify before trusting (2026-09-24; the Findings half 2026-10-02): make presentation.caption
+    count the yield rows wrong, or add "history" to model_page._WORTH_CHANGING_GROUPS -- each
+    FAILs its line below."""
     import re
     from collections import defaultdict
     from laser_trim_analyzer.findings import presentation as P
-    from laser_trim_analyzer.gui.v6.pages import home_page, model_page
+    from laser_trim_analyzer.gui.v6.pages import model_page
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets import blocks
 
@@ -4242,27 +4246,24 @@ def check_screens_count_what_they_draw(db) -> None:
     check("screens: the database has cached findings to count", len(rows) > 0, f"{len(rows)} findings")
     if not rows:
         return
-    ref_home = sum(len(g.rows) for g in P.arrange(rows, include_empty=False) if g.spec.key == "yield")
-    if not ref_home:
-        warn("screens: no yield-group finding in the cache", "Home's count is checked at zero")
-    saved_view, saved_header = home_page.FindingsView, blocks.group_header
+    ref_yield = sum(len(g.rows) for g in P.arrange(rows, include_empty=False) if g.spec.key == "yield")
+    if not ref_yield:
+        warn("screens: no yield-group finding in the cache", "the Findings page's count is checked at zero")
+    saved_view, saved_header = model_page.FindingsView, blocks.group_header
     try:
-        home_page.FindingsView = _ViewRecorder
-        _ViewRecorder.made = []
-        page, captions = _headless_home(db)
-        page._apply_findings(page._query_findings())
+        page, captions = _headless_findings(db)
+        page._apply(page._query())
         caption = captions[-1] if captions else ""
-        m = re.search(r"([\d,]+) worth changing", caption)
+        m = re.search(r"([\d,]+) changes? worth testing", caption)
         n = int(m.group(1).replace(",", "")) if m else None
-        handed = _rows_handed(_ViewRecorder.made[-1]) if _ViewRecorder.made else 0
-        check("home: 'N worth changing' is the yield rows arrange() builds from the cache, and the "
-              "rows its section hands its view", n is not None and n == ref_home == handed,
-              f"caption={caption!r} arrange={ref_home} handed={handed}")
+        handed = sum(len(g.rows) for g in P.arrange(page._view.rows, include_empty=False)
+                     if g.spec.key == "yield")
+        check("findings page: 'N changes worth testing' is the yield rows arrange() builds from "
+              "the cache, and the rows it hands its view", n is not None and n == ref_yield == handed,
+              f"caption={caption!r} arrange={ref_yield} handed={handed}")
     except Exception as e:
-        check("home: 'N worth changing' is the yield rows arrange() builds from the cache",
-              False, f"{type(e).__name__}: {e}")
-    finally:
-        home_page.FindingsView = saved_view
+        check("findings page: 'N changes worth testing' is the yield rows arrange() builds from "
+              "the cache", False, f"{type(e).__name__}: {e}")
 
     # One model, resolved by query: the most findings among models with NO analyzer error and at
     # least one finding OUTSIDE the section's three groups (so the section's own filtering counts).
@@ -4308,62 +4309,55 @@ def check_screens_count_what_they_draw(db) -> None:
 
 def check_failed_loads_are_never_zero(db) -> None:
     """Drive a loader to raise and read what the page would say: a failure is NAMED, never drawn
-    as "0 worth changing", "0 drifting now" or "Needs a look · 0" (final review, 2026-09-24).
+    as "0 changes worth testing" or "0 models need a look" (final review, 2026-09-24). Home's
+    "worth changing" and "drifting now" and Triage's "Needs a look" stood here until the Overview
+    replaced them (2026-10-02): the findings half is the Findings page's, the FOCUS half the
+    Overview's heading.
 
-    Falsify before trusting (2026-09-24): in home_page set `self._worth_count = 0` on the failed
-    branch, or `self._focus_count = len(result.focus)` whatever the result; in triage_page pass
-    `len(result.focus)` to the "Needs a look" header whatever the result -- each FAILs below."""
+    Falsify before trusting (2026-10-02): in overview_data make card_count return len(cards)
+    whatever failed, or in findings_page set a caption on the failed branch -- each FAILs below."""
+    import re
     from laser_trim_analyzer.gui.v6 import focus_data
-    from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6 import overview_data as od
+    from laser_trim_analyzer.gui.v6.pages import home_page
     from laser_trim_analyzer.gui.v6.widgets import blocks
 
+    saved_banner = blocks.banner
+    banners: list = []
     try:
-        page, captions = _headless_home(_FailingDb(db, "get_process_findings"))
-        page._apply_findings(page._query_findings())
+        def spy(parent, theme, text, tone="check", **kw):
+            banners.append((text, tone))
+            return _Recorder()
+        blocks.banner = spy
+        page, captions = _headless_findings(_FailingDb(db, "get_process_findings"))
+        page._apply(page._query())
         caption = captions[-1] if captions else ""
-        check("home: a failed findings load is named in a banner, never '0 worth changing'",
-              "worth changing" not in caption and page._worth_banner.packed
-              and "sweep: forced failure" in page._worth_banner.text,
-              f"caption={caption!r} banner={page._worth_banner.text[:80]!r}")
+        named = [t_ for t_, tone in banners if tone == "check" and "sweep: forced failure" in t_]
+        check("findings page: a failed findings load is named in a banner, never "
+              "'0 changes worth testing'", "worth testing" not in caption and bool(named),
+              f"caption={caption!r} banners={[t_[:60] for t_, _tone in banners]}")
     except Exception as e:
-        check("home: a failed findings load is named in a banner", False, f"{type(e).__name__}: {e}")
+        check("findings page: a failed findings load is named in a banner", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        blocks.banner = saved_banner
 
-    saved_compute, saved_header = focus_data.compute_focus_list, blocks.group_header
-    headers: list = []
+    saved_compute = focus_data.compute_focus_list
     try:
         def boom(_db):
             raise RuntimeError("sweep: forced FOCUS failure")
         focus_data.compute_focus_list = boom
-        result, last = focus_data.load_focus(db)
-        page, captions = _headless_home(db)
-        page._apply_focus(result, last)
-        caption = captions[-1] if captions else ""
-        check("home: a failed FOCUS load is named in a banner, never '0 drifting now'",
-              "drifting now" not in caption and page._focus_banner.packed
-              and "forced FOCUS failure" in page._focus_banner.text,
-              f"caption={caption!r} banner={page._focus_banner.text[:80]!r}")
-
-        def spy(parent, theme, title, count, **kw):
-            headers.append((title, count))
-            return _Recorder()
-        blocks.group_header = spy
-        tp = TriagePage.__new__(TriagePage)
-        tp.theme = ThemeManager()
-        for name in ("_content_parent", "_focus_wrap", "_focus", "_browse", "_load_banner"):
-            setattr(tp, name, _Recorder())
-        tp._focus_header, tp._show_all, tp._browse_failed = None, False, None
-        tp._apply(result, [], set(), last)
-        shown = [c for t_, c in headers if t_ == "Needs a look"]
-        check("triage: a failed FOCUS load is named, with no 'Needs a look' count",
-              shown == [None] and tp._load_banner.packed
-              and "forced FOCUS failure" in tp._load_banner.text,
-              f"header counts={shown} banner={tp._load_banner.text[:80]!r}")
+        ov = od.load_overview(db)
+        heading = od.need_a_look(od.card_count(ov))
+        said = home_page._failure_text(ov)
+        check("overview: a failed FOCUS load is named in its banner, never '0 models need a look'",
+              od.PART_FOCUS in ov.failed and "forced FOCUS failure" in said
+              and not re.search(r"\d", heading),
+              f"heading={heading!r} banner={said[:90]!r}")
     except Exception as e:
-        check("home/triage: a failed FOCUS load is named", False, f"{type(e).__name__}: {e}")
+        check("overview: a failed FOCUS load is named", False, f"{type(e).__name__}: {e}")
     finally:
         focus_data.compute_focus_list = saved_compute
-        blocks.group_header = saved_header
 
 
 # ---- usability glosses (moved out of main() so `--only glosses` runs them alone) -----------------
@@ -4387,7 +4381,7 @@ def _gloss_present(source: str, needle: str, kind: str) -> bool:
     literal CONTAINS it (a sentence); "code": the needle is code, a plain substring of the file.
 
     Text is matched against real string literals, not the raw file (final review, 2026-09-24,
-    M6): the Model page's `# ---- "How it's running" ...` and Triage's `# OWN "Needs a look" ...`
+    M6): the Model page's `# ---- "How it's running" ...` and Triage's (retired) `# OWN "Needs a look" ...`
     comments carry the very words -- quotes and all -- so a bare substring check, or even the
     quoted form, kept passing with the heading itself renamed. Made to fail first: rename either
     heading and leave the comment -- the old check PASSES, this one FAILS."""
@@ -4406,9 +4400,12 @@ def check_usability_glosses() -> None:
     a string literal -- see _gloss_present. Standalone: `--only glosses`."""
     _GLOSSES = [
         # 2026-08-29: the σ card wall became the FOCUS list. Same obligation,
-        # new zone — say WHY a model is on the list and when it leaves.
-        ("src/laser_trim_analyzer/gui/v6/widgets/focus_list_zone.py",
-         "outside its own control limits", "FOCUS list states its membership rule"),
+        # new zone — say WHY a model is on the list. 2026-10-02: the FOCUS list's rows became
+        # the Overview's cards, each with its reason (overview_data.focus_reason / drift_reason).
+        ("src/laser_trim_analyzer/gui/v6/overview_data.py",
+         "Fail rate ", "each Overview card says why it is there (the fail-rate move)"),
+        ("src/laser_trim_analyzer/gui/v6/overview_data.py",
+         "still passing", "a card whose signal moved on a passing model says it is still passing"),
         # 2026-09-24 (facelift step 2, T2): the three-sentence σ key moved to the Drift metrics
         # tab, beside the numbers it explains; the model page keeps a ONE-line key. Both pinned.
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
@@ -4417,19 +4414,16 @@ def check_usability_glosses() -> None:
          "historical lot medians", "drift tab explains σ in lot language (in full)"),
         ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
          "Gap = Trim − FT", "lowest-yield list explains Gap"),
-        # 2026-09-24 (facelift step 2, T7): the colour dot became a status WORD on each row
-        # (a colour-blind reader had nothing to read); the legend explains it in words. Final
-        # review (same date): "worst first" dropped -- the list is alphabetical, the lookup list
-        # -- so the needle pins all three glosses in one string, with no order claim between.
-        # F5 review (2026-09-25): "Date = last processed" beside "Inactive · last trimmed" read as
-        # a contradiction -- the date is the newest laser or smoothness file of any kind, and says so.
-        ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
-         "Status = drift tier. Date = the model's newest laser or smoothness file of any kind",
-         "browse list explains status/date"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
-         "'Active' scope = models with recent data", "browse list explains the Active scope"),
-        ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
-         '"newest file, any kind"', "browse list's date column names itself"),
+        # 2026-09-24 (facelift step 2, T7) .. 2026-09-25 (F5): Triage's browse list explained its
+        # status word, its date and its Active scope. Its heir (2026-10-02) is the Overview: one
+        # clock named under its heading, every other active model in "Everything else", and the
+        # inactive ones labelled with their last trim.
+        ("src/laser_trim_analyzer/gui/v6/overview_data.py",
+         "newest file", "the Overview names the clock its numbers use"),
+        ("src/laser_trim_analyzer/gui/v6/pages/home_page.py",
+         "Inactive models", "the Overview labels the inactive models, never hides them"),
+        ("src/laser_trim_analyzer/gui/v6/pages/home_page.py",
+         " · last trimmed ", "each inactive model says when it was last trimmed"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
          '"Sigma gradient"', "units table headers are full words"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
@@ -4457,10 +4451,12 @@ def check_usability_glosses() -> None:
          "How it's running", "model page marks the app's-read zone"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
          "What you're looking at", "model page marks the data zone"),
-        # 2026-09-24 (T7): Triage's app's-read zone is the "Needs a look" group (the focus list);
-        # the data zone is "All models" (the browse list).
-        ("src/laser_trim_analyzer/gui/v6/pages/triage_page.py",
-         "Needs a look", "triage marks the app's-read zone"),
+        # 2026-09-24 (T7): Triage's app's-read zone was its "Needs a look" group, its data zone
+        # "All models". 2026-10-02: the Overview's "N models need a look" and "Everything else".
+        ("src/laser_trim_analyzer/gui/v6/overview_data.py",
+         " models need a look", "the Overview marks the app's-read zone"),
+        ("src/laser_trim_analyzer/gui/v6/pages/home_page.py",
+         "Everything else", "the Overview marks the data zone"),
         ("src/laser_trim_analyzer/gui/v6/widgets/metric_pill_row.py",
          "Outcomes — trim linearity · final test", "pills grouped process vs outcomes"),
         ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
@@ -4614,10 +4610,9 @@ def check_self_check_passes_from_source() -> None:
 _GLOSS_KINDS = {
     '"Sigma gradient"': ("exact", "Sigma gradient"),
     '"Linearity error"': ("exact", "Linearity error"),
-    '"newest file, any kind"': ("exact", "newest file, any kind"),
     "How it's running": ("exact", None),
     "What you're looking at": ("exact", None),
-    "Needs a look": ("exact", None),
+    "Everything else": ("exact", None),
     "format_metric_value": ("code", None),
     "on_unit_click": ("code", None),
     "Include the PRE-TRIM trace": ("code", None),
@@ -4716,7 +4711,7 @@ def main() -> int:
 
     # ============ 3. FOCUS LIST: the SPC invariants the page now rests on ====
     # Replaces the σ-alert-feed checks that stood here until 2026-08-29 (that
-    # feed was deleted 2026-08-31): the Triage page ranks models from
+    # feed was deleted 2026-08-31): the Overview's cards (Triage's list until 2026-10-02) rank models from
     # `compute_focus_list` now, so THESE are the invariants a regression would
     # break. The promise being guarded is that every row can point at the lot
     # in its own series that put it there.
@@ -4880,19 +4875,19 @@ def main() -> int:
             except Exception as exc:
                 check("focus: every row carries a boolean spec_mismatch flag",
                       False, f"{type(exc).__name__}: {exc}")
-    # ---- HOME and TRIAGE cannot disagree about what is drifting ------------
-    # Two landing screens showing two different FOCUS lists would be worse
-    # than either of them being wrong, so both go through focus_data.load_focus
-    # and it must be a faithful pass-through of the computation.
+    # ---- the Overview's cards read the ONE focus loader -------------------
+    # Home and Triage both showed the FOCUS list until 2026-10-02, and two
+    # screens disagreeing about what is drifting would be worse than either of
+    # them being wrong; both went through focus_data.load_focus. The Overview's
+    # cards are its one caller now, and it must be a faithful pass-through.
     try:
         from laser_trim_analyzer.gui.v6 import focus_data
-        from laser_trim_analyzer.gui.v6.pages import home_page, triage_page
-        check("home/triage: both landing screens call ONE focus loader",
-              home_page.load_focus is focus_data.load_focus
-              is triage_page.load_focus)
+        from laser_trim_analyzer.gui.v6 import overview_data
+        check("overview: the cards' fail-rate half comes through the ONE focus loader",
+              overview_data.load_focus is focus_data.load_focus)
         loaded, last_seen = focus_data.load_focus(db)
         raw_focus = compute_focus_list(db)
-        check("home/triage: the loader passes the computation through untouched",
+        check("focus loader: passes the computation through untouched",
               [e.model for e in loaded.focus] == [e.model for e in raw_focus.focus]
               and [e.model for e in loaded.chronic] == [e.model for e in raw_focus.chronic]
               and loaded.anchor == raw_focus.anchor,
@@ -4900,10 +4895,10 @@ def main() -> int:
               f"anchor={loaded.anchor}")
         expect_last = max((m.last_processed for m in list_known_models(db)
                            if m.last_processed), default=None)
-        check("home/triage: the empty-state stamp is the newest data on record",
+        check("focus loader: the last-processed stamp is the newest data on record",
               last_seen == expect_last, f"{last_seen} vs {expect_last}")
     except Exception as exc:
-        check("home/triage: one FOCUS loader behind both screens", False,
+        check("overview: one FOCUS loader behind the cards", False,
               f"{type(exc).__name__}: {exc}")
     # ---- the screens count what they draw; a failed load is never a zero (final review M9)
     with _guard("screens: each count is the rows its section is handed"):
@@ -4911,29 +4906,29 @@ def main() -> int:
     with _guard("screens: a failed load is never a zero"):
         check_failed_loads_are_never_zero(db)
 
-    # ---- every sidebar row points at a page that exists --------------------
-    # A nav row whose key was never registered is a dead click with no error;
-    # the keys are also what FOCUS deep-links navigate by, so they are a
-    # contract, not decoration.
+    # ---- every top-bar item points at a page that exists --------------------
+    # A nav item whose key was never registered is a dead click with no error;
+    # the keys are also what card clicks and deep links navigate by, so they are
+    # a contract, not decoration. (The sidebar until 2026-10-02.)
     try:
         import re as _re
-        from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+        from laser_trim_analyzer.gui.v6.topbar import TopBar
         app_src = open(REPO / "src/laser_trim_analyzer/gui/v6/app.py",
                        encoding="utf-8").read()
         registered = set(_re.findall(r'add_page\(\s*"([a-z_]+)"', app_src))
-        keys = [k for k, _ in Sidebar.ITEMS]
-        check("shell: every sidebar row has a registered page",
-              set(keys) == registered, f"sidebar={keys} registered={sorted(registered)}")
-        check("shell: Home leads, Investigate keeps the 'model' key, Findings follows it",
-              keys[:4] == ["home", "model", "findings", "settings"]
-              and dict(Sidebar.ITEMS)["model"] == "Investigate"
-              and Sidebar.MUTED == {"dashboard", "triage", "process"},
-              f"{Sidebar.ITEMS}")
-        check("shell: nothing reachable was lost",
-              {"dashboard", "triage", "process"} <= registered,
+        keys = [k for k, _ in TopBar.ITEMS]
+        check("shell: every page is on the top bar or named as reached from elsewhere",
+              set(keys) | set(TopBar.OFF_BAR) == registered
+              and not set(keys) & set(TopBar.OFF_BAR),
+              f"bar={keys} off-bar={list(TopBar.OFF_BAR)} registered={sorted(registered)}")
+        check("shell: Overview leads, Models keeps the 'model' key, Settings follows",
+              TopBar.ITEMS == [("home", "Overview"), ("model", "Models"), ("settings", "Settings")],
+              f"{TopBar.ITEMS}")
+        check("shell: nothing reachable was lost but Triage, which is retired",
+              {"dashboard", "findings", "process"} <= registered and "triage" not in registered,
               f"registered={sorted(registered)}")
     except Exception as exc:
-        check("shell: sidebar/page registration contract", False,
+        check("shell: top bar/page registration contract", False,
               f"{type(exc).__name__}: {exc}")
 
     with _guard("presets and the active-model set"):

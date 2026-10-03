@@ -93,7 +93,7 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
             app.config.save()
         except Exception:
             pass
-        # Recompute thresholds so Triage reflects the new preset (get_drifting_models ignores its arg).
+        # Recompute thresholds so the Overview reflects the new preset (get_drifting_models ignores its arg).
         threading.Thread(target=lambda: apply_sensitivity_preset(app.db, preset), daemon=True).start()
         save_btn.configure(text="Applied ✓ (recomputing thresholds…)")
         save_btn.after(2500, lambda: save_btn.winfo_exists() and save_btn.configure(text="Apply preset"))

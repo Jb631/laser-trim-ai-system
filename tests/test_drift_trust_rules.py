@@ -508,7 +508,7 @@ def test_startup_retrains_under_new_rules_then_reloads_the_page_on_screen(tmp_pa
 
 
 # =============================================================================================
-# the FOCUS list ("Drifting now" on Home and Triage) follows the same rules -- it is its own
+# the FOCUS list ("Drifting now" -- the fail-rate half of the Overview's cards) follows the same rules -- it is its own
 # p-chart of each run's linearity fail rate (ml/spc.compute_focus_list), and the model page's run
 # chart beside it reads the drift loader: the two must never disagree about a suspect file.
 
@@ -683,8 +683,8 @@ def test_a_failed_startup_retrain_still_catches_up(tmp_path, monkeypatch):
 def test_reloading_the_page_on_screen_goes_through_its_own_background_load(make_app,
                                                                             monkeypatch):
     app = make_app()
-    app.show_page("triage")
-    page = app.page_container.get_page("triage")
+    app.show_page("home")                 # the Overview -- the landing page, and Triage's heir
+    page = app.page_container.get_page("home")
     shown = []
     monkeypatch.setattr(page, "on_show", lambda: shown.append("on_show"))
     monkeypatch.setattr(page, "reload_now", lambda: shown.append("reload_now"), raising=False)

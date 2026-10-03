@@ -219,7 +219,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                         "Retry unreadable files",
                         f"Offer {count:,} file(s) again that could not be read on an "
                         f"earlier run?\n\n"
-                        f"They are re-parsed on the next \"Process everything new\". "
+                        f"They are re-parsed on the next \"Process new files\". "
                         f"Any that still cannot be read are recorded again, so this "
                         f"is worth pressing after a parser upgrade and not before.\n\n"
                         f"Files skipped for NOT being test data, and duplicates "
@@ -278,7 +278,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                 if report.get("models") is not None:
                     msg += f" across {report['models']:,} models"
                 if not failed and not partial:
-                    return msg + ". Open Findings in the sidebar."
+                    return msg + ". Open them from \"All findings\" at the foot of the Overview."
                 names = sorted(set(failed) | set(partial))
                 shown = ", ".join(names[:8]) + (" …" if len(names) > 8 else "")
                 return (f"{msg} — but {len(failed):,} model(s) could not be worked out at all and "
@@ -343,7 +343,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                     res = db.recompute_overall_statuses(dry_run=False)
                     return (f"Re-graded {res['changed']} units "
                             f"({', '.join(f'{k}: {v}' for k, v in sorted(res['transitions'].items()))}). "
-                            f"Refresh Dashboard/Triage to see updated yields.")
+                            f"Open the Overview or the Dashboard again to see the updated yields.")
                 _async(do_execute)
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
@@ -465,7 +465,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                         f"plant share and re-graded on the rows the sheet itself "
                         f"grades. Off the work network the sources are "
                         f"unreachable and nothing is changed.\n\n"
-                        f"RUN \"Process everything new\" FIRST, and do not start "
+                        f"RUN \"Process new files\" FIRST, and do not start "
                         f"one while this is going. They share the database and "
                         f"the plant share, and together they make each other "
                         f"slower than either one alone.\n\n"

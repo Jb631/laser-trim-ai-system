@@ -13,7 +13,7 @@ def build_ml_training_section(parent, theme: ThemeManager, app) -> None:
     t = theme
     ctk.CTkLabel(parent, justify="left", wraplength=640, anchor="w", font=t.font(t.SIZE_BODY),
                  text_color=t.TEXT_SECONDARY,
-                 text=("Retrain ML against current data. Drift baselines feed Triage/Model; the "
+                 text=("Retrain ML against current data. Drift baselines feed the Overview and the Model page; the "
                        "per-model threshold optimizer, failure predictor, and profiler are the "
                        "existing per-model ML."))\
         .pack(side="top", fill="x", anchor="w", pady=(0, t.SPACE_MD))

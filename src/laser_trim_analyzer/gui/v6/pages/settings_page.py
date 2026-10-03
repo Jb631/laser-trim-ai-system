@@ -26,7 +26,7 @@ class SettingsPage(PageBase):
             # setting Home cannot work without, and Home's empty state sends
             # the user straight here. The Home connection is said in words
             # INSIDE the card (its body's own opening line already names
-            # "Process everything new" -- see build_ingest_folders_section),
+            # "Process new files" -- see build_ingest_folders_section),
             # so the title itself stays short, sentence case (ruling 3).
             ("Ingest folders", True, build_ingest_folders_section),
             ("Backlog — active models and pricing", False, build_backlog_section),

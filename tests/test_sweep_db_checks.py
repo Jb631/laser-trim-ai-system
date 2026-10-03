@@ -441,7 +441,8 @@ def test_the_screens_check_names_what_it_counts(tmp_path):
     line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULTS_JSON=")), None)
     assert r.returncode == 0 and line, r.stdout[-3000:] + r.stderr[-3000:]
     results = [tuple(x) for x in json.loads(line[len("RESULTS_JSON="):])]
-    home = [x for x in results if x[1].startswith("home: 'N worth changing'")]
+    # The Findings page's count since the Overview replaced Home's "Worth changing" (2026-10-02).
+    home = [x for x in results if x[1].startswith("findings page: 'N changes worth testing'")]
     assert len(home) == 1 and home[0][0] == "PASS", results
     assert "draws" not in home[0][1] and "hands its view" in home[0][1], home
     assert "drawn=" not in home[0][2] and "handed=5" in home[0][2], home
@@ -452,8 +453,8 @@ def test_the_screens_check_names_what_it_counts(tmp_path):
 
 
 # ============================================== check_inactive_models_on_database (F5, 2026-09-25)
-# Every model the app calls inactive -- core/activity, and what the Findings page, Home and Triage
-# are handed -- must match the definition read by independent SQL: a laser file with a track that
+# Every model the app calls inactive -- core/activity, and what the Findings page and the Overview
+# (Home's and Triage's lists until 2026-10-02) are handed -- must match the definition read by independent SQL: a laser file with a track that
 # did not fail, no file more than a day ahead, more than 730 days behind the fleet's newest.
 
 def _inactive_scratch(tmp_path, *, behind=(("LIVE", 0), ("OLD", 900), ("MID", 400))):

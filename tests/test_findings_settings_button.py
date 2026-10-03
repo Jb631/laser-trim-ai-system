@@ -110,7 +110,7 @@ def test_a_run_with_failures_does_not_just_say_refreshed(make_app, monkeypatch):
         assert _pump(app, lambda: "3 findings" in label.cget("text")), label.cget("text")
         said = label.cget("text")
         assert "across 40 models" in said and "1 model(s) could not be worked out at all" in said
-        assert "BROKEN" in said and "HURT" in said and "Open Findings in the sidebar" not in said
+        assert "BROKEN" in said and "HURT" in said and "All findings" not in said
     finally:
         frame.destroy()
 
