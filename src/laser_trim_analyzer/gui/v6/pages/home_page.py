@@ -6,15 +6,19 @@ ingest card went to the Process page (the top bar's "Process new files" runs it 
 "Worth changing" list into each model's page, and Triage is retired -- what it showed is here.
 
 Top to bottom:
-  * the last finished run's one-line summary, quietly (`set_run_summary`; a run lands here);
+  * the last finished run's one-line summary, quietly (`set_run_summary`; a run lands here), and
+    under it "See the run ›" -- the Process page and that run's tally, without starting another;
   * the quiet data-health notices (final tests graded before the ignore-window fix, files skipped
     as unreadable) and, in the check colour, any part of this page that could not be loaded;
-  * "N models need a look" over "Last 90 days · newest file DD Mon YYYY", and the CARDS: the
-    fail-rate list united with the drift watch's flags, each saying in one line why it is there
-    (James: "keep all 16 cards (fail rate up, or a signal moved), each with its reason");
+  * "N models need a look" over "Last 90 days · newest file DD Mon YYYY" and the rule that puts a
+    model on a card (`overview_data.CARD_RULE`), and the CARDS: the fail-rate list united with the
+    drift watch's flags, each saying in one line why it is there (James: "keep all 16 cards (fail
+    rate up, or a signal moved), each with its reason"); a click opens its Summary, charting the
+    signal its reason names;
   * "Everything else": every other active model, busiest first;
-  * "Inactive models (N) ▸", collapsed, expanding in place -- labelled, never hidden (F5);
-  * two quiet links: "All findings" and "Company trends".
+  * "Other models on file (N) ▸" and "Inactive models (N) ▸", collapsed, each expanding in place:
+    every model on file is somewhere on this page -- labelled, never hidden (F5);
+  * three quiet links: "All findings", "Company trends", "Process a specific folder".
 
 Every number comes from ONE loader, `gui/v6/overview_data.load_overview`, on a worker thread;
 this page only draws what it is handed. Three states, never confused: loading (nothing has landed
@@ -74,6 +78,9 @@ class HomePage(PageBase):
 
         # The lines at the top, each packed only while it has something to say (_place_top).
         self._run_line = blocks.banner(body, t, "", tone="quiet", wrap_to=body)
+        # The run's own tally is on the Process page. The blue button would start a NEW run and
+        # wipe it (final review, 2026-10-02) -- this only opens the page.
+        self._run_link = blocks.link_button(body, t, "See the run ›", self._open_process)
         self._legacy_ft_label = blocks.banner(body, t, "", tone="quiet", wrap_to=body)
         self._unreadable_label = blocks.banner(body, t, "", tone="quiet", wrap_to=body)
         self._load_banner = blocks.banner(body, t, "", wrap_to=body)        # check tone
@@ -84,7 +91,11 @@ class HomePage(PageBase):
         self._need_heading.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
         self._need_caption = ctk.CTkLabel(body, text="Loading…", anchor="w", justify="left",
                                           font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
-        self._need_caption.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._need_caption.pack(side="top", fill="x")
+        self._need_rule = ctk.CTkLabel(body, text=od.CARD_RULE, anchor="w", justify="left",
+                                       font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
+        self._need_rule.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        blocks.wrap_to_width(self._need_rule, body)        # built once with the page: binds once
         self._cards_frame = ctk.CTkFrame(body, fg_color="transparent")
         self._cards_frame.pack(side="top", fill="x", pady=(0, t.SPACE_XL))
         # Bound ONCE, on a frame that lives as long as the page: re-grids the cards when the
@@ -99,8 +110,19 @@ class HomePage(PageBase):
         self._others_heading.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
         self._others_frame = ctk.CTkFrame(body, fg_color="transparent")
         self._others_frame.pack(side="top", fill="x")
-        self._others_note = ctk.CTkLabel(body, text="", anchor="w", justify="left",
+        # "Loading…" until the first load lands -- never a bare heading over nothing.
+        self._others_note = ctk.CTkLabel(body, text="Loading…", anchor="w", justify="left",
                                          font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
+        self._others_note.pack(side="top", fill="x", after=self._others_frame)
+
+        # "Other models on file (N) ▸": trimmed, but on no card, in no list and not inactive --
+        # on file, and otherwise nowhere on this page. Packed once the count is known.
+        self._quiet_open = False
+        self._quiet_toggle = ctk.CTkButton(
+            body, text="", command=self._toggle_quiet, fg_color="transparent",
+            hover_color=t.CARD, text_color=t.TEXT_SECONDARY, font=t.font(t.SIZE_BODY),
+            anchor="w", width=0, height=28)
+        self._quiet_list = ctk.CTkFrame(body, fg_color="transparent")
 
         # "Inactive models (N) ▸": packed once the count is known; the list below it only while
         # it is open.
@@ -116,6 +138,11 @@ class HomePage(PageBase):
         self._findings_link.pack(side="left")
         self._trends_link = blocks.link_button(self._links, t, "Company trends", self._open_trends)
         self._trends_link.pack(side="left", padx=(t.SPACE_LG, 0))
+        # The blue button starts the remembered-folder run; a folder that is not on the list is
+        # processed from the Process page, reached here without starting anything.
+        self._process_link = blocks.link_button(self._links, t, "Process a specific folder",
+                                                self._open_process)
+        self._process_link.pack(side="left", padx=(t.SPACE_LG, 0))
 
     # ---- data ----------------------------------------------------------------
     def on_show(self):
@@ -147,6 +174,7 @@ class HomePage(PageBase):
         for what, draw in (("notices", lambda: self._draw_notices(ov)),
                            ("cards", lambda: self._draw_cards(ov)),
                            ("list", lambda: self._draw_others(ov)),
+                           ("other models line", lambda: self._draw_quiet(ov)),
                            ("inactive line", lambda: self._draw_inactive(ov))):
             try:
                 draw()
@@ -171,12 +199,16 @@ class HomePage(PageBase):
     def _place_top(self) -> None:
         """The four top lines, in order, each only while it has text -- all above the heading."""
         lines = (self._run_line, self._legacy_ft_label, self._unreadable_label, self._load_banner)
-        for line in lines:
+        for line in lines + (self._run_link,):
             line.pack_forget()
         for line in lines:
             if line.cget("text"):
                 line.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM),
                           before=self._need_heading)
+        if self._run_line.cget("text"):
+            self._run_line.pack_configure(pady=0)
+            self._run_link.pack(side="top", anchor="w", pady=(0, self.theme.SPACE_SM),
+                                after=self._run_line)
 
     # ---- the cards -------------------------------------------------------------
     def _draw_cards(self, ov: od.Overview) -> None:
@@ -185,7 +217,7 @@ class HomePage(PageBase):
         self._need_caption.configure(text=od.window_caption(ov))
         for w in self._card_widgets:
             w.destroy()
-        self._card_widgets = [_ModelCard(self._cards_frame, t, card, self._open_model)
+        self._card_widgets = [_ModelCard(self._cards_frame, t, card, self._open_card)
                               for card in ov.cards]
         failed = od.card_count(ov) is None
         self._cards_note.configure(
@@ -240,6 +272,26 @@ class HomePage(PageBase):
         for row in ov.others:
             _ListRow(self._others_frame, t, row, self._open_model).pack(side="top", fill="x")
 
+    # ---- the other models on file --------------------------------------------------------
+    def _draw_quiet(self, ov: od.Overview) -> None:
+        if not ov.quiet:
+            # Unknown (the banner names why) or none: no line -- never "(0)" for a crash.
+            self._quiet_toggle.pack_forget()
+            self._quiet_list.pack_forget()
+            return
+        arrow = "▾" if self._quiet_open else "▸"
+        self._quiet_toggle.configure(text=f"Other models on file ({len(ov.quiet):,}) {arrow}")
+        if self._quiet_toggle.winfo_manager() == "":
+            below = self._inactive_toggle if self._inactive_toggle.winfo_manager() else self._links
+            self._quiet_toggle.pack(side="top", anchor="w", pady=(self.theme.SPACE_MD, 0),
+                                    before=below)
+        self._fill_folded(self._quiet_list, ov.quiet, self._quiet_open, after=self._quiet_toggle)
+
+    def _toggle_quiet(self) -> None:
+        self._quiet_open = not self._quiet_open
+        if self._ov is not None:
+            self._draw_quiet(self._ov)
+
     # ---- the inactive line -------------------------------------------------------
     def _draw_inactive(self, ov: od.Overview) -> None:
         if ov.inactive is None or not ov.inactive:
@@ -253,36 +305,47 @@ class HomePage(PageBase):
         if self._inactive_toggle.winfo_manager() == "":
             self._inactive_toggle.pack(side="top", anchor="w", pady=(self.theme.SPACE_MD, 0),
                                        before=self._links)
-        self._fill_inactive(ov)
+        self._fill_folded(self._inactive_list, ov.inactive or {}, self._inactive_open,
+                          after=self._inactive_toggle)
 
     def _toggle_inactive(self) -> None:
         self._inactive_open = not self._inactive_open
         if self._ov is not None:
             self._draw_inactive(self._ov)
 
-    def _fill_inactive(self, ov: od.Overview) -> None:
-        """Expanded in place: every inactive model with its last trim, newest first."""
+    def _fill_folded(self, frame, models, is_open: bool, *, after) -> None:
+        """A folded line's list, expanded in place under its toggle: every model with its last
+        trim, newest first, in INACTIVE_COLUMNS columns."""
         t = self.theme
-        for child in self._inactive_list.winfo_children():
+        for child in frame.winfo_children():
             child.destroy()
-        if not self._inactive_open:
-            self._inactive_list.pack_forget()
+        if not is_open:
+            frame.pack_forget()
             return
-        lines = _inactive_lines(ov.inactive or {})
+        lines = _inactive_lines(models)
         per = -(-len(lines) // INACTIVE_COLUMNS)              # ceiling division
         for i in range(INACTIVE_COLUMNS):
             chunk = lines[i * per:(i + 1) * per]
             if not chunk:
                 break
-            ctk.CTkLabel(self._inactive_list, text="\n".join(chunk), anchor="nw", justify="left",
+            ctk.CTkLabel(frame, text="\n".join(chunk), anchor="nw", justify="left",
                          font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY
                          ).grid(row=0, column=i, sticky="nw", padx=(0, t.SPACE_XL))
-        self._inactive_list.pack(side="top", fill="x", pady=(t.SPACE_XS, 0), before=self._links)
+        frame.pack(side="top", fill="x", pady=(t.SPACE_XS, 0), after=after)
 
     # ---- routing -------------------------------------------------------------------
-    def _open_model(self, model: str) -> None:
-        self.app.set_model_route(model)
+    def _open_card(self, card: od.Card) -> None:
+        """Its Summary, charting the signal its reason names first (final review, 2026-10-02: a
+        fail-rate card opened on whatever the previous model had charted, or on History)."""
+        self.app.set_model_route(card.model, focus_metric=card.metric, tab="summary")
         self.app.show_page("model")
+
+    def _open_model(self, model: str) -> None:
+        self.app.set_model_route(model, tab="summary")
+        self.app.show_page("model")
+
+    def _open_process(self) -> None:
+        self.app.show_page("process")             # opens it -- never starts a run
 
     def _open_findings(self) -> None:
         self.app.show_page("findings")
@@ -331,7 +394,7 @@ class _ModelCard(ctk.CTkFrame):
     """One card: the model, its units, its pass % (large, mono) and "was", twelve monthly bars,
     and the reason it is here, in the fail colour. A click anywhere opens its Model page."""
 
-    def __init__(self, master, theme, card: od.Card, on_open: Callable[[str], None]):
+    def __init__(self, master, theme, card: od.Card, on_open: Callable[[od.Card], None]):
         t = theme
         super().__init__(master, fg_color=t.CARD, border_color=t.BORDER, border_width=1,
                          corner_radius=t.RADIUS_LG)
@@ -344,7 +407,8 @@ class _ModelCard(ctk.CTkFrame):
                      text_color=t.TEXT_PRIMARY).pack(side="left")
         if card.hand_trim:
             blocks.tag(top, t, "hand trim").pack(side="left", padx=(t.SPACE_SM, 0))
-        units = f"{card.units:,} unit" + ("" if card.units == 1 else "s")
+        units = ("— units" if card.units is None             # its read failed: no count
+                 else f"{card.units:,} unit" + ("" if card.units == 1 else "s"))
         if card.final_test:
             units += " · final test"
         ctk.CTkLabel(inner, text=units, anchor="w", font=t.font(t.SIZE_CAPTION),
@@ -366,7 +430,7 @@ class _ModelCard(ctk.CTkFrame):
         self._reason.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
         # `inner` is built and destroyed with this card, so the binding never outlives it.
         blocks.wrap_to_width(self._reason, inner)
-        _bind_click(self, lambda m=card.model: on_open(m))
+        _bind_click(self, lambda c=card: on_open(c))
 
 
 class _MonthBars(tkinter.Canvas):

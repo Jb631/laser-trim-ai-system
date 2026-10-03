@@ -83,6 +83,10 @@ class ProcessPage(PageBase):
         self._start_button = _plain_button(body, t, "Start processing", self._start)
         self._start_button.configure(state="disabled")
         self._start_button.pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
+        # Packed only while it has something to say: why a press started nothing (another job runs).
+        self._busy_note = ctk.CTkLabel(body, text="", font=t.font(t.SIZE_BODY),
+                                       text_color=t.CHECK, anchor="w", justify="left")
+        blocks.wrap_to_width(self._busy_note, body)
         # Packed only while a run is in flight (see _set_running) -- the same cooperative stop
         # the remembered run offers, on the same shared runner.
         self._stop_button = ctk.CTkButton(body, text="Stop", fg_color=t.CARD,
@@ -152,6 +156,20 @@ class ProcessPage(PageBase):
         folder = self._folder_picker.value()
         if not folder:
             return
+        # One long job at a time, as the remembered run refuses one (NewFilesRun._start, 2026-09-14):
+        # two jobs over the plant share make each other slower than either alone. This run used to
+        # start anyway (final review of the redesign, 2026-10-02).
+        busy = getattr(self.app, "active_run_name", lambda: None)()
+        if busy:
+            self._busy_note.configure(
+                text=f"{busy} is running — stop it first, then press this again. Two jobs over "
+                     f"the plant share make each other slower than either one alone.")
+            if self._busy_note.winfo_manager() == "":
+                self._busy_note.pack(side="top", fill="x", pady=(0, self.theme.SPACE_MD),
+                                     after=self._start_button)
+            return
+        self._busy_note.configure(text="")
+        self._busy_note.pack_forget()
         self._cancel = Event()          # fresh per run; never a reused event
         self._set_running(True)
         if self._progress.winfo_manager() == "":

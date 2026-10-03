@@ -44,6 +44,7 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.ml.drift_types import format_metric_value, metric_label
 from laser_trim_analyzer.ml.manager import (
     drift_reference_date, get_drifting_models, get_model_drift_status)
+from laser_trim_analyzer.ml.spc import RECENT_K
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,17 @@ PART_RATES = "the pass rates"
 PART_FT = "the final-test pass rates"     # read only for a card with no trim to show
 PART_ACTIVITY = "which models are inactive"
 
+# The signal a fail-rate card is about: the FOCUS list is a p-chart of each run's linearity fail
+# fraction (ml/spc.compute_focus_list), and a click opens the Model page charting it.
+FOCUS_METRIC = "linearity_fail_fraction"
+
+# What puts a model on a card, said where the cards are read -- the retired FOCUS list said why a
+# model was on it and when it left (final review of the redesign, 2026-10-02). RECENT_K, not a
+# written 5: the sentence can only promise the window the computation uses.
+CARD_RULE = (f"A model is on a card while one of its last {RECENT_K} runs failed more often than "
+             "its own history allows, or a watched signal has moved from its baseline — each "
+             "card says which.")
+
 _GRADED = ("PASS", "WARNING", "FAIL")
 _ACCEPTED = ("PASS", "WARNING")
 
@@ -75,12 +87,15 @@ class Card:
     """One model that needs a look, and the line saying why."""
     model: str
     reason: str
-    units: int = 0                       # graded trims in the 90 days (final tests if final_test)
+    # graded trims in the 90 days (final tests if final_test); None when the read it rests on
+    # failed -- the banner names it, and the card prints no count it does not have
+    units: Optional[int] = 0
     pass_pct: Optional[float] = None     # 0..100; None with nothing graded
     was_pct: Optional[float] = None      # the year before; None with nothing graded then
     months: Months = field(default_factory=list)    # MONTHS values, oldest first
     final_test: bool = False             # no trims to show: these are its final-test numbers
     hand_trim: bool = False
+    metric: Optional[str] = None         # the signal its reason names first: what a click charts
 
 
 @dataclass
@@ -103,6 +118,9 @@ class Overview:
     others: List[Row] = field(default_factory=list)
     # {model: its newest trim file, or None for "no trims on record"}; None = could not be worked out
     inactive: Optional[Dict[str, Optional[datetime]]] = None
+    # {model: its newest trim file} for every OTHER model on file -- trimmed, but on no card, in no
+    # list and not inactive (most: no trim in the 90 days, none in two years); None = unknown
+    quiet: Optional[Dict[str, datetime]] = None
     legacy_ft: int = 0
     unreadable: int = 0
     failed: Dict[str, str] = field(default_factory=dict)    # part -> "ExcType: message"
@@ -189,7 +207,9 @@ def load_overview(db, *, now: Optional[datetime] = None) -> Overview:
 
     # The two card sources, each on its own guard.
     focus = []
-    result, _last = load_focus(db)               # never raises; a crash comes back marked
+    # Never raises; a crash comes back marked. No "last processed" stamp: this page never
+    # prints one, and reading it runs the drift detector over every model a second time.
+    result, _last = load_focus(db, stamp=False)
     error = focus_failed(result)
     if error:
         ov.failed[PART_FOCUS] = error
@@ -230,18 +250,26 @@ def load_overview(db, *, now: Optional[datetime] = None) -> Overview:
         days, final_test = rates.get(model), False
         if not _graded_in_window(days, anchor_day) and _graded_in_window(ft_rates.get(model), anchor_day):
             days, final_test = ft_rates.get(model), True
-        units, pass_pct, was_pct, months = _summarise(days, anchor_day)
-        parts = []
+        # Unknown, not zero, when the read this card's numbers rest on failed: every card's when
+        # the pass rates did, and a card with no trim to show when the final-test read did (its
+        # numbers would have been final test's -- which ones is unknown).
+        unknown = PART_RATES in ov.failed or (
+            PART_FT in ov.failed and not _graded_in_window(rates.get(model), anchor_day))
+        units, pass_pct, was_pct, months = ((None, None, None, []) if unknown
+                                            else _summarise(days, anchor_day))
+        parts, metric = [], None
         if entry is not None:
             parts.append(focus_reason(entry))
+            metric = getattr(getattr(entry, "series", None), "metric", None) or FOCUS_METRIC
         flag = by_flag.get(model)
         if flag is not None:
             parts.append(drift_reason(statuses.get(model), flag.worst_metric))
+            metric = metric or flag.worst_metric
             if pass_pct is not None and pass_pct >= STILL_PASSING:
                 parts.append("still passing")
         ov.cards.append(Card(model=model, reason=" · ".join(parts), units=units, pass_pct=pass_pct,
                              was_pct=was_pct, months=months, final_test=final_test,
-                             hand_trim=model in HAND_TRIM_MODELS))
+                             hand_trim=model in HAND_TRIM_MODELS, metric=metric))
 
     # Everything else: the active models not on a card, busiest first.
     carded = {c.model for c in ov.cards}
@@ -256,7 +284,13 @@ def load_overview(db, *, now: Optional[datetime] = None) -> Overview:
     ov.others.sort(key=lambda r: (-r.units, r.model))
 
     try:
-        ov.inactive = load_activity(db, now=now).inactive()
+        activity = load_activity(db, now=now)
+        ov.inactive = activity.inactive()
+        # Every other model on file, so none is on file and nowhere on the page (F5, James: "i dont
+        # want to hide them"). Unknown without the pass rates: then no model is known to be active.
+        if PART_RATES not in ov.failed:
+            shown = {c.model for c in ov.cards} | {r.model for r in ov.others} | set(ov.inactive)
+            ov.quiet = {m: d for m, d in activity.newest.items() if m not in shown}
     except Exception as exc:
         logger.exception("Overview: could not work out which models are inactive")
         ov.failed[PART_ACTIVITY] = _why(exc)

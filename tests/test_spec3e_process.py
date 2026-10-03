@@ -491,3 +491,25 @@ def test_the_folders_and_summary_lines_wrap_to_their_container(make_app, scale):
             app.withdraw()
     finally:
         ctk.set_widget_scaling(1.0)
+
+
+# ---- one long job at a time, for the one-off folder too (final review, 2026-10-02) -------------
+
+def test_a_specific_folder_never_starts_beside_another_run(make_app, monkeypatch, tmp_path):
+    """The remembered run refuses to start beside another job (2026-09-14: two jobs over the plant
+    share made each other slower than either alone); the one-off folder started anyway."""
+    _no_threads(monkeypatch)
+    app = make_app()
+    page = _process(app)
+    monkeypatch.setattr(app, "active_run_name", lambda: "A re-grade")
+    page._folder_picker.set_value(str(tmp_path))
+    page._start()
+    assert [a for target, a in _NoThread.started if target == page._run] == []
+    assert page._busy_note.winfo_manager() == "pack"
+    assert page._busy_note.cget("text").startswith("A re-grade is running — stop it first")
+    assert page._cancel is None                          # nothing was set going
+    # ...and once nothing else runs, it starts, and the note goes.
+    monkeypatch.setattr(app, "active_run_name", lambda: None)
+    page._start()
+    assert len([a for target, a in _NoThread.started if target == page._run]) == 1
+    assert page._busy_note.winfo_manager() == ""

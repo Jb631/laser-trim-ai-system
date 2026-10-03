@@ -109,6 +109,9 @@ def test_before_the_first_load_it_says_loading_and_no_count(make_app):
     assert page._need_heading.cget("text") == "Models that need a look"
     assert page._need_caption.cget("text") == "Loading…"
     assert page._card_widgets == [] and page._inactive_toggle.winfo_manager() == ""
+    # ...and the list under the cards says so too, never a bare heading over nothing.
+    assert page._others_note.cget("text") == "Loading…"
+    assert page._others_note.winfo_manager() == "pack"
 
 
 # ---- "N models need a look" and the cards ------------------------------------------------------
@@ -148,7 +151,8 @@ def test_a_final_test_card_and_a_hand_trim_card_say_so(make_app, monkeypatch):
 
 def test_a_click_anywhere_on_a_card_opens_its_model(make_app, monkeypatch):
     app = make_app()
-    page = _show(app, monkeypatch, _ov(cards=[_card("7000"), _card("7001")]))
+    page = _show(app, monkeypatch, _ov(cards=[_card("7000", metric="linearity_fail_fraction"),
+                                              _card("7001", metric="untrimmed_resistance")]))
     calls = _routes(app, monkeypatch)
     try:
         app.attributes("-alpha", 0.0)
@@ -164,8 +168,13 @@ def test_a_click_anywhere_on_a_card_opens_its_model(make_app, monkeypatch):
         app.update()
     finally:
         app.withdraw()
-    assert calls == [("route", ("7001",), {}), ("show", "model"),
-                     ("route", ("7000",), {}), ("show", "model")]
+    # On Summary, charting the signal the card's reason names (final review, 2026-10-02: a
+    # fail-rate card opened on whatever the previous model charted, or on its History tab).
+    assert calls == [
+        ("route", ("7001",), {"focus_metric": "untrimmed_resistance", "tab": "summary"}),
+        ("show", "model"),
+        ("route", ("7000",), {"focus_metric": "linearity_fail_fraction", "tab": "summary"}),
+        ("show", "model")]
 
 
 @pytest.mark.parametrize("size,columns", [((1400, 900), 4), ((1280, 720), 4), ((960, 640), 3)])
@@ -264,7 +273,7 @@ def test_a_row_click_opens_its_model(make_app, monkeypatch):
         app.update()
     finally:
         app.withdraw()
-    assert calls == [("route", ("7100",), {}), ("show", "model")]
+    assert calls == [("route", ("7100",), {"tab": "summary"}), ("show", "model")]
 
 
 def test_failed_pass_rates_never_read_as_an_empty_list(make_app, monkeypatch):
@@ -527,3 +536,85 @@ def test_nothing_on_a_full_overview_is_cut(make_app, monkeypatch, scale):
     finally:
         ctk.set_widget_scaling(1.0)
         ctk.set_window_scaling(1.0)
+
+
+# ---- the final review of the redesign (2026-10-02) ---------------------------------------------
+
+def test_a_card_whose_count_could_not_be_read_prints_none(make_app, monkeypatch):
+    """Never "0 units" over a read that failed: the banner names the failure; the card says
+    nothing it does not know."""
+    page = _show(make_app(), monkeypatch, _ov(
+        cards=[_card("7000", units=None, pass_pct=None, was_pct=None)],
+        failed={od.PART_RATES: "RuntimeError: invented rates crash"}))
+    (card,) = page._card_widgets
+    texts = _labels(card)
+    assert texts[:2] == ["7000", "— units"]
+    assert not any(t[:1].isdigit() and "unit" in t for t in texts)
+
+
+def test_the_caption_says_what_puts_a_model_on_a_card(make_app, monkeypatch):
+    """The retired FOCUS list said why a model was on it and when it left; the cards did not."""
+    from laser_trim_analyzer.ml.spc import RECENT_K
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card()]))
+    rule = page._need_rule.cget("text")
+    assert rule == od.CARD_RULE
+    assert f"last {RECENT_K} runs" in rule and "watched signal" in rule
+    order = page._body.pack_slaves()
+    assert order.index(page._need_caption) < order.index(page._need_rule) < order.index(
+        page._cards_frame)
+
+
+def test_other_models_on_file_are_one_collapsed_line_above_the_inactive_one(make_app, monkeypatch):
+    quiet = {"Q1": datetime(2025, 6, 2), "Q2": datetime(2025, 11, 3)}
+    page = _show(make_app(), monkeypatch, _ov(others=[_row()], quiet=quiet,
+                                              inactive={"OLD": datetime(2016, 3, 9)}))
+    toggle = page._quiet_toggle
+    assert toggle.winfo_manager() == "pack" and toggle.cget("text") == "Other models on file (2) ▸"
+    assert page._quiet_list.winfo_manager() == ""
+    toggle.invoke()
+    assert toggle.cget("text") == "Other models on file (2) ▾"
+    assert page._quiet_list.winfo_manager() == "pack"
+    lines = "\n".join(_labels(page._quiet_list)).split("\n")
+    assert lines == ["Q2 · last trimmed Nov 2025", "Q1 · last trimmed Jun 2025"]
+    order = page._body.pack_slaves()
+    assert (order.index(page._others_frame) < order.index(toggle) < order.index(page._quiet_list)
+            < order.index(page._inactive_toggle) < order.index(page._links))
+    toggle.invoke()
+    assert toggle.cget("text").endswith("▸") and page._quiet_list.winfo_manager() == ""
+
+
+@pytest.mark.parametrize("quiet", [None, {}])
+def test_with_no_other_models_or_none_known_there_is_no_line(make_app, monkeypatch, quiet):
+    page = _show(make_app(), monkeypatch, _ov(others=[_row()], quiet=quiet))
+    assert page._quiet_toggle.winfo_manager() == ""
+
+
+def test_a_specific_folder_is_one_quiet_link_away_never_behind_a_run(make_app, monkeypatch):
+    """The blue button starts the remembered run. Reaching the one-off folder picker through it
+    started a scan of every remembered folder first (final review, 2026-10-02)."""
+    app = make_app()
+    page = _home(app)
+    started = []
+    monkeypatch.setattr(app.page_container.get_page("process"), "start_new_files",
+                        lambda: started.append(1))
+    assert page._process_link.cget("text") == "Process a specific folder"
+    assert page._process_link.master is page._links
+    page._process_link.invoke()
+    assert app.page_container.current_page == "process" and started == []
+
+
+def test_the_last_runs_line_opens_its_tally_without_starting_a_run(make_app, monkeypatch):
+    """A run that ended with failed files lands here; its tally is on the Process page. The blue
+    button would start a new run and wipe it -- the line itself opens the page."""
+    app = make_app()
+    page = _home(app)
+    started = []
+    monkeypatch.setattr(app.page_container.get_page("process"), "start_new_files",
+                        lambda: started.append(1))
+    assert page._run_link.winfo_manager() == ""            # no run yet: nothing to open
+    page.set_run_summary("2 folders · 14 new files · 1 folder failed", ok=False)
+    assert page._run_link.cget("text") == "See the run ›"
+    order = page._body.pack_slaves()
+    assert order.index(page._run_line) + 1 == order.index(page._run_link)    # right under it
+    page._run_link.invoke()
+    assert app.page_container.current_page == "process" and started == []

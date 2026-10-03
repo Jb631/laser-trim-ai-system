@@ -37,7 +37,7 @@ def focus_failed(result) -> Optional[str]:
     return result.error if isinstance(result, FocusLoadFailed) else None
 
 
-def load_focus(db, models: Optional[Sequence] = None
+def load_focus(db, models: Optional[Sequence] = None, *, stamp: bool = True
                ) -> Tuple[FocusResult, Optional[datetime]]:
     """(FocusResult, last_processed). Never raises.
 
@@ -46,7 +46,9 @@ def load_focus(db, models: Optional[Sequence] = None
     as "all models within tolerance".
 
     `models` is a caller's already-loaded model list; pass it to avoid a second
-    inventory query. Without it the stamp is read straight from the model inventory.
+    inventory query. Without it the stamp is read straight from the model inventory -- which runs
+    the drift detector over every model again, so a caller that never prints the stamp (the
+    Overview) passes stamp=False and gets None.
     """
     try:
         result = compute_focus_list(db)
@@ -54,7 +56,7 @@ def load_focus(db, models: Optional[Sequence] = None
         logger.exception("FOCUS computation failed")
         result = FocusLoadFailed(focus=[], chronic=[], anchor=None,
                                  error=f"{type(exc).__name__}: {exc}")
-    return result, _last_processed(db, models)
+    return result, (_last_processed(db, models) if stamp else None)
 
 
 def _last_processed(db, models: Optional[Sequence]) -> Optional[datetime]:

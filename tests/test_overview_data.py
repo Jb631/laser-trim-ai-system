@@ -80,7 +80,7 @@ def _fake_sources(monkeypatch, *, focus=(), flags=(), statuses=None):
     """Stand in for the two card sources: the FOCUS list (through the one focus loader) and the
     drift detector (its flags, and each flagged model's per-metric status)."""
     statuses = statuses or {}
-    monkeypatch.setattr(od, "load_focus", lambda db, models=None: (
+    monkeypatch.setattr(od, "load_focus", lambda db, *a, **k: (
         FocusResult(focus=list(focus), chronic=[], anchor=None), None))
     monkeypatch.setattr(od, "get_drifting_models", lambda db, *a, **k: list(flags))
     monkeypatch.setattr(od, "get_model_drift_status",
@@ -349,11 +349,14 @@ def test_a_part_that_fails_is_named_and_the_rest_still_loads(tmp_path, monkeypat
     # the rest, never dropped (the banner says the list it would have been on could not load).
     if target == "rates":
         assert ov.others == [] and all(c.pass_pct is None for c in ov.cards)
+        assert all(c.units is None for c in ov.cards)     # a count it does not have: none
         assert ov.anchor is None
     else:
         expected = {"focus": ["F1", "PLAIN"], "drift": ["D1", "PLAIN"]}.get(target, ["PLAIN"])
         assert [r.model for r in ov.others] == expected
     assert (ov.inactive is None) == (target == "activity")
+    # ...and with no pass rates the page cannot tell an active model from a quiet one: unknown.
+    assert (ov.quiet is None) == (target in ("activity", "rates"))
 
 
 def test_a_database_that_cannot_answer_anything_still_returns_an_overview():
@@ -409,6 +412,7 @@ def test_a_failed_final_test_read_is_named_on_its_own_and_spoils_nothing_else(tm
     assert ov.failed == {od.PART_FT: "RuntimeError: invented crash"}
     (card,) = ov.cards
     assert card.pass_pct is None and card.final_test is False
+    assert card.units is None                        # never "0 units" over a read that failed
     assert [r.model for r in ov.others] == ["OTHER"] and ov.anchor == ANCHOR
     assert od.card_count(ov) == 1                    # the cards themselves are all known
 
@@ -447,3 +451,58 @@ def test_a_final_test_after_the_newest_trim_counts_on_neither_screen(tmp_path, m
     facts = header_facts(db, "FTONLY", now=ANCHOR + timedelta(days=1))
     assert card.final_test is True and facts["basis"] == "final test"
     assert (facts["units"], facts["passed"]) == (card.units, 8) == (10, 8)
+
+
+# ---- the final review of the redesign (2026-10-02) ---------------------------------------------
+
+def _focus_entry(model, p_base, p_recent, metric="linearity_fail_fraction"):
+    """A FOCUS row with its series, as compute_focus_list hands one over."""
+    return SimpleNamespace(model=model, p_base=p_base, p_recent=p_recent,
+                           series=SimpleNamespace(metric=metric))
+
+
+def test_a_card_names_the_signal_its_click_should_chart(tmp_path, monkeypatch):
+    """A click opened the Model page charting whatever the previous model charted. The card now
+    names its signal: a fail-rate card its fail rate (the FOCUS series' own metric -- also on a
+    model on both lists, whose reason reads the fail rate first), a detector card its worst."""
+    db = _db(tmp_path)
+    _trims(db, "ANY", ANCHOR, passes=1)
+    _fake_sources(
+        monkeypatch, focus=[_focus_entry("F1", 0.04, 0.12), _focus_entry("BOTH", 0.1, 0.4)],
+        flags=[_flag("BOTH", DriftTier.DRIFT, 1.5),
+               _flag("RES", DriftTier.DRIFT, 1.0, metric="untrimmed_resistance")],
+        statuses={"BOTH": _status("BOTH", "untrimmed_error_max", 0.1, 0.2),
+                  "RES": _status("RES", "untrimmed_resistance", 4693.0, 5897.0)})
+    metrics = {c.model: c.metric for c in od.load_overview(db).cards}
+    assert metrics == {"F1": "linearity_fail_fraction", "BOTH": "linearity_fail_fraction",
+                       "RES": "untrimmed_resistance"}
+
+
+def test_every_model_on_file_is_somewhere_on_the_overview(tmp_path):
+    """A model trimmed before the 90 days but within two years was on no card, in no list and not
+    inactive: on file, and nowhere on the page. It is counted in a collapsed line of its own
+    now, with its last trim, as the inactive ones are (F5, James: "i dont want to hide them")."""
+    from test_model_activity import NEWEST, _file
+    db = _db(tmp_path)
+    _file(db, "LIVE", NEWEST)
+    _file(db, "QUIET", NEWEST - timedelta(days=200))
+    _file(db, "OLD", NEWEST - timedelta(days=900))
+    ov = od.load_overview(db)
+    assert [r.model for r in ov.others] == ["LIVE"]
+    assert ov.quiet == {"QUIET": NEWEST - timedelta(days=200)}
+    assert set(ov.inactive) == {"OLD"}
+
+
+def test_the_overview_never_pays_for_a_last_processed_stamp_it_does_not_show(tmp_path, monkeypatch):
+    """load_focus's "last processed" stamp walks every model (list_known_models runs the drift
+    detector over all of them again); the Overview never prints it."""
+    import laser_trim_analyzer.gui.v6.focus_data as fd
+    import laser_trim_analyzer.ml.manager as mlm
+    db = _db(tmp_path)
+    _trims(db, "ANY", ANCHOR, passes=1)
+    calls = []
+    monkeypatch.setattr(fd, "compute_focus_list",
+                        lambda db: FocusResult(focus=[], chronic=[], anchor=None))
+    monkeypatch.setattr(mlm, "list_known_models", lambda *a, **k: calls.append(1) or [])
+    ov = od.load_overview(db)
+    assert calls == [] and ov.failed == {}

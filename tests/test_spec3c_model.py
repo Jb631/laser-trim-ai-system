@@ -1723,7 +1723,7 @@ def test_existing_model_page_content_is_still_there(make_app):
     """Nothing currently reachable may be lost (app-shape spec §2) -- layout C moves it one level
     down: every part is still built, each on the tab its content belongs to."""
     app, page = _stats_app(make_app)
-    homes = {"Summary": ("_load_banner", "_spec_banner", "_headline", "_chart_toggle",
+    homes = {"Summary": ("_spec_banner", "_headline", "_chart_toggle",
                          "_focus_chart", "_also_section", "_worth_section", "_findings_tab",
                          "_drift_tab"),
              "Units": ("_stats_table", "_units_tab", "_smoothness_tab"),
@@ -1733,6 +1733,8 @@ def test_existing_model_page_content_is_still_there(make_app):
         for attr in attrs:
             widget = getattr(page, attr)
             assert str(widget).startswith(str(page._tabs.tab(tab)) + "."), (attr, tab)
+    # The load banner names a failure on ANY tab, so it sits above them, on none of them.
+    assert page._load_banner.master is page._body
     # The old _verdict label is gone (Task 2); its text is Summary's headline now (layout C).
     assert not hasattr(page, "_verdict")
 
@@ -2105,8 +2107,10 @@ def test_a_failed_findings_load_banners_never_the_quiet_line(make_app, monkeypat
 def test_one_teal_button_on_the_model_page_whichever_tab_is_open(make_app):
     """I4 (final review, 2026-09-24): with the Units tab open the page drew THREE teal-filled
     buttons -- the header's "Export model to Excel" plus the tab's own "Export to Excel" and
-    "Search". At most one per screen: the header's stays teal, the tab's are outlined. Layout C
-    adds two folds to Summary; checked folded and unfolded."""
+    "Search". At most one per screen. Since the Graphite top bar (2026-10-02) that one is the
+    bar's "Process new files", always on screen, so the page itself draws none (its final review
+    found two blue buttons over the Model page). Layout C adds two folds to Summary; checked
+    folded and unfolded."""
     import customtkinter as ctk
     app, page = _worth_app(make_app)
     t = page.theme
@@ -2118,7 +2122,10 @@ def test_one_teal_button_on_the_model_page_whichever_tab_is_open(make_app):
             app.update_idletasks()
             teal = [w.cget("text") for w in _all_labels(page)
                     if isinstance(w, ctk.CTkButton) and w.cget("fg_color") == t.ACCENT]
-            assert teal == ["Export model to Excel"], f"{name}, unfolded={unfolded}: {teal}"
+            assert teal == [], f"{name}, unfolded={unfolded}: {teal}"
+    bar = [w.cget("text") for w in _all_labels(app.topbar)
+           if isinstance(w, ctk.CTkButton) and w.cget("fg_color") == t.ACCENT]
+    assert bar == ["Process new files"]
 
 
 def test_spec_and_load_banners_are_check_tone_blocks_hidden_when_quiet(make_app):
@@ -2529,12 +2536,18 @@ def test_a_model_with_nothing_in_the_last_90_days_says_so_and_where_it_last_ran(
 
 
 def test_a_pass_rate_short_of_every_unit_never_rounds_up_to_100(tmp_path):
-    """Linearity is zero-tolerance: 299 of 300 is not "100%"."""
+    """Linearity is zero-tolerance: 299 of 300 is not "100%" -- and 1 of 300 is not "0%". The
+    header prints a rate the way its Overview card does (overview_data.pct_text): it read 99.7%
+    and 0% where the card read 99% and 1% (final review, 2026-10-02)."""
+    from laser_trim_analyzer.gui.v6 import overview_data as od
     from laser_trim_analyzer.gui.v6.pages import model_page as mp
     facts = {"basis": "trim", "units": 300, "passed": 299, "lasers": [], "lasers_in_window": True}
-    assert mp.header_texts(facts)[0] == "99.7%"
+    assert mp.header_texts(facts)[0] == "99%"
     assert mp.header_texts(dict(facts, passed=300))[0] == "100%"
     assert mp.header_texts(dict(facts, passed=263))[0] == "88%"
+    assert mp.header_texts(dict(facts, passed=1))[0] == "1%"
+    for passed in (0, 1, 2, 150, 263, 298, 299, 300):
+        assert mp.header_texts(dict(facts, passed=passed))[0] == od.pct_text(100.0 * passed / 300)
 
 
 @pytest.mark.parametrize("flagged, focus, inactive, word", [
@@ -2726,3 +2739,46 @@ def test_each_tab_holds_its_parts_in_order(make_app):
     assert str(page._units_scroll).startswith(str(page._tabs.tab("Units")) + ".")
     assert str(page._ft_scroll).startswith(str(page._tabs.tab("Final test")) + ".")
     assert page._history_tab.master is page._tabs.tab("History")
+
+
+
+# ---- the final review of the redesign (2026-10-02) ---------------------------------------------
+
+def _crash(*_a, **_k):
+    raise RuntimeError("invented: database is locked")
+
+
+def test_a_failed_load_is_named_above_the_tabs_whichever_tab_is_open(make_app, monkeypatch):
+    """Layout C put the load banner at the top of Summary. With Final test open, a crashed
+    final-test load read "No final-test records for this model", and the banner naming the crash
+    sat on a tab nobody was looking at. It sits above the tab view now, on every tab."""
+    app = make_app()
+    _seed(app.db, "HOT")
+    page = app.page_container.get_page("model")
+    monkeypatch.setattr(page, "_load_ft_units", _crash)
+    page._tabs.set("Final test")
+    page = _open_and_load(app, "HOT")
+    assert page._tabs.get() == "Final test"
+    banner = page._load_banner
+    assert banner.winfo_manager() == "pack" and "final-test units" in banner.cget("text")
+    order = page._body.pack_slaves()
+    assert order.index(page._header_line) < order.index(banner) < order.index(page._tabs)
+
+
+def test_a_model_on_the_drifting_now_list_charts_its_fail_rate(make_app):
+    """No drift detector names a worst signal for it, so the chart was whatever the PREVIOUS
+    model charted -- under a headline about its fail rate. A model on the "Drifting now" list
+    charts the fail rate that put it there; a pick of the reader's own still wins."""
+    app = make_app()
+    _seed(app.db, "HOT", fails_last=12)
+    page = app.page_container.get_page("model")
+    page._current_metric = "untrimmed_resistance"          # what the previous model charted
+    page = _open_and_load(app, "HOT")
+    assert page._current_metric == "linearity_fail_fraction"
+    app.show_page("settings")                               # away, then back as a click comes
+    app.set_model_route("HOT", focus_metric="untrimmed_resistance")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    assert page._current_metric == "untrimmed_resistance"

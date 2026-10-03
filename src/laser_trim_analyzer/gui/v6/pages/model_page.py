@@ -84,9 +84,10 @@ TAB_NAMES = (TAB_SUMMARY, TAB_UNITS, TAB_FINAL_TEST, TAB_HISTORY)
 # Where `set_model_route(model, tab=...)` lands: {route word: (tab, the part to open or scroll to)}.
 # Route words are plain and compared case-insensitively. Seven are the names of the tabs this page
 # had before layout C, and each lands where its content went -- the brief's map: findings -> Summary
-# at "Worth changing", its fold open; drift -> Summary with "All 12 signals" open. The callers today
-# (findings_page.py, home_page.py) both pass "findings"; tests/test_spec3c_model.py greps the source
-# for every tab= route and fails on one this map does not know.
+# at "Worth changing", its fold open; drift -> Summary with "All 12 signals" open. The callers today:
+# findings_page.py passes "findings", the Overview (home_page.py) "summary";
+# tests/test_spec3c_model.py greps the source for every tab= route and fails on one this map does
+# not know.
 _ROUTES: Dict[str, Tuple[str, Optional[str]]] = {
     "summary": (TAB_SUMMARY, None),
     "findings": (TAB_SUMMARY, "findings"),
@@ -127,6 +128,7 @@ _CLAUSE = "  ·  "
 # newest file's day (overview_data.WINDOW_DAYS) -- counted to the minute, a file late on the day
 # before them counted here and not on the card (caught at the 2026-10-02 merge).
 from laser_trim_analyzer.gui.v6.overview_data import WINDOW_DAYS as HEADER_DAYS  # noqa: E402
+from laser_trim_analyzer.gui.v6.overview_data import pct_text  # noqa: E402
 _GRADED = (StatusType.PASS, StatusType.WARNING, StatusType.FAIL)
 
 
@@ -195,14 +197,6 @@ def header_facts(db, model: str, *, now: Optional[datetime] = None) -> dict:
     return out
 
 
-def _pct_text(passed: int, units: int) -> str:
-    """The pass rate as the header shows it: whole percent -- but never "100%" while a unit
-    failed (linearity is zero-tolerance; 299 of 300 reads "99.7%")."""
-    pct = 100.0 * passed / units
-    text = f"{pct:.0f}%"
-    return f"{pct:.1f}%" if (text == "100%" and passed < units) else text
-
-
 def header_texts(facts: Optional[dict]) -> Tuple[str, str]:
     """(the pass % in large type, the words after it) for the header line. ("", "") when the load
     failed: the page's banner names it, and no number stands in for one."""
@@ -215,7 +209,9 @@ def header_texts(facts: Optional[dict]) -> Tuple[str, str]:
                  f"{units:,} unit{'s' if units != 1 else ''} in the last {HEADER_DAYS} days"]
         if lasers:
             parts.append(lasers if facts.get("lasers_in_window") else f"last ran on {lasers}")
-        return _pct_text(facts["passed"], units), " · ".join(parts)
+        # The Overview card's own words for the same number (overview_data.pct_text): whole
+        # percent, never all or nothing -- 299 of 300 is "99%", 1 of 300 "1%" (zero tolerance).
+        return pct_text(100.0 * facts["passed"] / units), " · ".join(parts)
     parts = [f"No units in the last {HEADER_DAYS} days"]
     if lasers:
         parts.append(f"last ran on {lasers}")
@@ -346,13 +342,19 @@ class ModelPage(PageBase):
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     @staticmethod
-    def _resolve_focus_metric(status, user_picked, current):
+    def _resolve_focus_metric(status, user_picked, current, focus_entry=None):
         """Pick the metric to focus: the user's explicit pick wins; otherwise the
-        model's worst flagged metric; otherwise the current fallback."""
+        model's worst flagged metric; otherwise, for a model on the "Drifting now"
+        list, the fail rate that put it there (`focus_entry`, its row -- final review
+        of the redesign, 2026-10-02: no signal flagged, it charted whatever the
+        PREVIOUS model had); otherwise the current fallback."""
         if user_picked:
             return current
         if status is not None and status.worst_metric and status.worst_metric in WATCHED_METRICS:
             return status.worst_metric
+        metric = getattr(getattr(focus_entry, "series", None), "metric", None)
+        if metric in WATCHED_METRICS:
+            return metric
         return current
 
     # ---- header (built INTO the actions parent — no reparenting) ----
@@ -404,8 +406,10 @@ class ModelPage(PageBase):
         ctk.CTkButton(parent, text="Copy summary", command=self._on_copy_summary, fg_color=t.CARD,
                       hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM)\
             .pack(side="left", padx=(0, t.SPACE_SM))
-        ctk.CTkButton(parent, text="Export model to Excel", command=self._on_export, fg_color=t.ACCENT,
-                      hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM)\
+        # Card-coloured, like "Copy summary": the ONE blue button on screen is the top bar's
+        # "Process new files" (Graphite, 2026-10-02; its final review found two over this page).
+        ctk.CTkButton(parent, text="Export model to Excel", command=self._on_export, fg_color=t.CARD,
+                      hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM)\
             .pack(side="left")
 
     def build_content(self, parent):
@@ -419,6 +423,11 @@ class ModelPage(PageBase):
         # window (render_pages.py --audit, 6607's Smoothness tab at 1280x720).
         self._body = ctk.CTkFrame(parent, fg_color="transparent")
         self._build_header_line(self._body)
+        # A failed loader is named ABOVE the tabs, so it is seen whichever tab is open. On Summary
+        # (layout C's first cut) a crashed final-test load read "No final-test records for this
+        # model" on the Final test tab while its banner sat on a tab nobody was looking at (final
+        # review, 2026-10-02). Packed only when something failed (_set_load_banner).
+        self._load_banner = blocks.banner(self._body, t, "", wrap_to=self._body)
         self._tabs = ThemedTabView(self._body, theme=t)
         self._tabs.pack(side="top", fill="both", expand=True)
         # add() order is the tab order: Summary, Units, Final test, History.
@@ -480,10 +489,10 @@ class ModelPage(PageBase):
 
     def _build_summary(self, s) -> None:
         t = self.theme
-        # Banners at the top of Summary (design doc item 2): a failed loader, and a trim-vs-final-
-        # test spec mismatch -- check tone, packed only when they have something to say, directly
-        # above the headline (_set_load_banner / _set_spec_banner pack them before=_headline_box).
-        self._load_banner = blocks.banner(s, t, "", wrap_to=s)
+        # The trim-vs-final-test spec mismatch banner at the top of Summary (design doc item 2) --
+        # check tone, packed only when it has something to say, directly above the headline it
+        # qualifies (_set_spec_banner packs it before=_headline_box). A failed loader's banner is
+        # above the tabs (build_content).
         self._spec_banner = blocks.banner(s, t, "", wrap_to=s)
         # (1) The verdict in ONE sentence -- the first clause of _compute_verdict's line -- and the
         # evidence clauses after it, quieter, beneath. `s` lives as long as the page, so each
@@ -721,9 +730,21 @@ class ModelPage(PageBase):
             # record instead of empty windows.
             cutoff = self._window_cutoff(model)
             requal = None
+            on_focus, focus_entry = None, None   # None: the "Drifting now" list failed to load
+            try:
+                # The list itself, not a re-derivation of its rule: the header's "Drifting" must
+                # agree with the Overview's cards, which are built from it. First, because it can
+                # choose the chart (a model on it, with no signal flagged, charts its fail rate).
+                focus_entry = next((e for e in compute_focus_list(self.app.db).focus
+                                    if e.model == model), None)
+                on_focus = focus_entry is not None
+            except Exception:
+                logger.exception("Model %s: drifting-now list failed", model)
+                failed.append("drifting-now list")
             try:
                 status = get_model_drift_status(self.app.db, model)
-                chosen = self._resolve_focus_metric(status, self._user_picked_metric, metric)
+                chosen = self._resolve_focus_metric(status, self._user_picked_metric, metric,
+                                                    focus_entry)
                 requal = self.app.db.get_baseline_requalification(model)
             except Exception:
                 logger.exception("Model %s: drift status failed", model)
@@ -782,16 +803,6 @@ class ModelPage(PageBase):
             except Exception:
                 logger.exception("Model %s: final-test units failed", model)
                 failed.append("final-test units")
-            on_focus, focus_entry = None, None   # None: the "Drifting now" list failed to load
-            try:
-                # The list itself, not a re-derivation of its rule: the header's "Drifting" must
-                # agree with the Overview's cards, which are built from it.
-                focus_entry = next((e for e in compute_focus_list(self.app.db).focus
-                                    if e.model == model), None)
-                on_focus = focus_entry is not None
-            except Exception:
-                logger.exception("Model %s: drifting-now list failed", model)
-                failed.append("drifting-now list")
             verdict = None
             try:
                 verdict = self._compute_verdict(model, cutoff, status, recent, focus=focus_entry)
@@ -1028,10 +1039,9 @@ class ModelPage(PageBase):
         see the module docstring / code review 2026-09-20). `failed` is a
         plain list built on the worker thread; this method only reads it.
 
-        At the top of Summary (layout C), `before=self._headline_box` -- same
-        anchor as `_set_spec_banner` and the same reason: pack() would
-        otherwise re-append the label at the foot of the tab every time it is
-        shown again.
+        Above the tab view, `before=self._tabs`, so it is seen whichever tab is
+        open -- and pack() re-inserts it there, never at the page's foot, every
+        time it is shown again.
         """
         if not failed:
             self._load_banner.pack_forget()
@@ -1042,7 +1052,7 @@ class ModelPage(PageBase):
                   "error, not an absence of data. The log has the details."))
         self._load_banner.pack(side="top", fill="x",
                                pady=(0, self.theme.SPACE_SM),
-                               before=self._headline_box)
+                               before=self._tabs)
 
     def _set_findings_section(self, findings_data, failed, *, inactive=None) -> None:
         """"Worth changing on this model" (design doc item 3; Summary's, since layout C): the

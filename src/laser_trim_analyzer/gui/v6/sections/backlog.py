@@ -4,7 +4,7 @@ each model's current price (James, 2026-09-20). Replaces the old separate
 and docs/decisions/2026-09-ledger-decisions.md (the E1 brief) for the full design.
 
 `mps_models` stays the ONE list every other screen reads (dashboard cost
-priorities, triage, trends, compare, analyze, database cleanup...). This section
+priorities, trends, compare, analyze, database cleanup...). This section
 only maintains it, as sorted(backlog_models | pinned_models), through
 rebuild_active_list() below — called from both the upload path and the pin-save
 path so the two can never drift apart.
@@ -209,7 +209,8 @@ def build_backlog_section(parent, theme: ThemeManager, app) -> None:
         entry.pack(side="left")
         return entry
 
-    recent_days_entry = _entry_row("Recent days (1–365)", cfg.recent_days)
+    # No "Recent days" box any more: it set the window of Triage's "Active" scope, and nothing
+    # has read it since Triage was retired (2026-10-02). The setting stays in config.yaml.
     cost_ratio_entry = _entry_row("Cost ratio (0.01–1.0)", cfg.cost_ratio)
 
     save_status = ctk.CTkLabel(parent, text="", font=t.font(t.SIZE_CAPTION),
@@ -226,10 +227,6 @@ def build_backlog_section(parent, theme: ThemeManager, app) -> None:
 
     def _save():
         cfg.pinned_models = _pinned_from_box()
-        try:
-            cfg.recent_days = max(1, min(365, int(recent_days_entry.get())))
-        except (ValueError, TypeError):
-            pass
         try:
             cfg.cost_ratio = max(0.01, min(1.0, float(cost_ratio_entry.get())))
         except (ValueError, TypeError):

@@ -4575,6 +4575,11 @@ def check_usability_glosses() -> None:
          "Fail rate ", "each Overview card says why it is there (the fail-rate move)"),
         ("src/laser_trim_analyzer/gui/v6/overview_data.py",
          "still passing", "a card whose signal moved on a passing model says it is still passing"),
+        # ...and the rule itself, which the retired list stated and the first cut of the cards did
+        # not (final review of the redesign, 2026-10-02): what puts a model on one, so when it leaves.
+        ("src/laser_trim_analyzer/gui/v6/overview_data.py",
+         "runs failed more often than its own history allows",
+         "the Overview says what puts a model on a card"),
         # 2026-09-24 (facelift step 2, T2): the three-sentence σ key moved to the Drift metrics
         # tab, beside the numbers it explains. Layout C (2026-10-02) removed the model page's
         # one-line key with the pills it explained; the numbers left on Summary are "Also
@@ -4595,6 +4600,10 @@ def check_usability_glosses() -> None:
          "Inactive models", "the Overview labels the inactive models, never hides them"),
         ("src/laser_trim_analyzer/gui/v6/pages/home_page.py",
          " · last trimmed ", "each inactive model says when it was last trimmed"),
+        # Every model on file is somewhere on the page: trimmed, but on no card, in no list and
+        # not inactive -- "Other models on file" (final review, 2026-10-02).
+        ("src/laser_trim_analyzer/gui/v6/pages/home_page.py",
+         "Other models on file", "the Overview lists every other model on file, never hides one"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
          '"Sigma gradient"', "units table headers are full words"),
         ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
@@ -4630,9 +4639,12 @@ def check_usability_glosses() -> None:
         ("src/laser_trim_analyzer/gui/v6/pages/home_page.py",
          "Everything else", "the Overview marks the data zone"),
         # The pills that grouped process vs outcomes are gone (layout C); the drift table -- "All
-        # 12 signals" -- draws the same three groups, from METRIC_GROUPS.
+        # 12 signals" -- draws the same three groups, from METRIC_GROUPS. The needle is the loop
+        # that DRAWS a header per group: the bare name also matched the module's import line, so
+        # the check passed with the headers gone (final review, 2026-10-02).
         ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
-         "METRIC_GROUPS", "signals grouped process vs outcomes (the drift table)"),
+         "for group_title, group_gloss, metrics in METRIC_GROUPS",
+         "signals grouped process vs outcomes (the drift table)"),
         ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
          "format_metric_value", "drift tab renders fail rates as percent"),
         ("src/laser_trim_analyzer/gui/v6/sections/alert_thresholds.py",
@@ -4788,7 +4800,7 @@ _GLOSS_KINDS = {
     '"newest file, any kind"': ("exact", "newest file, any kind"),
     "Summary": ("exact", None),
     "Final test": ("exact", None),
-    "METRIC_GROUPS": ("code", None),
+    "for group_title, group_gloss, metrics in METRIC_GROUPS": ("code", None),
     "format_metric_value": ("code", None),
     "on_unit_click": ("code", None),
     "Include the PRE-TRIM trace": ("code", None),

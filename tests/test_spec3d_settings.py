@@ -266,3 +266,24 @@ def test_should_offer_first_startup_train_is_data_gated(make_app):
                    overall_status=StatusType.PASS, has_multi_tracks=False, processing_time=0.1))
         s.commit()
     assert app._should_offer_first_startup_train() is True      # data, no metric_state yet
+
+
+
+def test_the_backlog_card_has_no_recent_days_box_nothing_reads_it(make_app):
+    """"Recent days" set the window of Triage's "Active" scope; Triage is retired (2026-10-02) and
+    nothing else reads the setting, so a box that changes nothing is gone (final review)."""
+    import customtkinter as ctk
+
+    def _texts(widget):
+        out = []
+        for c in widget.winfo_children():
+            if isinstance(c, ctk.CTkLabel):
+                out.append(c.cget("text"))
+            out.extend(_texts(c))
+        return out
+
+    app = make_app()
+    page = app.page_container.get_page("settings")
+    texts = _texts(page)                       # every card's body is built, open or folded
+    assert "Cost ratio (0.01–1.0)" in texts                  # the card's other box is still there
+    assert not any("Recent days" in t for t in texts)

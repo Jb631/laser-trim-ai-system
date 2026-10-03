@@ -592,21 +592,30 @@ def overview_loaded(page) -> bool:
 
 
 def _walk_overview_expanded(app, size_label: str, clipped: List[ClippedWidget]) -> None:
-    """The Overview with "Inactive models (N) ▸" open -- every inactive model's "last trimmed Mon
-    YYYY" drawn in full (F5; Triage's "All models" scope carried them until it was retired). Closed
-    again afterwards, so every other pass audits what it always did."""
+    """The Overview with its folded lines open -- "Other models on file (N) ▸" and "Inactive models
+    (N) ▸", every model's "last trimmed Mon YYYY" drawn in full (F5; Triage's "All models" scope
+    carried them until it was retired). Closed again afterwards, so every other pass audits what it
+    always did."""
     app.show_page("home")
     page = app.page_container.get_page("home")
     _pump_until(app, lambda: overview_loaded(page), _BANNER_WAIT_SECONDS)
-    toggle = getattr(page, "_inactive_toggle", None)
-    if toggle is None or toggle.winfo_manager() == "":
-        print(f"note: no inactive models on the Overview at {size_label} -- skipping its expanded audit")
+    folds = [(name, getattr(page, toggle_attr, None), getattr(page, opener, None))
+             for name, toggle_attr, opener in (("other models", "_quiet_toggle", "_toggle_quiet"),
+                                               ("inactive", "_inactive_toggle", "_toggle_inactive"))]
+    opened = [(name, opener) for name, toggle, opener in folds
+              if toggle is not None and toggle.winfo_manager() != "" and opener is not None]
+    for name, _toggle, _opener in folds:
+        if name not in {n for n, _o in opened}:
+            print(f"note: no {name} line on the Overview at {size_label} -- not audited open")
+    if not opened:
         return
-    page._toggle_inactive()
+    for _name, opener in opened:
+        opener()
     _pump(app, 1.0)
     app.update_idletasks()
-    _walk_page(app, "home", "home:inactive expanded", size_label, clipped)
-    page._toggle_inactive()
+    _walk_page(app, "home", "home:folds expanded", size_label, clipped)
+    for _name, opener in opened:
+        opener()
 
 
 def show_both_progress_sections(page) -> None:
