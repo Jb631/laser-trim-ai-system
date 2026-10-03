@@ -1,5 +1,47 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-10-02 evening — the new look: a top bar, the Overview, four tabs per model (pull, then look)
+
+You said: "im just not happy with the app, there is so much going on its hard to see what is
+what". You picked Graphite, the Overview with every card that has a reason, layout C for a model,
+and retiring Triage. All of it is in, and it comes with the same `git pull` as the drift section
+below. The app still rebuilds its drift state once at its first start.
+
+What you will see:
+
+1. **A top bar instead of the sidebar.** It has Overview · Models · Settings, and one blue button,
+   **Process new files**. The button runs your remembered folders, as Home's button did, on the
+   Process page. That page holds both runs: the remembered folders at the top, "A specific folder"
+   below.
+2. **The Overview** is the page the app opens on.
+   - **"N models need a look"**: one card per model. On your 30 Sep data there are **13**: the 8
+     whose recent runs fail more often than their own history allows, and the 7 the drift watch
+     flags (two models are on both).
+   - Each card shows the units in the last 90 days, the pass rate in large type, "was X%" (the
+     year before), 12 monthly bars, and **in red, why it is there**. A line under the heading
+     states the rule. 8232-1 and 8340-1 carry a "hand trim" tag.
+   - Under the cards, **"Everything else"**: every other model trimmed in the last 90 days, busiest
+     first, marked steady / up / down against the year before.
+   - Then two folded lines, **"Other models on file"** (trimmed before the last 90 days) and
+     **"Inactive models"** (not trimmed in two years). Click a line to open it.
+   - At the foot: All findings · Company trends · Process a specific folder.
+3. **Click a card** to open the model's page, on four tabs:
+   - **Summary**: one sentence, the chart of what moved, "Also moving", "Worth changing", and
+     **All 12 signals ▸** (the old drift table, folded).
+   - **Units**: the stats table, the units, smoothness.
+   - **Final test**: its units, trim vs final test, the prediction.
+   - **History**.
+
+   The 12 pills are gone; their numbers are in "All 12 signals" and on Units. If a part fails to
+   load, a red notice above the tabs names it.
+4. **Triage is gone.** What it showed is on the Overview. The "Chronically high" strip did not
+   come back: on your 30 Sep data, 4 of its 5 models passed 100% over the last 90 days, because
+   it judged them on old runs.
+5. **Settings → Backlog** has no "Recent days" box any more. Only Triage used it.
+
+It was checked for cut-off text at 100% and at 150% scaling, at 1400×900 and 1280×720. The
+colours have only been seen on the Mac. **Tell me what reads wrong.**
+
 ## ⚡ 2026-10-02 — drift you can trust (pull, then start the app once)
 
 You said: "im also concerned about dirty data and accuracy of the app telling me things are
@@ -26,8 +68,8 @@ brought home), 50 → 7: the six the audit called real (8506, 8504-2, 2475-8, 79
 plus 8488B; the six it called false (7539-2, 8902, 7953-1A, 8415-1, 2511, 6952) and the improvement
 8877 are gone. Tell me any flag that still looks wrong.
 
-**"Drifting now" on Home and Triage** is a second, separate check (each run's linearity fail rate
-against its own limit). It already ignored runs of 1–2 units and improvements; it now also ignores
+**"Drifting now"** — since the redesign above, the fail-rate half of the Overview's cards — is a
+second, separate check (each run's linearity fail rate against its own limit). It already ignored runs of 1–2 units and improvements; it now also ignores
 suspect files, and drops a model whose newest bad run is more than 90 days old. On the 30 Sep
 copy it goes from 7 models to 8: 8340 (40% → 100% of recent runs failing) and 7458-1 (2% → 14%)
 join, because their old suspect fails no longer inflate their baselines; 8340-1 leaves. On a model's

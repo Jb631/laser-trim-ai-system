@@ -13,9 +13,13 @@ so much going on its hard to see what is what" and "im also concerned about dirt
 accuracy of the app telling me things are drifting". **Drift you can trust is done (J1):** four
 rules decide what may raise an alarm, and on the home copy the flag list falls from 49 models to 7
 — every one the audit called real stays, every one it called false is gone. The app rebuilds its
-drift state by itself at the next start (about ten seconds). **Next: the Graphite look and the
-Overview page (J2, J3)**, then the Model page in the layout you picked, C — four tabs (J4).
-Yours: the two questions in J5/J6.
+drift state by itself at the next start (about ten seconds). **The redesign is built too (J2–J4):**
+the Graphite look; a top bar (Overview · Models · Settings · one blue "Process new files") instead
+of the sidebar; the Overview — 13 cards on the 30 Sep data, each saying why it is there, then
+"Everything else"; and each model's page in the layout you picked, C — a header over four tabs.
+Triage is retired. An independent review found four real problems in the first cut; all are fixed
+(J3). **Yours: look at it** — the top of `BRING_TO_WORK.md` says what changed — and say what reads
+wrong. Your J5/J6 answers are in.
 
 **New on 2026-09-30: the app can be packaged as an .exe for your coworker** (section I; the steps
 are at the top of `BRING_TO_WORK.md`). You asked for two things — "make sure the code is good for the
@@ -48,7 +52,7 @@ that rested on a final-test verdict has been re-derived on it (B3).
 | **E. Backlog upload** | shipped (E1) | — |
 | **F. Facelift** | steps 1 and 2 shipped; F4 follow-ups shipped | F5 "Inactive" models (+ F4's review gaps) — Claude |
 | **G. Parse fixes** | all built, reviewed and pushed (`422da7a`) | — (the back-fill is yours, optional) |
-| **J. Redesign and drift you can trust** | drift rules shipped (J1, 2026-10-02); Graphite look + Overview next; Model page = layout C (J4) | James: J5, J6 |
+| **J. Redesign and drift you can trust** | drift rules (J1), the 7953 merge (J5) and the 20× line (J6) shipped; the Graphite look, the Overview + top bar and the Model page in layout C built and reviewed (J2–J4) | James: look at it; the rest of J5 (Unknown + one-off names); J7 option |
 | **I. The app as an .exe for a coworker** | code, build script and steps on `main` (2026-09-30); never built — that needs Windows | James: the first build at work (I5) |
 
 ### One thing of mine to own (2026-09-24): the home database was written to
@@ -922,11 +926,13 @@ the pages but removed nothing; this one removes.
       fails on the old code (4 rows) — and drops a model whose newest bad run is more than 90 days
       old: 7 → 8 on the 30 Sep copy (8340 and 7458-1 join — their old suspect fails had inflated
       their baselines; 8340-1 leaves).
-- [ ] **J2 · The Graphite look — Claude, next.** The palette from the approved mockup into
+- [x] **J2 · The Graphite look (`202dc02`).** The palette from the approved mockup in
       `gui/v6/theme.py` (bg #0c0c0e, card #151518, border #26262b, text #ededed, secondary #8b8b93,
       accent #3b82f6, chart highlight #60a5fa, history bars #2a3a58, worse #f87171, better
-      #4ade80), the readability test re-run on it.
-- [ ] **J3 · Overview and a top bar — Claude, after J2.** The approved structure: a top bar
+      #4ade80); lasers violet / fuchsia / pink; text on the blue is dark (white on it is 3.7:1).
+      No widget holds a colour of its own, so the whole app turned at once; the readability test
+      passes 47 of 47 on it.
+- [x] **J3 · Overview and a top bar — built 2026-10-02.** The approved structure: a top bar
       (name · Overview · Models · Settings · one blue "Process new files") replaces the sidebar; "N
       models need a look" as one card per model (units, monthly linearity-pass bars, big pass %,
       "was X%"); "Everything else" as a plain list (model · units · pass % · steady/up/down,
@@ -934,13 +940,35 @@ the pages but removed nothing; this one removes.
       **Which models get a card — James, 2026-10-02 (from the Overview drawn on the home copy's
       real data): "keep all 16 cards (fail rate up, or a signal moved), each with its reason"** —
       the "Drifting now" fail-rate list (11 on the copy) together with the drift detector's flags
-      (7; two in both), each card saying in one line why it is there.
-- [ ] **J4 · The Model page — James picked C ("i like c", 2026-10-02), Claude builds it.** Of three
+      (7; two in both), each card saying in one line why it is there. **As built** (one loader,
+      `gui/v6/overview_data.py`): after the drift rebuild the 30 Sep copy has 8 + 7 − 2 = **13
+      cards**, 42 models in "Everything else", newest file 29 Sep. Pass % = (PASS + WARNING) /
+      graded, suspect and future-dated files out, over the 90 calendar days ending on the newest
+      file's day; "was" = the 365 days before; 12 monthly bars. The Model page's header counts the
+      same days (two tests). Triage is retired; Findings and Company trends are links at the foot,
+      with "Process a specific folder". **The independent review** (read-only, 2026-10-02) found
+      four real problems, all fixed with a test each: the folder picker could only be reached by
+      the button that starts a run (and the one-off run had no one-job guard); a failed load on
+      the Model page was named on Summary only, so the Final test tab could read "no records"
+      over a crash; a fail-rate card opened on whatever the previous model had charted; and
+      models trimmed 3–24 months ago appeared nowhere — now "Other models on file (N) ▸", folded,
+      above "Inactive models". **Not brought back:** the "Chronically high" strip — on the 30 Sep
+      data 4 of its 5 models passed 100% in the last 90 days (it judges them on old runs); the
+      one real case, 8914 (0 of 5), is in "Everything else". Say if you want steady high-fail
+      models called out another way (for instance "Everything else" sorted by failing units).
+- [x] **J4 · The Model page — James picked C ("i like c", 2026-10-02), built the same day.** Of three
       layouts drawn on 8504-2's real runs (A one page top to bottom · B signal list and detail ·
       C four tabs): a header (model, status, pass %, units, lasers) over four tabs — **Summary**
       (the headline in a sentence, the moving signal's run chart, "Also moving", "Worth changing",
       all 12 signals folded away) · **Units** (with smoothness) · **Final test** (with trim vs
-      final test) · **History**. Today's seven tabs fold into those four; nothing is lost.
+      final test) · **History**. Today's seven tabs fold into those four; nothing is lost. **As
+      built:** the header says Drifting / Steady / Inactive · last trimmed Mon YYYY, the 90-day pass
+      % (the Overview's number, printed the same way), units and lasers. Summary: the headline, the
+      run chart (a model on the "Drifting now" list charts its fail rate), "Also moving", "Worth
+      changing", and "All 12 signals ▸" folded (with the σ key, "Left out of the drift check" and
+      "Requalify baseline…"). Units: the stats table, the units, smoothness. Final test: its units,
+      trim vs final test, the prediction. A failed load is named above the tabs. The 12 pills are
+      gone. One blue button on screen — the top bar's.
 - [x] **J5 · 7953A → 7953-A and 7953B → 7953-B — DONE** (James, 2026-10-02: "yea you can mearge
       7953A with 7953-A. and 7953B with 7953-B"). One stored spelling from now on
       (`core/model_names.MODEL_ALIASES`, applied by every parser and every save); the stored rows
@@ -1075,7 +1103,10 @@ beside it by hand; no special variant and no data-copying machinery. His own dep
 ## Done recently
 
 **2026-10-02:** drift you can trust (J1) — dirty readings, small runs, old evidence and
-improvements no longer raise alarms; 49 → 7 flagged on the home copy.
+improvements no longer raise alarms; 49 → 7 flagged on the home copy. The 7953 names merged (J5)
+and the hand-trim models' 20× line (J6). Then the redesign (J2–J4): Graphite, a top bar, the
+Overview's 13 cards, the Model page in layout C; Triage retired; an independent review's four
+real findings fixed.
 
 **2026-09-30:** the app packaged for a coworker (section I) — the database rules for a copied
 `data` folder and for a packaged build, the self-check, the build file and the one-command build.
