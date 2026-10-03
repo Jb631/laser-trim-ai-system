@@ -1005,6 +1005,88 @@ def check_inactive_models_on_database(db, raw) -> None:
               + (f"; differ: {wrong[:8]}" if wrong else ""))
 
 
+def check_overview_on_database(db, raw) -> None:
+    """The Overview's cards and pass rates, held to their definitions by INDEPENDENT reads (Graphite
+    redesign, 2026-10-02; James: "keep all 16 cards (fail rate up, or a signal moved), each with its
+    reason"):
+      * the cards are the FOCUS computation's list, then the drift detector's other flags by tier and
+        magnitude -- both computed here by calling the two engines directly, never overview_data;
+      * every card's and every "Everything else" row's units and pass % are, by this file's own SQL,
+        (PASS + WARNING) / (PASS + WARNING + FAIL) over the 90 days ending on the newest graded,
+        believable (not more than a day ahead), not-suspect trim file -- and the two together list
+        every model with such a trim in those days, once;
+      * a card with no trim to show reads its final tests by the same definition.
+    Made to FAIL first (tests/test_sweep_db_checks.py, and on the copy): suspect files counted,
+    WARNING counted as a fail, the detector's own models left off the cards. Nothing to compare is a
+    WARN, never a PASS."""
+    from laser_trim_analyzer.gui.v6 import overview_data as od
+    from laser_trim_analyzer.ml.manager import get_drifting_models
+    from laser_trim_analyzer.ml.spc import compute_focus_list
+
+    ov = od.load_overview(db)
+    check("overview: every part of the page loads", not ov.failed, f"failed: {ov.failed}")
+
+    focus = [e.model for e in compute_focus_list(db).focus]
+    flags = sorted(get_drifting_models(db), key=lambda a: (int(a.tier), a.magnitude), reverse=True)
+    expected = focus + [a.model for a in flags if a.model not in set(focus)]
+    got = [c.model for c in ov.cards]
+    if not expected:
+        warn("overview: no model is on the fail-rate list or flagged -- the cards' union is checked "
+             "on nothing")
+    else:
+        first = next((i for i, (a, b) in enumerate(zip(got, expected)) if a != b),
+                     None if len(got) == len(expected) else min(len(got), len(expected)))
+        check("overview: the cards are the fail-rate list, then the drift watch's other flags by tier",
+              got == expected,
+              f"{len(got)} cards ({len(focus)} fail-rate, {len(flags)} flagged); "
+              f"missing={sorted(set(expected) - set(got))[:6]} extra={sorted(set(got) - set(expected))[:6]}"
+              + (f"; order differs at {first}" if first is not None else ""))
+
+    horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    counts = ("overall_status IN ('PASS', 'WARNING', 'FAIL') AND model IS NOT NULL"
+              " AND file_date IS NOT NULL AND file_date <= ?")
+    trims = counts + " AND (data_quality IS NULL OR data_quality <> 'suspect')"
+    newest = raw.execute(f"SELECT MAX(file_date) FROM analysis_results WHERE {trims}",
+                         (horizon,)).fetchone()[0]
+    if newest is None:
+        warn("overview: no graded trim on this copy -- its pass rates are checked on nothing")
+        return
+    day = str(newest)[:10]
+    check("overview: its clock is the newest graded, believable, unsuspect trim file",
+          ov.anchor is not None and f"{ov.anchor:%Y-%m-%d}" == day, f"app {ov.anchor} vs SQL {newest}")
+    window = " AND date(file_date) BETWEEN date(?, '-89 days') AND date(?)"
+    truth = {m: (n, 100.0 * a / n) for m, n, a in raw.execute(
+        f"SELECT model, COUNT(*), SUM(overall_status IN ('PASS', 'WARNING')) FROM analysis_results"
+        f" WHERE {trims}{window} GROUP BY model", (horizon, day, day)) if n}
+    drawn = {c.model: (c.units, c.pass_pct) for c in ov.cards if c.units and not c.final_test}
+    for r in ov.others:
+        if r.model in drawn:
+            drawn[r.model] = (-1, None)                  # listed twice: never equal to the truth
+        else:
+            drawn[r.model] = (r.units, r.pass_pct)
+    wrong = sorted(m for m in set(drawn) | set(truth)
+                   if m not in drawn or m not in truth or drawn[m][0] != truth[m][0]
+                   or drawn[m][1] is None or abs(drawn[m][1] - truth[m][1]) > 1e-9)
+    check("overview: every card's and row's units and pass % are the stated definition, by "
+          "independent SQL -- every active model once",
+          bool(truth) and not wrong,
+          f"{len(drawn)} models drawn, SQL {len(truth)}; differ: "
+          + ", ".join(f"{m} app={drawn.get(m)} sql={truth.get(m)}" for m in wrong[:4]))
+
+    ft_cards = [c for c in ov.cards if c.final_test]
+    if not ft_cards:
+        warn("overview: no card shows final-test numbers on this copy -- that path is checked on nothing")
+    for c in ft_cards:
+        n, a = raw.execute(
+            f"SELECT COUNT(*), SUM(overall_status IN ('PASS', 'WARNING')) FROM final_test_results"
+            f" WHERE model = ? AND {counts}{window}", (c.model, horizon, day, day)).fetchone()
+        sql_pct = 100.0 * a / n if n else None
+        check(f"overview: {c.model}'s card reads its final tests by the same definition",
+              n == c.units and sql_pct is not None and c.pass_pct is not None
+              and abs(sql_pct - c.pass_pct) < 1e-9,
+              f"app {c.units} units {c.pass_pct} vs SQL {n} units {sql_pct}")
+
+
 def check_drift_trust_rules(db, raw) -> None:
     """The drift watch raises no alarm the data cannot support (James, 2026-10-02: "im also
     concerned about dirty data and accuracy of the app telling me things are drifting"). On the
@@ -4900,6 +4982,9 @@ def main() -> int:
     except Exception as exc:
         check("overview: one FOCUS loader behind the cards", False,
               f"{type(exc).__name__}: {exc}")
+    # ---- the Overview: its cards are FOCUS united with the detector, its pass % the definition --
+    with _guard("overview: its cards and pass rates"):
+        check_overview_on_database(db, raw)
     # ---- the screens count what they draw; a failed load is never a zero (final review M9)
     with _guard("screens: each count is the rows its section is handed"):
         check_screens_count_what_they_draw(db)
@@ -6109,6 +6194,35 @@ STANDALONE = {"glosses": check_usability_glosses,
                                     check_self_check_passes_from_source())}
 
 
+# Sections that read a COPY of the work database, run alone (the same refusals main() makes):
+#     python scripts/app_qa_sweep.py /path/to/COPY_of_analysis.db --only overview
+ON_DATABASE = {"overview": check_overview_on_database}
+
+
+def _run_on_database(name: str) -> int:
+    paths = [a for a in sys.argv[1:] if not a.startswith("--") and a != name]
+    if not paths:
+        print(f"usage: python scripts/app_qa_sweep.py /path/to/COPY_of_analysis.db --only {name}")
+        return 1
+    db_path = Path(paths[0])
+    if _db_guard.is_production_db(db_path, REPO, by_name=True):
+        print(f"FATAL | {db_path} is the PRODUCTION database -- pass a copy")
+        return 1
+    if not db_path.exists():
+        print(f"FATAL | no database at {db_path}")     # never CREATE an empty one to check
+        return 1
+    import laser_trim_analyzer.database as _dbpkg
+    from laser_trim_analyzer.database import manager as _dbmod
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    db = DatabaseManager(db_path)
+    _dbmod._db_manager = db                   # both globals: nothing may reach the configured DB
+    _dbpkg._db_manager = db
+    raw = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    with _guard(name):
+        ON_DATABASE[name](db, raw)
+    return _tally()
+
+
 if __name__ == "__main__":
     # `--only` is found ANYWHERE in argv, not just at position 1. It used to be
     # tested as `sys.argv[1] == "--only"`, and `main()` never parsed `--only`
@@ -6119,8 +6233,11 @@ if __name__ == "__main__":
     if "--only" in sys.argv:
         i = sys.argv.index("--only")
         name = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+        if name in ON_DATABASE:
+            raise SystemExit(_run_on_database(name))
         if name not in STANDALONE:
-            raise SystemExit(f"unknown section {name!r}; have: {', '.join(STANDALONE)}")
+            raise SystemExit(f"unknown section {name!r}; have: "
+                             f"{', '.join([*STANDALONE, *ON_DATABASE])}")
         # Standalone sections build their own throwaway databases and never
         # open a path from argv, but the production file is refused by name
         # here too: the refusal must not depend on which branch was taken.
