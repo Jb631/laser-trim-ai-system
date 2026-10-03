@@ -1060,21 +1060,34 @@ def check_drift_trust_rules(db, raw) -> None:
         check("drift: no impossible resistance feeds the resistance watch", not bad,
               f"{row[0]}: {len(vals)} readings fed, {len(bad)} impossible")
 
-    # 2. small lots: the model with the most lots of one or two units
-    row = raw.execute(
-        "SELECT a.model, COUNT(DISTINCT substr(a.file_date, 1, 10)) FROM analysis_results a"
-        " WHERE a.overall_status NOT IN ('ERROR','PROCESSING_FAILED') GROUP BY a.model"
-        " ORDER BY 2 DESC LIMIT 40").fetchall()
-    small_seen = judged_small = 0
-    for model, _days in row:
-        lots = [l for l in get_model_lots(db, model, "linearity_error") if not l.is_open()]
-        small_seen += sum(1 for l in lots if l.n < 3)
-        judged_small += sum(1 for l in judged_lots(lots, use_mean=False) if l.n < 3)
-    if not small_seen:
-        warn("drift: no lot of fewer than 3 units among the 40 busiest models to test pooling")
+    # 2. small lots, read off what the TRAINER stored: every trained linearity watch's
+    # watermark (the end of the newest lot it judged) is the end of a judged lot -- a
+    # waiting small lot's end would mean the trainer judged it on its own. Only meaningful
+    # once the state was rebuilt under these rules (the app does that at its first start).
+    from laser_trim_analyzer.ml.drift_training import DRIFT_RULES_KEY, DRIFT_RULES_VERSION
+    built = raw.execute("SELECT value FROM app_meta WHERE key = ?", (DRIFT_RULES_KEY,)).fetchone()
+    if not built or built[0] != DRIFT_RULES_VERSION:
+        warn("drift: the stored state predates these rules (the app rebuilds it at its next "
+             "start) -- the small-lot rule is not checked against it")
     else:
-        check("drift: no lot of fewer than 3 units is judged on its own", judged_small == 0,
-              f"{small_seen} small lots on the 40 busiest models, {judged_small} judged alone")
+        rows = raw.execute(
+            "SELECT model, last_updated FROM model_metric_state WHERE metric = 'linearity_error'"
+            " AND is_trained = 1 AND last_row_id IS NULL").fetchall()
+        small_models = off_judged = 0
+        for model, mark in rows:
+            lots = [l for l in get_model_lots(db, model, "linearity_error") if not l.is_open()]
+            if not any(l.n < 3 for l in lots):
+                continue
+            small_models += 1
+            ends = {l.end for l in judged_lots(lots, use_mean=False)}
+            if datetime.fromisoformat(str(mark)[:19]) not in ends:
+                off_judged += 1
+        if not small_models:
+            warn("drift: no trained model with a lot of fewer than 3 units to test pooling")
+        else:
+            check("drift: every stored watermark is a judged lot's end (no small lot judged alone)",
+                  off_judged == 0,
+                  f"{small_models} trained models with small lots, {off_judged} off a judged lot")
 
     # 3 and 4. every flag recent, and on the worse side
     reference = drift_reference_date(db)
@@ -4798,23 +4811,28 @@ def main() -> int:
             # that default clock is not the same DB-global one the list used, the
             # click-through contradicts the row it came from: a lot the list calls
             # closed draws hollow ("· open") on the chart and exports as
-            # `Open lot: TRUE`. Capped at 5 models — one query each.
+            # `Open lot: TRUE`. Every row, focus and chronic, one query each, and
+            # EVERY one of its last RECENT_K lots, compared in full (2026-10-02: the
+            # old check read only the last lot's open/out-of-control on five rows, and
+            # missed four rows whose lots counted suspect files the chart left out).
             parity_bad = []
-            sampled = res_a.focus[:5]
+            sampled = list(res_a.focus) + list(res_a.chronic)
+            def _lot_key(p):
+                return (p.start, p.end, p.n, round(p.value, 9), p.ooc, p.is_open)
             for e in sampled:
                 try:
-                    pt_series = compute_spc_series(db, e.model, e.series.metric).points[-1]
-                    pt_row = e.series.points[-1]
-                    if (pt_series.is_open, pt_series.ooc) != (pt_row.is_open, pt_row.ooc):
+                    chart = compute_spc_series(db, e.model, e.series.metric).points[-RECENT_K:]
+                    row = e.series.points[-RECENT_K:]
+                    if [_lot_key(p) for p in chart] != [_lot_key(p) for p in row]:
                         parity_bad.append(
-                            f"{e.model}: click-through=(open={pt_series.is_open},"
-                            f"ooc={pt_series.ooc}) row=(open={pt_row.is_open},"
-                            f"ooc={pt_row.ooc})")
+                            f"{e.model}: chart {[(p.n, round(p.value, 3)) for p in chart]}"
+                            f" row {[(p.n, round(p.value, 3)) for p in row]}")
                 except Exception as exc:      # a crash here IS the regression
                     parity_bad.append(f"{e.model}: {type(exc).__name__}: {exc}")
-            check("focus: click-through series agrees with the row on the last lot "
-                  "(open + out-of-control)",
-                  not parity_bad, f"checked={len(sampled)} offenders={parity_bad[:3]}")
+            check("focus: every row's last lots are its click-through chart's lots "
+                  "(dates, units, rate, open, out-of-control)",
+                  bool(sampled) and not parity_bad,
+                  f"checked={len(sampled)} offenders={parity_bad[:3]}")
             # (g) The likely-driver hint (2026-08-30) must be honest: either None
             # (rendered "driver unclear") or the plain-language label of a real,
             # NON-outcome watched metric. A raw key, an outcome metric, or free

@@ -561,16 +561,21 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
     problem as one that is still burning, and the list ranks on the discounted
     `rank_score` while every printed number stays the measured one.
     """
+    from sqlalchemy import or_
     from laser_trim_analyzer.database.models import AnalysisResult as DBAR
     from laser_trim_analyzer.database.models import StatusType
+    from laser_trim_analyzer.ml.drift_types import RECENT_LOT_DAYS
 
     with db.session() as s:
         # Mirrors _load_samples_with_dates' linearity branch, minus the model
-        # filter: ERROR/UNTRIMMED rows are not gradeable and stay out.
+        # filter: ERROR/UNTRIMMED rows are not gradeable and stay out, and so does
+        # a file marked suspect (2026-10-02) -- the model page's run chart beside
+        # this list reads that loader, and the two must never disagree.
         rows = (s.query(DBAR.model, DBAR.file_date, DBAR.overall_status)
                 .filter(DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING,
                                                  StatusType.FAIL]),
-                        DBAR.file_date.isnot(None), DBAR.model.isnot(None))
+                        DBAR.file_date.isnot(None), DBAR.model.isnot(None),
+                        or_(DBAR.data_quality.is_(None), DBAR.data_quality != "suspect"))
                 .order_by(DBAR.model, DBAR.file_date).all())
 
     if anchor is None:
@@ -611,6 +616,11 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
         units_per_week = units_recent / weeks
 
         flagged = [pt for pt in series.points[-RECENT_K:] if pt.ooc]
+        if flagged and max(pt.end for pt in flagged) < anchor - timedelta(days=RECENT_LOT_DAYS):
+            # Only recent evidence alarms (2026-10-02, drift_types.RECENT_LOT_DAYS): a run that
+            # went wrong more than 90 days ago is history, not "drifting now", however few
+            # runs have come since.
+            flagged = []
         if flagged:
             # Pooled over the flagged lots — a 200-unit excursion should weigh
             # more than a 6-unit one when we quote "the rate right now".

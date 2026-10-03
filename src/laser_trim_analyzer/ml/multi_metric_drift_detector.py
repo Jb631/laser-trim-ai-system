@@ -42,6 +42,17 @@ CUSUM_K_SIGMAS: float = 0.5
 # Step-change window size N (number of recent samples averaged).
 STEP_CHANGE_WINDOW: int = 5
 
+# How much credit a one-sided metric's EWMA may bank for IMPROVING, in EWMA standard errors
+# below its baseline (2026-10-02, review of the one-sided rule). Without a floor, a model that
+# improved for months carried its EWMA far below baseline, and a later worsening took that much
+# longer to alarm; a floor AT the baseline (the textbook reflecting barrier) fixes that but, at
+# this app's own limits, raises the in-control false-WARNING rate. Simulated at the standard
+# preset's WARNING limit (p = 0.05/12), 40 in-control lots, 40,000 runs: no floor 4.74 %, floor
+# at the baseline 7.13 %, floor 1 standard error below 4.97 %; after 20 lots improved by 4 sigma
+# then a +3 sigma worsening, the first alarm comes at lot 25 / 21 / 22. One standard error buys
+# nearly all of the speed for almost none of the false alarms.
+EWMA_IMPROVEMENT_FLOOR_SE: float = 1.0
+
 # A baseline whose standard deviation is effectively zero (every baseline sample
 # identical to float precision) cannot be monitored with a z-score / EWMA / CUSUM
 # control chart: the control limits (h ∝ σ, L·σ_ewma ∝ σ) collapse toward zero, so
@@ -188,6 +199,15 @@ class MetricDetector:
 
         # EWMA update
         self.ewma_state = EWMA_LAMBDA * value + (1.0 - EWMA_LAMBDA) * self.ewma_state
+        # A one-sided metric banks at most EWMA_IMPROVEMENT_FLOOR_SE of improvement.
+        direction = WORSE_DIRECTION.get(self.metric, 0)
+        if direction and sigma > 0:
+            floor = (EWMA_IMPROVEMENT_FLOOR_SE * sigma
+                     * math.sqrt(EWMA_LAMBDA / (2.0 - EWMA_LAMBDA)))
+            if direction > 0:
+                self.ewma_state = max(self.ewma_state, mu - floor)
+            else:
+                self.ewma_state = min(self.ewma_state, mu + floor)
 
         # Step-change window
         self.recent_window.append(value)
@@ -413,8 +433,10 @@ class MultiMetricDriftDetector:
         # the composite went degenerate or stopped being scored.
         comp = per_metric.get(COMPOSITE_METRIC)
         comp_det = self.metrics.get(COMPOSITE_METRIC)
+        # ...and only while its own evidence is recent: a composite too stale to alarm
+        # (RECENT_LOT_DAYS) must not silence family metrics that are recent enough to.
         composite_active = (
-            comp is not None and comp.is_trained
+            comp is not None and comp.is_trained and comp.is_recent
             and not is_degenerate_baseline(comp.baseline_mean, comp.baseline_std)
             and (comp_det is None or comp_det.represents_family)
         )

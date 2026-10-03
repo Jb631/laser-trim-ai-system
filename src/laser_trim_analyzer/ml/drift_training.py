@@ -292,19 +292,24 @@ def _train_one_metric(
         )
         return False
 
-    # Baseline = all but the newest REPLAY_LOTS closed lots; tiny lots
-    # (n < MIN_LOT_BASELINE_N) are excluded from the baseline statistics but
-    # still replayed/scored — their medians are too noisy to calibrate σ.
-    split = max(MIN_LOTS_TRAIN - REPLAY_LOTS, len(closed) - REPLAY_LOTS)
-    baseline_lots = [l for l in closed[:split] if l.n >= MIN_LOT_BASELINE_N]
-    if len(baseline_lots) < 5:
-        baseline_lots = closed[:split]        # tiny-lot model: use what exists
-    # Replayed: the lots the detector JUDGES (a small lot pooled with the one after it, the
-    # newest small lot left waiting -- lots.judged_lots) among the newest closed lots.
+    # Replayed: the newest REPLAY_LOTS lots the detector JUDGES (a small lot pooled with the one
+    # after it, the newest small lot left waiting -- lots.judged_lots), always leaving at least
+    # MIN_LOTS_TRAIN - REPLAY_LOTS lots for the baseline. Counted on JUDGED lots (2026-10-02):
+    # counted on raw lots, a waiting 2-unit lot took a replay slot and pushed one more real lot
+    # of an ongoing drift into the baseline -- 8889's resistance, rising since July, fell just
+    # under the line that way.
     from laser_trim_analyzer.ml.lots import MEAN_AGGREGATED_METRICS as _MEAN
-    baseline_cutoff = closed[split - 1].end
-    replay_lots = [l for l in judged_lots(closed, use_mean=metric in _MEAN)
-                   if l.end > baseline_cutoff]
+    judged = judged_lots(closed, use_mean=metric in _MEAN)
+    n_replay = min(REPLAY_LOTS, max(0, len(judged) - (MIN_LOTS_TRAIN - REPLAY_LOTS)))
+    replay_lots = judged[len(judged) - n_replay:] if n_replay else []
+    # Baseline = every closed lot that ends before the first replayed lot begins; tiny lots
+    # (n < MIN_LOT_BASELINE_N) are left out of its statistics -- their medians are too noisy to
+    # calibrate sigma -- unless the model has hardly any other kind.
+    pool = [l for l in closed if not replay_lots or l.end < replay_lots[0].start]
+    baseline_lots = [l for l in pool if l.n >= MIN_LOT_BASELINE_N]
+    if len(baseline_lots) < 5:
+        baseline_lots = pool                  # tiny-lot model: use what exists
+    baseline_cutoff = pool[-1].end if pool else closed[0].end
 
     arr = np.asarray([l.median for l in baseline_lots], dtype=float)
     baseline_mean = float(np.mean(arr))

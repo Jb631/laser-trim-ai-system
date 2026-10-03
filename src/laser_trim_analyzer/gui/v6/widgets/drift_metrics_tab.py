@@ -45,7 +45,8 @@ def describe_exclusions(left_out) -> str:
         names = ", ".join(f"{metric_label(m)} {k}" for m, k in sorted(impossible.items()))
         parts.append(f"{n} that cannot be real ({names})")
     return ("Left out of the drift check: " + " · ".join(parts)
-            + ". They stay on file; only the drift check ignores them.")
+            + ". They stay on file and in the unit lists; the drift check and its run charts "
+            "leave them out.")
 
 # Two of the six uniform columns need more than an even 1/6 share once the row is
 # squeezed into a narrower window: column 0 (the metric NAME -- "Escape rate (trim

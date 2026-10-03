@@ -156,36 +156,40 @@ class V6App(ctk.CTk):
         """Advance all trained drift detectors over data that arrived since the
         last run. Worker thread; a no-op when nothing is new."""
         def work():
+            import logging
+            log = logging.getLogger(__name__)
+            from laser_trim_analyzer.ml.drift_training import (
+                advance_drift_state, ensure_drift_rules)
+            # The drift rules changed since this state was built (2026-10-02: dirty readings,
+            # small lots, old evidence, improvements): retrain once, about ten seconds, before
+            # catching up. Its own try: a retrain that fails (a locked database during an
+            # ingest) is retried at the next start, and must not cost this start its catch-up.
             try:
-                from laser_trim_analyzer.ml.drift_training import (
-                    advance_drift_state, ensure_drift_rules)
-                import logging
-                # The drift rules changed since this state was built (2026-10-02: dirty
-                # readings, small lots, old evidence, improvements): retrain once, about ten
-                # seconds, before catching up.
                 if ensure_drift_rules(self.db, getattr(self.config.ml, "drift_sensitivity",
                                                        "standard")):
-                    logging.getLogger(__name__).info(
-                        "Startup: drift state retrained under the current rules")
+                    log.info("Startup: drift state retrained under the current rules")
                     # The page on screen loaded its flags before this finished.
                     self.ui.post(self._reload_visible_page)
+            except Exception:
+                log.exception("Startup drift retrain under the current rules failed; "
+                              "the next start tries again")
+            try:
                 n = advance_drift_state(self.db)
                 if n:
-                    logging.getLogger(__name__).info(
-                        "Startup drift catch-up: advanced %d (model, metric) rows", n)
+                    log.info("Startup drift catch-up: advanced %d (model, metric) rows", n)
             except Exception:
-                import logging
-                logging.getLogger(__name__).exception("Startup drift catch-up failed")
+                log.exception("Startup drift catch-up failed")
         import threading
         threading.Thread(target=work, daemon=True).start()
 
     def _reload_visible_page(self) -> None:
-        """Reload the page on screen (Tk thread only): its data changed underneath it."""
-        name = self.page_container.current_page()
+        """Reload the page on screen (Tk thread only): its data changed underneath it. Through the
+        page's own on_show(), which loads on a worker -- never reload_now(), which loads on this
+        thread and would freeze the window for the page's whole query."""
+        name = self.page_container.current_page          # a property, not a method
         page = self.page_container.get_page(name) if name else None
-        reload = getattr(page, "reload_now", None)
-        if callable(reload):
-            reload()
+        if page is not None:
+            page.on_show()
 
     # ---- setup ----
     def _setup_window(self) -> None:

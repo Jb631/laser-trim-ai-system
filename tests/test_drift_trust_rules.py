@@ -254,13 +254,16 @@ def test_two_small_lots_in_a_row_that_agree_do_raise_it(tmp_path):
 
 
 def test_a_waiting_small_lot_is_judged_once_the_next_lot_arrives(tmp_path):
+    # Both runs are small (2 units): neither can be judged alone, so the alarm can only come
+    # from the waiting one being pooled with the one that arrives later (review, 2026-10-02: a
+    # 3-unit second run alarmed by itself and hid a pooling that never happened).
     from laser_trim_analyzer.ml.drift_training import advance_drift_state
     db = _db(tmp_path)
     day = _history(db, "M1")
-    _lot(db, "M1", day, [0.5], tag="x")
+    _lot(db, "M1", day, [0.5, 0.5], tag="x")
     _train(db)
     assert "M1" not in _flagged(db)
-    _lot(db, "M1", day + timedelta(days=7), [0.5, 0.5, 0.5], tag="y")
+    _lot(db, "M1", day + timedelta(days=7), [0.5, 0.5], tag="y")
     assert advance_drift_state(db, model="M1") >= 1
     assert "M1" in _flagged(db)
 
@@ -502,3 +505,215 @@ def test_startup_retrains_under_new_rules_then_reloads_the_page_on_screen(tmp_pa
     with db.session() as s:
         assert db._meta_get(s, "drift_rules") == DRIFT_RULES_VERSION
     assert posted == [app._reload_visible_page]
+
+
+# =============================================================================================
+# the FOCUS list ("Drifting now" on Home and Triage) follows the same rules -- it is its own
+# p-chart of each run's linearity fail rate (ml/spc.compute_focus_list), and the model page's run
+# chart beside it reads the drift loader: the two must never disagree about a suspect file.
+
+def _fail_lot(db, model, day, fails, passes, *, suspect_fails=0, tag=""):
+    if fails:
+        _lot(db, model, day, [0.05] * fails, status="FAIL", tag=f"{tag}f")
+    if passes:
+        _lot(db, model, day, [0.01] * passes, status="PASS", tag=f"{tag}p")
+    if suspect_fails:
+        _lot(db, model, day, [6.8] * suspect_fails, status="FAIL", data_quality="suspect",
+             tag=f"{tag}s")
+
+
+def _fail_history(db, model, lots=12, start=T0):
+    """`lots` weekly runs of 10 units, one failing in each: a 10% baseline."""
+    day = start
+    for i in range(lots):
+        _fail_lot(db, model, day, 1, 9, tag=f"h{i}")
+        day += timedelta(days=7)
+    return day
+
+
+def _focus(db):
+    from laser_trim_analyzer.ml.spc import compute_focus_list
+    return {e.model for e in compute_focus_list(db).focus}
+
+
+def test_the_focus_list_ignores_a_suspect_files_fail(tmp_path):
+    # With the six suspect files the newest run reads 8 of 10 failing -- far above its limit;
+    # without them it is 2 of 4, inside the wider limit a 4-unit run gets.
+    db = _db(tmp_path)
+    day = _fail_history(db, "M1")
+    _fail_lot(db, "M1", day, 2, 2, suspect_fails=6, tag="n")
+    assert "M1" not in _focus(db)
+
+
+def test_the_focus_list_still_sees_the_same_run_failing_for_real(tmp_path):
+    db = _db(tmp_path)
+    day = _fail_history(db, "M1")
+    _fail_lot(db, "M1", day, 8, 2, tag="n")
+    assert "M1" in _focus(db)
+
+
+def test_the_focus_list_drops_a_run_that_went_wrong_over_ninety_days_ago(tmp_path):
+    # One bad run, then four clean ones spread over five months: still inside the list's last
+    # five runs, but the newest run that went wrong is 150 days old.
+    db = _db(tmp_path)
+    day = _fail_history(db, "M1")
+    _fail_lot(db, "M1", day, 8, 2, tag="bad")
+    for k, gap in enumerate((40, 80, 120, 150)):
+        _fail_lot(db, "M1", day + timedelta(days=gap), 0, 10, tag=f"c{k}")
+    assert "M1" not in _focus(db)
+
+
+def test_the_focus_list_keeps_a_run_that_went_wrong_last_month(tmp_path):
+    db = _db(tmp_path)
+    day = _fail_history(db, "M1")
+    _fail_lot(db, "M1", day, 8, 2, tag="bad")
+    for k in range(4):
+        _fail_lot(db, "M1", day + timedelta(days=7 * (k + 1)), 0, 10, tag=f"c{k}")
+    assert "M1" in _focus(db)
+
+
+
+# =============================================================================================
+# found by the review of 886df39 (2026-10-02)
+
+def test_a_waiting_small_lot_never_makes_a_stale_alarm_look_recent(tmp_path):
+    # The alarm's evidence ends 140 days before the newest file; a one-unit run since is still
+    # waiting. "Recent" is measured on JUDGED runs -- the watermark -- never on a waiting one.
+    db = _db(tmp_path)
+    day = _history(db, "M1")
+    _lot(db, "M1", day, [0.5] * 5, tag="x")
+    _lot(db, "M1", day + timedelta(days=7), [0.5] * 5, tag="y")
+    _lot(db, "M1", day + timedelta(days=7 + 135), [0.5], tag="w")
+    _lot(db, "OTHER", day + timedelta(days=7 + 140), [0.011] * 3)
+    _train(db)
+    assert "M1" not in _flagged(db)
+    assert _status(db, "M1", "linearity_error").newest_lot == day + timedelta(days=7)
+
+
+def test_a_future_dated_file_never_makes_every_alarm_stale(tmp_path):
+    # One file with a mistyped date two years ahead must not become "the newest file".
+    db = _db(tmp_path)
+    day = _history(db, "M1")
+    _lot(db, "M1", day, [0.5] * 5, tag="x")
+    _lot(db, "M1", day + timedelta(days=7), [0.5] * 5, tag="y")
+    _lot(db, "OTHER", datetime.now() + timedelta(days=730), [0.011] * 3)
+    _train(db)
+    assert "M1" in _flagged(db)
+
+
+def test_the_preset_preview_counts_only_recent_alarms(tmp_path):
+    from laser_trim_analyzer.ml.manager import preview_alert_count
+    db = _db(tmp_path)
+    day = _history(db, "M1")
+    _lot(db, "M1", day, [0.5] * 5, tag="x")
+    _lot(db, "M1", day + timedelta(days=7), [0.5] * 5, tag="y")
+    _lot(db, "OTHER", day + timedelta(days=7 + 140), [0.011] * 3)
+    _train(db)
+    counts = preview_alert_count(db, "standard")
+    assert counts["warning"] + counts["drift"] + counts["out_of_control"] == 0
+
+
+def _tripped(metric, *, newest_lot):
+    from laser_trim_analyzer.ml.drift_training import corrected_tier_thresholds, _build_detector
+    det = _build_detector(metric, 1.0, 0.1, 20,
+                          thresholds_dict=corrected_tier_thresholds("standard", 0.1))
+    for _ in range(6):
+        det.update(1.0 + 6 * 0.1)                 # six runs, 6 sigma worse
+    det.newest_lot = newest_lot
+    return det
+
+
+def test_a_stale_composite_does_not_silence_a_recent_family_metric():
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        COMPOSITE_METRIC, MultiMetricDriftDetector)
+    reference = datetime(2026, 9, 22)
+    container = MultiMetricDriftDetector(model="M1", reference_date=reference, metrics={
+        COMPOSITE_METRIC: _tripped(COMPOSITE_METRIC, newest_lot=reference - timedelta(days=100)),
+        "untrimmed_error_max": _tripped("untrimmed_error_max",
+                                        newest_lot=reference - timedelta(days=80)),
+    })
+    status = container.get_status()
+    assert status.per_metric[COMPOSITE_METRIC].is_recent is False
+    assert status.worst_metric == "untrimmed_error_max"
+    assert int(status.overall_tier) > 0
+
+
+def test_a_long_improvement_banks_little_credit_against_a_later_worsening():
+    # Twenty runs 4 sigma better, then runs 3 sigma worse: with the improvement floor the EWMA
+    # alarms on the third worse run; banking the whole improvement it waited for the fifth.
+    from laser_trim_analyzer.ml.drift_training import corrected_tier_thresholds, _build_detector
+    det = _build_detector("linearity_error", 1.0, 0.1, 20,
+                          thresholds_dict=corrected_tier_thresholds("standard", 0.1))
+    for _ in range(20):
+        det.update(1.0 - 4 * 0.1)
+    assert int(det.get_status().tier) == 0
+    first_alarm = None
+    for k in range(1, 9):
+        if int(det.update(1.0 + 3 * 0.1).tier) > 0:
+            first_alarm = k
+            break
+    assert first_alarm is not None and first_alarm <= 3, first_alarm
+
+
+def test_a_failed_startup_retrain_still_catches_up(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from laser_trim_analyzer.gui.v6.app import V6App
+    from laser_trim_analyzer.ml import drift_training
+
+    class _Now:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            self._target()
+    monkeypatch.setattr(threading, "Thread", _Now)
+
+    def _locked(*a, **k):
+        raise RuntimeError("database is locked")
+    advanced = []
+    monkeypatch.setattr(drift_training, "ensure_drift_rules", _locked)
+    monkeypatch.setattr(drift_training, "advance_drift_state", lambda db: advanced.append(db) or 0)
+    app = SimpleNamespace(db=object(), config=SimpleNamespace(ml=SimpleNamespace(
+                              drift_sensitivity="standard")),
+                          ui=SimpleNamespace(post=lambda fn: None), _reload_visible_page=None)
+    V6App._advance_drift_catchup(app)
+    assert advanced == [app.db]
+
+
+def test_reloading_the_page_on_screen_goes_through_its_own_background_load(make_app,
+                                                                            monkeypatch):
+    app = make_app()
+    app.show_page("triage")
+    page = app.page_container.get_page("triage")
+    shown = []
+    monkeypatch.setattr(page, "on_show", lambda: shown.append("on_show"))
+    monkeypatch.setattr(page, "reload_now", lambda: shown.append("reload_now"), raising=False)
+    app._reload_visible_page()
+    assert shown == ["on_show"]
+
+
+
+def test_a_waiting_small_lot_never_pushes_a_real_lot_into_the_baseline(tmp_path):
+    # The 8889 shape (2026-10-02): a drift building over several runs, then a 2-unit run that
+    # waits. The three runs replayed must be the three newest JUDGED ones, so the baseline ends
+    # before the drift, exactly as it would without the waiting run.
+    from laser_trim_analyzer.database.models import ModelMetricState
+    db = _db(tmp_path)
+    day = _history(db, "M1")
+    for k, v in enumerate((0.0125, 0.013, 0.0135)):
+        _lot(db, "M1", day + timedelta(days=7 * k), [v] * 5, tag=f"d{k}")
+    _lot(db, "M1", day + timedelta(days=21), [0.0140] * 2, tag="w")     # waits
+
+    db2 = _db(tmp_path, "control.db")                                    # the same, no waiting run
+    day2 = _history(db2, "M1")
+    for k, v in enumerate((0.0125, 0.013, 0.0135)):
+        _lot(db2, "M1", day2 + timedelta(days=7 * k), [v] * 5, tag=f"d{k}")
+    _train(db)
+    _train(db2)
+
+    def state(d):
+        with d.session() as s:
+            r = s.query(ModelMetricState).filter_by(model="M1", metric="linearity_error").one()
+            return (round(r.baseline_mean, 9), round(r.baseline_std, 9), r.baseline_cutoff_date,
+                    round(r.ewma_state, 9), r.last_updated)
+    assert state(db) == state(db2)
