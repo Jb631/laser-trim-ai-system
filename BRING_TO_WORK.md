@@ -1,5 +1,42 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-10-02 — drift you can trust (pull, then start the app once)
+
+You said: "im also concerned about dirty data and accuracy of the app telling me things are
+drifting". On your database of 30 Sep the app flagged 50 models; most of those flags rested on
+evidence that cannot carry an alarm. Four rules now decide what may raise one:
+
+1. **Dirty readings never count.** A file the app marked *suspect* (almost always a linearity
+   error more than 10× the spec band — 7539-2's newest run was four files at 6.8 against 0.02) and
+   a reading that cannot be real (a resistance of 10 MΩ or more, or zero; a resistance change made
+   from one; an electrical angle above 400°) are left out of drift. They stay on file.
+2. **One or two units are not a run's verdict.** A run of fewer than 3 units is judged together
+   with the next run (when it comes within 90 days); until then it waits.
+3. **Only recent evidence alarms.** Runs more than 90 days apart do not add up, and a signal with
+   no run in the last 90 days cannot flag the model (2511 was flagged on 2020–21 final tests).
+4. **Getting better is not an alarm.** Less error, fewer fails, fewer escapes. Resistance and
+   angle still count both ways.
+
+What to do: **`git pull`, then start the app.** About ten seconds after it opens, it rebuilds every
+model's drift state once under these rules (the log says *Startup: drift state retrained under
+the current rules*) and the page on screen refreshes. Nothing to click, and it happens only once.
+
+What you will see: **far fewer models flagged.** On your database of 30 Sep (the copy you
+brought home), 50 → 7: the six the audit called real (8506, 8504-2, 2475-8, 7953-1B, 8889, 7845)
+plus 8488B; the six it called false (7539-2, 8902, 7953-1A, 8415-1, 2511, 6952) and the improvement
+8877 are gone. Tell me any flag that still looks wrong.
+
+**"Drifting now" on Home and Triage** is a second, separate check (each run's linearity fail rate
+against its own limit). It already ignored runs of 1–2 units and improvements; it now also ignores
+suspect files, and drops a model whose newest bad run is more than 90 days old. On the 30 Sep
+copy it goes from 7 models to 8: 8340 (40% → 100% of recent runs failing) and 7458-1 (2% → 14%)
+join, because their old suspect fails no longer inflate their baselines; 8340-1 leaves. On a model's
+**Drift metrics** tab, a line now says what was left out ("Left out of the drift check: 922
+readings from files marked suspect", on 8340-1), and a signal with no recent run says *No lot
+since Mon YYYY* instead of a tier.
+
+Two things for you to decide (TRACKER J): the hand-trim models' 10–20× errors, and the 7953 names.
+
 ## ⚡ 2026-09-30 — the app as an .exe for your coworker (you build it at work)
 
 Nothing here changes how YOU run the app: you keep `git pull` + `run_v6.bat`. This makes a second

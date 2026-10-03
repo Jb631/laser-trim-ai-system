@@ -4,9 +4,18 @@ What is open, in what order, and who holds the next move. Updated in the same
 commit as the work it describes. `BRING_TO_WORK.md` stays the place for
 step-by-step instructions at the work machine; this is the index above it.
 
-Last updated: 2026-09-30
+Last updated: 2026-10-02
 
-## ▶ Where things stand (Claude, 2026-09-30)
+## ▶ Where things stand (Claude, 2026-10-02)
+
+**New on 2026-10-02 — section J, from your handoff:** "im just not happy with the app, there is
+so much going on its hard to see what is what" and "im also concerned about dirty data and
+accuracy of the app telling me things are drifting". **Drift you can trust is done (J1):** four
+rules decide what may raise an alarm, and on the home copy the flag list falls from 49 models to 7
+— every one the audit called real stays, every one it called false is gone. The app rebuilds its
+drift state by itself at the next start (about ten seconds). **Next: the Graphite look and the
+Overview page (J2, J3)**, then the Model page in the layout you picked, C — four tabs (J4).
+Yours: the two questions in J5/J6.
 
 **New on 2026-09-30: the app can be packaged as an .exe for your coworker** (section I; the steps
 are at the top of `BRING_TO_WORK.md`). You asked for two things — "make sure the code is good for the
@@ -39,6 +48,7 @@ that rested on a final-test verdict has been re-derived on it (B3).
 | **E. Backlog upload** | shipped (E1) | — |
 | **F. Facelift** | steps 1 and 2 shipped; F4 follow-ups shipped | F5 "Inactive" models (+ F4's review gaps) — Claude |
 | **G. Parse fixes** | all built, reviewed and pushed (`422da7a`) | — (the back-fill is yours, optional) |
+| **J. Redesign and drift you can trust** | drift rules shipped (J1, 2026-10-02); Graphite look + Overview next; Model page = layout C (J4) | James: J5, J6 |
 | **I. The app as an .exe for a coworker** | code, build script and steps on `main` (2026-09-30); never built — that needs Windows | James: the first build at work (I5) |
 
 ### One thing of mine to own (2026-09-24): the home database was written to
@@ -872,6 +882,79 @@ first and reviewed; the whole test suite is the gate.
       happened to be the last digits of a long measured decimal in a test baseline. A short PO
       now matches only as a whole number; the whole history stays clean.
 
+## J. Redesign and drift you can trust — James, 2026-10-02
+
+From a handoff James pasted (2026-10-02): "im just not happy with the app, there is so much going on
+its hard to see what is what, i dont like the way the app presents" — "i dont think its colors or
+font its the overall ui" — "i like dark mode" (he picked **Graphite**: neutral near-black, white
+text, ONE blue accent, no navy, no teal; IBM Plex kept) — and "im also concerned about dirty data
+and accuracy of the app telling me things are drifting". The facelift (F) restyled and reordered
+the pages but removed nothing; this one removes.
+
+- [x] **J1 · Drift you can trust (`886df39`).** Four rules: (1) a file marked suspect, and a reading
+      that cannot be real (resistance ≥ 10 MΩ or ≤ 0, a resistance change made from one, an angle
+      above 400°, the 999.999 marker), never feed drift — counted, and said on the Drift metrics tab;
+      (2) a run of fewer than 3 units is judged pooled with the next run (within 90 days) and the
+      newest one waits; (3) runs more than 90 days apart do not add up, and a signal with no run in
+      the last 90 days cannot flag ("No lot since Mon YYYY"); (4) an improvement on a one-sided
+      signal is never an alarm (resistance and angle stay two-sided). The app retrains its drift
+      state once at the next start (`ensure_drift_rules`). **On the work database of 30 Sep**
+      (James brought it home 2026-10-02): 50 flagged → 7. The audit's six real flags stay (8506,
+      8504-2, 2475-8, 7953-1B, 8889, 7845), its six false ones go (7539-2, 8902, 7953-1A, 8415-1,
+      2511, 6952), the improvement 8877 goes; of the thin three, 8488B stays (runs of 6 and 3
+      units, 4–6σ up). Rebuilding alone, under the old rules, changes 1 of the 50 — the rules do
+      the rest. **An independent review** (2026-10-02) found five more, all fixed and each pinned
+      by a test that fails without its fix: the page on screen did not really reload after the
+      startup rebuild (and would have loaded on the window's thread); a composite too stale to
+      alarm still silenced its input signals; a one-sided signal banked improvements without
+      limit, so a later worsening alarmed late — now at most one EWMA standard error of credit
+      (simulated: false-WARNING rate 4.74 % → 4.97 %, detection after a long improvement lot 25 →
+      22; a floor at the baseline would cost 7.13 %); a failed startup rebuild also skipped the
+      catch-up; and a waiting small run took one of the three replay slots and pushed a real
+      run of a drift into the baseline (8889's resistance, rising since July, fell under the line
+      that way). Not applied: angles at or below 0 — the 2,416
+      negative angles are −0.1 on the 8340 family and 7715, whose angles all sit near zero. Worth a
+      look, not an alarm: 7539-2's escape rate is just under the line (+2.7σ on its 31 Jul run — 8 of
+      12 units the laser accepted failed final test in July). **"Drifting now"** (Home, Triage —
+      `ml/spc.compute_focus_list`, a separate p-chart of each run's fail rate that already ignored
+      small runs and improvements) now ignores suspect files too, so it agrees with the model
+      page's run chart — the sweep now compares every row's last five runs with its chart, and
+      fails on the old code (4 rows) — and drops a model whose newest bad run is more than 90 days
+      old: 7 → 8 on the 30 Sep copy (8340 and 7458-1 join — their old suspect fails had inflated
+      their baselines; 8340-1 leaves).
+- [ ] **J2 · The Graphite look — Claude, next.** The palette from the approved mockup into
+      `gui/v6/theme.py` (bg #0c0c0e, card #151518, border #26262b, text #ededed, secondary #8b8b93,
+      accent #3b82f6, chart highlight #60a5fa, history bars #2a3a58, worse #f87171, better
+      #4ade80), the readability test re-run on it.
+- [ ] **J3 · Overview and a top bar — Claude, after J2.** The approved structure: a top bar
+      (name · Overview · Models · Settings · one blue "Process new files") replaces the sidebar; "N
+      models need a look" as one card per model (units, monthly linearity-pass bars, big pass %,
+      "was X%"); "Everything else" as a plain list (model · units · pass % · steady/up/down,
+      hand-trim models tagged). The 12 metrics, findings, drift and history move inside a model.
+      **Which models get a card — James, 2026-10-02 (from the Overview drawn on the home copy's
+      real data): "keep all 16 cards (fail rate up, or a signal moved), each with its reason"** —
+      the "Drifting now" fail-rate list (11 on the copy) together with the drift detector's flags
+      (7; two in both), each card saying in one line why it is there.
+- [ ] **J4 · The Model page — James picked C ("i like c", 2026-10-02), Claude builds it.** Of three
+      layouts drawn on 8504-2's real runs (A one page top to bottom · B signal list and detail ·
+      C four tabs): a header (model, status, pass %, units, lasers) over four tabs — **Summary**
+      (the headline in a sentence, the moving signal's run chart, "Also moving", "Worth changing",
+      all 12 signals folded away) · **Units** (with smoothness) · **Final test** (with trim vs
+      final test) · **History**. Today's seven tabs fold into those four; nothing is lost.
+- [ ] **J5 · Model names — James confirms.** Merge 7953A → 7953-A (116 files into 1,109) and 7953B →
+      7953-B (86 into 1,254)? Then "Unknown" (381 files) and about 25 one-off names (0001, 0003,
+      1010, 1111, 1122, …) — each listed with its file names for you to say what it is.
+- [ ] **J6 · Decision: the hand-trim models' big laser-stage errors.** "Suspect" means a linearity
+      error more than 10× the band. On most models that is a scale fault (20× to over 200×), but on
+      8232-1 (359 tracks at 10–20×) and 8340-1 (49) it cuts into a continuous tail of their normal
+      errors (they run up to 5–10× routinely) — real units, now left out of drift with the rest.
+      Raise the line to 20× for drift on hand-trim models, or leave it?
+- [ ] **J7 · Option: the composite risk score is empty on every stored track.** 37 of the 260
+      composite risk models are deployed, but no stored file was processed while they were loaded
+      (they were trained after the rebuild). New files are scored from now on; a back-fill would
+      score the old ones, and until enough runs are scored the composite cannot train for drift (so
+      its input signals still alarm on their own, as designed for models without one).
+
 ## I. The app as an .exe for a coworker — James, 2026-09-30
 
 A coworker needs the app — "Look and analyse only"; if she processes, "just the daily files, not
@@ -919,6 +1002,15 @@ beside it by hand; no special variant and no data-copying machinery. His own dep
   not follow his.
 
 ## Housekeeping
+
+- [x] **H5 · Test windows no longer flash on screen (James, 2026-10-02):** "why does the test need
+      to flash the app on screen, cant we hide it so can continue to work while its running". The
+      app window was shown the moment CustomTkinter created it and stayed up while V6App built its
+      pages; `tests/conftest.py` now hides every test window the instant it exists (withdrawn and
+      transparent; dialogs transparent). Keyboard focus was never taken (measured). And one test
+      run at a time: agents run only the tests for what they change, the whole gate runs once per
+      push, and reviewers read code instead of starting their own runs ("it just seems wasteful
+      to be running 3 test instances at once").
 
 - [x] **H1 · `CLAUDE.md` step 1 breaks the git remote — FIXED (`fce84ee`):** the step now runs
       only when `.env` exists and holds a token. There is no `.env`, so
@@ -974,6 +1066,9 @@ beside it by hand; no special variant and no data-copying machinery. His own dep
   (`scripts/atp_spec_audit.py`).
 
 ## Done recently
+
+**2026-10-02:** drift you can trust (J1) — dirty readings, small runs, old evidence and
+improvements no longer raise alarms; 49 → 7 flagged on the home copy.
 
 **2026-09-30:** the app packaged for a coworker (section I) — the database rules for a copied
 `data` folder and for a packaged build, the self-check, the build file and the one-command build.
