@@ -318,10 +318,10 @@ def _models_on_file(db) -> set:
     """Every model the Models picker can open: one with a laser file or a smoothness file. A name
     found ONLY on final tests is not one of them (138 on the 30 Sep data -- 2475-08 beside the trim
     model 2475-8, among them): a naming question, TRACKER J5, not a model to list here."""
-    from sqlalchemy import text
+    from sqlalchemy import select, union
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR, SmoothnessResult as DBSR
     with db.session() as s:
-        rows = s.execute(text("SELECT DISTINCT model FROM analysis_results "
-                              "UNION SELECT DISTINCT model FROM smoothness_results")).fetchall()
+        rows = s.execute(union(select(DBAR.model), select(DBSR.model))).fetchall()   # distinct
     return {r[0] for r in rows if r[0]}
 
 
