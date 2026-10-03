@@ -441,7 +441,8 @@ def test_the_screens_check_names_what_it_counts(tmp_path):
     line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULTS_JSON=")), None)
     assert r.returncode == 0 and line, r.stdout[-3000:] + r.stderr[-3000:]
     results = [tuple(x) for x in json.loads(line[len("RESULTS_JSON="):])]
-    home = [x for x in results if x[1].startswith("home: 'N worth changing'")]
+    # The Findings page's count since the Overview replaced Home's "Worth changing" (2026-10-02).
+    home = [x for x in results if x[1].startswith("findings page: 'N changes worth testing'")]
     assert len(home) == 1 and home[0][0] == "PASS", results
     assert "draws" not in home[0][1] and "hands its view" in home[0][1], home
     assert "drawn=" not in home[0][2] and "handed=5" in home[0][2], home
@@ -452,8 +453,8 @@ def test_the_screens_check_names_what_it_counts(tmp_path):
 
 
 # ============================================== check_inactive_models_on_database (F5, 2026-09-25)
-# Every model the app calls inactive -- core/activity, and what the Findings page, Home and Triage
-# are handed -- must match the definition read by independent SQL: a laser file with a track that
+# Every model the app calls inactive -- core/activity, and what the Findings page and the Overview
+# (Home's and Triage's lists until 2026-10-02) are handed -- must match the definition read by independent SQL: a laser file with a track that
 # did not fail, no file more than a day ahead, more than 730 days behind the fleet's newest.
 
 def _inactive_scratch(tmp_path, *, behind=(("LIVE", 0), ("OLD", 900), ("MID", 400))):
@@ -545,3 +546,82 @@ def test_the_inactive_check_fails_when_the_app_counts_a_sweep_with_no_cut_as_a_t
         patch="import laser_trim_analyzer.core.activity as _a; _a._NOT_A_TRIM = _a._FAILED_PROCESSING")
     assert any(v == "FAIL" for v, _, _ in results), results
     assert any("SWEPT" in d or "NOTRIM" in d for v, _, d in results if v == "FAIL"), results
+
+
+# ============================================== check_overview_on_database (Graphite, 2026-10-02)
+# The Overview's cards must be the FOCUS list united with the drift detector's flags, and every
+# card's and row's pass % the stated definition -- each read independently of overview_data.
+
+def _overview_scratch(tmp_path):
+    """HOT runs at 10% failing, then one run at 60% (the fail-rate list); M1's linearity error
+    jumps (the drift watch, real training); CALM carries WARNINGs and suspect files; all invented."""
+    from datetime import timedelta
+    from test_drift_trust_rules import _history, _lot, _train
+    from test_overview_data import ANCHOR, _trims
+    db = _scratch_db(tmp_path)
+    start = ANCHOR - timedelta(days=77)
+    for k in range(11):
+        _trims(db, "HOT", start + timedelta(days=7 * k), passes=18, fails=2)
+    _trims(db, "HOT", ANCHOR, passes=8, fails=12)
+    _trims(db, "CALM", ANCHOR - timedelta(days=2), passes=40, warnings=5, fails=1, suspect_fails=9)
+    day = _history(db, "M1", start=ANCHOR - timedelta(days=7 * 14))
+    _lot(db, "M1", day, [0.5] * 5, tag="x")
+    _lot(db, "M1", day + timedelta(days=7), [0.5] * 5, tag="y")
+    _train(db)
+    return db
+
+
+def _run_overview_check(db, tmp_path, patch=""):
+    db.close()
+    code = (
+        "import sqlite3\n"
+        "import laser_trim_analyzer.database.manager as _m, laser_trim_analyzer.database as _d\n"
+        f"_db = _m.DatabaseManager(r'{db.database_path}'); _m._db_manager = _db; _d._db_manager = _db\n"
+        f"{patch}\n"
+        f"raw = sqlite3.connect('file:{db.database_path}?mode=ro', uri=True)\n"
+        "sweep.check_overview_on_database(_db, raw)\n")
+    r, results = _run_code(code)
+    assert r.returncode == 0 and results is not None, r.stdout[-3000:] + r.stderr[-3000:]
+    return results
+
+
+def test_the_overview_check_passes_when_the_page_matches_its_definitions(tmp_path):
+    results = _run_overview_check(_overview_scratch(tmp_path), tmp_path)
+    passed = {n for v, n, _ in results if v == "PASS"}
+    assert not [x for x in results if x[0] == "FAIL"], results
+    assert "overview: the cards are the fail-rate list, then the drift watch's other flags by tier" in passed
+    assert any(n.startswith("overview: every card's and row's units and pass %") for n in passed), results
+    assert any("2 cards" in d for _, _, d in results), results          # HOT and M1
+
+
+def test_the_overview_check_fails_when_suspect_files_are_counted(tmp_path):
+    results = _run_overview_check(
+        _overview_scratch(tmp_path), tmp_path,
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "_real = od._trim_filters\n"
+              "od._trim_filters = lambda DBAR, horizon: _real(DBAR, horizon)[:-1]")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any("pass %" in n and "CALM" in d for n, d in failed), results
+
+
+def test_the_overview_check_fails_when_a_warning_is_counted_as_a_fail(tmp_path):
+    results = _run_overview_check(
+        _overview_scratch(tmp_path), tmp_path,
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\nod._ACCEPTED = ('PASS',)")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any("pass %" in n and "CALM" in d for n, d in failed), results
+
+
+def test_the_overview_check_fails_when_the_detectors_own_models_are_left_off(tmp_path):
+    results = _run_overview_check(
+        _overview_scratch(tmp_path), tmp_path,
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "od.get_drifting_models = lambda db, *a, **k: []")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any(n.startswith("overview: the cards are") and "M1" in d for n, d in failed), results
+
+
+def test_the_overview_check_never_passes_on_nothing(tmp_path):
+    results = _run_overview_check(_scratch_db(tmp_path), tmp_path)
+    assert not any(v == "PASS" and ("cards are" in n or "pass %" in n) for v, n, _ in results), results
+    assert any(v == "WARN" for v, _, _ in results), results

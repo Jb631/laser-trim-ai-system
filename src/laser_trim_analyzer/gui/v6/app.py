@@ -1,4 +1,10 @@
-"""V6App root — sidebar + page container + the four real pages. Foundations §2.2."""
+"""V6App root — the top bar over the page container, and the pages. Foundations §2.2.
+
+The top bar replaced the sidebar on 2026-10-02 (Graphite redesign,
+docs/superpowers/specs/2026-10-02-graphite-redesign-design.md): Overview, Models and Settings
+on the bar, and one blue "Process new files" that runs the remembered folders on the Process
+page (`process_new_files`). Page KEYS never change -- every deep link navigates by key.
+"""
 import logging
 import time
 from typing import List, Optional, Tuple
@@ -9,8 +15,8 @@ from laser_trim_analyzer.config import Config
 from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.gui.v6 import ctk_patches
 from laser_trim_analyzer.gui.v6.page_container import PageContainer
-from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.topbar import TopBar
 from laser_trim_analyzer.gui.v6.ui_dispatch import UiDispatcher
 from laser_trim_analyzer.utils.threads import guard_tk_font_finalizer
 
@@ -78,7 +84,7 @@ class V6App(ctk.CTk):
         if self._auto_train_on_first_run:
             self.after(500, self._maybe_run_first_startup_train)
             # Catch-up advance: consume any data ingested since the last session
-            # (e.g. batches processed in V5 or by scripts) so Triage isn't stale.
+            # (e.g. batches processed in V5 or by scripts) so the Overview isn't stale.
             # Delayed so it doesn't compete with the first page load for the DB.
             self.after(5000, self._advance_drift_catchup)
 
@@ -87,7 +93,17 @@ class V6App(ctk.CTk):
         if self.page_container.get_page(name) is None:
             return
         self.page_container.show(name)
-        self.sidebar.set_active(name)
+        self.topbar.set_active(name)
+
+    def process_new_files(self) -> None:
+        """The top bar's one blue button: show the Process page and start the remembered-folder
+        run there. With no folders set, the page shows itself saying where to add them; with a run
+        already in flight, it shows that run."""
+        page = self.page_container.get_page("process")
+        if page is None:
+            return
+        self.show_page("process")
+        page.start_new_files()
 
     # ---- routing hint (3b adds consume_model_route, 3c adds consume_model_route_full) ----
     def set_model_route(self, model: str, focus_metric: Optional[str] = None,
@@ -197,42 +213,42 @@ class V6App(ctk.CTk):
         self.geometry(f"{self.config.gui.window_width}x{self.config.gui.window_height}")
         self.minsize(960, 640)
         self.configure(fg_color=self.theme.BG)
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=0)          # the top bar, its own height
+        self.grid_rowconfigure(1, weight=1)          # the pages take the rest
+        self.grid_columnconfigure(0, weight=1)
 
     def _build_layout(self) -> None:
-        self.sidebar = Sidebar(self, on_select=self.show_page, theme=self.theme)
-        self.sidebar.grid(row=0, column=0, sticky="nsw")
+        self.topbar = TopBar(self, on_select=self.show_page, on_process=self.process_new_files,
+                             theme=self.theme)
+        self.topbar.grid(row=0, column=0, sticky="ew")
         self.page_container = PageContainer(self, theme=self.theme)
-        self.page_container.grid(row=0, column=1, sticky="nsew")
+        self.page_container.grid(row=1, column=0, sticky="nsew")
 
     def _build_pages(self) -> None:
-        # All pages are real. Home is the landing; the rest follow in the sidebar.
+        # All pages are real. The Overview (key "home") is the landing; Models and Settings are
+        # on the top bar; Process, Findings and Dashboard are one click away (TopBar.OFF_BAR).
+        # Triage was retired on 2026-10-02 (Graphite redesign): the Overview's cards and its
+        # "Everything else" list are what it showed.
         from laser_trim_analyzer.gui.v6.pages.home_page import HomePage
         from laser_trim_analyzer.gui.v6.pages.dashboard_page import DashboardPage
-        from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
         from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
         from laser_trim_analyzer.gui.v6.pages.findings_page import FindingsPage
         from laser_trim_analyzer.gui.v6.pages.settings_page import SettingsPage
         from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage
         self.page_container.add_page(
             "home",
-            HomePage(self.page_container, theme=self.theme, app=self, page_title="Home"),
+            HomePage(self.page_container, theme=self.theme, app=self, page_title="Overview"),
         )
         self.page_container.add_page(
             "dashboard",
             DashboardPage(self.page_container, theme=self.theme, app=self, page_title="Dashboard"),
         )
         self.page_container.add_page(
-            "triage",
-            TriagePage(self.page_container, theme=self.theme, app=self, page_title="Triage"),
-        )
-        self.page_container.add_page(
             "model",
             # Route key stays "model" (FOCUS rows and set_model_route navigate to
-            # it); only what the user reads says "Investigate", matching the nav.
+            # it); only what the user reads says "Models", matching the top bar.
             ModelPage(self.page_container, theme=self.theme, app=self,
-                      page_title="Investigate"),
+                      page_title="Models"),
         )
         self.page_container.add_page(
             "findings",

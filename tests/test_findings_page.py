@@ -35,11 +35,14 @@ def _labels(widget):
     return out
 
 
-def test_findings_is_in_the_sidebar_right_after_investigate():
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-    keys = [k for k, _ in Sidebar.ITEMS]
-    assert ("findings", "Findings") in Sidebar.ITEMS
-    assert keys.index("findings") == keys.index("model") + 1
+def test_findings_left_the_bar_and_is_one_click_from_the_overview(make_app):
+    """Graphite redesign (2026-10-02, James: "thats fine"): Findings leaves the top bar for a
+    quiet "All findings" link at the foot of the Overview; a model's own findings live in it."""
+    from laser_trim_analyzer.gui.v6.topbar import TopBar
+    assert "findings" not in [k for k, _ in TopBar.ITEMS] and "findings" in TopBar.OFF_BAR
+    app = make_app()
+    app.page_container.get_page("home")._findings_link.invoke()
+    assert app.page_container.current_page == "findings"
 
 
 def test_the_list_is_ranked_and_a_row_opens_the_model(make_app, monkeypatch):

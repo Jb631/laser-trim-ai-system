@@ -1,4 +1,4 @@
-"""Ingest Folders — the remembered list behind HOME's "Process everything new".
+"""Ingest Folders — the remembered list behind "Process new files" (the top bar's button).
 
 Spec: docs/superpowers/specs/2026-08-29-app-shape-investigate-design.md §1/§3.
 Configured once here, walked top-to-bottom by HOME: the laser folders, then
@@ -47,7 +47,7 @@ class IngestFoldersSection:
 
         ctk.CTkLabel(parent, justify="left", wraplength=640, anchor="w",
                      font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY,
-                     text=("Home's “Process everything new” runs these folders in "
+                     text=("“Process new files” — the blue button at the top — runs these folders in "
                            "order — laser folders first, Final Test last. Add each "
                            "one once; a folder that is offline is still processed "
                            "next time and is called out below, never skipped in "

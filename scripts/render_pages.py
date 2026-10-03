@@ -17,17 +17,22 @@ laptop at 150%. The audit window is borderless (overrideredirect), because macOS
 window to its own screen (1512x917 px here) and would silently audit a smaller page than asked.
 Every audit.txt header names the scaling it ran at.
 
-PNG capture and --show use `build_views`: every page in `Sidebar.ITEMS`, plus the Model page loaded
-for the model with the most cached process findings, with its Findings tab selected (Task 7's own
-navigation: `app.set_model_route(model, tab="findings"); app.show_page("model")`) -- the Sidebar.ITEMS
-pass alone only ever shows the Model page's EMPTY state (no route is set).
+PNG capture and --show use `build_views`: every registered page (`page_keys()`: the top bar's
+`TopBar.ITEMS`, then `TopBar.OFF_BAR` -- Process, Findings, Dashboard -- the sidebar's list until the
+Graphite redesign, 2026-10-02), plus the Model page loaded for the model with the most cached process
+findings, with its Findings tab selected (Task 7's own navigation: `app.set_model_route(model,
+tab="findings"); app.show_page("model")`) -- the page pass alone only ever shows the Model page's
+EMPTY state (no route is set).
 
 --audit uses its OWN, richer procedure (`run_audit`), extended in a pre-review fix round (2026-09-24)
 after the first cut only ever saw whichever Model-page TAB happened to already be mapped (see point 2
 below) -- and the facelift spec names the Model page, not any one tab of it, as the most likely place
 for the bigger Step 1 text (SIZE_CAPTION 12, BODY 14, HEADING 17, TITLE 22, READOUT 20) to overflow an
 unchanged layout:
-  * every `Sidebar.ITEMS` page, plain;
+  * every page in `page_keys()`, plain, and the top bar once per size;
+  * the Overview with its inactive models expanded (where each one's "last trimmed Mon YYYY" is drawn
+    in full -- Triage's "All models" scope carried them until Triage was retired, 2026-10-02), and
+    the Process page with both runs' progress showing, as a started run shows it;
   * the Model page for TWO independently-resolved models -- `resolve_findings_model` (most cached
     findings) and `resolve_ft_heavy_model` (most final-test rows linked to a trim: a deliberately
     different data shape, so the sweep is not one model's UI state twice) -- each with EVERY tab its
@@ -446,21 +451,26 @@ def resolve_inactive_model(db, *, exclude=()) -> Optional[str]:
 View = Tuple[str, str, str, Callable]
 
 
+def page_keys() -> List[str]:
+    """Every page the app registers, in the order a reader meets them: the top bar's destinations,
+    then the pages reached from elsewhere (TopBar.OFF_BAR: the blue button, the Overview's links)."""
+    from laser_trim_analyzer.gui.v6.topbar import TopBar
+    return [key for key, _label in TopBar.ITEMS] + list(TopBar.OFF_BAR)
+
+
 def build_views(target_model: Optional[str]) -> List[View]:
-    """Every Sidebar.ITEMS page, plus the Model page for `target_model` with its
+    """Every page in page_keys(), plus the Model page for `target_model` with its
     Findings tab selected -- see the module docstring for why the second one
-    is a separate view rather than folded into the Sidebar.ITEMS pass.
+    is a separate view rather than folded into the page pass.
 
     Order matters: `PageContainer.show()` no-ops when the requested page is
     already current, so the extra Model-page view MUST come after some other
-    page has been shown (it does -- it is appended after the whole
-    Sidebar.ITEMS loop, and "process", the last entry, is never "model").
+    page has been shown (it does -- it is appended after the whole page loop,
+    and "dashboard", the last entry, is never "model").
     """
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-
     views: List[View] = [
         (key, key, key, (lambda app, key=key: app.show_page(key)))
-        for key, _label in Sidebar.ITEMS
+        for key in page_keys()
     ]
     if target_model:
         def _model_findings(app, model=target_model):
@@ -525,7 +535,7 @@ def _open_first_row(view) -> bool:
     Review finding (2026-09-24): FindingsView._render() re-opens whatever row
     was open before a refresh (`was_open` -> `toggle(was_open)`), and the
     Findings PAGE gets shown more than once in one --audit run -- once per
-    window size's Sidebar.ITEMS pass, once again for this explicit open. By
+    window size's page pass, once again for this explicit open. By
     the SECOND window size, the row this function opened for the FIRST size is
     routinely already open again by the time this runs (re-opened by
     _render()'s own "keep it open across a refresh" behaviour) -- and
@@ -551,21 +561,54 @@ def _open_first_row(view) -> bool:
     return view.open_key == key and view._detail is not None
 
 
-def _walk_triage_all_models(app, size_label: str, clipped: List[ClippedWidget]) -> None:
-    """Triage with its scope on "All models" -- where an inactive model's status reads "Inactive ·
-    last trimmed Mon YYYY" (F5); the default "Active" scope hardly ever lists one. Back to the
-    scope it was on afterwards, so every other pass audits what it always did."""
-    app.show_page("triage")
-    _pump(app)
-    page = app.page_container.get_page("triage")
-    was = page._scope.get()
-    page._scope.set("All models")
-    page._on_scope_change("All models")
+def overview_loaded(page) -> bool:
+    """Has the Overview's first load landed? Before it, the page says "Loading…" -- a state worth
+    seeing, but not the one the audit is about."""
+    return getattr(page, "_ov", None) is not None
+
+
+def _walk_overview_expanded(app, size_label: str, clipped: List[ClippedWidget]) -> None:
+    """The Overview with "Inactive models (N) ▸" open -- every inactive model's "last trimmed Mon
+    YYYY" drawn in full (F5; Triage's "All models" scope carried them until it was retired). Closed
+    again afterwards, so every other pass audits what it always did."""
+    app.show_page("home")
+    page = app.page_container.get_page("home")
+    _pump_until(app, lambda: overview_loaded(page), _BANNER_WAIT_SECONDS)
+    toggle = getattr(page, "_inactive_toggle", None)
+    if toggle is None or toggle.winfo_manager() == "":
+        print(f"note: no inactive models on the Overview at {size_label} -- skipping its expanded audit")
+        return
+    page._toggle_inactive()
     _pump(app, 1.0)
     app.update_idletasks()
-    _walk_page(app, "triage", "triage:all models", size_label, clipped)
-    page._scope.set(was)
-    page._on_scope_change(was)
+    _walk_page(app, "home", "home:inactive expanded", size_label, clipped)
+    page._toggle_inactive()
+
+
+def show_both_progress_sections(page) -> None:
+    """Pack the Process page's two progress sections with a long progress line in each, exactly as a
+    started run packs them -- without starting a run. Idle, the page shows neither."""
+    from laser_trim_analyzer.core.ingest_run import format_progress_line
+    line = format_progress_line(6123, 21877, folder=2, folders=3, rate=12.3, eta="about 21 min left",
+                                elapsed=3725.0, filename="8340-1_SN12345_TEST DATA_9-29-2026_10-07 AM.xls")
+    run = page._new_files
+    for progress, anchor in ((run._progress, {"before": run._summary}),
+                             (page._progress, {"before": page._db_info})):
+        if progress.winfo_manager() == "":
+            progress.pack(side="top", fill="x", **anchor)
+        progress.set_overall(6123, 21877, line)
+        progress.add_counts({"passed": 5000, "warnings": 400, "failed": 600, "skipped": 100,
+                             "errors": 23}, ["invented.xls: an invented reason the file failed"])
+
+
+def _walk_process_running(app, size_label: str, clipped: List[ClippedWidget]) -> None:
+    app.show_page("process")
+    _pump(app, 1.0)
+    page = app.page_container.get_page("process")
+    show_both_progress_sections(page)
+    _pump(app, 1.0)
+    app.update_idletasks()
+    _walk_page(app, "process", "process:both runs' progress", size_label, clipped)
 
 
 def _walk_findings_show_all(app, size_label: str, clipped: List[ClippedWidget]) -> None:
@@ -598,10 +641,10 @@ def run_audit(app, target_model: Optional[str], ft_model: Optional[str],
     so the densest page in the app is checked against two independently-chosen
     real data shapes, not one. `inactive_model` (F5) gets a third, "model3:<tab>":
     its caption starts "Inactive — last trimmed" and its findings rows carry the tag.
-    Triage is also walked on "All models" and the Findings page with every group
-    expanded, the two places an inactive model's label is drawn in full.
+    The Overview is also walked with its inactive models expanded and the Findings page with
+    every group expanded, the two places an inactive model's label is drawn in full -- and the
+    Process page with both runs' progress showing.
     """
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 
     clipped: List[ClippedWidget] = []
     failures: List[str] = []
@@ -632,16 +675,20 @@ def run_audit(app, target_model: Optional[str], ft_model: Optional[str],
         if failure:
             print(failure)
             failures.append(failure)
-        # The sidebar is not inside any page's subtree, and it never changes
+        # The top bar is not inside any page's subtree, and it never changes
         # across a page switch, so it gets one walk per size rather than one
         # per view.
-        clipped.extend(find_clipped_text_widgets(app.sidebar, page="sidebar", window_size=size_label))
-        for key, _label in Sidebar.ITEMS:
+        clipped.extend(find_clipped_text_widgets(app.topbar, page="top bar", window_size=size_label))
+        for key in page_keys():
             app.show_page(key)
             _pump(app)
+            if key == "home":       # its first load can outlast the fixed pump on a big copy
+                _pump_until(app, lambda: overview_loaded(app.page_container.get_page("home")),
+                            _BANNER_WAIT_SECONDS)
             app.update_idletasks()
             _walk_page(app, key, key, size_label, clipped)
-        _walk_triage_all_models(app, size_label, clipped)
+        _walk_overview_expanded(app, size_label, clipped)
+        _walk_process_running(app, size_label, clipped)
         if target_model:
             _sweep_model_tabs(app, target_model, "model", size_label, clipped)
         if ft_model:
@@ -799,7 +846,7 @@ def _run_audit_mode(db_path: Path, outdir: Path) -> int:
                   "tab sweep (the Model page's Inactive caption is not audited)")
         if target_model is None:
             print("note: this database has no findings and no analysis rows -- "
-                  "auditing every Sidebar.ITEMS page, but not the Model page's loaded state")
+                  "auditing every page, but not the Model page's loaded state")
         if ft_model is None:
             print("note: this database has no final-test rows linked to a trim -- "
                   "skipping the second model's tab sweep")

@@ -1,7 +1,8 @@
 """The ingest run — ONE folder-processing pipeline, driven by every page.
 
-This is ProcessPage._run, lifted out whole. Home's "Process everything new"
-and the Process page's folder picker are two front ends onto the same worker
+This is ProcessPage._run, lifted out whole. "Process new files" (the remembered
+folders; the top bar's button since 2026-10-02 -- Home's "Process everything new"
+before) and the Process page's folder picker are two front ends onto the same worker
 (spec 2026-08-29-app-shape-investigate-design.md §1: "same worker, no
 duplicate pipeline"), and the only way to keep them honest is for there to be
 exactly one implementation to call.
@@ -726,7 +727,7 @@ def format_ingest_summary(report: IngestReport) -> str:
                 + f" ({n} of {total_folders} folder"
                 + ("" if total_folders == 1 else "s") + ")"
                 f" · {format_elapsed(report.seconds)}"
-                " — press Process everything new again to continue; it resumes "
+                " — press Process new files again to continue; it resumes "
                 "where this left off (everything already saved is skipped).")
         line += _unreadable_clause(report)
         line += _unsaved_clause(report)

@@ -133,8 +133,8 @@ def test_every_tab_and_segmented_control_the_app_draws_is_readable(make_app):
     widgets = list(_walk(app))
     segs = [w for w in widgets if isinstance(w, ctk.CTkSegmentedButton)]
     # A walk that reached nothing would pass everything below: prove it reaches every control.
-    named = {"the Triage scope toggle": pages.get_page("triage")._scope,
-             "the Model chart toggle": pages.get_page("model")._chart_toggle,
+    # (Triage's scope toggle was the third one until Triage was retired, 2026-10-02.)
+    named = {"the Model chart toggle": pages.get_page("model")._chart_toggle,
              "the Model page's tabs": pages.get_page("model")._tabs._segmented_button}
     sliders = [w for w in widgets if isinstance(w, SensitivitySlider)]
     assert sliders, "the Settings sensitivity slider was never built"
@@ -365,6 +365,8 @@ def test_no_v6_segmented_control_or_checkbox_is_built_without_its_readable_colou
             if not (isinstance(value, ast.Attribute) and value.attr == token):
                 bad.append(f"{path.name}:{node.lineno} {name} without {keyword}=<theme>.{token}")
     # Floors, so a scan that silently matched nothing cannot pass: 3 segmented buttons, the tab
-    # view, and 5 checkbox sites existed when this was written.
-    assert seen["CTkSegmentedButton"] >= 3 and seen["CTkCheckBox"] >= 5 and seen["CTkTabview"] >= 1, seen
+    # view, and 5 checkbox sites existed when this was written -- 2 segmented buttons since
+    # Triage's scope toggle went with Triage (2026-10-02): the Model chart toggle and the
+    # sensitivity slider.
+    assert seen["CTkSegmentedButton"] >= 2 and seen["CTkCheckBox"] >= 5 and seen["CTkTabview"] >= 1, seen
     assert not bad, bad

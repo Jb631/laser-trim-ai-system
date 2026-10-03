@@ -305,7 +305,8 @@ def test_cancelled_summary_says_how_far_it_got_and_how_to_continue():
                            "(2 of 3 folders) · 12 min 4 s")
     # Resuming must be spelled out: without it the safe reading is "I have to
     # start the whole thing again", and nobody ever presses Stop.
-    assert "again" in line and "Process everything new" in line
+    # The button's name since the Graphite redesign (2026-10-02): "Process new files".
+    assert "again" in line and "Process new files" in line
     assert "skip" in line.lower() or "resume" in line.lower()
 
 
@@ -341,10 +342,11 @@ def test_an_uncancelled_summary_is_word_for_word_what_it_was():
         "3 folders · 214 new files · 2 min 40 s"
 
 
-# ---- HOME ------------------------------------------------------------------
+# ---- "Process new files" (Home's run until 2026-10-02; the Process page's top section now) ----
 
 def _home(app):
-    return app.page_container.get_page("home")
+    """The remembered-folder run -- the section that was Home's card, on the Process page now."""
+    return app.page_container.get_page("process")._new_files
 
 
 class _NoThread:
@@ -383,8 +385,8 @@ def test_home_has_no_stop_button_until_a_run_starts(make_app, tmp_path):
 
 def test_home_stop_button_appears_while_running_and_leaves_after(
         make_app, monkeypatch, tmp_path):
-    import laser_trim_analyzer.gui.v6.pages.home_page as home_mod
-    _no_threads(monkeypatch, home_mod)
+    import laser_trim_analyzer.gui.v6.pages.process_page as proc_mod
+    _no_threads(monkeypatch, proc_mod)
     app = make_app()
     app.config.ingest.add(str(tmp_path))
     page = _home(app)
@@ -398,8 +400,8 @@ def test_home_stop_button_appears_while_running_and_leaves_after(
 
 def test_home_stop_sets_the_event_and_relabels_itself(make_app, monkeypatch,
                                                       tmp_path):
-    import laser_trim_analyzer.gui.v6.pages.home_page as home_mod
-    _no_threads(monkeypatch, home_mod)
+    import laser_trim_analyzer.gui.v6.pages.process_page as proc_mod
+    _no_threads(monkeypatch, proc_mod)
     app = make_app()
     app.config.ingest.add(str(tmp_path))
     page = _home(app)

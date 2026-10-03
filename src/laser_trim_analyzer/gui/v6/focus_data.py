@@ -1,10 +1,10 @@
-"""The FOCUS list's page-side loader — one function, two pages.
+"""The FOCUS list's page-side loader — one function, for every screen that shows it.
 
-Home and Triage both open on "is anything drifting right now?", and they have
-to answer it identically. `ml/spc.compute_focus_list` already owns the
-membership rule, the ranking and the wording; what was about to get copied is
-the wrapper around it — the failure posture and the "last processed" stamp the
-empty state prints. So it lives here, called by both.
+Home and Triage both opened on "is anything drifting right now?" and had to answer it
+identically; since 2026-10-02 (Graphite redesign) the Overview's cards are its one caller
+(gui/v6/overview_data.py: the fail-rate half of the cards). `ml/spc.compute_focus_list` owns the
+membership rule, the ranking and the wording; what lives here is the wrapper around it — the
+failure posture and the "last processed" stamp.
 
 Worker-safe: no Tk, no widget, no page state. Callers run it on a thread and
 marshal the result back through `safe_after`/`ui_dispatch`.
@@ -45,9 +45,8 @@ def load_focus(db, models: Optional[Sequence] = None
     shop floor, but marked, so a screen can name the failure in a banner instead of reading it
     as "all models within tolerance".
 
-    `models` is the caller's already-loaded model list (Triage has one for its
-    browse list); pass it to avoid a second inventory query. Without it the
-    stamp is read straight from the model inventory.
+    `models` is a caller's already-loaded model list; pass it to avoid a second
+    inventory query. Without it the stamp is read straight from the model inventory.
     """
     try:
         result = compute_focus_list(db)

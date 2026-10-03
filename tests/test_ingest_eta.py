@@ -410,10 +410,11 @@ def test_the_single_event_path_credits_known_files_as_well(make_app):
     assert page._progress._counters["skipped"] == 0
 
 
-# ---- HOME paints the whole run --------------------------------------------
+# ---- "Process new files" paints the whole run (Home's run until 2026-10-02) ----------------
 
 def _home(app):
-    return app.page_container.get_page("home")
+    """The remembered-folder run -- the section that was Home's card, on the Process page now."""
+    return app.page_container.get_page("process")._new_files
 
 
 def test_home_paints_the_run_total_not_the_folders(make_app):

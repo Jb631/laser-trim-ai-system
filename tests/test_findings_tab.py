@@ -540,7 +540,6 @@ def test_the_presentation_layer_and_both_counts_read_findings_cached_by_older_ve
     (the new analyzers' pre-fix evidence): arranged without a crash, and every row's number is the
     one its own evidence holds -- never a 0 or a blank made up for a field it lacks."""
     from laser_trim_analyzer.findings import presentation as P
-    from laser_trim_analyzer.gui.v6.pages.home_page import _yield_findings_count
     from laser_trim_analyzer.gui.v6.pages.model_page import _worth_changing_count
     for version in ("pre_pull", "fix_57fdcdb"):
         for model, findings in CACHE[version]["findings"].items():
@@ -564,8 +563,6 @@ def test_the_presentation_layer_and_both_counts_read_findings_cached_by_older_ve
                         assert r.value == sum(x["n_units"] for x in r.findings)
                     shown = P.value_text(key, r.value, r.findings)
                     assert shown == "—" if r.value is None else shown not in ("", "—")
-            assert _yield_findings_count(findings) == sum(
-                len(g.rows) for g in groups if g.spec.key == "yield")
             assert _worth_changing_count(findings) == sum(
                 len(g.rows) for g in groups if g.spec.key in ("yield", "laser_time", "check"))
 

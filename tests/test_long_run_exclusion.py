@@ -1,7 +1,7 @@
 """One long job at a time: a re-grade and an ingest must not overlap.
 
 Work incident, 2026-09-14. The re-grade was started at 14:19. At 14:45, with
-it still running, "Process everything new" was pressed. Nothing crashed and
+it still running, "Process everything new" (now "Process new files") was pressed. Nothing crashed and
 nothing was corrupted — they simply shared one SQLite write lock and one SMB
 link, and both got much worse:
 
@@ -26,7 +26,9 @@ from laser_trim_analyzer.core.ingest_run import IngestReport
 
 
 def _home(app):
-    return app.page_container.get_page("home")
+    """The remembered-folder run: HOME's card until 2026-10-02, the Process page's top section
+    now (the top bar's "Process new files" starts it)."""
+    return app.page_container.get_page("process")._new_files
 
 
 def _live_run(app, name):

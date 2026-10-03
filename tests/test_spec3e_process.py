@@ -71,36 +71,71 @@ def test_process_page_initial_state(make_app):
     assert str(page._start_button.cget("state")) == "disabled"
 
 
-# ---- facelift step 2, Task 7: one button, a way to what changed ------------
+# ---- the Graphite redesign (2026-10-02): no blue button of its own ---------------------------
 
-def test_start_processing_is_the_one_teal_button(make_app):
-    """blocks.primary_button, and the only one on this page (global-constraints.md: at most
-    ONE teal-filled button per screen)."""
+def _buttons(widget):
+    import customtkinter as ctk
+    out = []
+    for c in widget.winfo_children():
+        if isinstance(c, ctk.CTkButton):
+            out.append(c)
+        out.extend(_buttons(c))
+    return out
+
+
+def _labels(widget):
+    import customtkinter as ctk
+    out = []
+    for c in widget.winfo_children():
+        if isinstance(c, ctk.CTkLabel):
+            out.append(c.cget("text"))
+        out.extend(_labels(c))
+    return out
+
+
+def test_the_page_draws_no_blue_button_the_top_bar_holds_the_one(make_app, tmp_path):
+    """The spec: "accent #3b82f6 (the single primary button)" -- the top bar's "Process new
+    files", on screen above every page. Both runs here start from plain buttons."""
     app = make_app()
+    app.config.ingest.add(str(tmp_path))
     page = app.page_container.get_page("process")
+    page.on_show()
+    page._folder_picker.set_value(str(tmp_path))
     t = page.theme
     assert page._start_button.cget("text") == "Start processing"
-    assert page._start_button.cget("fg_color") == t.ACCENT
-    assert page._see_changed.cget("fg_color") != t.ACCENT
+    assert page._new_files._run_button.cget("text") == "Process new files"
+    blue = [b.cget("text") for b in _buttons(page) if b.cget("fg_color") == t.ACCENT]
+    assert blue == []
+    assert [b.cget("text") for b in _buttons(app.topbar) if b.cget("fg_color") == t.ACCENT] == [
+        "Process new files"]
 
 
-def test_see_what_changed_appears_after_a_run_and_routes_to_findings(make_app):
-    """Replaces the old 'Go to Triage' teal button (ruling 6): a blocks.link_button that
-    routes to Findings, not Triage -- 'what changed' is what the findings engine says. It used
-    to make a SECOND teal button appear next to Start processing the moment a run finished."""
+def test_the_page_holds_both_runs_new_files_first(make_app):
     app = make_app()
     page = app.page_container.get_page("process")
-    t = page.theme
+    order = page._body.pack_slaves()
+    assert order.index(page._new_files) < order.index(page._folder_picker)
+    text = " ".join(_labels(page))
+    assert "New files from your folders" in text and "A specific folder" in text
+    assert not hasattr(page, "_see_changed")          # a finished run lands on Overview instead
 
-    def _packed(w):
-        return w.winfo_manager() == "pack"
 
-    assert _packed(page._see_changed) is False        # not shown before any run
+def test_each_progress_shows_only_once_its_run_has_started(make_app, monkeypatch, tmp_path):
+    """An idle "Ready" bar and five zero counters, twice over, say nothing (James: "there is so
+    much going on"). Each run's progress appears when it starts, and stays to show the tally."""
+    _no_threads(monkeypatch)
+    app = make_app()
+    page = app.page_container.get_page("process")
+    assert page._progress.winfo_manager() == "" and page._new_files._progress.winfo_manager() == ""
+    page._folder_picker.set_value(str(tmp_path))
+    page._start()
+    assert page._progress.winfo_manager() == "pack"
     page._on_done()
-    assert _packed(page._see_changed) is True
-    assert page._see_changed.cget("fg_color") != t.ACCENT   # never a second teal button
-    page._see_changed.invoke()
-    assert app.page_container.current_page == "findings"
+    assert page._progress.winfo_manager() == "pack"
+    app.config.ingest.add(str(tmp_path))
+    page._new_files.refresh_folders()
+    page._new_files._start()
+    assert page._new_files._progress.winfo_manager() == "pack"
 
 
 @pytest.mark.parametrize("scale", (1.0, 1.5))
@@ -151,3 +186,308 @@ def test_apply_progress_counts_skipped_from_processing_status(make_app):
 # ---- 2026-08-29: parallel folder walk --------------------------------------
 # The walk moved to core/ingest_run.discover_excel_files (2026-08-31, one
 # shared pipeline); its tests live in tests/test_ingest_run.py.
+
+
+# ---- "Process new files": the remembered folder list (moved from Home, 2026-10-02) -------------
+# Home's "Bring in what's new" card -- run, stop, progress, the one-line summary, and the way to
+# the folder list in Settings -- lives at the top of this page now, above the one-off picker. The
+# top bar's blue button is the same run: V6App.process_new_files shows this page and starts it.
+
+from laser_trim_analyzer.core.ingest_run import FolderResult, IngestReport  # noqa: E402
+
+
+class _NoThread:
+    """Stand-in for threading.Thread: records, never starts."""
+    started = []
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self.target, self.args = target, args or ()
+
+    def start(self):
+        _NoThread.started.append((self.target, self.args))
+
+    def is_alive(self):
+        return True
+
+    def join(self, timeout=None):
+        pass
+
+
+def _no_threads(monkeypatch):
+    """Freeze thread spawning INSIDE process_page only -- replacing the module reference in its
+    namespace, never threading.Thread itself (that would freeze every other thread in the
+    process: the Settings page's folder probe landed in the recorder that way once)."""
+    import types
+    import laser_trim_analyzer.gui.v6.pages.process_page as proc_mod
+    _NoThread.started = []
+    monkeypatch.setattr(proc_mod, "threading", types.SimpleNamespace(Thread=_NoThread))
+    return _NoThread
+
+
+def _process(app):
+    return app.page_container.get_page("process")
+
+
+def _runs_started(run):
+    """The remembered-folder runs the fake recorded -- not the page's own database check, which
+    starts a thread of its own every time the page is shown."""
+    return [args for target, args in _NoThread.started if target == run._run]
+
+
+def _new_files(app):
+    return _process(app)._new_files
+
+
+def _with_folders(app, *folders):
+    for f in folders:
+        app.config.ingest.add(f)
+    run = _new_files(app)
+    run.refresh_folders()
+    return run
+
+
+def test_with_no_folders_the_run_says_where_to_add_them(make_app):
+    app = make_app()                       # fresh Config: no folders
+    run = _new_files(app)
+    assert str(run._run_button.cget("state")) == "disabled"
+    said = run._folders_label.cget("text")
+    assert "Settings" in said and "folder" in said.lower()
+    run._settings_link.invoke()
+    assert app.page_container.current_page == "settings"
+
+
+def test_with_folders_the_run_names_them_in_order(make_app, tmp_path):
+    app = make_app()
+    run = _with_folders(app, str(tmp_path / "a"), str(tmp_path / "b"))
+    assert str(run._run_button.cget("state")) == "normal"
+    said = run._folders_label.cget("text")
+    assert said.startswith("2 folders, in this order:")
+    assert said.index(str(tmp_path / "a")) < said.index(str(tmp_path / "b"))
+
+
+def test_the_run_drives_the_shared_multi_folder_runner(make_app, monkeypatch):
+    """No second pipeline: core/ingest_run.run_folders, in the configured order, incremental."""
+    from laser_trim_analyzer.core import ingest_run
+    seen = {}
+
+    def fake(folders, **kw):
+        seen.update(folders=list(folders), incremental=kw.get("incremental"), db=kw.get("db"))
+        return IngestReport(results=[], seconds=1.0)
+
+    monkeypatch.setattr(ingest_run, "run_folders", fake)
+    app = make_app()
+    run = _with_folders(app, "/laser/a", "/laser/b", "/final_test")
+    run._run(["/laser/a", "/laser/b", "/final_test"], True)
+    assert seen == {"folders": ["/laser/a", "/laser/b", "/final_test"], "incremental": True,
+                    "db": app.db}
+
+
+def test_the_button_is_disabled_while_the_run_is_in_flight(make_app, monkeypatch, tmp_path):
+    _no_threads(monkeypatch)
+    app = make_app()
+    run = _with_folders(app, str(tmp_path))
+    run._start()
+    assert str(run._run_button.cget("state")) == "disabled"
+    assert _NoThread.started, "a worker should have been spawned"
+    run._on_run_done(IngestReport(results=[], seconds=1.0))
+    assert str(run._run_button.cget("state")) == "normal"
+
+
+def test_start_is_a_no_op_with_no_folders(make_app, monkeypatch):
+    app = make_app()
+    _no_threads(monkeypatch)
+    _new_files(app)._start()
+    assert _NoThread.started == []
+
+
+def test_the_run_shows_the_combined_summary(make_app):
+    from laser_trim_analyzer.core.ingest_run import format_ingest_summary
+    app = make_app()
+    run = _new_files(app)
+    report = IngestReport(
+        results=[FolderResult(folder=f"/f{i}", ok=True, files_found=100, new_files=n, seconds=1.0)
+                 for i, n in enumerate((100, 100, 14))], seconds=160.0)
+    run._on_run_done(report)
+    assert run._summary.cget("text") == format_ingest_summary(report)
+    assert "3 folders · 214 new files · 2 min 40 s" in run._summary.cget("text")
+
+
+def test_the_summary_names_a_folder_that_failed(make_app):
+    app = make_app()
+    run = _new_files(app)
+    run._on_run_done(IngestReport(results=[
+        FolderResult(folder="/laser/a", ok=True, files_found=10, new_files=4),
+        FolderResult(folder="\\\\192.0.2.9\\Laser", ok=False, error="not found — offline share?")],
+        seconds=61.0))
+    text = run._summary.cget("text")
+    assert "\\\\192.0.2.9\\Laser" in text and "1 of 2 folders failed" in text
+
+
+# ---- the top bar's button --------------------------------------------------------------------
+
+def test_the_top_bar_button_shows_the_page_and_starts_the_remembered_run(make_app, monkeypatch,
+                                                                       tmp_path):
+    _no_threads(monkeypatch)
+    app = make_app()
+    _with_folders(app, str(tmp_path / "laser"), str(tmp_path / "final test"))
+    app.topbar._process_button.invoke()
+    assert app.page_container.current_page == "process"
+    assert app.topbar._active_name is None                  # Process has no item on the bar
+    run = _new_files(app)
+    assert run._running is True
+    (args,) = _runs_started(run)
+    assert args[0] == [str(tmp_path / "laser"), str(tmp_path / "final test")]
+
+
+def test_with_no_folders_the_button_shows_the_page_saying_where_to_add_them(make_app, monkeypatch):
+    _no_threads(monkeypatch)
+    app = make_app()
+    app.process_new_files()
+    assert app.page_container.current_page == "process"
+    assert _runs_started(_new_files(app)) == []
+    assert "Settings" in _new_files(app)._folders_label.cget("text")
+
+
+def test_pressing_the_button_again_during_the_run_starts_no_second_one(make_app, monkeypatch,
+                                                                      tmp_path):
+    _no_threads(monkeypatch)
+    app = make_app()
+    _with_folders(app, str(tmp_path))
+    app.process_new_files()
+    app.show_page("model")
+    app.process_new_files()                   # back to the page, where the run is
+    assert app.page_container.current_page == "process"
+    assert len(_runs_started(_new_files(app))) == 1
+
+
+# ---- a finished run lands on Overview, whose top shows its summary line ------------------------
+
+def _report(new=214, failed=False, cancelled=False):
+    results = [FolderResult(folder="/laser/a", ok=True, files_found=300, new_files=new, seconds=1.0)]
+    if failed:
+        results.append(FolderResult(folder="/laser/b", ok=False, error="not found — offline share?"))
+    return IngestReport(results=results, seconds=160.0, cancelled=cancelled)
+
+
+def test_a_finished_run_lands_on_overview_with_its_summary_on_top(make_app):
+    from laser_trim_analyzer.core.ingest_run import format_ingest_summary
+    app = make_app()
+    app.show_page("process")
+    report = _report()
+    _new_files(app)._on_run_done(report)
+    assert app.page_container.current_page == "home"
+    overview = app.page_container.get_page("home")
+    line = overview._run_line
+    assert line.winfo_manager() == "pack" and line.cget("text") == format_ingest_summary(report)
+    t = overview.theme
+    assert (line.cget("fg_color"), line.cget("text_color")) == (t.CARD, t.TEXT_SECONDARY)  # quietly
+
+
+def test_a_run_with_a_folder_that_failed_lands_with_its_line_in_the_check_colour(make_app):
+    app = make_app()
+    app.show_page("process")
+    _new_files(app)._on_run_done(_report(failed=True))
+    overview = app.page_container.get_page("home")
+    t = overview.theme
+    assert app.page_container.current_page == "home"
+    assert "1 of 2 folders failed" in overview._run_line.cget("text")
+    assert (overview._run_line.cget("fg_color"), overview._run_line.cget("text_color")) == (
+        t.CHECK_TINT, t.CHECK)
+
+
+def test_a_stopped_run_stays_on_the_process_page(make_app):
+    app = make_app()
+    app.show_page("process")
+    run = _new_files(app)
+    run._on_run_done(_report(new=52, cancelled=True))
+    assert app.page_container.current_page == "process"
+    assert run._summary.cget("text").startswith("Stopped after 52")
+    assert "press Process new files again" in run._summary.cget("text")
+
+
+def test_a_run_that_finishes_while_you_read_a_model_does_not_pull_you_away(make_app):
+    app = make_app()
+    app.show_page("settings")
+    _new_files(app)._on_run_done(_report())
+    assert app.page_container.current_page == "settings"
+    overview = app.page_container.get_page("home")
+    assert overview._run_line.winfo_manager() == "pack"           # waiting for you there
+
+
+def test_a_finished_one_off_folder_lands_on_overview_too(make_app):
+    app = make_app()
+    page = _process(app)
+    app.show_page("process")
+    page._on_done(FolderResult(folder="/one/off", ok=True, files_found=60, new_files=52, seconds=40.0))
+    assert app.page_container.current_page == "home"
+    assert app.page_container.get_page("home")._run_line.cget("text") == "1 folder · 52 new files · 40 s"
+
+
+def test_a_stopped_one_off_folder_stays(make_app):
+    app = make_app()
+    page = _process(app)
+    app.show_page("process")
+    page._on_done(FolderResult(folder="/one/off", ok=True, files_found=60, new_files=20,
+                               cancelled=True))
+    assert app.page_container.current_page == "process"
+
+
+# ---- the full-width lines fit (moved from Home; final review, 2026-09-24) ----------------------
+
+def _map_offscreen(app, size="1280x720"):
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.geometry(f"{size}+20000+20000")
+    app.deiconify()
+    app.update_idletasks()
+    app.update()
+
+
+def test_the_full_width_lines_fit_at_1280_by_720(make_app):
+    """Measured with the audit's own detector, on a real mapped window (invisible), with invented
+    folder names long enough to wrap."""
+    import pathlib
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    from render_pages import find_clipped_text_widgets
+    app = make_app()
+    app.show_page("process")
+    run = _new_files(app)
+    folders = "  →  ".join(f"/invented/share/laser-{i}/Trim Data/Production line {i}" for i in range(1, 9))
+    run._folders_label.configure(text=f"8 folders, in this order:  {folders}")
+    run._summary.configure(text=f"Summary line {folders}")
+    _map_offscreen(app)
+    try:
+        leads = ("8 folders", "Summary line")
+        ours = [c for c in find_clipped_text_widgets(_process(app), page="process", window_size="1280x720")
+                if c.text.startswith(leads)]
+        assert not ours, [c.line() for c in ours]
+    finally:
+        app.withdraw()
+
+
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_the_folders_and_summary_lines_wrap_to_their_container(make_app, scale):
+    """global-constraints.md: no fixed pixel wraplength on page-width text. At 150% too:
+    wraplength is CustomTkinter's unscaled units, the container's width real pixels."""
+    import customtkinter as ctk
+    ctk.set_widget_scaling(scale)
+    try:
+        app = make_app()
+        app.show_page("process")
+        run = _new_files(app)
+        folders = "  →  ".join(f"/invented/share/laser-{i}/Trim Data" for i in range(1, 9))
+        run._folders_label.configure(text=f"8 folders, in this order:  {folders}")
+        run._summary.configure(text=f"Summary line {folders}")
+        _map_offscreen(app)
+        try:
+            width = run._folders_label.master.winfo_width()
+            for label in (run._folders_label, run._summary):
+                assert label.cget("wraplength") == int(width / scale)
+                assert label._label.winfo_reqwidth() <= width
+        finally:
+            app.withdraw()
+    finally:
+        ctk.set_widget_scaling(1.0)
