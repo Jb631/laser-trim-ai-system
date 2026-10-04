@@ -4922,8 +4922,7 @@ def main() -> int:
     # in its own series that put it there.
     with _guard("focus list: the SPC invariants"):
         from laser_trim_analyzer.ml.manager import (
-            list_known_models, active_model_set,
-            preview_alert_count, get_model_drift_status)
+            list_known_models, preview_alert_count, get_model_drift_status)
         from laser_trim_analyzer.ml.spc import (
             RECENT_K, compute_focus_list, compute_spc_series)
         try:
@@ -5141,10 +5140,12 @@ def main() -> int:
         check("shell: top bar/page registration contract", False,
               f"{type(exc).__name__}: {exc}")
 
-    with _guard("presets and the active-model set"):
-        from laser_trim_analyzer.ml.manager import (active_model_set, list_known_models,
-                                                    preview_alert_count)
-        known = {m.model for m in list_known_models(db)}
+    # The "active set" check that stood here tested ml.manager.active_model_set, which only
+    # Triage and the dead Settings → Active Models section called; both are gone (2026-10-02/04).
+    # Which models are active is the Overview's now, held to independent SQL by
+    # check_overview_on_database ("every active model once").
+    with _guard("presets"):
+        from laser_trim_analyzer.ml.manager import preview_alert_count
         counts = {}
         for preset in ("loose", "standard", "tight", "strict"):
             p = preview_alert_count(db, preset)
@@ -5152,9 +5153,6 @@ def main() -> int:
         check("presets: tighter never flags more",
               counts["loose"] >= counts["standard"] >= counts["tight"] >= counts["strict"],
               str(counts))
-        active = active_model_set(db, recent_days=90, mps_models=[])
-        check("active set (unpinned) is a subset of known models",
-              active.issubset(known), f"active={len(active)}")
 
     # ============ 4. MODEL PAGE loaders across variants =======================
     with _guard("model loaders across variants"):

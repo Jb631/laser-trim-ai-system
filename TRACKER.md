@@ -1053,6 +1053,17 @@ beside it by hand; no special variant and no data-copying machinery. His own dep
       push, and reviewers read code instead of starting their own runs ("it just seems wasteful
       to be running 3 test instances at once").
 
+- [x] **H6 · Dead Settings code removed (2026-10-04, after the redesign retired Triage).** Two
+      V6 Settings modules that no screen built: `sections/active_models.py` (the old "Active
+      Models (MPS)" editor; its docstring said Triage read it) and `sections/pricing.py` (the old
+      price upload, replaced by the Backlog section in E1, 2026-09-20, which reads prices through
+      `core/backlog`). Nothing imported either one but two tests of `pricing.py` itself, and the
+      packaged build lists its modules by walking the source, so no build file named them. With
+      them goes `ml.manager.active_model_set`, which only those two screens called; its own
+      unit test and the sweep's "active set" check went too. Which models are active is the
+      Overview's now, and its sweep check holds them to independent SQL. `config.active_models.
+      recent_days` stays: the V5 Settings page still shows and saves it.
+
 - [x] **H1 · `CLAUDE.md` step 1 breaks the git remote — FIXED (`fce84ee`):** the step now runs
       only when `.env` exists and holds a token. There is no `.env`, so
       the command sets the remote to `https://@github.com/…` and the next push
