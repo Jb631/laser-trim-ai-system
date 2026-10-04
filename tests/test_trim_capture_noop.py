@@ -29,6 +29,7 @@ import did not come from the root it was told to use. It prints the file it
 imported, which belongs in the record of any run that regenerates this.
 """
 import json
+import math
 import sys
 import tempfile
 from pathlib import Path
@@ -85,19 +86,43 @@ def test_no_pre_existing_field_changed():
     assert not diffs, "capture changed pre-existing values:\n" + "\n".join(diffs[:20])
 
 
+# Two maths libraries can round the last bit or two of a float differently. The Mac's numpy is
+# built on Apple's Accelerate, the work laptop's on OpenBLAS, and a package reinstall on the Mac
+# (2026-10-04) swapped its build: 8232-1's sigma gradient read 0.0005741040733785927 where the
+# baseline holds ...929, 3 parts in 10^16. A parser change moves a value by far more than one part
+# in 10^12, so that line tells rounding from a change. (abs: a value at zero is compared absolutely.)
+FLOAT_REL_TOL = 1e-12
+FLOAT_ABS_TOL = 1e-15
+
+
 def _same(a, b):
-    """Equality that treats NaN as equal to NaN.
+    """Equality that treats NaN as equal to NaN, and forgives the last-bit rounding of a float.
 
     `nan != nan`, so a plain `!=` would report a permanent, unfixable diff on
     any column that legitimately stores NaN — and these exact 8232-1 files are
     the ones that produce it: `max()` returns NaN when element 0 is NaN, and
     they open with an unmeasured lead-in. A baseline NaN compared against the
-    identical NaN must read "unchanged", because it IS unchanged.
+    identical NaN must read "unchanged", because it IS unchanged. A list (a
+    sweep's points) is compared element by element under the same rules.
     """
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
     if isinstance(a, float) and isinstance(b, float):
         if a != a and b != b:       # both NaN
             return True
+        return math.isclose(a, b, rel_tol=FLOAT_REL_TOL, abs_tol=FLOAT_ABS_TOL)
     return a == b
+
+
+def test_the_comparison_forgives_rounding_never_a_real_change():
+    """The tolerance is for the maths library's last bit, nothing more."""
+    assert _same(0.0005741040733785927, 0.0005741040733785929)      # Accelerate vs the baseline
+    assert not _same(0.0005741040733785927, 0.0005741040733785927 * (1 + 1e-9))
+    assert not _same(0.0, 1e-12)
+    assert _same(float("nan"), float("nan")) and not _same(float("nan"), 0.0)
+    assert _same([1.0, 0.0005741040733785927], [1.0, 0.0005741040733785929])
+    assert not _same([1.0, 2.0], [1.0, 2.000001]) and not _same([1.0], [1.0, 2.0])
+    assert not _same(3, 4) and _same("TRK1", "TRK1")
 
 
 def _normalise(dump):
