@@ -963,7 +963,10 @@ the pages but removed nothing; this one removes.
       (a file that failed processing no longer counts as a failure, suspect files are out, and a
       future-dated file no longer draws a future month), so Company trends reads the same. And
       "why is there like a halo behind the text" on the Units tab's table: its shaded bands sat
-      under the table's own background, so only the shaded labels showed, as boxes; fixed.
+      under the table's own background, so only the shaded labels showed, as boxes; fixed. Then
+      "the colors are too similare you cant tell them apart": the lasers are lime, teal and purple
+      now (each pair at least 89 degrees of hue apart), each with its own marker; and on the Mac a
+      mouse-wheel notch scrolls 30 px instead of 8 ("mouse is not scolling").
 - [x] **J4 · The Model page — James picked C ("i like c", 2026-10-02), built the same day.** Of three
       layouts drawn on 8504-2's real runs (A one page top to bottom · B signal list and detail ·
       C four tabs): a header (model, status, pass %, units, lasers) over four tabs — **Summary**

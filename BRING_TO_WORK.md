@@ -15,7 +15,8 @@ What you will see:
    below.
 2. **The Overview** is the page the app opens on.
    - At the top, **"Yield by laser — last 12 months"**: the Company trends chart, each laser
-     and the company, month by month. Its yield is now the cards' own (a file that failed
+     and the company, month by month — laser 1 lime circles, laser 2 teal squares, laser 3
+     purple triangles, the company thick blue. Its yield is now the cards' own (a file that failed
      processing is no longer counted as a failure, nor is a suspect file), so Company trends
      reads a fraction higher than before.
    - **"N models need a look"**: one card per model. On your 30 Sep data there are **13**: the 8
