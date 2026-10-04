@@ -10,6 +10,9 @@ Top to bottom:
     under it "See the run ›" -- the Process page and that run's tally, without starting another;
   * the quiet data-health notices (final tests graded before the ignore-window fix, files skipped
     as unreadable) and, in the check colour, any part of this page that could not be loaded;
+  * "Yield by laser — last 12 months": the Company trends chart -- each laser and the company,
+    month by month (James, 2026-10-04: "on the overveiw screen i no longer have each laser charted
+    overall?");
   * "N models need a look" over "Last 90 days · newest file DD Mon YYYY" and the rule that puts a
     model on a card (`overview_data.CARD_RULE`), and the CARDS: the fail-rate list united with the
     drift watch's flags, each saying in one line why it is there (James: "keep all 16 cards (fail
@@ -41,6 +44,7 @@ from laser_trim_analyzer.core.ingest_run import unreadable_notice
 from laser_trim_analyzer.gui.v6 import overview_data as od
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
+from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +55,7 @@ BARS_HEIGHT = 40
 # "Everything else": fixed column widths, so the plain rows line up (CustomTkinter units).
 LIST_COLUMNS = (180, 110, 70, 140)
 INACTIVE_COLUMNS = 3
+TREND_TITLE = "Yield by laser — last 12 months"
 
 _TONE = {"up": "PASS_FG", "down": "FAIL_FG", "steady": "TEXT_SECONDARY", "new": "TEXT_SECONDARY"}
 
@@ -84,6 +89,20 @@ class HomePage(PageBase):
         self._legacy_ft_label = blocks.banner(body, t, "", tone="quiet", wrap_to=body)
         self._unreadable_label = blocks.banner(body, t, "", tone="quiet", wrap_to=body)
         self._load_banner = blocks.banner(body, t, "", wrap_to=body)        # check tone
+
+        # Each laser and the company, month by month: the Company trends chart itself. Its place is
+        # held from the start; the chart is packed once a load has landed -- "Loading…" until then,
+        # never "No trim data" before it has looked.
+        self._trend_box = ctk.CTkFrame(body, fg_color="transparent")
+        self._trend_box.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
+        self._trend_heading = ctk.CTkLabel(self._trend_box, text=TREND_TITLE, anchor="w",
+                                           font=t.font(t.SIZE_HEADING, "bold"),
+                                           text_color=t.TEXT_PRIMARY)
+        self._trend_heading.pack(side="top", fill="x")
+        self._trend_note = ctk.CTkLabel(self._trend_box, text="Loading…", anchor="w",
+                                        font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
+        self._trend_note.pack(side="top", fill="x")
+        self._trend_chart = CompanyTrendChart(self._trend_box, theme=t)
 
         self._need_heading = ctk.CTkLabel(body, text=od.need_a_look(None), anchor="w",
                                           font=t.font(t.SIZE_HEADING, "bold"),
@@ -172,6 +191,7 @@ class HomePage(PageBase):
             return                   # nothing changed since the last load: nothing to redraw
         self._ov = ov
         for what, draw in (("notices", lambda: self._draw_notices(ov)),
+                           ("yield chart", lambda: self._draw_trend(ov)),
                            ("cards", lambda: self._draw_cards(ov)),
                            ("list", lambda: self._draw_others(ov)),
                            ("other models line", lambda: self._draw_quiet(ov)),
@@ -204,11 +224,21 @@ class HomePage(PageBase):
         for line in lines:
             if line.cget("text"):
                 line.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM),
-                          before=self._need_heading)
+                          before=self._trend_box)
         if self._run_line.cget("text"):
             self._run_line.pack_configure(pady=0)
             self._run_link.pack(side="top", anchor="w", pady=(0, self.theme.SPACE_SM),
                                 after=self._run_line)
+
+    # ---- the chart of each laser -----------------------------------------------
+    def _draw_trend(self, ov: od.Overview) -> None:
+        """The Company trends chart, the last 12 months by month. A load that failed draws
+        "Unavailable" (the banner names it), never an empty chart."""
+        self._trend_note.pack_forget()
+        if self._trend_chart.winfo_manager() == "":
+            self._trend_chart.pack(side="top", fill="x", pady=(self.theme.SPACE_XS, 0))
+        self._trend_chart.set_data(None if od.PART_TREND in ov.failed else (ov.trend or {}),
+                                   period_label=od.TREND_PERIOD)
 
     # ---- the cards -------------------------------------------------------------
     def _draw_cards(self, ov: od.Overview) -> None:

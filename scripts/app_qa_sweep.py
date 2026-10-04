@@ -1090,6 +1090,28 @@ def check_overview_on_database(db, raw) -> None:
           f"{len(on_file)} on file, {len(places)} placed; missing={missing[:6]} twice={twice[:6]}"
           + ("" if ov.quiet is not None and ov.inactive is not None else "; a place is unknown"))
 
+    # The chart of each laser (James, 2026-10-04): every month and laser it draws is (PASS +
+    # WARNING) / graded over that month's believable, unsuspect files -- by this file's own SQL.
+    since = (datetime.now() - timedelta(days=od.TREND_DAYS)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    sql_trend = {(p, s): (n, a) for p, s, n, a in raw.execute(
+        f"SELECT strftime('%Y-%m', file_date), system, COUNT(*),"
+        f" SUM(overall_status IN ('PASS', 'WARNING')) FROM analysis_results"
+        f" WHERE {trims} AND file_date >= ? GROUP BY 1, 2", (horizon, since))}
+    drawn_trend = {(r["period"], s): (r["total"], r["accepted"])
+                   for s, series in ((ov.trend or {}).get("by_system") or {}).items()
+                   for r in series if r["total"]}
+    if not sql_trend:
+        warn("overview: no graded trim in the chart's 12 months -- the chart by laser is checked "
+             "on nothing")
+    else:
+        off = sorted(k for k in set(sql_trend) | set(drawn_trend)
+                     if sql_trend.get(k) != drawn_trend.get(k))
+        check("overview: the yield chart by laser is each month's (PASS + WARNING) / graded, by "
+              "independent SQL",
+              ov.trend is not None and not off,
+              f"{len(drawn_trend)} month-laser points drawn, SQL {len(sql_trend)}; differ: "
+              + ", ".join(f"{k} app={drawn_trend.get(k)} sql={sql_trend.get(k)}" for k in off[:4]))
+
     ft_cards = [c for c in ov.cards if c.final_test]
     if not ft_cards:
         warn("overview: no card shows final-test numbers on this copy -- that path is checked on nothing")

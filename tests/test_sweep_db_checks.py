@@ -625,6 +625,23 @@ def test_the_overview_check_fails_when_the_detectors_own_models_are_left_off(tmp
     assert any(n.startswith("overview: the cards are") and "M1" in d for n, d in failed), results
 
 
+def test_the_overview_check_fails_when_the_chart_by_laser_is_not_its_definition(tmp_path):
+    results = _run_overview_check(
+        _overview_scratch(tmp_path), tmp_path,
+        patch="import laser_trim_analyzer.database.manager as _mm\n"
+              "_real = _mm.DatabaseManager.get_company_yield_trend\n"
+              "def _off(self, days_back=365, period='week'):\n"
+              "    out = _real(self, days_back, period)\n"
+              "    for series in out['by_system'].values():\n"
+              "        for r in series:\n"
+              "            if r['total']:\n"
+              "                r['total'] += 1\n"
+              "    return out\n"
+              "_mm.DatabaseManager.get_company_yield_trend = _off")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any(n.startswith("overview: the yield chart by laser") for n, d in failed), results
+
+
 def test_the_overview_check_never_passes_on_nothing(tmp_path):
     results = _run_overview_check(_scratch_db(tmp_path), tmp_path)
     assert not any(v == "PASS" and ("cards are" in n or "pass %" in n) for v, n, _ in results), results

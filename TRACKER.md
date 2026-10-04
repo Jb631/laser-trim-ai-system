@@ -957,6 +957,13 @@ the pages but removed nothing; this one removes.
       data 4 of its 5 models passed 100% in the last 90 days (it judges them on old runs); the
       one real case, 8914 (0 of 5), is in "Everything else". Say if you want steady high-fail
       models called out another way (for instance "Everything else" sorted by failing units).
+      **From James's first look (2026-10-04):** "on the overveiw screen i no longer have each
+      laser charted overall?" — the Overview now opens with the Company trends chart, each laser
+      and the company over the last 12 months; and that chart's yield is now the Overview's own
+      (a file that failed processing no longer counts as a failure, suspect files are out, and a
+      future-dated file no longer draws a future month), so Company trends reads the same. And
+      "why is there like a halo behind the text" on the Units tab's table: its shaded bands sat
+      under the table's own background, so only the shaded labels showed, as boxes; fixed.
 - [x] **J4 · The Model page — James picked C ("i like c", 2026-10-02), built the same day.** Of three
       layouts drawn on 8504-2's real runs (A one page top to bottom · B signal list and detail ·
       C four tabs): a header (model, status, pass %, units, lasers) over four tabs — **Summary**

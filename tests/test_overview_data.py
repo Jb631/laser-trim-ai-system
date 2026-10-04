@@ -367,8 +367,10 @@ def test_a_database_that_cannot_answer_anything_still_returns_an_overview():
         def __getattr__(self, name):
             return _boom
     ov = od.load_overview(_Gone())
-    assert set(ov.failed) == {od.PART_FOCUS, od.PART_DRIFT, od.PART_RATES, od.PART_ACTIVITY}
+    assert set(ov.failed) == {od.PART_FOCUS, od.PART_DRIFT, od.PART_RATES, od.PART_ACTIVITY,
+                              od.PART_TREND}
     assert ov.cards == [] and ov.others == [] and od.card_count(ov) is None
+    assert ov.trend is None
 
 
 def test_the_two_data_health_counts_come_through(tmp_path, monkeypatch):
@@ -548,3 +550,27 @@ def test_the_card_rule_names_its_ninety_days():
     flags only on a run within 90 days: the printed rule says so (re-review, 2026-10-02)."""
     from laser_trim_analyzer.ml.drift_types import RECENT_LOT_DAYS
     assert f"a run of the last {RECENT_LOT_DAYS} days" in od.CARD_RULE
+
+
+
+# ---- each laser, charted (James, 2026-10-04) ----------------------------------------------------
+
+def test_the_overview_charts_each_laser_with_the_company_trend(tmp_path):
+    """James, 2026-10-04: "on the overveiw screen i no longer have each laser charted overall?" --
+    the chart of each laser and the company lived on the Dashboard (since the redesign, the
+    "Company trends" link). The Overview loads that same chart: the last 12 months, by month."""
+    db = _db(tmp_path)
+    _trims(db, "M1", datetime.now() - timedelta(days=10), passes=3, fails=1)
+    ov = od.load_overview(db)
+    assert od.TREND_DAYS == 365
+    assert ov.trend == db.get_company_yield_trend(days_back=365, period="month")
+    assert ov.trend["by_system"]["A"][-1]["linearity_yield"] == 75.0
+
+
+def test_a_chart_that_cannot_load_is_named_and_the_rest_still_loads(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _trims(db, "M1", ANCHOR, passes=3)
+    monkeypatch.setattr(db, "get_company_yield_trend", _boom)
+    ov = od.load_overview(db)
+    assert ov.trend is None and ov.failed == {od.PART_TREND: "RuntimeError: invented crash"}
+    assert [r.model for r in ov.others] == ["M1"]

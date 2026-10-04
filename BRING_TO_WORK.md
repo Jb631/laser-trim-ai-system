@@ -14,6 +14,10 @@ What you will see:
    Process page. That page holds both runs: the remembered folders at the top, "A specific folder"
    below.
 2. **The Overview** is the page the app opens on.
+   - At the top, **"Yield by laser — last 12 months"**: the Company trends chart, each laser
+     and the company, month by month. Its yield is now the cards' own (a file that failed
+     processing is no longer counted as a failure, nor is a suspect file), so Company trends
+     reads a fraction higher than before.
    - **"N models need a look"**: one card per model. On your 30 Sep data there are **13**: the 8
      whose recent runs fail more often than their own history allows, and the 7 the drift watch
      flags (two models are on both).

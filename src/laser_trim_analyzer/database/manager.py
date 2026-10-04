@@ -6157,17 +6157,31 @@ class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceM
     ) -> Dict[str, Any]:
         """Company-wide yield trend, overall and split by trim system (A/B/C).
 
-        The v6 Dashboard's company-trend section (2026-07-06). Differs from
-        get_yield_trend in two ways: UNTRIMMED test-sweeps are excluded from
-        BOTH numerator and denominator (they have no trim verdict — dashboard
-        convention), and results are additionally grouped by system so the
-        LTS3 (C) ramp can be compared against A/B.
+        The v6 Dashboard's company-trend section (2026-07-06), and since
+        2026-10-04 the Overview's chart of each laser. Its yield is the
+        Overview's own: (PASS + WARNING) / graded (PASS + WARNING + FAIL).
+        Not graded, so out of both numerator and denominator: UNTRIMMED
+        test-sweeps (no trim verdict), and a file that FAILED processing --
+        not a measurement (CLAUDE.md), where it used to count as a failure.
+        Also out: a file marked suspect (the rule the drift watch, the FOCUS
+        list and the Overview's cards follow since 2026-10-02), and a file
+        dated more than a day ahead (core/activity.trusted_until) -- it used
+        to draw a month in the future. Results are additionally grouped by
+        system so the LTS3 (C) ramp can be compared against A/B.
 
         Returns {"periods": [...ordered period keys...],
                  "company":  [{"period","total","passed","pass_rate"}...],
                  "by_system": {"A": [rows...], "B": [...], "C": [...]}}.
         Systems with no data in the window are omitted from by_system.
         """
+        from laser_trim_analyzer.core.activity import trusted_until
+        believed = (
+            DBAnalysisResult.overall_status.in_(
+                [DBStatusType.PASS, DBStatusType.WARNING, DBStatusType.FAIL]),
+            DBAnalysisResult.file_date <= trusted_until(),
+            or_(DBAnalysisResult.data_quality.is_(None),
+                DBAnalysisResult.data_quality != "suspect"),
+        )
         with self.session() as session:
             cutoff = datetime.now() - timedelta(days=days_back)
             if period == "week":
@@ -6188,8 +6202,7 @@ class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceM
                         [DBStatusType.PASS, DBStatusType.WARNING]), 1), else_=0)
                 ).label("accepted"),
             ).filter(
-                DBAnalysisResult.file_date >= cutoff,
-                DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
+                DBAnalysisResult.file_date >= cutoff, *believed,
             ).group_by(period_expr, DBAnalysisResult.system) \
              .order_by(period_expr).all()
 
@@ -6219,7 +6232,8 @@ class DatabaseManager(MigrationsMixin, SpecsMixin, FtMatchingMixin, MaintenanceM
             # Honesty metadata for the chart: the newest period is usually
             # PARTIAL (the week/month is still filling), and the whole dataset
             # has a vintage (batch-loaded data can lag production by weeks).
-            data_through = session.query(func.max(DBAnalysisResult.file_date)).scalar()
+            data_through = (session.query(func.max(DBAnalysisResult.file_date))
+                            .filter(*believed).scalar())
             partial_last = False
             if periods and data_through is not None:
                 fmt = '%Y-W%W' if period == "week" else '%Y-%m'

@@ -112,6 +112,9 @@ def test_before_the_first_load_it_says_loading_and_no_count(make_app):
     # ...and the list under the cards says so too, never a bare heading over nothing.
     assert page._others_note.cget("text") == "Loading…"
     assert page._others_note.winfo_manager() == "pack"
+    # ...and the chart of each laser: "Loading…", never "No trim data" before it has looked.
+    assert page._trend_note.cget("text") == "Loading…" and page._trend_note.winfo_manager() == "pack"
+    assert page._trend_chart.winfo_manager() == ""
 
 
 # ---- "N models need a look" and the cards ------------------------------------------------------
@@ -627,3 +630,47 @@ def test_a_model_with_no_trim_file_is_listed_with_the_other_models_and_says_so(m
     page._quiet_toggle.invoke()
     lines = "\n".join(_labels(page._quiet_list)).split("\n")
     assert lines == ["Q1 · last trimmed Jun 2025", "FT1 · no trim file on record"]
+
+
+
+# ---- each laser, charted (James, 2026-10-04) ----------------------------------------------------
+
+def _spy_trend(monkeypatch):
+    from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
+    seen = []
+    monkeypatch.setattr(CompanyTrendChart, "set_data",
+                        lambda self, trend, period_label="week", note=None: seen.append(
+                            (trend, period_label)))
+    return seen
+
+
+def test_the_overview_charts_each_laser_over_the_last_twelve_months(make_app, monkeypatch):
+    """James, 2026-10-04: "on the overveiw screen i no longer have each laser charted overall?" --
+    the Company trends chart, on top of the Overview: each laser and the company, by month."""
+    from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
+    seen = _spy_trend(monkeypatch)
+    trend = {"periods": ["2026-02", "2026-03"], "partial_last": True, "data_through": ANCHOR,
+             "company": [{"period": "2026-02", "total": 10, "accepted": 8, "linearity_yield": 80.0},
+                         {"period": "2026-03", "total": 5, "accepted": 5, "linearity_yield": 100.0}],
+             "by_system": {"A": [{"period": "2026-02", "total": 10, "accepted": 8,
+                                  "linearity_yield": 80.0},
+                                 {"period": "2026-03", "total": 5, "accepted": 5,
+                                  "linearity_yield": 100.0}]}}
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card()], trend=trend))
+    assert isinstance(page._trend_chart, CompanyTrendChart)
+    assert seen[-1] == (trend, "month")
+    assert page._trend_heading.cget("text") == "Yield by laser — last 12 months"
+    assert page._trend_chart.winfo_manager() == "pack" and page._trend_note.winfo_manager() == ""
+    order = page._body.pack_slaves()
+    assert order.index(page._trend_box) < order.index(page._need_heading)
+
+
+def test_a_chart_that_cannot_load_says_so_and_the_banner_names_it(make_app, monkeypatch):
+    seen = _spy_trend(monkeypatch)
+    page = _show(make_app(), monkeypatch, _ov(
+        cards=[_card()], trend=None, failed={od.PART_TREND: "RuntimeError: invented chart crash"}))
+    assert seen[-1] == (None, "month")         # the chart: "Unavailable — the notice above says why."
+    assert ("the yield chart by laser (RuntimeError: invented chart crash)"
+            in page._load_banner.cget("text"))
+    order = page._body.pack_slaves()
+    assert order.index(page._load_banner) < order.index(page._trend_box)    # the notice is above it

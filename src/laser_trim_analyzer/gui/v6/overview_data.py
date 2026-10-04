@@ -34,7 +34,7 @@ look like a result).
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from laser_trim_analyzer.core.activity import load_activity, trusted_until
 from laser_trim_analyzer.core.ft_regrade import legacy_ft_count
@@ -65,6 +65,12 @@ PART_RATES = "the pass rates"
 PART_FT = "the final-test pass rates"     # read only for a card with no trim to show
 PART_ACTIVITY = "which models are inactive"
 PART_ON_FILE = "the other models on file"
+PART_TREND = "the yield chart by laser"
+
+# The chart of each laser and the company (James, 2026-10-04: "on the overveiw screen i no longer
+# have each laser charted overall?"): the Company trends chart itself, its last 12 months by month.
+TREND_DAYS = 365
+TREND_PERIOD = "month"
 
 # The signal a fail-rate card is about: the FOCUS list is a p-chart of each run's linearity fail
 # fraction (ml/spc.compute_focus_list), and a click opens the Model page charting it.
@@ -119,6 +125,8 @@ class Overview:
     others: List[Row] = field(default_factory=list)
     # {model: its newest trim file, or None for "no trims on record"}; None = could not be worked out
     inactive: Optional[Dict[str, Optional[datetime]]] = None
+    # The chart of each laser: database.get_company_yield_trend's shape; None = could not be loaded
+    trend: Optional[Dict[str, Any]] = None
     # {model: its newest trim file} for every OTHER model on file -- on no card, in no list and not
     # inactive: most were trimmed before the 90 days; a value of None is a model with no trim file
     # at all (smoothness records only). The field None = could not be worked out.
@@ -308,6 +316,12 @@ def load_overview(db, *, now: Optional[datetime] = None) -> Overview:
         except Exception as exc:
             logger.exception("Overview: could not work out the other models on file")
             ov.failed[PART_ON_FILE] = _why(exc)
+
+    try:
+        ov.trend = db.get_company_yield_trend(days_back=TREND_DAYS, period=TREND_PERIOD)
+    except Exception as exc:
+        logger.exception("Overview: the yield chart by laser could not be loaded")
+        ov.failed[PART_TREND] = _why(exc)
 
     ov.legacy_ft = legacy_ft_count(db)            # both never raise: a count must never break a page
     ov.unreadable = unreadable_count(db)

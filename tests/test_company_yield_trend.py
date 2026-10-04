@@ -1,8 +1,9 @@
 """Company yield trend query (2026-07-06) — the Dashboard company-trend section.
 
-Company-wide pass-rate per week/month with per-system split. UNTRIMMED
-test-sweeps are excluded from numerator AND denominator (they carry no trim
-verdict), matching the dashboard yield convention.
+Company-wide pass-rate per week/month with per-system split: (PASS + WARNING) /
+graded. UNTRIMMED test-sweeps and files that failed processing are out of numerator
+AND denominator (no trim verdict); since 2026-10-04 suspect files and future-dated
+files are out too -- the Overview's own definition (it charts each laser with this).
 """
 import sys
 from datetime import datetime
@@ -78,3 +79,32 @@ def test_company_trend_weekly_and_window(tmp_path):
     # Honesty metadata present: vintage + partial flag computed.
     assert out_all["data_through"] is not None
     assert isinstance(out_all["partial_last"], bool)
+
+
+def test_a_failed_file_a_suspect_file_and_a_future_date_never_count(tmp_path):
+    """The company trend is the Overview's own yield since 2026-10-04 (the Overview charts each
+    laser with it): (PASS + WARNING) / graded. A file that failed processing is not a measurement
+    (CLAUDE.md) -- it used to count as a failure; a file marked suspect is left out (the rule the
+    drift watch, the FOCUS list and the Overview's cards follow since 2026-10-02); and a file
+    dated more than a day ahead is not believed -- it used to draw a month in the future."""
+    from datetime import timedelta
+    from sqlalchemy import text
+    from laser_trim_analyzer.database.manager import DatabaseManager
+
+    db = DatabaseManager(tmp_path / "clean.db")
+    jan = datetime(2026, 1, 10)
+    _add(db, "M1", "A", "PASS", jan, n=6)
+    _add(db, "M1", "A", "FAIL", jan, n=2)
+    _add(db, "M1", "A", "ERROR", jan, n=3)                    # failed processing
+    _add(db, "M1", "A", "PROCESSING_FAILED", jan, n=1)
+    _add(db, "M2", "A", "FAIL", jan, n=4)                     # marked suspect below
+    _add(db, "M3", "A", "PASS", datetime.now() + timedelta(days=40), n=5)   # a mistyped date
+    with db.session() as s:
+        s.execute(text("UPDATE analysis_results SET data_quality = 'suspect' WHERE model = 'M2'"))
+        s.commit()
+
+    out = db.get_company_yield_trend(days_back=36500, period="month")
+    assert out["periods"] == ["2026-01"]
+    (jan_c,) = out["company"]
+    assert (jan_c["total"], jan_c["accepted"]) == (8, 6)
+    assert out["data_through"].date() == jan.date()           # the newest file it believes
