@@ -204,9 +204,13 @@ class StatsTableZone(ctk.CTkFrame):
         end_row = plan[-1][0] + plan[-1][1]
 
         # Bands FIRST. Same-parent widgets stack in CREATION order, so the
-        # blocks have to exist before the labels that sit on them; .lower() as
-        # well, so a later edit that moves this loop cannot silently hide the
-        # table behind its own banding.
+        # blocks have to exist before the labels that sit on them -- and each
+        # is raised to just above the table's OWN background canvas, so a later
+        # edit that moves this loop cannot hide the table behind its banding.
+        # Never .lower(): that put every band under that canvas, out of sight,
+        # and each label painted the band's colour drew a box round its text
+        # instead (James, 2026-10-04: "why is there like a halo behind the
+        # text").
         for start, span, banded in plan:
             if not banded:
                 continue
@@ -217,7 +221,7 @@ class StatsTableZone(ctk.CTkFrame):
                                 corner_radius=t.RADIUS_SM)
             band.grid(row=start, rowspan=span, column=0, columnspan=full,
                       sticky="nsew")
-            band.lower()
+            band.tkraise(frame._canvas)     # above the background, under every label
         # The two rules, and there are only two. Created after the bands so the
         # group rule stays visible where it crosses one.
         self._rule(frame, row=ROW_HEAD_RULE, column=0, columnspan=full,

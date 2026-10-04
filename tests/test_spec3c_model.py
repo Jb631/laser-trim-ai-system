@@ -2782,3 +2782,34 @@ def test_a_model_on_the_drifting_now_list_charts_its_fail_rate(make_app):
     del page._reload
     page.reload_now()
     assert page._current_metric == "untrimmed_resistance"
+
+
+def test_a_banded_metric_reads_as_one_surface_never_a_box_per_cell(make_app):
+    """The stats table bands every other metric (677414a) and paints each label on a band in the
+    band's colour, so the block reads as one surface. But each band was LOWERED below every
+    sibling -- under the table's own background canvas -- so no band ever showed, and every label
+    on a banded row drew a lighter box round its text (James, 2026-10-04, on the Units tab: "why
+    is there like a halo behind the text"). A band sits just above the table's background and
+    under every label."""
+    import tkinter
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.widgets.stats_table import _TableGrid
+    app, page = _stats_app(make_app)
+    t = page.theme
+
+    def walk(w):
+        yield w
+        for c in tkinter.Misc.winfo_children(w):
+            yield from walk(c)
+
+    grids = [w for w in walk(page._stats_table) if isinstance(w, _TableGrid)]
+    checked = 0
+    for grid in grids:
+        order = list(tkinter.Misc.winfo_children(grid))    # Tk's stacking order, lowest first
+        bands = [w for w in order if isinstance(w, ctk.CTkFrame) and w.cget("fg_color") == t.ELEVATED]
+        on_band = [w for w in order if isinstance(w, ctk.CTkLabel) and w.cget("fg_color") == t.ELEVATED]
+        for band in bands:
+            checked += 1
+            assert order.index(grid._canvas) < order.index(band), "a band under its table's background"
+            assert all(order.index(band) < order.index(label) for label in on_band)
+    assert checked, "no banded metric to check -- the fixture no longer bands"
