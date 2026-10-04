@@ -55,10 +55,13 @@ class ThemeManager:
     # Charts. HIGHLIGHT is the data line a chart is about, HISTORY its past bars (the approved
     # mockup's monthly pass bars). SERIES_* are keyed by the code's system letter -- the UI still
     # says "Laser 2 (DLTS)" -- and keep 30 degrees of hue from every colour that means something
-    # (the blue accent, pass green, fail red, watch amber): violet, fuchsia, pink.
+    # (the blue accent, pass green, fail red, watch amber), AND at least 60 degrees from each other:
+    # violet, fuchsia and pink sat 37 degrees apart, and James could not tell them apart on the
+    # Overview's chart (2026-10-04: "the colors are too similare"). Laser 1 lime, laser 2 teal,
+    # laser 3 purple -- warm to cool in the shop's order; the company line keeps CHART_HIGHLIGHT.
     CHART_REFERENCE: str = "#8b8b93"
     CHART_HIGHLIGHT: str = "#60a5fa"; CHART_HISTORY: str = "#2a3a58"
-    SERIES_A: str = "#a78bfa"; SERIES_B: str = "#e879f9"; SERIES_C: str = "#f472b6"
+    SERIES_A: str = "#2dd4bf"; SERIES_B: str = "#a3e635"; SERIES_C: str = "#c084fc"
     CHART_FONT_SMALL: float = 8.0; CHART_FONT: float = 9.0; CHART_FONT_LARGE: float = 10.0
     # Typography. On Windows (GDI) Plex Medium is its OWN family, not a weight of Plex Sans,
     # so "bold" is mapped onto it in font()/mono() when it is available.

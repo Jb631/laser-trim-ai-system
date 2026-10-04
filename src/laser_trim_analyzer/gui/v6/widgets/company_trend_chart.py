@@ -21,6 +21,10 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 # (ThemeManager.series_color) -- stable, distinct hues clear of verdict meaning.
 
 
+# Laser 1 (B) circles, laser 2 (A) squares, laser 3 (C) triangles; the company line keeps its dots.
+_LASER_MARKERS = {"B": "o", "A": "s", "C": "^"}
+
+
 class CompanyTrendChart(ctk.CTkFrame):
     def __init__(self, master, theme: ThemeManager, **kwargs):
         super().__init__(master, fg_color=theme.CARD, corner_radius=theme.RADIUS_MD, **kwargs)
@@ -123,7 +127,9 @@ class CompanyTrendChart(ctk.CTkFrame):
             ys = [r["linearity_yield"] for r in series]
             if all(v is None for v in ys):
                 continue
-            ax.plot(x, ys, lw=1.1, alpha=0.85, marker="o", ms=2.5,
+            # A shape per laser as well as a colour: told apart in grey too (James, 2026-10-04:
+            # "the colors are too similare").
+            ax.plot(x, ys, lw=1.3, alpha=0.9, marker=_LASER_MARKERS.get(sys_name, "o"), ms=4,
                     color=t.series_color(sys_name),
                     label=laser_label(sys_name), zorder=3)
         comp_rates = [r["linearity_yield"] for r in company]

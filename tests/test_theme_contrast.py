@@ -370,3 +370,15 @@ def test_no_v6_segmented_control_or_checkbox_is_built_without_its_readable_colou
     # sensitivity slider.
     assert seen["CTkSegmentedButton"] >= 2 and seen["CTkCheckBox"] >= 5 and seen["CTkTabview"] >= 1, seen
     assert not bad, bad
+
+
+def test_the_three_lasers_are_told_apart_at_a_glance():
+    """James, 2026-10-04, on the Overview's chart of each laser: "the colors are too similare you
+    cant tell them apart" -- violet, fuchsia and pink sat 37 degrees apart. Each pair of lasers
+    is now at least 60 degrees of hue apart (and each still clear of every colour that means
+    something -- the test above)."""
+    lasers = (T.SERIES_A, T.SERIES_B, T.SERIES_C)
+    for i, a in enumerate(lasers):
+        for b in lasers[i + 1:]:
+            d = abs((hue(a) - hue(b) + 180) % 360 - 180)
+            assert d >= 60, f"{a} and {b} are only {d:.0f} degrees apart"
