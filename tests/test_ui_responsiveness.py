@@ -352,3 +352,20 @@ def test_the_debounced_redraw_defers_the_render_without_swallowing_it(tk_root):
     assert state.pending is None, "the render did not clear its own pending id"
     assert chart_redraw.QUIET_MS >= 60, "a quiet window shorter than a frame debounces nothing"
     chart.destroy()
+
+
+# ---- The Mac's mouse wheel (James, 2026-10-04: "mouse is not scolling on the app?") -------------
+
+def test_a_wheel_notch_moves_a_scrolling_frame_a_useful_step_on_the_mac(patched_ctk, tk_root,
+                                                                        monkeypatch):
+    """On macOS Tk reports a wheel notch as delta 1, and CustomTkinter scrolls that many canvas
+    units -- 8 px: the Overview (about 4,000 px) took some 500 notches, which reads as "not
+    scrolling". On the Mac each unit is MAC_WHEEL_STEP px; on Windows (a notch is delta 120,
+    CustomTkinter scrolls delta / 6 units) nothing changes."""
+    import customtkinter as ctk
+    monkeypatch.setattr(patched_ctk.sys, "platform", "darwin")
+    mac = ctk.CTkScrollableFrame(tk_root)
+    assert int(mac._parent_canvas.cget("yscrollincrement")) == patched_ctk.MAC_WHEEL_STEP == 30
+    monkeypatch.setattr(patched_ctk.sys, "platform", "win32")
+    windows = ctk.CTkScrollableFrame(tk_root)
+    assert int(windows._parent_canvas.cget("yscrollincrement")) != patched_ctk.MAC_WHEEL_STEP

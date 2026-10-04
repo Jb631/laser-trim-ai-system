@@ -42,8 +42,20 @@ Suppression is done by shadowing `update_idletasks` on the canvas instance for
 the duration of the nested call, rather than by reimplementing `_draw`. That
 keeps CustomTkinter's drawing code — the part that actually matters and the
 part that changes between releases — untouched.
+
+---- 2. The Mac's mouse wheel moved a scrolling frame 8 px a notch ----------
+
+James, 2026-10-04: "mouse is not scolling on the app?" On macOS, Tk 8.6 reports a wheel
+notch as `delta` 1 (more only when spun fast), and `CTkScrollableFrame._mouse_wheel_all`
+scrolls `-delta` canvas UNITS -- 8 px each: the Overview, about 4,000 px tall, took some 500
+notches, which reads as not scrolling at all. On Windows a notch is `delta` 120 and CustomTkinter
+scrolls `delta / 6` = 20 units, which is why it was never seen at work. So on the Mac only, every
+scrolling frame's canvas steps MAC_WHEEL_STEP px per unit; Windows keeps CustomTkinter's own.
+Set at construction (the platform read then, not at import), so nothing else about the frame,
+its scrollbar or a programmatic `yview_moveto` changes.
 """
 import logging
+import sys
 from typing import Optional
 
 import customtkinter as ctk
@@ -52,6 +64,10 @@ logger = logging.getLogger(__name__)
 
 # The version this file has been read against. See module docstring.
 PINNED_CTK_VERSION = "5.2.2"
+
+# Pixels a scrolling frame moves per wheel unit on the Mac (patch 2): a notch, 30 px; a trackpad
+# swipe, the same per unit it reports.
+MAC_WHEEL_STEP = 30
 
 _applied = False
 
@@ -104,6 +120,18 @@ def _patch_scrollbar_reentrancy() -> None:
     ctk.CTkScrollbar._draw = _draw
 
 
+def _patch_mac_wheel_step() -> None:
+    original_init = ctk.CTkScrollableFrame.__init__
+
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if sys.platform == "darwin":
+            self._parent_canvas.configure(yscrollincrement=MAC_WHEEL_STEP)
+
+    __init__.__doc__ = original_init.__doc__
+    ctk.CTkScrollableFrame.__init__ = __init__
+
+
 def apply(strict: bool = False) -> bool:
     """Install the patches. Idempotent; safe to call from every V6App.
 
@@ -131,5 +159,6 @@ def apply(strict: bool = False) -> bool:
         return False
 
     _patch_scrollbar_reentrancy()
+    _patch_mac_wheel_step()
     _applied = True
     return True
