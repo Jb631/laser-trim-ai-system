@@ -4,9 +4,21 @@ What is open, in what order, and who holds the next move. Updated in the same
 commit as the work it describes. `BRING_TO_WORK.md` stays the place for
 step-by-step instructions at the work machine; this is the index above it.
 
-Last updated: 2026-10-02
+Last updated: 2026-10-04
 
-## ▶ Where things stand (Claude, 2026-10-02)
+## ▶ Where things stand (Claude, 2026-10-04)
+
+**New on 2026-10-04 — option B and the finish pass (J8).** With TMOG open you said "this is an
+example of a finished peice of solftware", then picked B. The Overview is now a list of models
+with the selected model's detail beside it, under the yield-by-laser chart; the top bar's three
+pages sit together with icons; every page has a status bar; titles are in Marcellus. You then
+asked of the list's rows "these little charts and % dont mean anything?" and picked C: each row
+says what changed, shows twelve months as bars on one scale, and gives the 90-day pass %, under
+named columns. A finish pass fixed the rough edges from the screenshots (one date format, real
+buttons, clearer Model-page tabs, chart axes, the Process page's folder rows). An independent
+review found seven things; all are fixed. One older bug turned up on the way and is fixed too:
+the Model page's "Export charts (PDF)" could mark fail points on a passing unit the analyzer
+had rotated. **Yours: pull and look** — the top of `BRING_TO_WORK.md` says what changed.
 
 **New on 2026-10-02 — section J, from your handoff:** "im just not happy with the app, there is
 so much going on its hard to see what is what" and "im also concerned about dirty data and
@@ -52,7 +64,7 @@ that rested on a final-test verdict has been re-derived on it (B3).
 | **E. Backlog upload** | shipped (E1) | — |
 | **F. Facelift** | steps 1 and 2 shipped; F4 follow-ups shipped | F5 "Inactive" models (+ F4's review gaps) — Claude |
 | **G. Parse fixes** | all built, reviewed and pushed (`422da7a`) | — (the back-fill is yours, optional) |
-| **J. Redesign and drift you can trust** | drift rules (J1), the 7953 merge (J5) and the 20× line (J6) shipped; the Graphite look, the Overview + top bar and the Model page in layout C built and reviewed (J2–J4) | James: look at it; the rest of J5 (Unknown + one-off names); J7 option |
+| **J. Redesign and drift you can trust** | J1–J6 shipped; option B and the finish pass built, reviewed and pushed 2026-10-04 (J8) | James: look at it; the rest of J5 (Unknown + one-off names); J7 option |
 | **I. The app as an .exe for a coworker** | code, build script and steps on `main` (2026-09-30); never built — that needs Windows | James: the first build at work (I5) |
 
 ### One thing of mine to own (2026-09-24): the home database was written to
@@ -1006,6 +1018,31 @@ the pages but removed nothing; this one removes.
       score the old ones, and until enough runs are scored the composite cannot train for drift (so
       its input signals still alarm on their own, as designed for models without one).
 
+- [x] **J8 · Option B and the finish pass — built 2026-10-04** (James, with TMOG open: "this is an
+      example of a finished peice of solftware, this is what im going for"; then "i like B but im
+      not saying we need to copy everything"; title font Marcellus, "6"; "go"). Spec
+      `docs/superpowers/specs/2026-10-04-option-b-design.md`.
+      - **Built in three parallel streams.** Shell: top bar with icons, no repeated page titles, a
+        status bar. Overview B: a header line with the dollars lost at final test, the laser
+        chart strip, list + detail. Finish: dates, number precision, buttons and dropdowns,
+        Model-page tabs and top, chart axes, Process page folders, "Company trends", Settings →
+        Backlog for prices.
+      - **Reviewed and tested.** The streams were merged and reviewed, then tested in one batch.
+        After test windows took over James's Mac, agents ran no window-opening tests (see H7).
+      - **The list rows.** James saw the list's first rows: "these little charts and % dont mean
+        anything? they dont show anything?". He picked C from three rows drawn on his data: each
+        row says what changed (its reason, or the change against the year before), twelve months
+        as bars on one scale, the 90-day %, and named columns.
+      - **Review findings.** A read-only review found 0 critical, 2 important and 5 minor
+        findings; all are fixed. The detail names a failed read instead of drawing it empty. Pages
+        off the top bar name themselves again. Two dates were moved to the one format. The pinned
+        CustomTkinter internals are all listed. The Process tests check the real folder rows. The
+        Model page's name is in Marcellus. A failed drift catch-up no longer reads "updating"
+        forever.
+      - **Assets.** The 22 icons are images made once from the Tabler set (MIT). Marcellus is
+        bundled (OFL). On the Mac the bundled fonts now load: before the window is created,
+        because Mac Tk reads its font list only once.
+
 ## I. The app as an .exe for a coworker — James, 2026-09-30
 
 A coworker needs the app — "Look and analyse only"; if she processes, "just the daily files, not
@@ -1062,6 +1099,13 @@ beside it by hand; no special variant and no data-copying machinery. His own dep
       run at a time: agents run only the tests for what they change, the whole gate runs once per
       push, and reviewers read code instead of starting their own runs ("it just seems wasteful
       to be running 3 test instances at once").
+
+- [x] **H7 · Test windows take the Mac's focus (2026-10-04)** — James: "the tests have the computer
+      essentually looked up because it keeps switching to python". On macOS every Tk window a test
+      or script opens makes Python the active app (measured; the H5 note that focus was never taken
+      was wrong). Five ways to stop it inside Tk were tried and failed (two crashed Tk). The rule
+      now: agents run no window-opening tests; the controller runs them in one batch, when James
+      says he is stepping away.
 
 - [x] **H6 · Dead Settings code removed (2026-10-04, after the redesign retired Triage).** Two
       V6 Settings modules that no screen built: `sections/active_models.py` (the old "Active
@@ -1128,6 +1172,13 @@ beside it by hand; no special variant and no data-copying machinery. His own dep
   (`scripts/atp_spec_audit.py`).
 
 ## Done recently
+
+**2026-10-04:** in the morning, the redesign's follow-ups: each laser charted on the Overview,
+lime / teal / purple lasers, the Mac scroll step, dead Settings code removed (H6). Then option B
+and the finish pass (J8): the Overview as a list with its detail, the list's rows as James
+picked them (C), a status bar, icons, Marcellus, one date format. A review's seven findings
+fixed, and the PDF of many charts now grades a rotated unit as the analyzer did. Test windows
+taking the Mac's focus has its rule (H7).
 
 **2026-10-02:** drift you can trust (J1) — dirty readings, small runs, old evidence and
 improvements no longer raise alarms; 49 → 7 flagged on the home copy. The 7953 names merged (J5)

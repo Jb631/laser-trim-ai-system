@@ -1,5 +1,49 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-10-04 evening — option B: the Overview as a list with its detail, a status bar, and a finish pass (pull, then look)
+
+You said TMOG "feels more like a finished peice of software", picked B, and Marcellus for titles
+("6"). After `git pull`:
+
+1. **Top bar**: the app's name in Marcellus; Overview · Models · Settings sit right beside it, each
+   with an icon; the blue "Process new files" keeps its place on the right. A page that is on the
+   bar no longer repeats its name as a big title; a page that is not on it (Process, Findings,
+   Company trends) shows its name at the top in the title font.
+2. **The Overview**:
+   - one line on top: "13 models need a look · $… lost at final test in the last 90 days · newest
+     file 29 Sep 2026" — the dollars are final-test fails × the model's price × the cost ratio,
+     across every model with a price (the Company trends formula, on the Overview's own 90 days);
+     with no prices loaded it says where to add them, never "$0";
+   - the yield-by-laser chart as a strip, always visible;
+   - a **list** on the left (it replaces the cards the section below describes) — the models
+     that need a look, then everything else — under named
+     columns. You asked of its first version, "these little charts and % dont mean anything?",
+     and picked C from three rows drawn on your data. Each row now says **what changed**: why a
+     model is flagged, in red ("2 recent runs failed 74%", with "usually 36%" quiet under it), or,
+     for the rest, the change against the year before ("down 6 pts"). Next to that are **twelve
+     months of pass % as bars** on one scale for every row: the months the 90 days cover are
+     bright, the rest are grey, and a month with no units is a faint dash. Last is the **90-day
+     pass %**;
+   - click a row and its **detail** fills the right: pass meter, why it is flagged, 12 months, the
+     facts (units, lasers, signal, dollars, newest file) and "Open full page ›".
+3. **A status bar on every page**: database OK, models, newest file, drift watch current (or
+   updating), files skipped, and the progress of any run while it runs.
+4. **The finish pass** fixes the rough edges seen in the 2026-10-04 screenshots:
+   - one date format ("29 Sep 2026") everywhere, including the backlog's upload date and a saved
+     unit chart;
+   - numbers shown together share one precision;
+   - buttons look like buttons, and dropdowns match the theme;
+   - the Model page's name is in the title font; its tabs are left-aligned and clearer, with one
+     headline and one facts line above the chart (the station-spec notice is one quiet line that
+     opens);
+   - fail-rate charts stop at 100%, and the company chart shows month names;
+   - the Process page lists its folders one per row and drops its duplicate run button;
+   - "Company trends" is that page's name everywhere, and prices are added in Settings → Backlog.
+5. **On the Mac only**: the app's own fonts now load — titles in Marcellus, everything else in IBM
+   Plex. It had been drawing in a fallback font.
+
+Nothing to run at work beyond the usual `git pull` and start.
+
 ## ⚡ 2026-10-02 evening — the new look: a top bar, the Overview, four tabs per model (pull, then look)
 
 You said: "im just not happy with the app, there is so much going on its hard to see what is
