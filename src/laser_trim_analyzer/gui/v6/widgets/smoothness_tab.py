@@ -4,6 +4,7 @@ from typing import Dict, List
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
 # The shared render budget for the Model page's row lists — rationale lives in
@@ -79,7 +80,7 @@ class SmoothnessTab(RowBudgetMixin, ctk.CTkFrame):
         for r in self._budget_slice(ordered):
             row = ctk.CTkFrame(self._rows_host, fg_color=t.CARD)
             row.pack(side="top", fill="x", pady=1)
-            when = r["file_date"].strftime("%Y-%m-%d") if r.get("file_date") else "—"
+            when = formats.day(r.get("file_date"))
             def _fmt(v):
                 return f"{v:.4g}" if isinstance(v, (int, float)) else "—"
             # Max deviation vs its spec is the smoothness quality measure. (The old "avg"

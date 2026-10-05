@@ -34,6 +34,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.core.models import laser_label
 from laser_trim_analyzer.findings import presentation as P
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
@@ -64,10 +65,27 @@ def _share(v) -> str:
 
 
 def _mon(month) -> str:
+    """"2026-09" (or a whole date) as "Sep 2026" -- gui/v6/formats.month, the app's one way."""
     try:
-        return datetime.strptime(str(month)[:7], "%Y-%m").strftime("%b %Y")
+        return formats.month(datetime.strptime(str(month)[:7], "%Y-%m"))
     except (TypeError, ValueError):
         return "—"
+
+
+def _day(value) -> str:
+    """An analyzer's ISO day ("2023-09-22") as "22 Sep 2023" (gui/v6/formats.day). Anything it
+    cannot read is shown as it came (_txt), never dropped."""
+    text = formats.day(value) if value not in (None, "") else formats.NONE
+    return text if text != formats.NONE else _txt(value)
+
+
+def _window(value) -> str:
+    """cut_setting's window, "2025-01-06 .. 2025-06-30", as "6 Jan 2025 – 30 Jun 2025"; a window in
+    any other shape is shown as it came."""
+    first, sep, last = str(value or "").partition(" .. ")
+    if sep and formats.day(first) != formats.NONE and formats.day(last) != formats.NONE:
+        return f"{formats.day(first)} – {formats.day(last)}"
+    return _txt(value)
 
 
 def _span(months) -> str:
@@ -322,7 +340,7 @@ class FindingsTab(ctk.CTkFrame):
             for tab in tables:
                 self._line(f"{laser_label(tab.get('system'))} · {_txt(tab.get('track'))} · "
                            f"{_num(tab.get('graded'))} graded points of {_num(tab.get('rows'))} rows · "
-                           f"{_num(tab.get('n'))} tracks · {_txt(tab.get('first'))} → {_txt(tab.get('last'))} · "
+                           f"{_num(tab.get('n'))} tracks · {_day(tab.get('first'))} → {_day(tab.get('last'))} · "
                            f"{_pct(tab.get('trim_pass_pct'))} left the laser inside limits", muted=True)
         burden = facts.get("pass_burden") or {}
         if burden:
@@ -340,7 +358,7 @@ class FindingsTab(ctk.CTkFrame):
             for group, g in sorted(cuts.items()):
                 current = g.get("current_setting")
                 mixed = g.get("days_with_more_than_one_setting_pct")
-                self._line(f"{group} · {_num(g.get('n'))} tracks · {_txt(g.get('window'))}"
+                self._line(f"{group} · {_num(g.get('n'))} tracks · {_window(g.get('window'))}"
                            + (f" · {_pct(mixed)} of days ran more than one setting" if mixed is not None else ""),
                            muted=True)
                 for s_ in g.get("settings") or []:
@@ -348,13 +366,13 @@ class FindingsTab(ctk.CTkFrame):
                     self._line(f"      cut {_txt(s_.get('setting'))} · {_num(s_.get('n'))} tracks · "
                                f"{_pct(s_.get('pass_pct'))} left the laser inside limits · "
                                f"median incoming {_num(s_.get('median_incoming_resistance'))} Ω · "
-                               f"{_txt(s_.get('window'))}{mark}", muted=True)
+                               f"{_window(s_.get('window'))}{mark}", muted=True)
         history = facts.get("recipe_history") or []
         if history:
             self._group_heading("Recipe history", len(history))
             for run in history:
-                self._line(f"{laser_label(run.get('system'))} · {_txt(run.get('first'))} → "
-                           f"{_txt(run.get('last'))} · {_txt(run.get('recipe'))} · {_num(run.get('n'))} tracks · "
+                self._line(f"{laser_label(run.get('system'))} · {_day(run.get('first'))} → "
+                           f"{_day(run.get('last'))} · {_txt(run.get('recipe'))} · {_num(run.get('n'))} tracks · "
                            f"{_pct(run.get('trim_pass_pct'))} left the laser inside limits · "
                            f"median incoming {_num(run.get('median_incoming_r'))} Ω", muted=True)
         # A key this version has not worked out (absent, None, or an older shape -- named at the

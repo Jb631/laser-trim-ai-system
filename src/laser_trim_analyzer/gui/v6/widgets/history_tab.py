@@ -12,8 +12,12 @@ import customtkinter as ctk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from laser_trim_analyzer.core.model_stats import decimals_for, fixed
 from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
+from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import period_labels, period_ticks
+from laser_trim_analyzer.gui.v6.widgets.focus_chart import set_date_axis
 
 _LABELS = {
     "measured_electrical_angle": "Measured electrical angle",
@@ -35,14 +39,8 @@ class HistoryTab(ctk.CTkFrame):
         bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
         ctk.CTkLabel(bar, text="Measure:", font=theme.font(theme.SIZE_BODY),
                      text_color=theme.TEXT_SECONDARY).pack(side="left", padx=(0, theme.SPACE_SM))
-        # Themed like the other seven Task 1 dropdowns (facelift step 2 Task 3, controller
-        # ruling): this one used to rely on CTkOptionMenu's own un-themed default -- safe to
-        # look at (7.47:1) but not consistent with the rest of the app's teal.
-        self._menu = ctk.CTkOptionMenu(bar, values=["—"], width=220, command=self._on_pick,
-                                       font=theme.font(theme.SIZE_BODY), fg_color=theme.CARD,
-                                       button_color=theme.SEGMENT_SELECTED,
-                                       button_hover_color=theme.SEGMENT_SELECTED_HOVER,
-                                       text_color=theme.TEXT_PRIMARY)
+        # The app's one dropdown (blocks.dropdown): a quiet arrow on an ELEVATED panel.
+        self._menu = blocks.dropdown(bar, theme, ["—"], command=self._on_pick, width=220)
         self._menu.pack(side="left")
         self._stats = ctk.CTkLabel(bar, text="", font=theme.font(theme.SIZE_CAPTION),
                                    text_color=theme.TEXT_SECONDARY, anchor="w")
@@ -109,6 +107,7 @@ class HistoryTab(ctk.CTkFrame):
             dates = [p[0] for p in series]
             vals = np.array([p[1] for p in series], dtype=float)
             self._ax_val.scatter(dates, vals, s=10, color=t.ACCENT, alpha=0.75)
+            set_date_axis(self._ax_val.xaxis)            # dates in the app's words
             finite = vals[np.isfinite(vals)]
             if finite.size:
                 lo, hi = (np.percentile(finite, [2, 98]) if finite.size >= 10
@@ -127,9 +126,12 @@ class HistoryTab(ctk.CTkFrame):
 
         s = (d.get("stats") or {}).get(self._metric)
         if s:
+            # One precision for the line's six figures (finish pass: each chose its own).
+            places = decimals_for(s[k] for k in ("mean", "std", "min", "max", "last"))
+            f = {k: fixed(s[k], places) for k in ("mean", "std", "min", "max", "last")}
             self._stats.configure(
-                text=(f"n={s['n']}   mean={s['mean']:.4g}   σ={s['std']:.4g}   "
-                      f"min={s['min']:.4g}   max={s['max']:.4g}   last={s['last']:.4g}"))
+                text=(f"n={s['n']:,}   mean={f['mean']}   σ={f['std']}   "
+                      f"min={f['min']}   max={f['max']}   last={f['last']}"))
         else:
             self._stats.configure(text="")
 
@@ -143,17 +145,20 @@ class HistoryTab(ctk.CTkFrame):
             self._ax_pr.plot(xs, rates, marker="o", ms=3, lw=1.2, color=t.ACCENT)
             self._ax_pr.set_ylim(0, 105)
             self._ax_pr.axhline(100, color=t.TEXT_SECONDARY, ls="--", lw=0.8, alpha=0.5)
-            step = max(1, len(pr) // 8)
-            self._ax_pr.set_xticks(xs[::step])
-            self._ax_pr.set_xticklabels([pr[i][0] for i in xs[::step]], rotation=45,
-                                        ha="right", fontsize=t.CHART_FONT_SMALL)
+            # Month names on whole months, flat, the year on January and the first label -- the
+            # Company trends chart's own rule (it read a rotated "2025-10" too).
+            months = [p[0] for p in pr]
+            ticks = period_ticks(months)
+            self._ax_pr.set_xticks(ticks)
+            self._ax_pr.set_xticklabels(period_labels(months, ticks), rotation=0, ha="center",
+                                        fontsize=t.CHART_FONT_SMALL)
             self._ax_pr.set_ylabel("% pass", color=t.TEXT_SECONDARY, fontsize=t.CHART_FONT)
         else:
             self._ax_pr.text(0.5, 0.5, "No linearity pass/fail history.",
                              transform=self._ax_pr.transAxes, ha="center", va="center",
                              color=t.TEXT_SECONDARY)
         # h_pad keeps the bottom panel's title clear of the top panel's
-        # rotated tick labels (they collided at default padding).
+        # tick labels (they collided at default padding when they were rotated).
         self._fig.tight_layout(h_pad=2.4)
         self.canvas.draw_idle()
 

@@ -61,9 +61,9 @@ over a table.
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from math import isfinite
+from math import floor, isfinite, log10
 from statistics import median
-from typing import List, NamedTuple, Optional, Sequence, Tuple
+from typing import Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -554,6 +554,19 @@ _OHM, _KOHM = "Ω", "kΩ"
 _KILO = 1000.0
 
 
+# The app's one way to write a date is gui/v6/formats (day "29 Sep 2026", day_short "29 Sep";
+# finish pass, 2026-10-04: the Units tab said "since Jun 26, 2026" beside "29 Sep 2026" elsewhere).
+# This module is core -- the Excel sheet prints its words too -- so it keeps its own copy of that
+# rule rather than import the GUI; tests/test_finish_pass_pages.py pins the two together. The day
+# is a plain int: `%-d` raises on Windows.
+def day_text(d: datetime) -> str:
+    return f"{d.day} {d:%b %Y}"
+
+
+def day_short_text(d: datetime) -> str:
+    return f"{d.day} {d:%b}"
+
+
 def _num(value: float) -> str:
     """Three-ish significant digits, never scientific notation.
 
@@ -573,6 +586,60 @@ def _num(value: float) -> str:
     return f"{value:.4g}"
 
 
+# ---- one precision for numbers shown together (finish pass, 2026-10-04) --------------------------
+# The Units tab printed one sigma gradient as 0.005201 and the next as 0.011: each number chose its
+# own precision (`_num` per value), so a column read as noise. Numbers shown TOGETHER -- a row of
+# this table, a column of a unit list, a row of the drift table -- share one count of decimals:
+# three significant digits on the largest of them, and at least one on the smallest that is not
+# zero, so a real 0.0003 beside a 1.5 never reads as 0.00. A lone number in a sentence keeps
+# `_num`'s own three-ish digits (format_in with no decimals).
+_SIG_DIGITS = 3
+_MAX_DECIMALS = 6
+# Every percentage in the table carries one decimal -- the rate rows' "63.7%" and the margin row's
+# alike ("percentages whole or one decimal consistently per table").
+_PERCENT_DECIMALS = 1
+
+
+def decimals_for(values: Iterable[Optional[float]], sig: int = _SIG_DIGITS) -> int:
+    """How many decimals a set of numbers shown together share: `sig` significant digits on the
+    largest, one on the smallest that is not zero, at most _MAX_DECIMALS. 0 when there is nothing
+    but zeros and blanks."""
+    mags = []
+    for v in values:
+        f = _usable(v)
+        if f is not None and f != 0:
+            mags.append(abs(f))
+    if not mags:
+        return 0
+
+    def need(magnitude: float, digits: int) -> int:
+        return max(0, digits - 1 - floor(log10(magnitude)))
+
+    return min(_MAX_DECIMALS, max(need(max(mags), sig), need(min(mags), 1)))
+
+
+def fixed(value: Optional[float], decimals: int) -> str:
+    """One number at the decimals it shares with its row or column: thousands separated, "—" for
+    nothing, and never a "-0.00" (a negative too small to show is 0)."""
+    if value is None:
+        return "—"
+    v = float(value)
+    if round(v, decimals) == 0:
+        v = 0.0
+    return f"{v:,.{decimals}f}"
+
+
+def row_decimals(row: "StatRow") -> int:
+    """ONE precision for the whole row, as row_unit is ONE scale: from every number the row shows,
+    in both groups, in the unit it shows them in. A percentage row takes the table's one decimal."""
+    unit = row_unit(row)
+    if unit == "%":
+        return _PERCENT_DECIMALS
+    scale = _KILO if unit == _KOHM else 1.0
+    return decimals_for(v / scale for c in (row.all_, row.lin_passing)
+                        for v in (c.avg, c.low, c.high) if v is not None)
+
+
 def display_unit(unit: str, reference: Optional[float]) -> str:
     """The unit this value should be SHOWN in (the data layer keeps raw ohms)."""
     if unit == "ohms":
@@ -580,18 +647,21 @@ def display_unit(unit: str, reference: Optional[float]) -> str:
     return {"deg": "°", "%": "%"}.get(unit, "")
 
 
-def bare_number(value: Optional[float], unit_text: str) -> str:
-    """The number alone, scaled to the unit — for a range that names it once."""
+def bare_number(value: Optional[float], unit_text: str,
+                decimals: Optional[int] = None) -> str:
+    """The number alone, scaled to the unit — for a range that names it once. `decimals`: the
+    precision it shares with its row (row_decimals); None for a lone number (_num)."""
     if value is None:
         return "—"
-    return _num(value / _KILO if unit_text == _KOHM else value)
+    scaled = value / _KILO if unit_text == _KOHM else value
+    return _num(scaled) if decimals is None else fixed(scaled, decimals)
 
 
-def format_in(value: Optional[float], unit_text: str) -> str:
+def format_in(value: Optional[float], unit_text: str, decimals: Optional[int] = None) -> str:
     """One value in an already-chosen unit. None reads as an em dash, never 0."""
     if value is None:
         return "—"
-    text = bare_number(value, unit_text)
+    text = bare_number(value, unit_text, decimals)
     return f"{text} {unit_text}" if unit_text in (_OHM, _KOHM) else f"{text}{unit_text}"
 
 
@@ -624,9 +694,9 @@ def cell_texts(row: StatRow, cell: Cell) -> List[str]:
         return [f"{cell.n:,}",
                 "—" if cell.count is None else f"{cell.count:,}",
                 "—" if cell.pct is None else f"{cell.pct:.1f}%"]
-    unit = row_unit(row)
-    return [f"{cell.n:,}", format_in(cell.avg, unit),
-            format_in(cell.low, unit), format_in(cell.high, unit)]
+    unit, places = row_unit(row), row_decimals(row)
+    return [f"{cell.n:,}", format_in(cell.avg, unit, places),
+            format_in(cell.low, unit, places), format_in(cell.high, unit, places)]
 
 
 def disclosure_text(cell: Cell) -> str:
@@ -668,9 +738,10 @@ def lot_line(row: StatRow, cell: Cell, verdict: Optional["LotVerdict"]) -> str:
     if row.kind == "rate":
         return (f"this lot: {cell.count:,} of {cell.n:,} "
                 f"({cell.pct:.1f}%)")
-    unit = row_unit(row)
-    numbers = (f"this lot: {cell.n:,} readings · avg {format_in(cell.avg, unit)} "
-               f"· {format_in(cell.low, unit)} to {format_in(cell.high, unit)}")
+    # The row's own unit AND precision: the line sits inside the row's band, under its numbers.
+    unit, places = row_unit(row), row_decimals(row)
+    numbers = (f"this lot: {cell.n:,} readings · avg {format_in(cell.avg, unit, places)} "
+               f"· {format_in(cell.low, unit, places)} to {format_in(cell.high, unit, places)}")
     return f"{numbers} — {verdict.text}" if verdict else numbers
 
 
@@ -686,7 +757,7 @@ def summary_line(stats: ModelStats) -> str:
     if stats.lot is not None:
         window = "over the selected lot"
     elif stats.cutoff is not None:
-        window = f"since {stats.cutoff:%b %d, %Y}"
+        window = f"since {day_text(stats.cutoff)}"
     text = f"{stats.tracks:,} track measurements {window}"
     dropped = stats.excluded_total
     if dropped:
@@ -717,8 +788,10 @@ class LotChoice:
 
 
 def _lot_label(start: datetime, end: datetime, n: int, is_open: bool) -> str:
-    span = (f"{start:%b %d}" if start.date() == end.date()
-            else f"{start:%b %d}–{end:%b %d}")
+    """"19 Sep–28 Sep 2025 · 34 units": the run's days in the app's words, the year once at the end
+    when it is not this year or the run crosses one."""
+    span = (day_short_text(start) if start.date() == end.date()
+            else f"{day_short_text(start)}–{day_short_text(end)}")
     if start.year != end.year or start.year != datetime.now().year:
         span += f" {end:%Y}"
     label = f"{span} · {n} unit{'s' if n != 1 else ''}"

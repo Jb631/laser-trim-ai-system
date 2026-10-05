@@ -103,7 +103,9 @@ def test_the_page_draws_no_blue_button_the_top_bar_holds_the_one(make_app, tmp_p
     page._folder_picker.set_value(str(tmp_path))
     t = page.theme
     assert page._start_button.cget("text") == "Start processing"
-    assert page._new_files._run_button.cget("text") == "Process new files"
+    # The remembered run has no button of its own since the finish pass (2026-10-04): two
+    # "Process new files" on one screen; the top bar's is the one.
+    assert "Process new files" not in [b.cget("text") for b in _buttons(page)]
     blue = [b.cget("text") for b in _buttons(page) if b.cget("fg_color") == t.ACCENT]
     assert blue == []
     assert [b.cget("text") for b in _buttons(app.topbar) if b.cget("fg_color") == t.ACCENT] == [
@@ -249,7 +251,7 @@ def _with_folders(app, *folders):
 def test_with_no_folders_the_run_says_where_to_add_them(make_app):
     app = make_app()                       # fresh Config: no folders
     run = _new_files(app)
-    assert str(run._run_button.cget("state")) == "disabled"
+    assert run._folder_rows == []
     said = run._folders_label.cget("text")
     assert "Settings" in said and "folder" in said.lower()
     run._settings_link.invoke()
@@ -257,12 +259,13 @@ def test_with_no_folders_the_run_says_where_to_add_them(make_app):
 
 
 def test_with_folders_the_run_names_them_in_order(make_app, tmp_path):
+    """One row per folder since the finish pass (2026-10-04) -- it was one run-on line."""
     app = make_app()
     run = _with_folders(app, str(tmp_path / "a"), str(tmp_path / "b"))
-    assert str(run._run_button.cget("state")) == "normal"
     said = run._folders_label.cget("text")
     assert said.startswith("2 folders, in this order:")
-    assert said.index(str(tmp_path / "a")) < said.index(str(tmp_path / "b"))
+    assert [r.path_label.cget("text") for r in run._folder_rows] == [
+        str(tmp_path / "a"), str(tmp_path / "b")]
 
 
 def test_the_run_drives_the_shared_multi_folder_runner(make_app, monkeypatch):
@@ -282,15 +285,19 @@ def test_the_run_drives_the_shared_multi_folder_runner(make_app, monkeypatch):
                     "db": app.db}
 
 
-def test_the_button_is_disabled_while_the_run_is_in_flight(make_app, monkeypatch, tmp_path):
+def test_stop_shows_while_the_run_is_in_flight_and_only_then(make_app, monkeypatch, tmp_path):
+    """The run's own button went with the finish pass (2026-10-04); what the run still needs on
+    the page is Stop, there for as long as the run is -- and a second press starts nothing
+    (test_pressing_the_button_again_during_the_run_starts_no_second_one)."""
     _no_threads(monkeypatch)
     app = make_app()
     run = _with_folders(app, str(tmp_path))
+    assert run._stop_button.winfo_manager() == ""
     run._start()
-    assert str(run._run_button.cget("state")) == "disabled"
+    assert run._running and run._stop_button.winfo_manager() == "pack"
     assert _NoThread.started, "a worker should have been spawned"
     run._on_run_done(IngestReport(results=[], seconds=1.0))
-    assert str(run._run_button.cget("state")) == "normal"
+    assert not run._running and run._stop_button.winfo_manager() == ""
 
 
 def test_start_is_a_no_op_with_no_folders(make_app, monkeypatch):

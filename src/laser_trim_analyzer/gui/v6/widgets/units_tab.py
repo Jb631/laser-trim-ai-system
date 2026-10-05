@@ -16,11 +16,27 @@ from typing import Callable, Dict, List, Optional
 
 import customtkinter as ctk
 
-from laser_trim_analyzer.core.model_stats import failed_processing
+from laser_trim_analyzer.core.model_stats import decimals_for, failed_processing, fixed
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 _COLUMNS = [("serial", "Serial"), ("file_date", "Date"), ("overall_status", "Status"),
             ("sigma_gradient", "Sigma gradient"), ("linearity_error", "Linearity error")]
+
+# The two measurement columns. Each shares ONE precision down the whole list (finish pass,
+# 2026-10-04: one sigma gradient read 0.005201 and the next 0.011) -- worked out over every unit the
+# tab holds, not the rows drawn, so "Show all" never changes a number already on screen.
+_MEASURES = ("sigma_gradient", "linearity_error")
+
+
+def column_decimals(units) -> Dict[str, int]:
+    """{column: the decimals its numbers share}. A failed track's leftovers (the 999.999 marker)
+    are never shown -- its cells say "—" -- so they never set a column's precision either."""
+    graded = [u for u in units if not failed_processing(u.get("track_status"))]
+    return {key: decimals_for(u.get(key) for u in graded if isinstance(u.get(key), (int, float)))
+            for key in _MEASURES}
+
 
 # Shared by the three row-list tabs on the Model page (units, final test,
 # smoothness) so the budget is one number with one rationale — see the module
@@ -105,36 +121,24 @@ class UnitsTab(RowBudgetMixin, ctk.CTkFrame):
         self._selected: set = set()   # analysis_id of checked rows (subset export)
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
-        # Outlined, not teal-filled (final review, 2026-09-24): the Model page's header already
-        # carries its one teal button ("Export model to Excel"), and with this tab open the
-        # screen showed three -- this one and "Search" below as well. Same outline as its
-        # neighbour "Export charts (PDF)".
-        ctk.CTkButton(bar, text="Export to Excel", fg_color=theme.CARD, hover_color=theme.ELEVATED,
-                      text_color=theme.TEXT_PRIMARY, border_width=1, border_color=theme.BORDER,
-                      command=self._on_export, corner_radius=theme.RADIUS_SM).pack(side="right")
+        # Secondary buttons, never teal-filled (final review, 2026-09-24: with this tab open the
+        # screen once showed three teal buttons; the one blue button is the top bar's).
+        blocks.secondary_button(bar, theme, "Export to Excel", self._on_export, icon="export")\
+            .pack(side="right")
         if on_export_charts is not None:
             # Chart export: the checked rows (or all shown if none are checked)
             # as a single multi-page print-ready PDF.
-            ctk.CTkButton(bar, text="Export charts (PDF)", fg_color=theme.CARD,
-                          hover_color=theme.ELEVATED, text_color=theme.TEXT_PRIMARY,
-                          border_width=1, border_color=theme.BORDER,
-                          command=on_export_charts, corner_radius=theme.RADIUS_SM)\
-                .pack(side="right", padx=(0, theme.SPACE_SM))
+            blocks.secondary_button(bar, theme, "Export charts (PDF)", on_export_charts,
+                                    icon="export").pack(side="right", padx=(0, theme.SPACE_SM))
         # Serial lookup (bypasses the recent-cap and window — see module docstring).
         self._search = ctk.CTkEntry(bar, placeholder_text="Find serial…", width=180,
                                     font=theme.font(theme.SIZE_BODY))
         self._search.pack(side="left")
         self._search.bind("<Return>", lambda e: self._do_search())
-        # Outlined like "Recent" beside it (see "Export to Excel" above: one teal per screen).
-        ctk.CTkButton(bar, text="Search", width=64, fg_color="transparent",
-                      hover_color=theme.ELEVATED, border_width=1, border_color=theme.BORDER,
-                      text_color=theme.TEXT_PRIMARY, command=self._do_search,
-                      corner_radius=theme.RADIUS_SM
-                      ).pack(side="left", padx=(theme.SPACE_XS, 0))
-        ctk.CTkButton(bar, text="Recent", width=64, fg_color="transparent",
-                      border_width=1, border_color=theme.BORDER, text_color=theme.TEXT_SECONDARY,
-                      command=self._clear_search, corner_radius=theme.RADIUS_SM
-                      ).pack(side="left", padx=(theme.SPACE_XS, 0))
+        blocks.secondary_button(bar, theme, "Search", self._do_search, icon="search")\
+            .pack(side="left", padx=(theme.SPACE_XS, 0))
+        blocks.secondary_button(bar, theme, "Recent", self._clear_search)\
+            .pack(side="left", padx=(theme.SPACE_XS, 0))
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
         # Spacer keeps the column headers aligned with the per-row checkbox.
@@ -219,10 +223,12 @@ class UnitsTab(RowBudgetMixin, ctk.CTkFrame):
         ordered = sorted(self._units,
                          key=lambda u: (u.get(self._sort_key) is None, u.get(self._sort_key)),
                          reverse=self._sort_rev)
+        places = column_decimals(self._units)
         for u in self._budget_slice(ordered):
             uid = u.get("analysis_id")
             row = _UnitRow(self._rows_host, unit=u, theme=self.theme, on_click=self._on_unit_click,
-                           on_toggle=self._toggle_select, selected=(uid in self._selected))
+                           on_toggle=self._toggle_select, selected=(uid in self._selected),
+                           decimals=places)
             row.pack(side="top", fill="x", pady=1)
             self._rows.append(row)
         self._apply_show_all(len(ordered))
@@ -234,8 +240,11 @@ class UnitsTab(RowBudgetMixin, ctk.CTkFrame):
 
 class _UnitRow(ctk.CTkFrame):
     def __init__(self, master, unit: dict, theme: ThemeManager, on_click,
-                 on_toggle=None, selected: bool = False):
+                 on_toggle=None, selected: bool = False, decimals: Optional[Dict[str, int]] = None):
         super().__init__(master, fg_color=theme.SURFACE)
+        # The precision each measurement column shares (column_decimals); a row built on its own
+        # works its own out, from itself.
+        decimals = decimals if decimals is not None else column_decimals([unit])
         self.unit = unit
         self._cb = on_click
         self._on_toggle = on_toggle
@@ -277,8 +286,10 @@ class _UnitRow(ctk.CTkFrame):
                 color = theme.TEXT_SECONDARY
             elif key in ("linearity_error", "sigma_gradient") and track_failed:
                 txt, color = "—", theme.TEXT_PRIMARY
+            elif key in decimals and isinstance(v, (int, float)):
+                txt, color = fixed(v, decimals[key]), theme.TEXT_PRIMARY
             else:
-                txt = (v.strftime("%Y-%m-%d") if hasattr(v, "strftime")
+                txt = (formats.day(v) if hasattr(v, "strftime")
                        else f"{v:.4g}" if isinstance(v, float) else str(v) if v is not None else "—")
                 color = _status_color.get(txt, theme.TEXT_PRIMARY) if key == "overall_status" \
                     else theme.TEXT_PRIMARY

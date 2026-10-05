@@ -10,9 +10,12 @@ from math import isfinite
 from typing import List, Optional
 
 import customtkinter as ctk
+import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.ticker import Formatter, FuncFormatter
 
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.ml.drift_types import FRACTION_METRICS, metric_label
@@ -50,6 +53,64 @@ _ROLLING_MIN_UNITS = 5
 _ROLLING_GAP_BREAK_DAYS = 30
 
 
+# A fail rate's axis stops a hair past 100% (and below 0%), never at 125% (finish pass, 2026-10-04)
+# -- just enough for a dot drawn at 100% to show whole.
+_FRACTION_TOP_MARGIN = 0.03
+
+
+def _ticks_within_a_rate(ax) -> None:
+    """The y ticks of a rate axis: nice steps, none below 0% or past 100%."""
+    from matplotlib.ticker import FixedLocator, MaxNLocator
+    y0, y1 = ax.get_ylim()
+    ticks = [v for v in MaxNLocator(nbins=5).tick_values(max(0.0, y0), min(1.0, y1))
+             if -1e-9 <= v <= 1.0 + 1e-9]
+    ax.yaxis.set_major_locator(FixedLocator(ticks))
+
+
+def _tick_unit(days: List[datetime]) -> str:
+    """How far apart a date axis's ticks are, in the words its labels use: "year" for yearly ticks,
+    "month" for monthly (or two-, three-, six-monthly) ones, else "day"."""
+    gaps = sorted((b - a).days for a, b in zip(days, days[1:]))
+    gap = gaps[len(gaps) // 2] if gaps else 0
+    return "year" if gap >= 360 else "month" if gap >= 28 else "day"
+
+
+class AppDateFormatter(Formatter):
+    """A date axis in the app's words (gui/v6/formats.axis_labels): "29 Sep" ticks a few days apart,
+    "Sep" months apart, "2026" years apart, the year said where it changes (or once, up front).
+    ConciseDateFormatter said "15", "22", "Sep", "08" -- matplotlib's words, not the app's (finish
+    pass, 2026-10-04).
+
+    It labels the ticks all at once (format_ticks), which is how it knows how far apart they are and
+    where the year changes. The locator also hands it ticks just outside the view, which are never
+    drawn, so the year is worked out on the ticks INSIDE the view -- said on one nobody sees, it
+    would be said nowhere."""
+
+    def format_ticks(self, values):
+        days = [mdates.num2date(v).replace(tzinfo=None) for v in values]
+        try:
+            lo, hi = sorted(self.axis.get_view_interval())
+        except Exception:                         # not attached to an axis: label them all
+            lo, hi = float("-inf"), float("inf")
+        slack = (hi - lo) * 1e-9
+        shown = [i for i, v in enumerate(values) if lo - slack <= v <= hi + slack]
+        unit = _tick_unit([days[i] for i in shown] or days)
+        labels = formats.axis_labels(days, unit)
+        for i, text in zip(shown, formats.axis_labels([days[i] for i in shown], unit)):
+            labels[i] = text
+        return labels
+
+    def __call__(self, x, pos=None):
+        return formats.day(mdates.num2date(x).replace(tzinfo=None))
+
+
+def set_date_axis(axis, minticks: int = 4, maxticks: int = 9) -> None:
+    """A date axis that fits its ticks to the room (AutoDateLocator) and says them in the app's
+    words (AppDateFormatter). Shared by every V6 chart drawn on real dates."""
+    axis.set_major_locator(mdates.AutoDateLocator(minticks=minticks, maxticks=maxticks))
+    axis.set_major_formatter(AppDateFormatter())
+
+
 def spc_draw_params(series: SpcSeries, focus_recent: int = RECENT_K) -> dict:
     """Everything needed to DRAW an SpcSeries — pure, so every surface agrees.
 
@@ -77,10 +138,15 @@ def spc_draw_params(series: SpcSeries, focus_recent: int = RECENT_K) -> dict:
             if pt.ooc:
                 (flag_idx if i >= cut else old_idx).append(i)
     fraction = series.metric in FRACTION_METRICS
-    # A month/day tick reads BACKWARDS when the lots span calendar years — the
-    # work data's 8887 drew "08/20" and then "07/23" for a lot ELEVEN MONTHS
-    # later (render check). The year earns its space only when there is one.
-    date_fmt = "%m/%d" if len({pt.end.year for pt in points}) <= 1 else "%m/%d/%y"
+    # The lots' end days in the app's words (gui/v6/formats; it read "09/19/25" on 2026-10-04). A
+    # month/day tick reads BACKWARDS when the lots span calendar years -- the work data's 8887
+    # drew "08/20" and then "07/23" for a lot ELEVEN MONTHS later (render check) -- so the year is
+    # said where it changes (formats.axis_labels). The axis is thinned from the RIGHT, so the
+    # newest lot always keeps its label (at most 12), and the year is worked out on the labels
+    # actually drawn: said on a lot whose label is thinned away, it would never be seen.
+    ends = [pt.end for pt in points]
+    stride = max(1, -(-n // 12))
+    ticks = list(range(n - 1, -1, -stride))[::-1]
     # A small lot's binomial band can run past 100% (se blows up as n shrinks,
     # seen on 6607) -- drawn, that reads as "more than everyone could fail".
     # Clipped for the CHART ONLY, fraction metrics only (a continuous metric's
@@ -108,7 +174,9 @@ def spc_draw_params(series: SpcSeries, focus_recent: int = RECENT_K) -> dict:
         "open_idx": next((i for i, pt in enumerate(points) if pt.is_open), None),
         "labels": {i: points[i].note for i in flag_idx if points[i].note},
         "n_labels": [f"n={pt.n}" for pt in points],
-        "x_dates": [pt.end.strftime(date_fmt) for pt in points],
+        "x_dates": formats.axis_labels(ends),
+        "ticks": ticks,
+        "tick_labels": formats.axis_labels([ends[i] for i in ticks]),
         "judged": series.judged,
         "fraction": fraction,
     }
@@ -260,6 +328,16 @@ class FocusChart(ctk.CTkFrame):
                     lo, hi = lo - 1.0, hi + 1.0
             pad = (hi - lo) * 0.08 or abs(hi) * 0.1 or 1.0
             ax.set_ylim(lo - pad, hi + pad)
+        rate = metric in FRACTION_METRICS
+        if rate:
+            # A fail rate lives between 0% and 100%: the window never runs past either end, however
+            # wide the baseline's band (finish pass, 2026-10-04: the lot view read 125%).
+            b0, b1 = ax.get_ylim()
+            b0, b1 = max(b0, -_FRACTION_TOP_MARGIN), min(b1, 1.0 + _FRACTION_TOP_MARGIN)
+            if b1 > b0:
+                ax.set_ylim(b0, b1)
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v * 100:.0f}%"))
+            _ticks_within_a_rate(ax)
         y0, y1 = ax.get_ylim()
 
         # ---- Units + the one strong line. Both live only with a baseline to
@@ -474,14 +552,11 @@ class FocusChart(ctk.CTkFrame):
         # Round 3, James: month labels ran together ("2026-022026-03") at a
         # 12-month window -- the implicit default formatter/locator packed
         # ticks too densely for the available width. AutoDateLocator picks
-        # HOW MANY ticks actually fit (not a fixed one-per-month), and
-        # ConciseDateFormatter drops what is already established on the
-        # axis (a bare "Feb" once a year has been shown) instead of
-        # repeating the full date at every tick -- both together are what
-        # keeps labels apart, at a wide window or a narrow one.
-        locator = mdates.AutoDateLocator(minticks=4, maxticks=9)
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        # HOW MANY ticks actually fit (not a fixed one-per-month), and the
+        # formatter says each tick in the app's words ("29 Sep", "Sep",
+        # "2026") with the year said once (AppDateFormatter) -- both together
+        # are what keeps labels apart, at a wide window or a narrow one.
+        set_date_axis(ax.xaxis)
 
         self._fig.tight_layout()
         # tight_layout already makes room for the header text above (checked
@@ -593,18 +668,25 @@ class FocusChart(ctk.CTkFrame):
         span = (hi - lo) or (abs(hi) * 0.1) or 1.0
         # Extra headroom when a sentence is annotated above a flagged lot.
         top_pad = 0.30 if p["labels"] else 0.15
-        ax.set_ylim(lo - span * 0.06, hi + span * top_pad)
+        top = hi + span * top_pad
+        if fraction:
+            # A fail rate ends at 100%: the axis stops there, a hair above so a 100% lot's dot is
+            # whole (finish pass, 2026-10-04: the headroom for a sentence ran it to 125%). A
+            # sentence on a lot that high goes below it -- the placement further down flips at 70%.
+            top = min(top, 1.0 + _FRACTION_TOP_MARGIN)
+        ax.set_ylim(lo - span * 0.06, top)
         ax.yaxis.set_major_formatter(FuncFormatter(
             (lambda v, _pos: f"{v * 100:.0f}%") if fraction
             else (lambda v, _pos: t.fmt_measure(v, 4))))
+        if fraction:
+            _ticks_within_a_rate(ax)
 
         # ---- x labels: lot end date, with the lot SIZE under it. n is not
         # decoration — it is why the band above that lot is the width it is.
-        # Thinned from the RIGHT so the newest lot always keeps its label.
-        stride = max(1, -(-len(xs) // 12))
-        ticks = list(range(len(xs) - 1, -1, -stride))[::-1]
+        # Thinned from the RIGHT so the newest lot always keeps its label (spc_draw_params).
+        ticks = p["ticks"]
         ax.set_xticks(ticks)
-        ax.set_xticklabels([p["x_dates"][i] for i in ticks], fontsize=t.CHART_FONT)
+        ax.set_xticklabels(p["tick_labels"], fontsize=t.CHART_FONT)
         for i in ticks:
             # "open" rides on the lot's own label: a free-floating legend line
             # for the hollow marker collided with the amber note (render check),

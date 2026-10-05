@@ -7,9 +7,12 @@ to theme.py alone. The pixel numbers that remain are the shapes of single blocks
 height and side padding, the model column's width, a line's wrap length -- which no other
 block shares and no page changes.
 """
-from typing import Callable, Dict, Iterable, Optional, Tuple
+import tkinter
+from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple
 
 import customtkinter as ctk
+
+from laser_trim_analyzer.gui.v6 import icons
 
 VERDICT_TOKENS: Dict[str, Tuple[str, str]] = {
     "PASS": ("PASS_FG", "PASS_BG"),
@@ -177,6 +180,94 @@ def primary_button(parent, theme, text: str, command) -> ctk.CTkButton:
     return ctk.CTkButton(parent, text=text, command=command, fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
                          text_color=t.TEXT_INVERSE, font=t.font(t.SIZE_BODY, "bold"),
                          corner_radius=t.RADIUS_MD, height=32)
+
+
+_ICON_SIZE = 16          # a button's icon, in CustomTkinter units
+_ICON_GAP = 6            # CTkButton's own space between its image and its text
+
+
+def secondary_button(parent, theme, text: str, command, *, icon: Optional[str] = None,
+                     tone: str = "act", width: Optional[int] = None) -> ctk.CTkButton:
+    """A real button that is not THE button: CARD fill, a 1 px BORDER, TEXT_PRIMARY, a lift to
+    ELEVATED under the pointer, and optionally a small icon before its words (gui/v6/icons:
+    "Copy summary" with `copy`, "Export model to Excel" with `export`). A card-coloured button
+    with no border read as text on the page, not as something to press (finish pass, 2026-10-04:
+    "Copy summary", "Export model to Excel", "Browse…"); every action that is not the top bar's
+    one blue button is one of these. tone="check" is the coral for an action that destroys
+    something ("Clear selected").
+
+    Its width is the text's own plus SPACE_MD a side (and the icon): CTkButton pads a width=0
+    button by only its corner radius, 6 px from border to text."""
+    t = theme
+    color = t.CHECK if tone == "check" else t.TEXT_PRIMARY
+    image = icons.icon(icon, t.CHECK if tone == "check" else t.TEXT_SECONDARY, _ICON_SIZE) \
+        if icon else None
+    font = t.font(t.SIZE_BODY)
+    if width is None:
+        width = font.measure(text) + 2 * t.SPACE_MD + (_ICON_SIZE + _ICON_GAP if image else 0)
+    return ctk.CTkButton(parent, text=text, command=command, image=image, compound="left",
+                         fg_color=t.CARD, hover_color=t.ELEVATED, border_width=1,
+                         border_color=t.BORDER, text_color=color, font=font,
+                         corner_radius=t.RADIUS_MD, height=32, width=width)
+
+
+class _QuietArrow:
+    """A dropdown whose arrow is its own colour, not the value's. CustomTkinter 5.2.2 paints the
+    "dropdown_arrow" canvas item with text_color in every _draw() (ctk_optionmenu.py and
+    ctk_combobox.py), so it is repainted after each one; a disabled dropdown keeps CustomTkinter's
+    own grey. Private API, right only under the pin -- ctk_patches.py lists it with the app's other
+    overrides."""
+    _arrow_color: Optional[str] = None
+
+    def _draw(self, no_color_updates=False):
+        super()._draw(no_color_updates)
+        if self._arrow_color is not None and getattr(self, "_state", "normal") != tkinter.DISABLED:
+            self._canvas.itemconfig("dropdown_arrow",
+                                    fill=self._apply_appearance_mode(self._arrow_color))
+
+
+class _Dropdown(_QuietArrow, ctk.CTkOptionMenu):
+    def __init__(self, master, *, arrow_color: str, **kwargs):
+        self._arrow_color = arrow_color            # before the first draw, which __init__ runs
+        super().__init__(master, **kwargs)
+
+
+class _ComboBox(_QuietArrow, ctk.CTkComboBox):
+    def __init__(self, master, *, arrow_color: str, **kwargs):
+        self._arrow_color = arrow_color
+        super().__init__(master, **kwargs)
+
+
+def _menu_colors(t) -> dict:
+    """The list a dropdown opens, in the same tokens (where the platform lets Tk colour it)."""
+    return dict(dropdown_fg_color=t.CARD, dropdown_hover_color=t.ELEVATED,
+                dropdown_text_color=t.TEXT_PRIMARY, dropdown_font=t.font(t.SIZE_BODY))
+
+
+def dropdown(parent, theme, values: Sequence[str], command=None, *, width: int = 140,
+             **kwargs) -> ctk.CTkOptionMenu:
+    """Every V6 dropdown: its value TEXT_PRIMARY on CARD, its arrow TEXT_SECONDARY on an ELEVATED
+    panel that lifts to BORDER under the pointer -- never the bright blue square CustomTkinter's
+    theme gives it (finish pass, 2026-10-04: the model picker, "90d" and the run menu each had
+    one)."""
+    t = theme
+    return _Dropdown(parent, values=list(values), command=command, width=width,
+                     fg_color=t.CARD, button_color=t.ELEVATED, button_hover_color=t.BORDER,
+                     text_color=t.TEXT_PRIMARY, arrow_color=t.TEXT_SECONDARY,
+                     font=t.font(t.SIZE_BODY), corner_radius=t.RADIUS_MD, **_menu_colors(t),
+                     **kwargs)
+
+
+def combo_box(parent, theme, values: Sequence[str], command=None, *, width: int = 140,
+              fg_color: Optional[str] = None, **kwargs) -> ctk.CTkComboBox:
+    """A dropdown you can also type into (the model picker): the dropdown's colours, its box
+    outlined in BORDER. `fg_color` for a box that sits among entry fields (SURFACE)."""
+    t = theme
+    return _ComboBox(parent, values=list(values), command=command, width=width,
+                     fg_color=fg_color or t.CARD, border_color=t.BORDER, button_color=t.ELEVATED,
+                     button_hover_color=t.BORDER, text_color=t.TEXT_PRIMARY,
+                     arrow_color=t.TEXT_SECONDARY, font=t.font(t.SIZE_BODY),
+                     corner_radius=t.RADIUS_MD, **_menu_colors(t), **kwargs)
 
 
 def link_button(parent, theme, text: str, command, tone: str = "act") -> ctk.CTkButton:

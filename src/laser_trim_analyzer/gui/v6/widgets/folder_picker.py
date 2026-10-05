@@ -5,6 +5,7 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 
 class FolderPicker(ctk.CTkFrame):
@@ -16,9 +17,7 @@ class FolderPicker(ctk.CTkFrame):
         self._label = ctk.CTkLabel(self, text="No folder selected", font=theme.font(theme.SIZE_BODY),
                                    text_color=theme.TEXT_SECONDARY, anchor="w")
         self._label.pack(side="left", fill="x", expand=True, padx=(0, theme.SPACE_SM))
-        ctk.CTkButton(self, text="Browse…", width=100, fg_color=theme.CARD, hover_color=theme.ELEVATED,
-                      text_color=theme.TEXT_PRIMARY, command=self._browse,
-                      corner_radius=theme.RADIUS_SM).pack(side="right")
+        blocks.secondary_button(self, theme, "Browse…", self._browse, icon="folder").pack(side="right")
 
     def value(self) -> Optional[str]:
         return self._value

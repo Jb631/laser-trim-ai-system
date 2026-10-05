@@ -74,15 +74,17 @@ def test_without_an_open_handler_there_is_no_open_button(tk_root):
     assert not any(x.startswith("Open ") for x in _texts(v))
 
 
-def test_the_open_button_is_teal_filled_by_default(tk_root):
-    """The Findings page's own default (open_as="primary", unchanged) -- opening a row IS the
-    page's one call to action."""
+def test_the_open_button_is_a_real_button_by_default(tk_root):
+    """The Findings page's own default (open_as="primary") -- opening a row IS the page's call to
+    action, so it is a button, not a link. A secondary one since the finish pass (2026-10-04): the
+    ONE blue button on a screen is the top bar's, and a teal "Open 6607" made two."""
     t = ThemeManager()
     v = FindingsView(tk_root, t, on_open=lambda m: None)
     v.set_findings([cut("6607", 182.0)])
     v.toggle(next(iter(v.row_widgets)))
     btn = [b for b in v._detail.winfo_children() if isinstance(b, ctk.CTkButton)][0]
-    assert btn.cget("fg_color") == t.ACCENT
+    assert btn.cget("fg_color") == t.CARD and btn.cget("border_width") == 1
+    assert btn.cget("fg_color") != t.ACCENT
 
 
 def test_open_as_link_draws_a_link_not_a_second_teal_button(tk_root):

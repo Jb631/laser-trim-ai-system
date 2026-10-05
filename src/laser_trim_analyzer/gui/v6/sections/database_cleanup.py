@@ -98,7 +98,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             return "\n".join(lines) if len(lines) > 1 else "Database is clean."
         _async(work)
 
-    blocks.link_button(parent, t, "Scan database", _scan)\
+    blocks.secondary_button(parent, t, "Scan database", _scan)\
         .pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
 
     # Category checkboxes.
@@ -154,13 +154,13 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
 
     btns = ctk.CTkFrame(parent, fg_color="transparent")
     btns.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
-    blocks.link_button(btns, t, "Preview", _preview).pack(side="left")
+    blocks.secondary_button(btns, t, "Preview", _preview).pack(side="left")
     # Destructive: the CONFIRMATION dialog above (messagebox.askyesno, unchanged) is what
-    # actually gates the delete. Still a link (ruling 3: actions use primary_button/link_button;
-    # Settings has no teal-filled button at all), but in the CHECK coral, so the danger cue
-    # survives beside the harmless teal "Preview" (final review, 2026-09-24).
-    blocks.link_button(btns, t, "Clear selected", _execute, tone="check"
-                       ).pack(side="left", padx=(t.SPACE_SM, 0))
+    # actually gates the delete. A secondary button like every Settings action (finish pass,
+    # 2026-10-04; Settings has no teal-filled button at all), but in the CHECK coral, so the
+    # danger cue survives beside the harmless "Preview" (final review, 2026-09-24).
+    blocks.secondary_button(btns, t, "Clear selected", _execute, tone="check"
+                            ).pack(side="left", padx=(t.SPACE_SM, 0))
 
     def _reset_skipped():
         from tkinter import messagebox
@@ -185,7 +185,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
-    blocks.link_button(parent, t, "Reset skipped files", _reset_skipped)\
+    blocks.secondary_button(parent, t, "Reset skipped files", _reset_skipped)\
         .pack(side="top", anchor="w", pady=(t.SPACE_MD, 0))
 
     def _retry_unreadable():
@@ -230,7 +230,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
-    blocks.link_button(parent, t, "Retry unreadable files", _retry_unreadable)\
+    blocks.secondary_button(parent, t, "Retry unreadable files", _retry_unreadable)\
         .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
     def _refresh_findings():
@@ -297,7 +297,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
         if register is not None and thread is not None:
             register(cancel, thread, "A findings refresh")
 
-    blocks.link_button(parent, t, "Refresh process findings", _refresh_findings)\
+    blocks.secondary_button(parent, t, "Refresh process findings", _refresh_findings)\
         .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
     def _recompute_statuses():
@@ -343,12 +343,12 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                     res = db.recompute_overall_statuses(dry_run=False)
                     return (f"Re-graded {res['changed']} units "
                             f"({', '.join(f'{k}: {v}' for k, v in sorted(res['transitions'].items()))}). "
-                            f"Open the Overview or the Dashboard again to see the updated yields.")
+                            f"Open the Overview or Company trends again to see the updated yields.")
                 _async(do_execute)
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
-    blocks.link_button(parent, t, "Recompute unit statuses", _recompute_statuses)\
+    blocks.secondary_button(parent, t, "Recompute unit statuses", _recompute_statuses)\
         .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
     def _fix_missing_tracks():
@@ -402,7 +402,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
-    blocks.link_button(parent, t, "Fix missing tracks", _fix_missing_tracks)\
+    blocks.secondary_button(parent, t, "Fix missing tracks", _fix_missing_tracks)\
         .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
     # ---- Re-grade final tests (2026-09-13) --------------------------------
@@ -528,8 +528,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
 
     regrade_row = ctk.CTkFrame(parent, fg_color="transparent")
     regrade_row.pack(side="top", fill="x", anchor="w", pady=(t.SPACE_SM, 0))
-    blocks.link_button(regrade_row, t, "Re-grade final tests", _regrade_final_tests)\
+    blocks.secondary_button(regrade_row, t, "Re-grade final tests", _regrade_final_tests)\
         .pack(side="left", anchor="w")
-    stop_btn = blocks.link_button(regrade_row, t, "Stop", _stop_regrade)
+    stop_btn = blocks.secondary_button(regrade_row, t, "Stop", _stop_regrade)
     stop_btn.configure(state="disabled")
     stop_btn.pack(side="left", padx=(t.SPACE_SM, 0))

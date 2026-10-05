@@ -182,7 +182,7 @@ def build_backlog_section(parent, theme: ThemeManager, app) -> None:
             post_ui(app, apply_ui)
         threading.Thread(target=work, daemon=True).start()
 
-    upload_btn = blocks.link_button(parent, t, "Upload current backlog…", _upload)
+    upload_btn = blocks.secondary_button(parent, t, "Upload current backlog…", _upload, icon="open")
     upload_btn.pack(side="top", anchor="w", pady=(0, t.SPACE_XS))
 
     toggle_btn = blocks.link_button(parent, t, "Show unrecognised items", _toggle_unmatched)
@@ -239,7 +239,7 @@ def build_backlog_section(parent, theme: ThemeManager, app) -> None:
             save_status.configure(text=f"Save failed: {exc}")
         summary.configure(text=_summary_from_config(cfg))
 
-    blocks.link_button(parent, t, "Save", _save)\
+    blocks.secondary_button(parent, t, "Save", _save)\
         .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
     save_status.pack(side="top", fill="x")
 

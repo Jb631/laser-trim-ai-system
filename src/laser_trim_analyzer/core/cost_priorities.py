@@ -6,11 +6,13 @@ already in the unit by the time it fails there. So the dollar signal is
     dollar_impact = FT_fail_units × unit_price × cost_ratio
 
 where cost_ratio (config, default 0.5) is the share of unit price lost to a
-late failure, and unit_price comes from config.model_prices (Settings →
-Pricing). Models with no loaded price rank counts-only (dollar_impact = None) so
-they never silently drop off the board — add a price and the dollars light up.
-Clicking a row on the dashboard drills into the Model page for the reason
-(escapes vs rework vs avoidable trims) and the evidence.
+late failure, and unit_price comes from config.model_prices -- set in
+Settings → Backlog, where one open-order upload sets each model's price (the
+old Pricing card merged into it on 2026-09-20). Models with no loaded price rank
+counts-only (dollar_impact = None) so they never silently drop off the board —
+add a price and the dollars light up. Clicking a row on Company trends drills
+into the Model page for the reason (escapes vs rework vs avoidable trims) and
+the evidence.
 
 James, 2026-07-14: the prices were loaded the whole time (121 models); V6 just
 never consumed them. This is the consumption the V5 dashboard/trends had and the

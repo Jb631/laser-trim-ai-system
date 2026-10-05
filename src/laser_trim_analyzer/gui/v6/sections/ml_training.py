@@ -50,7 +50,7 @@ def build_ml_training_section(parent, theme: ThemeManager, app) -> None:
         status.configure(text="Retraining per-model ML…")
         threading.Thread(target=work, daemon=True).start()
 
-    blocks.link_button(parent, t, "Retrain drift detector", retrain_drift)\
+    blocks.secondary_button(parent, t, "Retrain drift detector", retrain_drift, icon="refresh")\
         .pack(side="top", anchor="w", pady=(0, t.SPACE_SM))
-    blocks.link_button(parent, t, "Retrain per-model ML (thresholds + predictor + profiler)",
-                       retrain_per_model).pack(side="top", anchor="w")
+    blocks.secondary_button(parent, t, "Retrain per-model ML (thresholds + predictor + profiler)",
+                            retrain_per_model, icon="refresh").pack(side="top", anchor="w")

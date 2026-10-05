@@ -164,9 +164,10 @@ def test_database_cleanup_section_builds(tk_root, tmp_path):
 
 
 def test_the_destructive_link_keeps_its_danger_cue(tk_root, tmp_path):
-    """M8 (final review, 2026-09-24): "Clear selected" DELETES records. It stays a link (Settings
-    has no teal button at all), but in the CHECK coral, not the teal every other action here
-    wears -- the confirmation dialog still gates it (unchanged)."""
+    """M8 (final review, 2026-09-24): "Clear selected" DELETES records. It is never filled (Settings
+    has no teal button at all), and it is in the CHECK coral, not the colour every other action here
+    wears -- the confirmation dialog still gates it (unchanged). Since the finish pass (2026-10-04)
+    every Settings action is a secondary button (CARD, a BORDER outline) rather than a link."""
     import customtkinter as ctk
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_database_cleanup_section
@@ -181,8 +182,8 @@ def test_the_destructive_link_keeps_its_danger_cue(tk_root, tmp_path):
     buttons = {b.cget("text"): b for b in walk(frame) if isinstance(b, ctk.CTkButton)}
     clear = buttons["Clear selected"]
     assert clear.cget("text_color") == t.CHECK
-    assert clear.cget("fg_color") == "transparent"                   # still a link, never filled
-    assert buttons["Preview"].cget("text_color") == t.ACCENT          # the harmless one stays teal
+    assert clear.cget("fg_color") == t.CARD and clear.cget("border_width") == 1   # never filled
+    assert buttons["Preview"].cget("text_color") == t.TEXT_PRIMARY    # the harmless one: plain
 
 
 def test_build_cleanup_options():

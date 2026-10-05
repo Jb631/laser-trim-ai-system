@@ -1,4 +1,4 @@
-"""Dashboard — WorstModelsList: ranked, clickable model rows (model/units/trim%/FT%)."""
+"""Company trends — WorstModelsList: ranked, clickable model rows (model/units/trim%/FT%)."""
 from typing import Callable, List, Optional
 
 import customtkinter as ctk

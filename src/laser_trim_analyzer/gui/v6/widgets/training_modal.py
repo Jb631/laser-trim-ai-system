@@ -5,6 +5,7 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 
 class TrainingModal(ctk.CTkToplevel):
@@ -34,9 +35,7 @@ class TrainingModal(ctk.CTkToplevel):
         self._bar = ctk.CTkProgressBar(self, progress_color=theme.ACCENT, fg_color=theme.CARD)
         self._bar.pack(fill="x", padx=theme.SPACE_LG, pady=theme.SPACE_SM)
         self._bar.set(0)
-        ctk.CTkButton(self, text="Close", fg_color=theme.CARD, hover_color=theme.ELEVATED,
-                      text_color=theme.TEXT_PRIMARY, command=self.destroy,
-                      corner_radius=theme.RADIUS_SM).pack(pady=theme.SPACE_MD)
+        blocks.secondary_button(self, theme, "Close", self.destroy).pack(pady=theme.SPACE_MD)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def start(self) -> None:

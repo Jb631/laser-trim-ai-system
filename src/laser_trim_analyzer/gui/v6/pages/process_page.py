@@ -3,10 +3,11 @@
 Spec: docs/superpowers/specs/2026-10-02-graphite-redesign-design.md ("Process new files").
 
   * "New files from your folders", at the top: the remembered folder list (Settings -> Ingest
-    folders), in order, through `core/ingest_run.run_folders` -- what Home's "Bring in what's new"
-    card did, moved here whole: run, stop, progress, the one-line summary, and the way to the
-    folder list in Settings (`NewFilesRun`). The top bar's blue "Process new files" is the same
-    run: `V6App.process_new_files` shows this page and calls `start_new_files()`.
+    folders), one row per folder, in order, through `core/ingest_run.run_folders` -- what Home's
+    "Bring in what's new" card did: stop, progress, the one-line summary, and the way to the
+    folder list in Settings (`NewFilesRun`). It has no run button of its own (finish pass,
+    2026-10-04: two "Process new files" on one screen): the top bar's blue one starts it --
+    `V6App.process_new_files` shows this page and calls `start_new_files()`.
   * "A specific folder", below it: today's one-off picker, through `core/ingest_run.run_folder`.
 
 ONE pipeline (spec 2026-08-29: "same worker, no duplicate pipeline"): core/ingest_run is the only
@@ -23,7 +24,9 @@ Thread discipline (CLAUDE.md rule 5): every Tk read happens on the Tk thread and
 the worker as plain values; the worker only posts back through `safe_after`.
 """
 import logging
+import ntpath
 import threading
+from pathlib import Path
 from threading import Event
 
 import customtkinter as ctk
@@ -35,20 +38,25 @@ from laser_trim_analyzer.core.ingest_run import (
     EtaEstimator, IngestReport, ProgressCoalescer, ProgressTicker, format_ingest_summary,
     format_progress_line)
 from laser_trim_analyzer.core.models import ProcessingStatus
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.folder_picker import FolderPicker
 from laser_trim_analyzer.gui.v6.widgets.process_progress_section import ProcessProgressSection
 
-RUN_LABEL = "Process new files"        # the top bar's button says the same: it is the same run
+RUN_LABEL = "Process new files"        # the top bar's button: the one that starts this run
 
 
-def _plain_button(parent, t, text: str, command) -> ctk.CTkButton:
-    """A run's own button: a card-coloured one, never the blue -- the top bar holds the one."""
-    return ctk.CTkButton(parent, text=text, command=command, fg_color=t.CARD,
-                         hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY, border_width=1,
-                         border_color=t.BORDER, corner_radius=t.RADIUS_MD,
-                         font=t.font(t.SIZE_BODY, "bold"), height=32)
+def folder_name(path) -> str:
+    """A folder's own name -- the last part of its path, a Windows share's or a Mac's alike ("Trim
+    Data" of \\\\server\\Laser1\\Trim Data) -- or the whole path for a drive's root ("C:\\")."""
+    text = str(path or "")
+    return ntpath.basename(text.rstrip("\\/")) or text
+
+
+def _plain_button(parent, t, text: str, command, icon=None) -> ctk.CTkButton:
+    """A run's own button: a secondary one, never the blue -- the top bar holds the one."""
+    return blocks.secondary_button(parent, t, text, command, icon=icon)
 
 
 class ProcessPage(PageBase):
@@ -80,7 +88,7 @@ class ProcessPage(PageBase):
                         fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
                         checkmark_color=t.TEXT_INVERSE)\
             .pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
-        self._start_button = _plain_button(body, t, "Start processing", self._start)
+        self._start_button = _plain_button(body, t, "Start processing", self._start, icon="play")
         self._start_button.configure(state="disabled")
         self._start_button.pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
         # Packed only while it has something to say: why a press started nothing (another job runs).
@@ -89,11 +97,7 @@ class ProcessPage(PageBase):
         blocks.wrap_to_width(self._busy_note, body)
         # Packed only while a run is in flight (see _set_running) -- the same cooperative stop
         # the remembered run offers, on the same shared runner.
-        self._stop_button = ctk.CTkButton(body, text="Stop", fg_color=t.CARD,
-                                          hover_color=t.ELEVATED,
-                                          text_color=t.TEXT_PRIMARY,
-                                          command=self._stop,
-                                          corner_radius=t.RADIUS_SM)
+        self._stop_button = _plain_button(body, t, "Stop", self._stop, icon="stop")
         # Packed when this run starts (see _start), never before: an idle "Ready" bar and five
         # zero counters say nothing (James, 2026-10-02: "there is so much going on").
         self._progress = ProcessProgressSection(body, theme=t)
@@ -115,18 +119,35 @@ class ProcessPage(PageBase):
             self._busy_note.pack_forget()
 
         def work():
-            try:
-                from laser_trim_analyzer.database.models import AnalysisResult as DBAR
-                with self.app.db.session() as s:
-                    n = s.query(DBAR.id).count()
-                path = getattr(getattr(self.app.config, "database", None), "path", "?")
-                txt = (f"Database: {path} — {n:,} trim units on record"
-                       + ("   ⚠ EMPTY database — a first run processes everything as new"
-                          if n == 0 else ""))
-            except Exception as e:
-                txt = f"Database check failed: {e}"
+            txt = self._database_line()
             self.safe_after(lambda: self._db_info.configure(text=txt))
         threading.Thread(target=work, daemon=True).start()
+
+    def _database_line(self) -> str:
+        """Which database a run would write to, how much it knows and how fresh it is -- a worker
+        call (one count, one max). Its file's NAME, never the whole path (finish pass, 2026-10-04:
+        a raw scratch path ran across the page), and the newest file in the app's words. A check
+        that fails says so, never "0 units"."""
+        try:
+            from sqlalchemy import func
+            from laser_trim_analyzer.core.activity import trusted_until
+            from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+            with self.app.db.session() as s:
+                n = s.query(DBAR.id).count()
+                newest = (s.query(func.max(DBAR.file_date))
+                          .filter(DBAR.file_date <= trusted_until()).scalar() if n else None)
+            path = (getattr(self.app.db, "database_path", None)
+                    or getattr(getattr(self.app.config, "database", None), "path", None))
+            name = Path(str(path)).name if path else "?"
+            text = f"Database {name} · {n:,} trim unit{'' if n == 1 else 's'} on record"
+            if newest is not None:
+                text += f" · newest file {formats.day(newest)}"
+            if n == 0:
+                text += "   ⚠ EMPTY database — a first run processes everything as new"
+            return text
+        except Exception as e:
+            logger.exception("Process page: database check failed")
+            return f"Database check failed: {e}"
 
     # ---- the top bar's button ------------------------------------------------------------------
     def start_new_files(self) -> None:
@@ -324,29 +345,33 @@ class NewFilesRun(ctk.CTkFrame):
 
         page._zone_header(self, "New files from your folders",
                           "Your remembered folders, in order — laser folders first, Final Test "
-                          "last. Files already in the database are skipped.")
-        # What the button will do, before it is pressed: which folders, in which order.
+                          "last. Files already in the database are skipped. “Process new files” "
+                          "at the top runs them.")
+        # What the top bar's button will do, before it is pressed: which folders, in which order --
+        # a count here, then ONE ROW PER FOLDER under it, its name and, beneath, its whole path
+        # (finish pass, 2026-10-04: the four were one run-on line of network paths).
         self._folders_label = ctk.CTkLabel(self, text="", anchor="w", justify="left",
                                            font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
-        self._folders_label.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._folders_label.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
         # Built once, never destroyed/rebuilt (only .configure(text=...) later): bound once.
         blocks.wrap_to_width(self._folders_label, self)
+        self._folder_list = ctk.CTkFrame(self, fg_color="transparent", height=1)
+        self._folder_list.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._folder_rows: list = []
+        self._folder_spacer = None          # the list's one child while it has no rows
 
+        # No run button of its own: the top bar's blue "Process new files" is THE one, on screen
+        # above this page too (finish pass, 2026-10-04: two "Process new files" on one screen).
+        # This section keeps what a run needs while it runs -- Stop, and the progress below.
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(side="top", fill="x")
-        self._run_button = _plain_button(row, t, RUN_LABEL, self._start)
-        self._run_button.configure(state="disabled")
-        self._run_button.pack(side="left")
         # Packed only while a run is in flight (see _set_running). A Stop button on an idle
         # screen is a question with no answer; a run with no Stop button is hours you cannot get
         # back -- the first full ingest is ~4 hours here and 6-8 on the laptop.
-        self._stop_button = ctk.CTkButton(
-            row, text="Stop", height=32, fg_color=t.CARD, hover_color=t.ELEVATED,
-            text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM,
-            font=t.font(t.SIZE_BODY, "bold"), command=self._stop)
+        self._stop_button = _plain_button(row, t, "Stop", self._stop, icon="stop")
         self._settings_link = blocks.link_button(row, t, "Edit folders in Settings",
                                                  self._open_settings)
-        self._settings_link.pack(side="left", padx=(t.SPACE_MD, 0))
+        self._settings_link.pack(side="left")
 
         # Packed when a run starts (see _start); stays afterwards with the run's tally.
         self._progress = ProcessProgressSection(self, theme=t)
@@ -366,22 +391,52 @@ class NewFilesRun(ctk.CTkFrame):
         return list(getattr(cfg, "folders", []) or [])
 
     def refresh_folders(self) -> None:
-        """Re-read the configured folders and set the button's state. Tk thread."""
+        """Re-read the configured folders and list them, one row each. Tk thread."""
         folders = self._folders()
+        self._render_folders(folders)
         if not folders:
             # Empty state, not a modal: a blocking dialog on every cold start of a single-user
             # app is a tax, and this one has somewhere to go.
-            self._run_button.configure(state="disabled")
             self._folders_label.configure(
-                text="No ingest folders yet — add the laser folders and the Final Test folder "
-                     "in Settings → Ingest folders, and this runs them all.")
+                text=f"No ingest folders yet — add the laser folders and the Final Test folder "
+                     f"in Settings → Ingest folders, and “{RUN_LABEL}” at the top runs them all.")
             return
-        if not self._running:
-            self._run_button.configure(state="normal")
         n = len(folders)
         noun = "folder" if n == 1 else "folders"
-        self._folders_label.configure(
-            text=f"{n} {noun}, in this order:  " + "  →  ".join(folders))
+        self._folders_label.configure(text=f"{n} {noun}, in this order:")
+
+    def _render_folders(self, folders) -> None:
+        """One row per folder: its place in the order, its name, and under the name its whole path
+        in the secondary colour. Rebuilt whole -- the list is a handful of rows -- and each path
+        wraps to a frame built with its row, so nothing binds to the long-lived section."""
+        t = self.theme
+        for row in self._folder_rows:
+            row.destroy()
+        self._folder_rows = []
+        if self._folder_spacer is not None:
+            self._folder_spacer.destroy()
+            self._folder_spacer = None
+        if not folders:
+            # One child always: a Tk frame whose last child goes keeps the height it had.
+            self._folder_spacer = ctk.CTkFrame(self._folder_list, height=1, fg_color="transparent")
+            self._folder_spacer.pack(side="top", fill="x")
+            return
+        for place, folder in enumerate(folders, 1):
+            row = ctk.CTkFrame(self._folder_list, fg_color="transparent")
+            row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+            ctk.CTkLabel(row, text=f"{place}", width=24, anchor="nw", font=t.mono(t.SIZE_BODY),
+                         text_color=t.TEXT_SECONDARY).pack(side="left", anchor="n")
+            words = ctk.CTkFrame(row, fg_color="transparent")
+            words.pack(side="left", fill="x", expand=True)
+            row.name_label = ctk.CTkLabel(words, text=folder_name(folder), anchor="w",
+                                          font=t.font(t.SIZE_BODY), text_color=t.TEXT_PRIMARY)
+            row.name_label.pack(side="top", fill="x")
+            row.path_label = ctk.CTkLabel(words, text=folder, anchor="w", justify="left",
+                                          font=t.font(t.SIZE_CAPTION),
+                                          text_color=t.TEXT_SECONDARY)
+            row.path_label.pack(side="top", fill="x")
+            blocks.wrap_to_width(row.path_label, words)
+            self._folder_rows.append(row)
 
     # ---- the run -----------------------------------------------------------
     def _start(self) -> None:
@@ -434,13 +489,13 @@ class NewFilesRun(ctk.CTkFrame):
                                     state="disabled")
 
     def _set_running(self, running: bool) -> None:
+        """Stop shows while a run is in flight, and only then -- beside the way to the folder list.
+        The top bar's button starts the run; pressing it again during one starts nothing (_start)."""
         self._running = running
-        self._run_button.configure(state="disabled" if running else "normal",
-                                   text=("Processing…" if running else RUN_LABEL))
         if running:
             self._stop_button.configure(text="Stop", state="normal")
-            self._stop_button.pack(side="left", after=self._run_button,
-                                   padx=(self.theme.SPACE_SM, 0))
+            self._stop_button.pack(side="left", before=self._settings_link,
+                                   padx=(0, self.theme.SPACE_MD))
         else:
             self._stop_button.pack_forget()
 

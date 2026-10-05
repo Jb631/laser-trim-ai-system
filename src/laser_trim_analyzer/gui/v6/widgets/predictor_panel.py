@@ -6,6 +6,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import resolve_dispatcher
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 
 def _default_load(db):
@@ -72,9 +73,7 @@ class PredictorPanel(ctk.CTkFrame):
         ctk.CTkLabel(header, text="Predictor (diagnostic — not part of daily flow)",
                      font=theme.font(theme.SIZE_CAPTION, "bold"), text_color=theme.TEXT_SECONDARY)\
             .pack(side="left", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
-        self._toggle_btn = ctk.CTkButton(header, text="Show", width=60, fg_color=theme.CARD,
-                                         hover_color=theme.ELEVATED, text_color=theme.TEXT_SECONDARY,
-                                         command=self.toggle, corner_radius=theme.RADIUS_SM)
+        self._toggle_btn = blocks.secondary_button(header, theme, "Show", self.toggle, width=60)
         self._toggle_btn.pack(side="right", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
         self._body = ctk.CTkFrame(self, fg_color="transparent")
         self._body_label = ctk.CTkLabel(self._body, text="", font=theme.font(theme.SIZE_BODY),

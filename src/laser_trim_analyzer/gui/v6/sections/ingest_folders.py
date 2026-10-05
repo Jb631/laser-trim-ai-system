@@ -64,15 +64,16 @@ class IngestFoldersSection:
             placeholder_text=r"\\192.168.66.9\Public\LaserTrim  (or Browse…)")
         self._entry.pack(side="left", fill="x", expand=True, padx=(0, t.SPACE_SM))
         self._entry.bind("<Return>", lambda _e: self._add_from_entry())
-        blocks.link_button(add_row, t, "Add", self._add_from_entry).pack(side="left", padx=(0, t.SPACE_XS))
-        blocks.link_button(add_row, t, "Browse…", self._browse).pack(side="left")
+        blocks.secondary_button(add_row, t, "Add", self._add_from_entry)\
+            .pack(side="left", padx=(0, t.SPACE_XS))
+        blocks.secondary_button(add_row, t, "Browse…", self._browse, icon="folder").pack(side="left")
 
         self._status = ctk.CTkLabel(parent, text="", justify="left", anchor="w",
                                     wraplength=640, font=t.font(t.SIZE_CAPTION),
                                     text_color=t.TEXT_SECONDARY)
         self._status.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
 
-        blocks.link_button(parent, t, "Check folders now", self.check_folders)\
+        blocks.secondary_button(parent, t, "Check folders now", self.check_folders, icon="refresh")\
             .pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
 
         self._render()
