@@ -4729,8 +4729,13 @@ def check_usability_glosses() -> None:
         # 2026-08-29: the σ card wall became the FOCUS list. Same obligation,
         # new zone — say WHY a model is on the list. 2026-10-02: the FOCUS list's rows became
         # the Overview's cards, each with its reason (overview_data.focus_reason / drift_reason).
+        # 2026-10-04: the words changed with the list's rows (James: "these little charts and %
+        # dont mean anything?") -- "Fail rate 36% → 74%" became "A recent run failed 74%" over
+        # "usually 36%". Two needles, each only in focus_parts: the signal, and what is usual.
         ("src/laser_trim_analyzer/gui/v6/overview_data.py",
-         "Fail rate ", "each Overview card says why it is there (the fail-rate move)"),
+         "A recent run", "each Overview card says why it is there (a recent run's fail rate)"),
+        ("src/laser_trim_analyzer/gui/v6/overview_data.py",
+         "usually ", "a fail-rate card says what is usual for that model, so the move can be read"),
         ("src/laser_trim_analyzer/gui/v6/overview_data.py",
          "still passing", "a card whose signal moved on a passing model says it is still passing"),
         # ...and the rule itself, which the retired list stated and the first cut of the cards did
