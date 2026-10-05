@@ -26,6 +26,7 @@ def test_every_bundled_file_and_both_licences_are_present():
     # neither one alone is the licence for everything bundled here.
     assert (font_loader.FONT_DIR / "OFL.txt").is_file()
     assert (font_loader.FONT_DIR / "license.txt").is_file()
+    assert (font_loader.FONT_DIR / "Marcellus-OFL.txt").is_file()          # the title font's
 
 
 def test_the_files_are_the_families_the_theme_asks_for():
@@ -41,6 +42,7 @@ def test_the_files_are_the_families_the_theme_asks_for():
         "IBMPlexSans-Medium.ttf": t.FONT_FAMILY_MEDIUM,
         "IBMPlexMono-Regular.ttf": t.MONO_FAMILY,
         "IBMPlexMono-Medium.ttf": t.MONO_FAMILY_MEDIUM,
+        "Marcellus-Regular.ttf": t.TITLE_FAMILY,
     }
     for name in font_loader.FILES:
         got = _family(font_loader.FONT_DIR / name)
@@ -160,3 +162,35 @@ def test_loading_twice_is_harmless():
     a = font_loader.load_bundled_fonts()
     b = font_loader.load_bundled_fonts()
     assert a == b
+
+
+
+# ---- macOS: the fonts load for this process too (2026-10-04) -------------------------------------
+# Before, Tk on the Mac never saw Plex: every Mac preview of the app was drawn in a fallback font.
+
+def test_on_the_mac_every_bundled_font_is_visible_to_tk(tk_root):
+    import pytest
+    import tkinter.font as tkfont
+    if sys.platform != "darwin":
+        pytest.skip("CoreText registration is the macOS branch")
+    for name in font_loader.FILES:
+        assert font_loader._load_tk(font_loader.FONT_DIR / name), name     # again: still loaded
+    # The Mac lists the TYPOGRAPHIC family (name ID 16, else 1): "IBM Plex Sans", with Medium as a
+    # weight of it -- not GDI's separate "IBM Plex Sans Medm".
+    families = set(tkfont.families())
+    for name in font_loader.FILES:
+        names = TTFont(str(font_loader.FONT_DIR / name))["name"]
+        typographic = names.getDebugName(16) or names.getDebugName(1)
+        assert typographic in families, name
+
+
+def test_the_title_face_is_marcellus_where_tk_has_it_and_the_sans_bold_where_not(tk_root,
+                                                                                   monkeypatch):
+    font_loader.load_bundled_fonts()
+    t = ThemeManager()
+    if t.resolved_title:
+        assert t.title(22).cget("family") == "Marcellus"
+    monkeypatch.setattr(ThemeManager, "_available_families", staticmethod(lambda: set()))
+    fallback = ThemeManager()
+    assert fallback.resolved_title is None
+    assert fallback.title(22) is fallback.font(22, "bold")

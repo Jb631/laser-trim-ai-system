@@ -1,4 +1,5 @@
-"""Load the bundled IBM Plex fonts: privately for Tk on Windows, and for matplotlib everywhere.
+"""Load the bundled fonts (IBM Plex; Marcellus for titles): privately for Tk on Windows and macOS,
+and for matplotlib everywhere.
 
 Tk on Windows: CustomTkinter's FontManager.windows_load_font() calls AddFontResourceEx
 PRIVATELY -- the font exists for this process only, no install, no admin, no IT request.
@@ -6,9 +7,11 @@ Its default passes FR_NOT_ENUM, which hides the family from tkinter.font.familie
 theme resolves families from that list -- so it would silently fall back to Segoe UI even with
 Plex loaded. It is called with enumerable=True for exactly that reason.
 
-macOS/Linux Tk: nothing here (FontManager.windows_load_font uses ctypes.windll, which only
-exists on Windows); the theme's family tuples fall back to their next entry. matplotlib reads
-TTF files directly, so charts get Plex on every platform, including this one.
+macOS Tk (2026-10-04): each file is registered with CoreText for THIS process only
+(CTFontManagerRegisterFontsForURL, scope "process") -- no install, gone when the app quits. Until
+then the Mac never had Plex: Tk could not see it, and every Mac preview of the app was drawn in a
+fallback system font. Linux Tk: nothing here; the theme's family tuples fall back to their next
+entry. matplotlib reads TTF files directly, so charts get Plex on every platform.
 
 A file that fails to load is logged at WARNING and the app continues on the fallback fonts --
 never silently, never fatally.
@@ -22,7 +25,13 @@ logger = logging.getLogger(__name__)
 
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 FILES = ("IBMPlexSans-Regular.ttf", "IBMPlexSans-Medium.ttf",
-         "IBMPlexMono-Regular.ttf", "IBMPlexMono-Medium.ttf")
+         "IBMPlexMono-Regular.ttf", "IBMPlexMono-Medium.ttf",
+         # Titles: page titles, model names, the app's name (James picked it, 2026-10-04).
+         "Marcellus-Regular.ttf")
+
+# CoreText: register for this process only, and the code a second registration answers with.
+_CT_SCOPE_PROCESS = 1
+_CT_ERROR_ALREADY_REGISTERED = 105
 
 _DONE: Optional[Dict[str, Dict[str, bool]]] = None
 
@@ -33,6 +42,8 @@ def _load_tk(path: Path) -> bool:
     Both are logged HERE, once, so load_bundled_fonts() doesn't also have to check and log
     the same failure a second time.
     """
+    if sys.platform == "darwin":
+        return _load_tk_mac(path)
     if not sys.platform.startswith("win"):
         return False
     try:
@@ -47,6 +58,49 @@ def _load_tk(path: Path) -> bool:
     if not ok:
         logger.warning("bundled font %s did not load for the window; using the fallback", path.name)
     return ok
+
+
+def _load_tk_mac(path: Path) -> bool:
+    """Register `path` with CoreText for this process only. A file this process already registered
+    counts as loaded. Anything else that fails is logged once, and the fallback font is used."""
+    try:
+        import ctypes
+        import ctypes.util
+        cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
+        ct = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreText"))
+        cf.CFURLCreateFromFileSystemRepresentation.restype = ctypes.c_void_p
+        cf.CFURLCreateFromFileSystemRepresentation.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_bool]
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        cf.CFErrorGetCode.restype = ctypes.c_long
+        cf.CFErrorGetCode.argtypes = [ctypes.c_void_p]
+        ct.CTFontManagerRegisterFontsForURL.restype = ctypes.c_bool
+        ct.CTFontManagerRegisterFontsForURL.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+        raw = str(path).encode()
+        url = cf.CFURLCreateFromFileSystemRepresentation(None, raw, len(raw), False)
+        if not url:
+            logger.warning("bundled font %s could not be addressed; using the fallback", path.name)
+            return False
+        error = ctypes.c_void_p()
+        try:
+            ok = bool(ct.CTFontManagerRegisterFontsForURL(url, _CT_SCOPE_PROCESS,
+                                                          ctypes.byref(error)))
+        finally:
+            cf.CFRelease(url)
+        if not ok and error.value:
+            code = cf.CFErrorGetCode(error)
+            cf.CFRelease(error)
+            if code == _CT_ERROR_ALREADY_REGISTERED:
+                return True
+        if not ok:
+            logger.warning("bundled font %s did not load for the window; using the fallback",
+                           path.name)
+        return ok
+    except Exception:
+        logger.exception("bundled font %s did not load for the window; using the fallback",
+                         path.name)
+        return False
 
 
 def _load_matplotlib(path: Path) -> bool:

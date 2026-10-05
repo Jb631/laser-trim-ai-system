@@ -196,8 +196,10 @@ FILE_USERS = {
                              "packaged build never builds (it runs on threads)",
     "ml/predictor.py": "_get_hmac_key(): the install path as a STRING in the predictor "
                        "integrity key; nothing is read from it",
-    "gui/v6/font_loader.py": "FONT_DIR: the bundled fonts -- the one thing read from beside "
-                             "the code",
+    "gui/v6/font_loader.py": "FONT_DIR: the bundled fonts -- read from beside the code, and "
+                             "bundled by the spec",
+    "gui/v6/icons.py": "ICON_DIR: the bundled icon images -- read from beside the code, and "
+                       "bundled by the spec",
     "selfcheck.py": "package_directory(): the app's own modules, walked FROM SOURCE only, and "
                     "packaged_manifest.json, which the spec writes and bundles beside this "
                     "module",
@@ -225,14 +227,16 @@ def test_every_use_of_dunder_file_in_the_app_is_a_known_one():
         "see FILE_USERS above")
 
 
-def test_the_only_files_shipped_beside_the_code_are_the_fonts():
+def test_the_only_files_shipped_beside_the_code_are_the_fonts_and_icons():
     """Anything that is not Python inside the package has to be named in the spec's `datas`, or
-    the packaged app will not have it. Today that is the fonts folder and nothing else."""
+    the packaged app will not have it. Today that is the fonts folder and the icons folder
+    (2026-10-04), and nothing else."""
     from laser_trim_analyzer import config as cfg
     package = Path(cfg.__file__).resolve().parent
     others = {p.relative_to(package).as_posix() for p in package.rglob("*")
               if p.is_file() and p.suffix not in (".py", ".pyc") and p.name != ".DS_Store"}
-    assert others and all(o.startswith("gui/v6/fonts/") for o in others), sorted(others)
+    assert others and all(o.startswith(("gui/v6/fonts/", "gui/v6/icons/")) for o in others), \
+        sorted(others)
 
 
 def test_the_app_reaches_only_its_data_folder_through_its_own_directory():

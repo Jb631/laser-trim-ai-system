@@ -74,6 +74,10 @@ class ThemeManager:
     FONT_FAMILY_MEDIUM: Tuple[str, ...] = ("IBM Plex Sans Medium", "IBM Plex Sans Medm")
     MONO_FAMILY: Tuple[str, ...] = ("IBM Plex Mono", "Cascadia Mono", "Consolas", "Menlo", "Courier")
     MONO_FAMILY_MEDIUM: Tuple[str, ...] = ("IBM Plex Mono Medium",)
+    # Titles -- page titles, model names, the app's name -- in Marcellus (James, 2026-10-04, from
+    # ten fonts drawn on his own header: "6"). Bundled and loaded by font_loader; where Tk cannot
+    # see it, title() falls back to the Sans's bold.
+    TITLE_FAMILY: Tuple[str, ...] = ("Marcellus",)
     SIZE_CAPTION: int = 12; SIZE_BODY: int = 14; SIZE_HEADING: int = 17
     SIZE_TITLE: int = 22; SIZE_DISPLAY: int = 30; SIZE_READOUT: int = 20
     # Spacing / radii (unchanged)
@@ -85,6 +89,7 @@ class ThemeManager:
     resolved_medium: Optional[str] = field(default=None, init=False)
     resolved_mono: str = field(default="", init=False)
     resolved_mono_medium: Optional[str] = field(default=None, init=False)
+    resolved_title: Optional[str] = field(default=None, init=False)
     # One CTkFont per (family, size, weight) — see font(). Excluded from
     # repr/eq: it is a performance cache, not part of the theme's identity.
     _font_cache: Dict[Tuple[str, int, str], ctk.CTkFont] = field(
@@ -99,6 +104,7 @@ class ThemeManager:
         object.__setattr__(self, "resolved_medium", self._pick(self.FONT_FAMILY_MEDIUM, available, None))
         object.__setattr__(self, "resolved_mono", self._pick(self.MONO_FAMILY, available))
         object.__setattr__(self, "resolved_mono_medium", self._pick(self.MONO_FAMILY_MEDIUM, available, None))
+        object.__setattr__(self, "resolved_title", self._pick(self.TITLE_FAMILY, available, None))
 
     @staticmethod
     def _available_families() -> set:
@@ -151,6 +157,12 @@ class ThemeManager:
         if weight == "bold" and self.resolved_mono_medium:
             return self._shared_font(self.resolved_mono_medium, size, "normal")
         return self._shared_font(self.resolved_mono, size, weight)
+
+    def title(self, size: int) -> ctk.CTkFont:
+        """The title face (Marcellus) at `size` -- or, where Tk cannot see it, the Sans's bold."""
+        if self.resolved_title:
+            return self._shared_font(self.resolved_title, size, "normal")
+        return self.font(size, "bold")
 
     def _shared_font(self, family: str, size: int, weight: str) -> ctk.CTkFont:
         root = getattr(tkinter, "_default_root", None)

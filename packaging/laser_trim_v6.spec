@@ -99,6 +99,10 @@ DATAS = []
 # files the app reads from beside its own code (tests/test_packaged_mode.py pins that).
 DATAS += [(os.path.join(FONTS, _name), "laser_trim_analyzer/gui/v6/fonts")
           for _name in sorted(os.listdir(FONTS)) if os.path.isfile(os.path.join(FONTS, _name))]
+# The icons: gui/v6/icons.py reads them from `icons` beside itself (2026-10-04), with their licence.
+ICONS = os.path.join(PACKAGE, "gui", "v6", "icons")
+DATAS += [(os.path.join(ICONS, _name), "laser_trim_analyzer/gui/v6/icons")
+          for _name in sorted(os.listdir(ICONS)) if os.path.isfile(os.path.join(ICONS, _name))]
 # The manifest, beside laser_trim_analyzer/selfcheck.py, which reads it in the packaged app.
 DATAS += [(MANIFEST, "laser_trim_analyzer")]
 # CustomTkinter's themes (JSON), its shapes font and its icon: it reads them from its own folder.
