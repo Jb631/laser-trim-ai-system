@@ -61,11 +61,8 @@ class DashboardPage(PageBase):
 
     def header_actions(self, parent):
         t = self.theme
-        self._window_menu = ctk.CTkOptionMenu(parent, values=list(_WINDOW_DAYS), width=90,
-                                              command=self._on_window_change, fg_color=t.CARD,
-                                              button_color=t.SEGMENT_SELECTED,
-                                              button_hover_color=t.SEGMENT_SELECTED_HOVER,
-                                              text_color=t.TEXT_PRIMARY)
+        self._window_menu = blocks.dropdown(parent, t, list(_WINDOW_DAYS),
+                                            command=self._on_window_change, width=90)
         self._window_menu.set(self._window_choice)
         self._window_menu.pack(side="left")
 
@@ -99,11 +96,8 @@ class DashboardPage(PageBase):
         trend_hdr.pack(side="top", fill="x")
         ctk.CTkLabel(trend_hdr, text="Yield by laser", font=t.font(t.SIZE_BODY, "bold"),
                      text_color=t.TEXT_PRIMARY, anchor="w").pack(side="left")
-        self._trend_period_menu = ctk.CTkOptionMenu(
-            trend_hdr, values=list(_TREND_PERIODS), width=100,
-            command=self._on_trend_period_change, fg_color=t.CARD,
-            button_color=t.SEGMENT_SELECTED, button_hover_color=t.SEGMENT_SELECTED_HOVER,
-            text_color=t.TEXT_PRIMARY)
+        self._trend_period_menu = blocks.dropdown(trend_hdr, t, list(_TREND_PERIODS),
+                                                  command=self._on_trend_period_change, width=100)
         self._trend_period_menu.set(self._trend_period_choice)
         self._trend_period_menu.pack(side="right")
         self._company_trend = CompanyTrendChart(body, theme=t)

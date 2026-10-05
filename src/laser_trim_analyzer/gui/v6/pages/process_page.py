@@ -43,12 +43,9 @@ from laser_trim_analyzer.gui.v6.widgets.process_progress_section import ProcessP
 RUN_LABEL = "Process new files"        # the top bar's button says the same: it is the same run
 
 
-def _plain_button(parent, t, text: str, command) -> ctk.CTkButton:
-    """A run's own button: a card-coloured one, never the blue -- the top bar holds the one."""
-    return ctk.CTkButton(parent, text=text, command=command, fg_color=t.CARD,
-                         hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY, border_width=1,
-                         border_color=t.BORDER, corner_radius=t.RADIUS_MD,
-                         font=t.font(t.SIZE_BODY, "bold"), height=32)
+def _plain_button(parent, t, text: str, command, icon=None) -> ctk.CTkButton:
+    """A run's own button: a secondary one, never the blue -- the top bar holds the one."""
+    return blocks.secondary_button(parent, t, text, command, icon=icon)
 
 
 class ProcessPage(PageBase):
@@ -80,7 +77,7 @@ class ProcessPage(PageBase):
                         fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
                         checkmark_color=t.TEXT_INVERSE)\
             .pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
-        self._start_button = _plain_button(body, t, "Start processing", self._start)
+        self._start_button = _plain_button(body, t, "Start processing", self._start, icon="play")
         self._start_button.configure(state="disabled")
         self._start_button.pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
         # Packed only while it has something to say: why a press started nothing (another job runs).
@@ -89,11 +86,7 @@ class ProcessPage(PageBase):
         blocks.wrap_to_width(self._busy_note, body)
         # Packed only while a run is in flight (see _set_running) -- the same cooperative stop
         # the remembered run offers, on the same shared runner.
-        self._stop_button = ctk.CTkButton(body, text="Stop", fg_color=t.CARD,
-                                          hover_color=t.ELEVATED,
-                                          text_color=t.TEXT_PRIMARY,
-                                          command=self._stop,
-                                          corner_radius=t.RADIUS_SM)
+        self._stop_button = _plain_button(body, t, "Stop", self._stop, icon="stop")
         # Packed when this run starts (see _start), never before: an idle "Ready" bar and five
         # zero counters say nothing (James, 2026-10-02: "there is so much going on").
         self._progress = ProcessProgressSection(body, theme=t)
@@ -337,10 +330,7 @@ class NewFilesRun(ctk.CTkFrame):
         # Packed only while a run is in flight (see _set_running). A Stop button on an idle
         # screen is a question with no answer; a run with no Stop button is hours you cannot get
         # back -- the first full ingest is ~4 hours here and 6-8 on the laptop.
-        self._stop_button = ctk.CTkButton(
-            row, text="Stop", height=32, fg_color=t.CARD, hover_color=t.ELEVATED,
-            text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM,
-            font=t.font(t.SIZE_BODY, "bold"), command=self._stop)
+        self._stop_button = _plain_button(row, t, "Stop", self._stop, icon="stop")
         self._settings_link = blocks.link_button(row, t, "Edit folders in Settings",
                                                  self._open_settings)
         self._settings_link.pack(side="left", padx=(t.SPACE_MD, 0))

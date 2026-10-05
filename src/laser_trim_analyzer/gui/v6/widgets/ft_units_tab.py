@@ -12,6 +12,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 # The shared render budget for the Model page's row lists — rationale lives in
 # units_tab's module docstring. This tab is the one that measured worst: 500
 # rows blocked the Tk thread for 1.4 s to build and 2.1 s to rebuild.
@@ -38,11 +39,8 @@ class FtUnitsTab(RowBudgetMixin, ctk.CTkFrame):
             bar = ctk.CTkFrame(self, fg_color="transparent")
             bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
             # Checked rows (or all shown if none checked) as one multi-page PDF.
-            ctk.CTkButton(bar, text="Export charts (PDF)", fg_color=theme.CARD,
-                          hover_color=theme.ELEVATED, text_color=theme.TEXT_PRIMARY,
-                          border_width=1, border_color=theme.BORDER,
-                          command=on_export_charts, corner_radius=theme.RADIUS_SM)\
-                .pack(side="right")
+            blocks.secondary_button(bar, theme, "Export charts (PDF)", on_export_charts,
+                                    icon="export").pack(side="right")
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
         # Spacer keeps the column headers aligned with the per-row checkbox.

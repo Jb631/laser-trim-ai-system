@@ -445,3 +445,87 @@ def test_the_history_tabs_figures_share_one_precision(tk_root):
                   "passrate_periods": []})
     assert tab._stats.cget("text") == (
         "n=120   mean=4,282   σ=61   min=4,102   max=4,500   last=4,300")
+
+
+# ---- 5. Real buttons, quiet dropdowns ----------------------------------------------------------
+# "Copy summary" and "Export model to Excel" were flat card-coloured text with no border; the model
+# picker, "90d" and the run menu each had a bright blue square for an arrow (2026-10-04). The ONE
+# blue button is the top bar's.
+
+def test_an_icon_survives_a_new_tk_root():
+    """A Tk image belongs to the interpreter that made it -- theme.font()'s own lesson. The icon
+    cache handed the second root a CTkImage whose picture lived in the first: "image "pyimage1"
+    doesn't exist". The app has one root; the tests build one each."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6 import icons
+    for _ in range(2):
+        root = ctk.CTk()
+        try:
+            root.withdraw()
+            button = ctk.CTkButton(root, text="Copy summary", compound="left",
+                                   image=icons.icon("copy", "#8b8b93", 16))
+            button.pack()
+            root.update_idletasks()
+        finally:
+            root.destroy()
+
+
+def test_a_secondary_button_is_a_real_button(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets import blocks
+    t = ThemeManager()
+    b = blocks.secondary_button(tk_root, t, "Copy summary", lambda: None, icon="copy")
+    assert (b.cget("fg_color"), b.cget("border_width"), b.cget("border_color")) == (t.CARD, 1, t.BORDER)
+    assert (b.cget("text_color"), b.cget("hover_color")) == (t.TEXT_PRIMARY, t.ELEVATED)
+    assert b.cget("image") is not None and b.cget("height") == 32
+    plain = blocks.secondary_button(tk_root, t, "Browse…", lambda: None)
+    assert plain.cget("image") is None
+    danger = blocks.secondary_button(tk_root, t, "Clear selected", lambda: None, tone="check")
+    assert danger.cget("text_color") == t.CHECK and danger.cget("fg_color") == t.CARD
+
+
+def test_the_model_pages_two_actions_are_buttons_with_their_icons(make_app):
+    app = make_app()
+    page = app.page_container.get_page("model")
+    t = page.theme
+    import customtkinter as ctk
+    buttons = {w.cget("text"): w for w in _walk(page) if isinstance(w, ctk.CTkButton)}
+    for name in ("Copy summary", "Export model to Excel"):
+        b = buttons[name]
+        assert (b.cget("fg_color"), b.cget("border_width")) == (t.CARD, 1), name
+        assert b.cget("image") is not None, name
+
+
+def test_a_dropdown_paints_its_arrow_quietly_after_every_draw(tk_root):
+    """CustomTkinter repaints the arrow in the value's colour on every draw; the dropdown repaints
+    it TEXT_SECONDARY after each one -- the value itself stays TEXT_PRIMARY."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets import blocks
+    t = ThemeManager()
+    menus = (blocks.dropdown(tk_root, t, ["30d", "90d"], width=80),
+             blocks.combo_box(tk_root, t, ["INV-1", "INV-2"], width=200))
+    for w in menus:
+        w.pack()
+        for _ in range(2):
+            w._draw()                                     # CustomTkinter's own redraw
+            assert w._canvas.itemcget("dropdown_arrow", "fill") == t.TEXT_SECONDARY
+        assert w.cget("text_color") == t.TEXT_PRIMARY
+        assert (w.cget("button_color"), w.cget("button_hover_color")) == (t.ELEVATED, t.BORDER)
+        w.configure(state="disabled")
+        assert w._canvas.itemcget("dropdown_arrow", "fill") != t.TEXT_SECONDARY   # greyed with it
+
+
+def test_the_findings_page_opens_a_model_with_a_secondary_button(tk_root):
+    """Opening a row was the Findings page's one teal-filled button -- drawn beside the top bar's,
+    two blue buttons on one screen since the Graphite bar (2026-10-02)."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.findings_view import FindingsView
+    from test_findings_view import cut
+    t = ThemeManager()
+    view = FindingsView(tk_root, t, on_open=lambda m: None)
+    view.set_findings([cut("6607", 182.0)])
+    view.toggle(next(iter(view.row_widgets)))
+    (button,) = [b for b in view._detail.winfo_children() if isinstance(b, ctk.CTkButton)]
+    assert button.cget("text") == "Open 6607"
+    assert (button.cget("fg_color"), button.cget("border_width")) == (t.CARD, 1)

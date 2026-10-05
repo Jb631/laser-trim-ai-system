@@ -15,6 +15,7 @@ from matplotlib.figure import Figure
 from laser_trim_analyzer.core.model_stats import decimals_for, fixed
 from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import period_labels, period_ticks
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import set_date_axis
 
@@ -38,14 +39,8 @@ class HistoryTab(ctk.CTkFrame):
         bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
         ctk.CTkLabel(bar, text="Measure:", font=theme.font(theme.SIZE_BODY),
                      text_color=theme.TEXT_SECONDARY).pack(side="left", padx=(0, theme.SPACE_SM))
-        # Themed like the other seven Task 1 dropdowns (facelift step 2 Task 3, controller
-        # ruling): this one used to rely on CTkOptionMenu's own un-themed default -- safe to
-        # look at (7.47:1) but not consistent with the rest of the app's teal.
-        self._menu = ctk.CTkOptionMenu(bar, values=["—"], width=220, command=self._on_pick,
-                                       font=theme.font(theme.SIZE_BODY), fg_color=theme.CARD,
-                                       button_color=theme.SEGMENT_SELECTED,
-                                       button_hover_color=theme.SEGMENT_SELECTED_HOVER,
-                                       text_color=theme.TEXT_PRIMARY)
+        # The app's one dropdown (blocks.dropdown): a quiet arrow on an ELEVATED panel.
+        self._menu = blocks.dropdown(bar, theme, ["—"], command=self._on_pick, width=220)
         self._menu.pack(side="left")
         self._stats = ctk.CTkLabel(bar, text="", font=theme.font(theme.SIZE_CAPTION),
                                    text_color=theme.TEXT_SECONDARY, anchor="w")

@@ -149,11 +149,8 @@ class DriftMetricsTab(ctk.CTkFrame):
             anchor="w", justify="left", wraplength=900)
         self._baseline_lbl.pack(side="left", fill="x", expand=True)
         if on_requalify is not None:
-            ctk.CTkButton(footer, text="Requalify baseline…", width=150,
-                          fg_color=theme.CARD, hover_color=theme.ELEVATED,
-                          text_color=theme.TEXT_PRIMARY, border_width=1,
-                          border_color=theme.BORDER, corner_radius=theme.RADIUS_SM,
-                          command=on_requalify).pack(side="right")
+            blocks.secondary_button(footer, theme, "Requalify baseline…", on_requalify,
+                                    icon="refresh").pack(side="right")
 
     def set_baseline_info(self, req) -> None:
         """Baseline-period disclosure. req = (effective_date, note, set_at)

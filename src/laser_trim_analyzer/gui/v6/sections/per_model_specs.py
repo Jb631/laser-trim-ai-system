@@ -87,10 +87,8 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
     # Build empty and fill off-thread: querying specs here ran a DB call during
     # app startup ON the main thread — blocked the whole UI whenever a worker
     # (batch save, training) held the DB lock.
-    model_box = ctk.CTkComboBox(parent, values=[], fg_color=t.SURFACE,
-                                border_color=t.BORDER, button_color=t.SEGMENT_SELECTED,
-                                button_hover_color=t.SEGMENT_SELECTED_HOVER, text_color=t.TEXT_PRIMARY,
-                                command=lambda choice: _load(choice))
+    model_box = blocks.combo_box(parent, t, [], command=lambda choice: _load(choice),
+                                 fg_color=t.SURFACE)
     model_box.set("")
     model_box.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
     _refresh_model_box()
@@ -128,7 +126,8 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
 
     imp_row = ctk.CTkFrame(parent, fg_color="transparent")
     imp_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-    blocks.link_button(imp_row, t, "Import spec sheet…", _import_sheet).pack(side="left")
+    blocks.secondary_button(imp_row, t, "Import spec sheet…", _import_sheet, icon="open")\
+        .pack(side="left")
     ctk.CTkLabel(imp_row, text="  Bulk load/refresh every model from your master sheet "
                                "(merges — never deletes).",
                  font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY).pack(side="left")
@@ -235,5 +234,6 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
 
     btns = ctk.CTkFrame(parent, fg_color="transparent")
     btns.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
-    blocks.link_button(btns, t, "Save spec", _save).pack(side="left")
-    blocks.link_button(btns, t, "Delete spec", _delete).pack(side="left", padx=(t.SPACE_SM, 0))
+    blocks.secondary_button(btns, t, "Save spec", _save).pack(side="left")
+    blocks.secondary_button(btns, t, "Delete spec", _delete, tone="check")\
+        .pack(side="left", padx=(t.SPACE_SM, 0))

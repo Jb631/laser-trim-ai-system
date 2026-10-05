@@ -84,7 +84,7 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
             ctk.CTkLabel(desc, text=text, font=t.font(t.SIZE_CAPTION),
                          text_color=t.TEXT_SECONDARY, anchor="w").pack(side="top", fill="x")
 
-    save_btn = blocks.link_button(parent, t, "Apply preset", None)
+    save_btn = blocks.secondary_button(parent, t, "Apply preset", None)
 
     def save():
         preset = state["selected"]

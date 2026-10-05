@@ -361,11 +361,10 @@ class ModelPage(PageBase):
     # ---- header (built INTO the actions parent — no reparenting) ----
     def header_actions(self, parent):
         t = self.theme
-        self._model_selector = ctk.CTkComboBox(parent, values=[], width=200,
-                                                command=self._on_model_selected, fg_color=t.CARD,
-                                                border_color=t.BORDER, button_color=t.SEGMENT_SELECTED,
-                                                button_hover_color=t.SEGMENT_SELECTED_HOVER,
-                                                text_color=t.TEXT_PRIMARY)
+        # The picker and the two menus are blocks' quiet dropdowns: a grey arrow on an ELEVATED
+        # panel, not the bright blue squares they wore (finish pass, 2026-10-04).
+        self._model_selector = blocks.combo_box(parent, t, [], command=self._on_model_selected,
+                                                width=200)
         self._model_selector.set("Select model…")
         # Typing a model number + Enter must load it — the combobox command
         # only fires on dropdown picks, and scrolling 279 entries to reach a
@@ -385,11 +384,8 @@ class ModelPage(PageBase):
         # customtkinter 5.2.2 (see requirements-pinned.txt).
         self._model_selector._open_dropdown_menu = self._open_model_picker
         self._model_selector.pack(side="left", padx=(0, t.SPACE_SM))
-        self._window_menu = ctk.CTkOptionMenu(parent, values=list(_WINDOW_DAYS), width=80,
-                                              command=self._on_window_change, fg_color=t.CARD,
-                                              button_color=t.SEGMENT_SELECTED,
-                                              button_hover_color=t.SEGMENT_SELECTED_HOVER,
-                                              text_color=t.TEXT_PRIMARY)
+        self._window_menu = blocks.dropdown(parent, t, list(_WINDOW_DAYS),
+                                            command=self._on_window_change, width=80)
         self._window_menu.set(self._window_choice)
         self._window_menu.pack(side="left", padx=(0, t.SPACE_SM))
         # Lot selector (app-shape spec §2): production runs newest first, from
@@ -397,20 +393,16 @@ class ModelPage(PageBase):
         # Sits with the model and window pickers because all three answer "what
         # am I looking at"; it is what turns the stats table from a history
         # into "is THIS run different".
-        self._lot_menu = ctk.CTkOptionMenu(parent, values=[_ALL_HISTORY], width=210,
-                                           command=self._on_lot_change, fg_color=t.CARD,
-                                           button_color=t.SEGMENT_SELECTED,
-                                           button_hover_color=t.SEGMENT_SELECTED_HOVER,
-                                           text_color=t.TEXT_PRIMARY)
+        self._lot_menu = blocks.dropdown(parent, t, [_ALL_HISTORY], command=self._on_lot_change,
+                                         width=210)
         self._lot_menu.set(_ALL_HISTORY)
         self._lot_menu.pack(side="left", padx=(0, t.SPACE_SM))
-        ctk.CTkButton(parent, text="Copy summary", command=self._on_copy_summary, fg_color=t.CARD,
-                      hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM)\
+        # Real buttons, each with its icon -- they were flat card-coloured text (finish pass,
+        # 2026-10-04). Never blue: the ONE blue button on screen is the top bar's "Process new
+        # files" (Graphite, 2026-10-02; its final review found two over this page).
+        blocks.secondary_button(parent, t, "Copy summary", self._on_copy_summary, icon="copy")\
             .pack(side="left", padx=(0, t.SPACE_SM))
-        # Card-coloured, like "Copy summary": the ONE blue button on screen is the top bar's
-        # "Process new files" (Graphite, 2026-10-02; its final review found two over this page).
-        ctk.CTkButton(parent, text="Export model to Excel", command=self._on_export, fg_color=t.CARD,
-                      hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM)\
+        blocks.secondary_button(parent, t, "Export model to Excel", self._on_export, icon="export")\
             .pack(side="left")
 
     def build_content(self, parent):
@@ -1804,12 +1796,10 @@ class ModelPage(PageBase):
             threading.Thread(target=work, daemon=True).start()
 
         btns = ctk.CTkFrame(dlg, fg_color="transparent"); btns.pack(fill="x", padx=16, pady=12)
-        ctk.CTkButton(btns, text="Requalify + retrain", fg_color=t.ACCENT,
-                      hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
-                      command=go, corner_radius=t.RADIUS_SM).pack(side="right")
-        ctk.CTkButton(btns, text="Cancel", fg_color=t.CARD, hover_color=t.ELEVATED,
-                      text_color=t.TEXT_PRIMARY, border_width=1, border_color=t.BORDER,
-                      command=dlg.destroy, corner_radius=t.RADIUS_SM).pack(side="right", padx=8)
+        # Secondary buttons, both: the one blue button is the top bar's (finish pass, 2026-10-04).
+        blocks.secondary_button(btns, t, "Requalify + retrain", go, icon="refresh")\
+            .pack(side="right")
+        blocks.secondary_button(btns, t, "Cancel", dlg.destroy).pack(side="right", padx=8)
 
     def _on_export_charts(self):
         """Trim tab: export the checked unit charts (or all shown if none are

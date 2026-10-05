@@ -245,7 +245,9 @@ def test_every_dropdown_arrow_the_app_draws_is_readable(make_app):
 
         bad = []
         for w in menus:
-            arrow = _hex(w, w.cget("text_color"))
+            # The arrow as DRAWN -- its own colour since the finish pass (blocks._QuietArrow), not
+            # the text_color CustomTkinter paints it with first.
+            arrow = _hex(w, w._canvas.itemcget("dropdown_arrow", "fill"))
             for state, fill in (("", w.cget("button_color")), (", hovered", w.cget("button_hover_color"))):
                 ratio = contrast(arrow, _hex(w, fill))
                 if ratio < 3.0:
@@ -286,13 +288,14 @@ def test_the_final_test_overlay_switch_knob_is_readable(make_app):
 def test_no_v6_dropdown_or_switch_is_built_with_the_defective_colour():
     """Static backstop, same idea as the segmented-button/checkbox one below.
 
-    CTkOptionMenu/CTkComboBox: flagged only when EXPLICITLY given the wrong colour, not when
-    button_color is left unset -- CTkOptionMenu's own un-themed default text_color/button_color
-    measures 7.47:1, so an unstyled site is still SAFE, just inconsistent with the rest of the
-    app's teal. `widgets/history_tab.py`'s menu used to be exactly that -- the one dropdown left
-    unstyled after step 1's review fixed the other seven -- until facelift step 2 Task 3 themed
-    it too (controller ruling); the `themed` count below pins that all 7 CTkOptionMenu sites
-    carry the token outright, not merely "not wrong".
+    CTkOptionMenu/CTkComboBox: since the finish pass (2026-10-04) every dropdown is built by
+    blocks.dropdown / blocks.combo_box -- an ELEVATED arrow panel that lifts to BORDER, the arrow
+    itself TEXT_SECONDARY -- where the SEGMENT_SELECTED panel was the bright blue square James's
+    screenshots showed. So a construction site is a call to one of the two, and blocks' own two
+    constructions are checked for those tokens. A CTkOptionMenu or CTkComboBox built anywhere else
+    must carry button_color=<theme>.ELEVATED (or BORDER) outright: left unset, CustomTkinter's own
+    theme draws it blue. (history_tab.py's menu was once the one left unstyled -- facelift step 2
+    Task 3; the floors below fail the day a dropdown stops going through blocks.)
     CTkSwitch: the one construction site must carry the token outright -- there is no already-safe
     default to fall back on here (ctk_switch.py's own default button_color measured 1.27:1 against
     progress_color=ACCENT).
@@ -301,39 +304,43 @@ def test_no_v6_dropdown_or_switch_is_built_with_the_defective_colour():
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[1] / "src/laser_trim_analyzer/gui/v6"
-    permissive = {"CTkOptionMenu": ("button_color", "SEGMENT_SELECTED"),
-                  "CTkComboBox": ("button_color", "SEGMENT_SELECTED")}
+    quiet_panel = ("ELEVATED", "BORDER")
+    built_by_blocks = {"_Dropdown": "dropdown", "_ComboBox": "combo_box"}
+    wants_in_blocks = {"button_color": "ELEVATED", "button_hover_color": "BORDER",
+                       "arrow_color": "TEXT_SECONDARY", "text_color": "TEXT_PRIMARY"}
     required = {"CTkSwitch": ("button_color", "TEXT_PRIMARY")}
     bad = []
-    seen = {name: 0 for name in (*permissive, *required)}
-    themed = {name: 0 for name in (*permissive, *required)}       # has_token, not just "not wrong"
+    sites = {"dropdown": 0, "combo_box": 0, "CTkSwitch": 0}
+
+    def token(node, keyword):
+        value = {k.arg: k.value for k in node.keywords}.get(keyword)
+        return value.attr if isinstance(value, ast.Attribute) else None
+
     for path in root.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             if not isinstance(node, ast.Call):
                 continue
-            name = getattr(node.func, "attr", getattr(node.func, "id", None))
-            if name not in seen:
-                continue
-            seen[name] += 1
-            keyword, token = (permissive.get(name) or required.get(name))
-            given = {k.arg: k.value for k in node.keywords}
-            value = given.get(keyword)
-            has_token = isinstance(value, ast.Attribute) and value.attr == token
-            if has_token:
-                themed[name] += 1
-            if name in required and not has_token:
-                bad.append(f"{path.name}:{node.lineno} {name} without {keyword}=<theme>.{token}")
-            elif name in permissive and value is not None and not has_token:
-                wrong = value.attr if isinstance(value, ast.Attribute) else ast.dump(value)
-                bad.append(f"{path.name}:{node.lineno} {name} styled with {keyword}={wrong}, want {token}")
-    # Floors: model_page (combo box + 2 option menus) + dashboard_page (2) + unit_chart_modal (2)
-    # + history_tab (1, now themed too -- facelift step 2 Task 3) = 7 CTkOptionMenu; model_page
-    # + per_model_specs = 2 CTkComboBox; unit_chart_modal = 1 CTkSwitch.
-    assert seen["CTkOptionMenu"] >= 7 and seen["CTkComboBox"] >= 2 and seen["CTkSwitch"] >= 1, seen
-    # Every CTkOptionMenu site the walk found is now EXPLICITLY themed -- no more "unstyled but
-    # safe" holdout (history_tab.py was the last one; this fails again the day a new dropdown
-    # is added unstyled, the same way the old permissive-only check let history_tab.py through).
-    assert themed["CTkOptionMenu"] == seen["CTkOptionMenu"], (themed, seen)
+            func = node.func
+            name = getattr(func, "attr", getattr(func, "id", None))
+            owner = getattr(getattr(func, "value", None), "id", None)
+            if name in ("dropdown", "combo_box") and owner == "blocks":
+                sites[name] += 1
+            elif name in built_by_blocks:
+                for keyword, want in wants_in_blocks.items():
+                    if token(node, keyword) != want:
+                        bad.append(f"{path.name}:{node.lineno} {name} without {keyword}=<theme>.{want}")
+            elif name in ("CTkOptionMenu", "CTkComboBox"):
+                if token(node, "button_color") not in quiet_panel:
+                    bad.append(f"{path.name}:{node.lineno} {name} built outside blocks, its "
+                               f"button_color {token(node, 'button_color')}, want ELEVATED or BORDER")
+            elif name in required:
+                sites[name] += 1
+                keyword, want = required[name]
+                if token(node, keyword) != want:
+                    bad.append(f"{path.name}:{node.lineno} {name} without {keyword}=<theme>.{want}")
+    # Floors: model_page (2) + dashboard_page (2) + unit_chart_modal (2) + history_tab (1) = 7
+    # dropdowns; model_page + per_model_specs = 2 combo boxes; unit_chart_modal = 1 CTkSwitch.
+    assert sites["dropdown"] >= 7 and sites["combo_box"] >= 2 and sites["CTkSwitch"] >= 1, sites
     assert not bad, "\n".join(bad)
 
 
@@ -382,3 +389,69 @@ def test_the_three_lasers_are_told_apart_at_a_glance():
         for b in lasers[i + 1:]:
             d = abs((hue(a) - hue(b) + 180) % 360 - 180)
             assert d >= 60, f"{a} and {b} are only {d:.0f} degrees apart"
+
+
+# ---- Finish pass (option B, 2026-10-04): real buttons, quiet dropdowns -- brief F, item 5 --------
+# One block, kept together (other streams add theirs after it). The screenshots: "Copy summary" and
+# "Export model to Excel" were flat card-coloured text with no border, and the model picker, the
+# "90d" window and the run menu each carried a bright blue square for an arrow. Every dropdown is
+# now blocks.dropdown / blocks.combo_box -- an ELEVATED arrow panel that lifts to BORDER, the arrow
+# itself TEXT_SECONDARY -- and every text button a blocks.secondary_button (CARD fill, BORDER 1 px).
+
+def _every_dropdown(app):
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import FtUnitChartModal, UnitChartModal
+    unit_modal = UnitChartModal(app, app.theme, app.db, {
+        "serial": "S1", "overall_status": "PASS", "file_date": "2026-01-01",
+        "analysis_id": None, "model": "M1", "system": "B"})
+    ft_modal = FtUnitChartModal(app, app.theme, app.db, {
+        "serial": "S1", "result": "PASS", "file_date": None,
+        "id": None, "model": "M1", "system": "B"})
+    return _dropdown_menus(app, unit_modal, ft_modal), (unit_modal, ft_modal)
+
+
+def test_no_dropdown_carries_a_bright_blue_square(make_app):
+    app = make_app()
+    t = app.theme
+    menus, modals = _every_dropdown(app)
+    try:
+        assert len(menus) >= 9, len(menus)          # 7 menus + 2 combo boxes, as the scan below
+        blue = (t.ACCENT, t.ACCENT_HOVER, t.SEGMENT_SELECTED, t.SEGMENT_SELECTED_HOVER)
+        bad = []
+        for w in menus:
+            panel, hover = w.cget("button_color"), w.cget("button_hover_color")
+            arrow = w._canvas.itemcget("dropdown_arrow", "fill")
+            if panel not in (t.ELEVATED, t.BORDER) or hover != t.BORDER or panel in blue:
+                bad.append(f"{w}: panel {panel}, hover {hover}")
+            if arrow != t.TEXT_SECONDARY or w.cget("text_color") != t.TEXT_PRIMARY:
+                bad.append(f"{w}: arrow {arrow}, value {w.cget('text_color')}")
+        assert not bad, "\n".join(bad)
+    finally:
+        for m in modals:
+            m.destroy()
+
+
+def test_no_text_button_in_the_app_is_flat_card_coloured_text(make_app):
+    """A CARD-filled button with no border reads as text on the page, not as something to press
+    -- every one is a secondary button now: the Model page's two actions, "Browse…", the Process
+    page's Stop, the predictor's Show, every Settings action (all cards open)."""
+    import customtkinter as ctk
+    app = make_app()
+    t = app.theme
+    for card in app.page_container.get_page("settings")._cards:
+        if not card._expanded:
+            card.toggle()
+    process = app.page_container.get_page("process")
+    process._set_running(True)                      # the one-off run's Stop is packed only then
+    buttons = [w for w in _walk(app) if isinstance(w, ctk.CTkButton)
+               and not isinstance(w.master, ctk.CTkSegmentedButton)]
+    flat = [w.cget("text") for w in buttons
+            if w.cget("fg_color") == t.CARD and not w.cget("border_width")]
+    assert not flat, flat
+    blue = [w.cget("text") for w in buttons if w.cget("fg_color") == t.ACCENT]
+    assert blue == ["Process new files"], blue      # the top bar's, and only it
+    settings = [w for w in _walk(app.page_container.get_page("settings"))
+                if isinstance(w, ctk.CTkButton) and w.cget("text") in (
+                    "Retrain drift detector", "Scan database", "Upload current backlog…",
+                    "Check folders now", "Import spec sheet…", "Apply preset")]
+    assert len(settings) == 6 and all(w.cget("border_width") == 1 for w in settings), \
+        [(w.cget("text"), w.cget("border_width")) for w in settings]

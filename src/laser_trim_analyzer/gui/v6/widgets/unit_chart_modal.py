@@ -5,6 +5,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.widgets import blocks
 
 
 def compute_offset_feasibility(errors, upper_limits, lower_limits):
@@ -302,15 +303,13 @@ class UnitChartModal(ctk.CTkToplevel):
         # still exposes save_figure; the V6 modal just never surfaced a button for it).
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(side="bottom", fill="x", padx=theme.SPACE_MD, pady=(0, theme.SPACE_MD))
-        self._save_btn = ctk.CTkButton(bar, text="Save chart…", command=self._save_chart,
-                                       fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                                       text_color=theme.TEXT_INVERSE, corner_radius=theme.RADIUS_SM)
+        # A secondary button: the one blue button is the top bar's (finish pass, 2026-10-04).
+        self._save_btn = blocks.secondary_button(bar, theme, "Save chart…", self._save_chart,
+                                                 icon="export")
         self._save_btn.pack(side="right")
         # Track selector (packed only when the unit has multiple tracks).
-        self._track_menu = ctk.CTkOptionMenu(
-            bar, values=["Track"], width=140, command=self._on_track_change,
-            fg_color=theme.CARD, button_color=theme.SEGMENT_SELECTED,
-            button_hover_color=theme.SEGMENT_SELECTED_HOVER, text_color=theme.TEXT_PRIMARY)
+        self._track_menu = blocks.dropdown(bar, theme, ["Track"], command=self._on_track_change,
+                                           width=140)
         # Trim / Trim + FT. The overlay was V5 Compare's alone until now; it is
         # OFF by default so the unit chart still opens as the trim chart it is.
         self._show_ft = False
@@ -612,15 +611,12 @@ class FtUnitChartModal(ctk.CTkToplevel):
                          padx=theme.SPACE_MD, pady=theme.SPACE_MD)
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(side="bottom", fill="x", padx=theme.SPACE_MD, pady=(0, theme.SPACE_MD))
-        self._save_btn = ctk.CTkButton(bar, text="Save chart…", command=self._save,
-                                       fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                                       text_color=theme.TEXT_INVERSE,
-                                       corner_radius=theme.RADIUS_SM, state="disabled")
+        self._save_btn = blocks.secondary_button(bar, theme, "Save chart…", self._save,
+                                                 icon="export")
+        self._save_btn.configure(state="disabled")
         self._save_btn.pack(side="right")
-        self._track_menu = ctk.CTkOptionMenu(
-            bar, values=["Track"], width=140, command=self._on_track_change,
-            fg_color=theme.CARD, button_color=theme.SEGMENT_SELECTED,
-            button_hover_color=theme.SEGMENT_SELECTED_HOVER, text_color=theme.TEXT_PRIMARY)
+        self._track_menu = blocks.dropdown(bar, theme, ["Track"], command=self._on_track_change,
+                                           width=140)
         # Reconciliation banner: when the applied offset clears a sweep the FT
         # station recorded as FAIL, the note keeps that stored disposition visible
         # instead of the chart reading as a silent clean PASS (packs above the bar).

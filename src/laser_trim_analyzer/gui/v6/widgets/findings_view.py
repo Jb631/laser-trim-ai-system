@@ -26,12 +26,12 @@ class FindingsView(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
         self._on_open = on_open
-        # "primary" (default, unchanged): the Findings page itself, where opening a row IS the
-        # page's one call to action. "link" (Home, facelift step 2 review 7bc0743): Home already
-        # has its own primary_button ("Process everything new"), so a second teal-filled button
-        # drawn the moment a "Worth changing" row is expanded broke "at most ONE teal-filled
-        # button per screen" (global-constraints.md) -- caught only by a test that actually
-        # expands a row, which the shipped test never did.
+        # "primary" (default): the Findings page itself, where opening a row IS the page's call to
+        # action -- a secondary button with the `open` icon since the finish pass (2026-10-04):
+        # the ONE blue button on any screen is the top bar's, and a teal-filled "Open 6607" made
+        # two. "link" (Home, facelift step 2 review 7bc0743): a quiet link where the row sits
+        # among other content -- "at most ONE teal-filled button per screen"
+        # (global-constraints.md) was caught only by a test that actually expands a row.
         self._open_as = open_as
         self._include_empty = include_empty
         # None -> presentation's own default, unchanged from before this option existed.
@@ -146,9 +146,13 @@ class FindingsView(ctk.CTkFrame):
                                  ).pack(fill="x", padx=t.SPACE_LG, pady=(t.SPACE_SM, 0))
                 self._settings_table(d, setting_rows)
         if self._on_open is not None:
-            button = blocks.primary_button if self._open_as == "primary" else blocks.link_button
-            button(d, t, f"Open {r.model}", lambda m=r.model: self._on_open(m)
-                  ).pack(anchor="w", padx=t.SPACE_LG, pady=t.SPACE_MD)
+            if self._open_as == "link":
+                blocks.link_button(d, t, f"Open {r.model}", lambda m=r.model: self._on_open(m)
+                                   ).pack(anchor="w", padx=t.SPACE_LG, pady=t.SPACE_MD)
+            else:
+                blocks.secondary_button(d, t, f"Open {r.model}",
+                                        lambda m=r.model: self._on_open(m), icon="open"
+                                        ).pack(anchor="w", padx=t.SPACE_LG, pady=t.SPACE_MD)
         else:
             ctk.CTkFrame(d, height=t.SPACE_SM, fg_color="transparent").pack()
         return d
