@@ -208,12 +208,29 @@ class V6App(ctk.CTk):
         """Advance all trained drift detectors over data that arrived since the
         last run. Worker thread; a no-op when nothing is new. `on_done(error)` is called on the
         worker when it has finished -- `error` the class name of the first step that failed, or
-        None."""
+        None -- every time, even when the drift code itself will not load."""
         def work():
             import logging
             log = logging.getLogger(__name__)
-            from laser_trim_analyzer.ml.drift_training import (
-                advance_drift_state, ensure_drift_rules)
+
+            def report(error: Optional[str]) -> None:
+                if on_done is not None:
+                    try:
+                        on_done(error)
+                    except Exception:
+                        log.exception("Could not report the drift catch-up's end")
+
+            # Guarded like every step below (review of option B, 2026-10-04). This import used to
+            # sit outside both guards: a drift module that would not load ended the thread before
+            # it reported, and the status bar said "Drift watch updating…" for good -- a failure
+            # reading as work in progress. Now it is named, the way a failed step is.
+            try:
+                from laser_trim_analyzer.ml.drift_training import (
+                    advance_drift_state, ensure_drift_rules)
+            except Exception as exc:
+                log.exception("Startup drift catch-up: the drift code would not load")
+                report(type(exc).__name__)
+                return
             error = None
             # The drift rules changed since this state was built (2026-10-02: dirty readings,
             # small lots, old evidence, improvements): retrain once, about ten seconds, before
@@ -236,11 +253,7 @@ class V6App(ctk.CTk):
             except Exception as exc:
                 error = error or type(exc).__name__
                 log.exception("Startup drift catch-up failed")
-            if on_done is not None:
-                try:
-                    on_done(error)
-                except Exception:
-                    log.exception("Could not report the drift catch-up's end")
+            report(error)
         import threading
         threading.Thread(target=work, daemon=True).start()
 
