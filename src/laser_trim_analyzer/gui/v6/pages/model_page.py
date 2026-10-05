@@ -1873,7 +1873,7 @@ class ModelPage(PageBase):
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_pdf import PdfPages
             from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
-                compute_fail_points, ft_document_meta, load_ft_track, load_unit_track,
+                document_fail_points, ft_document_meta, load_ft_track, load_unit_track,
                 unit_document_meta)
             from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
             done = err = 0
@@ -1886,10 +1886,10 @@ class ModelPage(PageBase):
                             if not data:
                                 err += 1
                                 continue
-                            fp = compute_fail_points(
-                                data.get("error_data"), data.get("upper_limits"),
-                                data.get("lower_limits"),
-                                offset=data.get("optimal_offset") or 0.0)
+                            # The same grading as a unit saved from its chart window: the
+                            # stored slope too (this passed the offset alone, and marked a
+                            # rotated unit's in-spec points as fails).
+                            fp = document_fail_points(data)
                             # Each page's words about its unit come from the same place as a
                             # unit saved from its chart window: its day the app's way ("5 Jan
                             # 2026"; a final test's own test day), never ISO.

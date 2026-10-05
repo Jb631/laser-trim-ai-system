@@ -176,6 +176,21 @@ def compute_fail_points(errors, upper_limits, lower_limits,
     return sorted(out_of_band + unmeasured)
 
 
+def document_fail_points(data) -> List[int]:
+    """The fail points a saved document marks, from a load_unit_track / load_ft_track dict: the
+    analyzer's grading of record -- the stored offset AND the stored slope on theory (a final
+    test stores neither slope nor theory, and is graded on its offset alone).
+
+    ONE function for a unit saved from its chart window and for the Model page's PDF of many. The
+    PDF passed the offset only, so on a rotated unit its X markers and its PASS/FAIL stamp could
+    contradict the single save and the analyzer -- 8415-1 SN 26's phantom fail points again
+    (compute_fail_points says how that went the first time). Found 2026-10-04."""
+    return compute_fail_points(
+        data.get("error_data"), data.get("upper_limits"), data.get("lower_limits"),
+        offset=data.get("optimal_offset") or 0.0, k=data.get("optimal_slope") or 0.0,
+        theory=data.get("theory_data"))
+
+
 def unmeasured_points(errors, upper_limits, lower_limits,
                       offset: float = 0.0, k: float = 0.0,
                       theory=None, exclude_indices=None) -> List[int]:
@@ -543,12 +558,7 @@ class UnitChartModal(ctk.CTkToplevel):
             return
         try:
             from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
-            from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
-            fp = compute_fail_points(data.get("error_data"), data.get("upper_limits"),
-                                     data.get("lower_limits"),
-                                     offset=data.get("optimal_offset") or 0.0,
-                                     k=data.get("optimal_slope") or 0.0,
-                                     theory=data.get("theory_data"))
+            fp = document_fail_points(data)
             # The saved document shows what the screen shows, overlay included.
             fig = build_unit_export_figure(
                 unit_document_meta(self._unit, data), data, fp,

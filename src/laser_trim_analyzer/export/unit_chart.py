@@ -13,6 +13,7 @@ requirement and decides accept/reject; sigma only separates PASS from
 from laser_trim_analyzer.core.models import laser_label
 # The graded-trace definition lives in core (see there); re-exported for this module's callers.
 from laser_trim_analyzer.core.analyzer import corrected_errors  # noqa: F401
+from laser_trim_analyzer.core.model_stats import day_text
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -478,7 +479,10 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
                    fontweight="bold", color=color, transform=ax_status.transAxes)
     ax_status.text(0.5, 0.44, note, ha="center", va="center", fontsize=9.5,
                    color=color, transform=ax_status.transAxes, wrap=True)
-    ax_status.text(0.5, 0.12, f"Exported {datetime.now():%Y-%m-%d %H:%M}",
+    # The day as the page's other date says it ("5 Jan 2026"): one document, one way to write a
+    # day (core's day_text -- this module keeps the GUI out).
+    now = datetime.now()
+    ax_status.text(0.5, 0.12, f"Exported {day_text(now)} {now:%H:%M}",
                    ha="center", va="center", fontsize=8.5, color="gray",
                    style="italic", transform=ax_status.transAxes)
     return fig

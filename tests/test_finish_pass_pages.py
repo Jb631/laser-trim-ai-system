@@ -232,6 +232,77 @@ def test_a_saved_final_test_document_says_its_test_day_the_apps_way():
     assert ucm.ft_document_meta({"serial": "S2"}, {"date": ""})["serial"] == "S2"
 
 
+def test_a_saved_documents_footer_says_its_day_as_the_page_does():
+    """ "Exported 2026-10-04 17:22" sat under a trim date of "5 Jan 2026": one page, two ways."""
+    from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
+    data = {"position_data": [0, 1, 2], "error_data": [0.0, 0.01, 0.0],
+            "upper_limits": [0.05] * 3, "lower_limits": [-0.05] * 3, "optimal_offset": 0.0,
+            "linearity_pass": True, "sigma_pass": True}
+    fig = build_unit_export_figure({"model": "INV-1", "serial": "S1", "n_tracks": 1,
+                                    "trim_date": "5 Jan 2026"}, data, [])
+    texts = [t.get_text() for ax in fig.axes for t in ax.texts]
+    (footer,) = [t for t in texts if t.startswith("Exported ")]
+    assert re.fullmatch(r"Exported \d{1,2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}", footer), footer
+
+
+# The Model page's PDF of many graded each unit on its stored offset alone. On a unit the analyzer
+# rotated (a stored slope on theory) its X markers and its PASS/FAIL stamp could contradict the
+# same unit saved from its chart window -- 8415-1 SN 26's phantom fails again. ONE function grades
+# both documents now (found while fixing the review of option B, 2026-10-04). Values INVENTED.
+
+_ROTATED = {    # raw errors climb out of band along the travel; the stored slope brings them back
+    "error_data": [0.0, 0.02, 0.04, 0.06, 0.08], "theory_data": [0.0, 1.0, 2.0, 3.0, 4.0],
+    "upper_limits": [0.05] * 5, "lower_limits": [-0.05] * 5,
+    "optimal_offset": 0.0, "optimal_slope": -0.02}
+
+
+def test_a_saved_document_grades_a_rotated_unit_as_the_analyzer_did():
+    from laser_trim_analyzer.gui.v6.widgets import unit_chart_modal as ucm
+    d = _ROTATED
+    # What the offset alone marks -- the phantom fails the PDF of many drew:
+    assert ucm.compute_fail_points(d["error_data"], d["upper_limits"], d["lower_limits"],
+                                   offset=d["optimal_offset"]) == [3, 4]
+    assert ucm.document_fail_points(d) == []
+    # A final test stores no slope and no theory: graded on its offset alone, as it always was.
+    ft = {k: v for k, v in d.items() if k not in ("optimal_slope", "theory_data")}
+    assert ucm.document_fail_points(ft) == [3, 4]
+
+
+def test_the_pdf_of_many_marks_the_fail_points_a_single_save_marks(monkeypatch, tmp_path):
+    """No window: the Model page's own export, run on a stand-in for the page."""
+    import time
+    from tkinter import filedialog
+    from types import SimpleNamespace as NS
+    from matplotlib.figure import Figure
+    import laser_trim_analyzer.export.unit_chart as export_mod
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+    from laser_trim_analyzer.gui.v6.widgets import unit_chart_modal as ucm
+
+    marked = []
+
+    def figure(meta, data, fail_points, **kw):
+        marked.append(list(fail_points))
+        fig = Figure()
+        fig.add_subplot(111)
+        return fig
+    monkeypatch.setattr(export_mod, "build_unit_export_figure", figure)
+    monkeypatch.setattr(ucm, "load_unit_track", lambda db, analysis_id: dict(_ROTATED, model="INV-1"))
+    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: str(tmp_path / "many.pdf"))
+    said = []
+    tab = NS(get_selected_units=lambda: [{"serial": "S1", "analysis_id": 1,
+                                          "file_date": datetime(2026, 1, 5)}],
+             set_caption=said.append)
+    page = NS(_current_model="INV-1", _units_tab=tab, _ft_units_tab=None, app=NS(db=None),
+              safe_after=lambda work: work())
+    mp.ModelPage._export_charts_pdf(page, kind="trim")
+    until = time.time() + 30
+    while time.time() < until and not any(s.startswith("Export") and "…" not in s for s in said):
+        time.sleep(0.02)                              # the export runs on its own thread
+    assert said and said[-1].startswith("Exported 1 chart(s)"), said
+    assert marked == [[]], marked                     # the rotated unit: no phantom fail point
+    assert (tmp_path / "many.pdf").stat().st_size > 0
+
+
 def test_the_two_chart_windows_save_and_draw_their_day_the_apps_way(make_app, monkeypatch, tmp_path):
     """Both windows' Save, with the save dialog and the document builder stood in for: the name
     the dialog offers keeps the ISO day, the document is handed the app's. And the final-test
