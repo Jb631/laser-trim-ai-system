@@ -34,7 +34,6 @@ from laser_trim_analyzer.core.spec_alignment import compare_station_specs
 from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
 from laser_trim_analyzer.findings import presentation as P
-from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
@@ -1872,7 +1871,8 @@ class ModelPage(PageBase):
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_pdf import PdfPages
             from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
-                load_unit_track, load_ft_track, compute_fail_points)
+                compute_fail_points, ft_document_meta, load_ft_track, load_unit_track,
+                unit_document_meta)
             from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
             done = err = 0
             try:
@@ -1888,19 +1888,12 @@ class ModelPage(PageBase):
                                 data.get("error_data"), data.get("upper_limits"),
                                 data.get("lower_limits"),
                                 offset=data.get("optimal_offset") or 0.0)
-                            date_s = data.get("date") if is_ft else None
-                            if not date_s:
-                                fd = u.get("file_date")
-                                # The page's own words for the day ("5 Jan 2026"), as the
-                                # unit chart window's title says it.
-                                date_s = (formats.day(fd) if hasattr(fd, "strftime")
-                                          else "nodate")
-                            meta = {"model": data.get("model") or model,
-                                    "serial": data.get("serial") or u.get("serial"),
-                                    "system": data.get("system", ""),
-                                    "trim_date": date_s,
-                                    "track_id": data.get("track_id"),
-                                    "n_tracks": data.get("n_tracks", 1)}
+                            # Each page's words about its unit come from the same place as a
+                            # unit saved from its chart window: its day the app's way ("5 Jan
+                            # 2026"; a final test's own test day), never ISO.
+                            meta = (ft_document_meta(u, data) if is_ft
+                                    else unit_document_meta(u, data))
+                            meta["model"] = meta["model"] or model
                             fig = build_unit_export_figure(
                                 meta, data, fp, kind="ft" if is_ft else "trim")
                             pdf.savefig(fig, facecolor="white", bbox_inches="tight")

@@ -199,6 +199,81 @@ def test_the_unit_chart_windows_are_titled_with_the_apps_date(make_app):
         final.destroy()
 
 
+# A unit chart saved on its own printed its day as 2026-01-05 while the bulk PDF printed "5 Jan
+# 2026" (review of option B, #3). Both build the document's words in ONE place now, the app's way;
+# the FILE NAME keeps the ISO day -- it is not a screen date, and it sorts in a folder.
+
+def test_a_saved_unit_document_says_its_day_the_apps_way_and_its_file_name_keeps_iso():
+    from laser_trim_analyzer.gui.v6.widgets import unit_chart_modal as ucm
+    unit = {"serial": "S1", "file_date": datetime(2026, 1, 5, 9, 30), "model": "INV-1",
+            "system": "B"}
+    data = {"model": "INV-1", "system": "B", "track_id": "TRK2", "n_tracks": 2}
+    assert ucm.unit_chart_file_name(unit) == "unit_S1_2026-01-05.png"
+    assert ucm.unit_document_meta(unit, data) == {
+        "model": "INV-1", "serial": "S1", "system": "B", "trim_date": "5 Jan 2026",
+        "track_id": "TRK2", "n_tracks": 2}
+    # A row of the Units tab carries no model or laser; the track's own record does.
+    assert ucm.unit_document_meta({"serial": "S1", "file_date": "2026-01-05 09:30:00"},
+                                  data)["trim_date"] == "5 Jan 2026"
+    # No day on record: the app's dash in the document, and a name with no date -- never "None".
+    assert ucm.unit_document_meta({"serial": "S2", "file_date": None}, {})["trim_date"] == "—"
+    assert ucm.unit_chart_file_name({"serial": "S2", "file_date": None}) == "unit_S2.png"
+
+
+def test_a_saved_final_test_document_says_its_test_day_the_apps_way():
+    from laser_trim_analyzer.gui.v6.widgets import unit_chart_modal as ucm
+    row = {"serial": "S1", "file_date": datetime(2026, 1, 6, 11), "id": 7}     # a Final-test row
+    data = {"model": "INV-1", "serial": "S1", "date": "2026-01-06", "track_id": "TRK1",
+            "n_tracks": 1}                                                      # load_ft_track's
+    assert ucm.ft_document_meta(row, data) == {
+        "model": "INV-1", "serial": "S1", "system": "", "trim_date": "6 Jan 2026",
+        "track_id": "TRK1", "n_tracks": 1}
+    assert ucm.ft_document_meta({"serial": "S2"}, {"date": ""})["trim_date"] == "—"
+    assert ucm.ft_document_meta({"serial": "S2"}, {"date": ""})["serial"] == "S2"
+
+
+def test_the_two_chart_windows_save_and_draw_their_day_the_apps_way(make_app, monkeypatch, tmp_path):
+    """Both windows' Save, with the save dialog and the document builder stood in for: the name
+    the dialog offers keeps the ISO day, the document is handed the app's. And the final-test
+    window's own chart said "Test Date: 2026-01-06" on screen."""
+    import tkinter.filedialog
+    from laser_trim_analyzer.export import unit_chart
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import FtUnitChartModal, UnitChartModal
+    offered, handed = [], []
+
+    class _Figure:
+        def savefig(self, *args, **kwargs):
+            pass
+    monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename",
+                        lambda **kw: offered.append(kw["initialfile"]) or str(tmp_path / "x.pdf"))
+    monkeypatch.setattr(unit_chart, "build_unit_export_figure",
+                        lambda meta, data, fp, **kw: handed.append(meta) or _Figure())
+    sweep = {"position_data": [0.0, 1.0], "error_data": [0.01, 0.02],
+             "upper_limits": [0.05, 0.05], "lower_limits": [-0.05, -0.05], "optimal_offset": 0.0,
+             "untrimmed_positions": [], "untrimmed_errors": [], "track_id": "TRK1", "n_tracks": 1}
+    app = make_app()
+    trim = UnitChartModal(app, app.theme, app.db, {
+        "serial": "S1", "overall_status": "PASS", "file_date": datetime(2026, 1, 5, 9, 30),
+        "analysis_id": None, "model": "INV-1", "system": "B"})
+    final = FtUnitChartModal(app, app.theme, app.db, {
+        "serial": "S1", "result": "PASS", "file_date": datetime(2026, 1, 6, 11), "id": None})
+    try:
+        drawn = []
+        for window in (trim, final):
+            monkeypatch.setattr(window._chart, "plot_error_vs_position",
+                                lambda **kw: drawn.append(kw["trim_date"]))
+        trim._render(dict(sweep, model="INV-1", system="B"), None)
+        final._render(dict(sweep, model="INV-1", serial="S1", date="2026-01-06", result="PASS"))
+        trim._save_chart()
+        final._save()
+    finally:
+        trim.destroy()
+        final.destroy()
+    assert drawn == ["5 Jan 2026", "6 Jan 2026"]                      # on screen
+    assert offered == ["unit_S1_2026-01-05.png", "final_test_S1.pdf"]  # the file names
+    assert [meta["trim_date"] for meta in handed] == ["5 Jan 2026", "6 Jan 2026"]   # printed
+
+
 def test_the_drift_tab_dates_its_baseline_the_apps_way(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab

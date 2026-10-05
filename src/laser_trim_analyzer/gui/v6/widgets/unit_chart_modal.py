@@ -283,6 +283,40 @@ def _window_title(lead: str, when, verdict: str) -> str:
     return " — ".join(parts)
 
 
+# What a saved document says about its unit. ONE place for a unit saved from its chart window and
+# for the Model page's PDF of many (review of option B, 2026-10-04: the first printed its day as
+# 2026-01-05, the second as "5 Jan 2026"). The day is the app's (gui/v6/formats); "—" when none.
+
+def unit_document_meta(unit: dict, data: dict) -> dict:
+    """A trimmed unit: `unit` is its row (the Units tab's), `data` its track (load_unit_track)."""
+    return {"model": data.get("model") or unit.get("model", ""),
+            "serial": unit.get("serial", ""),
+            "system": data.get("system") or unit.get("system", ""),
+            "trim_date": formats.day(unit.get("file_date")),
+            "track_id": data.get("track_id"),
+            "n_tracks": data.get("n_tracks", 1)}
+
+
+def ft_document_meta(ft_unit: dict, data: dict) -> dict:
+    """A final test: `ft_unit` is its row (the Final test tab's), `data` its track (load_ft_track,
+    whose "date" is the test's own day -- else the file's)."""
+    return {"model": data.get("model") or ft_unit.get("model", ""),
+            "serial": data.get("serial") or str(ft_unit.get("serial", "ft_unit")),
+            "system": ft_unit.get("system", ""),
+            "trim_date": formats.day(data.get("date")),
+            "track_id": data.get("track_id"),
+            "n_tracks": data.get("n_tracks", 1)}
+
+
+def unit_chart_file_name(unit: dict) -> str:
+    """"unit_S1_2026-01-05.png", the name a saved unit chart is offered under. It keeps the ISO
+    day: a file name is not a screen date, and 2026-01-05 sorts in a folder where "5 Jan 2026"
+    would not (review of option B, 2026-10-04). No day on record, no day in the name."""
+    serial = str(unit.get("serial", "unit"))
+    day = str(unit.get("file_date") or "").split(" ")[0]
+    return f"unit_{serial}{('_' + day) if day else ''}.png"
+
+
 class UnitChartModal(ctk.CTkToplevel):
     def __init__(self, master, theme: ThemeManager, db, unit: dict):
         super().__init__(master)
@@ -497,11 +531,9 @@ class UnitChartModal(ctk.CTkToplevel):
         panels (export/unit_chart.py), like V5's Export Chart produced.
         """
         from tkinter import filedialog
-        serial = str(self._unit.get("serial", "unit"))
-        date = str(self._unit.get("file_date", "")).split(" ")[0]
-        initial = f"unit_{serial}{('_' + date) if date else ''}.png"
+        # The file's name keeps the ISO day (it sorts); the document inside says the app's.
         path = filedialog.asksaveasfilename(
-            parent=self, defaultextension=".png", initialfile=initial,
+            parent=self, defaultextension=".png", initialfile=unit_chart_file_name(self._unit),
             filetypes=[("PNG image", "*.png"), ("PDF", "*.pdf"), ("SVG", "*.svg")])
         if not path:
             return
@@ -517,15 +549,9 @@ class UnitChartModal(ctk.CTkToplevel):
                                      offset=data.get("optimal_offset") or 0.0,
                                      k=data.get("optimal_slope") or 0.0,
                                      theory=data.get("theory_data"))
-            meta = {"model": data.get("model") or self._unit.get("model", ""),
-                    "serial": self._unit.get("serial", ""),
-                    "system": data.get("system") or self._unit.get("system", ""),
-                    "trim_date": date,
-                    "track_id": data.get("track_id"),
-                    "n_tracks": data.get("n_tracks", 1)}
             # The saved document shows what the screen shows, overlay included.
             fig = build_unit_export_figure(
-                meta, data, fp,
+                unit_document_meta(self._unit, data), data, fp,
                 ft_overlay=self._ft_overlay if self._show_ft else None)
             fig.savefig(path, facecolor="white", bbox_inches="tight")
         except Exception:
@@ -693,7 +719,7 @@ class FtUnitChartModal(ctk.CTkToplevel):
             upper_limits=data["upper_limits"] or None,
             lower_limits=data["lower_limits"] or None,
             offset=data.get("optimal_offset") or 0.0,
-            trim_date=data.get("date") or None, date_label="Test Date",
+            trim_date=_day_or_none(data.get("date")), date_label="Test Date",
             fail_points=fp, title=title,
             serial_number=str(data.get("serial", "")),
             measured_label="Final test (as measured)",
@@ -719,13 +745,7 @@ class FtUnitChartModal(ctk.CTkToplevel):
         try:
             from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
             fp, _pass, _note, _binding = ft_reconciled_verdict(data)
-            meta = {"model": data.get("model") or self._ft.get("model", ""),
-                    "serial": data.get("serial") or serial,
-                    "system": self._ft.get("system", ""),
-                    "trim_date": data.get("date") or "",
-                    "track_id": data.get("track_id"),
-                    "n_tracks": data.get("n_tracks", 1)}
-            fig = build_unit_export_figure(meta, data, fp, kind="ft")
+            fig = build_unit_export_figure(ft_document_meta(self._ft, data), data, fp, kind="ft")
             fig.savefig(path, facecolor="white", bbox_inches="tight")
         except Exception:
             import logging
