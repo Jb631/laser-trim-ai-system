@@ -41,6 +41,11 @@ You said TMOG "feels more like a finished peice of software", picked B, and Marc
    - "Company trends" is that page's name everywhere, and prices are added in Settings → Backlog.
 5. **On the Mac only**: the app's own fonts now load — titles in Marcellus, everything else in IBM
    Plex. It had been drawing in a fallback font.
+6. **One fix to a document you hand out**: the Model page's "Export charts (PDF)" graded each unit
+   on its offset alone. On a unit the analyzer had rotated, it could mark fail points on in-spec
+   readings and stamp FAIL on a passing unit. It now grades exactly as a unit saved from its own
+   chart window does (those were always right). If a PDF of many charts ever showed a unit as
+   failing that the app called passing, export it again.
 
 Nothing to run at work beyond the usual `git pull` and start.
 
