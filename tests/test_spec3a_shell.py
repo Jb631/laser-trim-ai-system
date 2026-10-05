@@ -201,12 +201,14 @@ def test_a_page_with_no_item_lights_none(tk_root):
     t = bar.theme
     bar.set_active("home")
     for key in ("process", "findings", "dashboard", "bogus"):
+        assert not bar.lights(key), key             # ...so the page names itself (PageBase)
         bar.set_active(key)
         assert bar._active_name is None, key
         assert all(i._label.cget("text_color") == t.TEXT_SECONDARY for i in bar._items.values())
         assert all(i._underline.cget("fg_color") == t.SIDEBAR_BG for i in bar._items.values())
     bar.set_active("model")
     assert bar._active_name == "model"
+    assert all(bar.lights(key) for key, _label in bar.ITEMS)
 
 
 def test_the_bar_holds_one_blue_button_and_it_processes_new_files(tk_root):
@@ -405,9 +407,12 @@ def test_page_base_header_actions_receives_parent(tk_root):
     assert seen["parent_is_actions_frame"] is True
 
 
-# ---- option B (2026-10-04): no page repeats its name under the bar ------------------------------
-# "Overview" twice, "Models" over "8232-1" (finish list 2). The top bar names the page; a page's
-# own row under it holds only its actions -- and is not there at all when it has none.
+# ---- option B (2026-10-04): a page the bar names never repeats it; the rest name themselves -------
+# "Overview" twice, "Models" over "8232-1" (finish list 2): the top bar names Overview, Models and
+# Settings, and their row under it holds only their actions -- and is not there at all when they
+# have none. But the bar lights nothing for Process, Findings and Company trends, which then were
+# named nowhere (review of option B, the same day): each says its name at the left of its row, in
+# the title face at the heading size (PageBase.show_name, called by V6App from TopBar.lights).
 
 def _header_labels(page):
     """Every label in the page's own row that is not one of its actions."""
@@ -424,7 +429,7 @@ def test_a_page_with_no_actions_has_no_band_under_the_bar(tk_root):
         page_title = "Somewhere"
         def build_content(self, parent): pass
 
-    p = _P(tk_root, theme=ThemeManager())
+    p = _P(tk_root, theme=ThemeManager())         # never told to name itself: a page on the bar
     assert p.page_title == "Somewhere"            # kept: tests, render_pages and the window use it
     assert p._header.winfo_manager() == ""
     assert p.pack_slaves() == [p._content]        # no title, no rule, no empty band
@@ -453,16 +458,82 @@ def test_a_page_with_actions_keeps_them_right_aligned_with_no_title(tk_root):
     assert slaves.index(p._header) < slaves.index(p._caption) < slaves.index(p._content)
 
 
-def test_no_page_in_the_app_shows_its_name_under_the_bar(make_app):
+def _with_marcellus(monkeypatch):
+    """What Tk can see, faked as test_the_apps_name_is_in_the_title_face fakes it -- BEFORE a theme
+    is built, since a theme reads the list once."""
+    import tkinter.font as tkfont
+    monkeypatch.setattr(tkfont, "families", lambda: ["IBM Plex Sans", "Marcellus"])
+
+
+def test_a_page_told_to_name_itself_says_it_at_the_left_in_the_title_face(tk_root, monkeypatch):
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    _with_marcellus(monkeypatch)
+    t = ThemeManager()
+
+    class _P(PageBase):
+        page_title = "Somewhere"
+        def build_content(self, parent): pass
+
+    p = _P(tk_root, theme=t)
+    p.set_caption("A headline")                   # a caption first: the name still goes on top
+    p.show_name()
+    p.show_name()                                 # twice: one name, one row, one rule
+    (label,) = _header_labels(p)
+    assert label is p._header.title_label and label.cget("text") == "Somewhere"
+    assert label.cget("font") is t.title(t.SIZE_HEADING)
+    assert label.cget("font").cget("family") == "Marcellus"
+    assert label.cget("text_color") == t.TEXT_PRIMARY and label.pack_info()["side"] == "left"
+    assert p.pack_slaves() == [p._header, p._header_rule, p._caption, p._content]
+
+
+def test_a_page_with_a_name_and_actions_has_both_in_one_row(tk_root):
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    class _P(PageBase):
+        page_title = "Somewhere"
+        def build_content(self, parent): pass
+        def header_actions(self, parent):
+            ctk.CTkButton(parent, text="Go").pack(side="right")
+
+    p = _P(tk_root, theme=ThemeManager())
+    p.show_name()
+    assert [w.cget("text") for w in _header_labels(p)] == ["Somewhere"]
+    assert p._header.title_label.pack_info()["side"] == "left"
+    assert p._header.actions_frame.pack_info()["side"] == "right"
+    assert p.pack_slaves() == [p._header, p._header_rule, p._content]
+
+
+def test_only_the_pages_the_bar_does_not_light_name_themselves(make_app, monkeypatch):
+    from laser_trim_analyzer.gui.v6.topbar import TopBar
+    _with_marcellus(monkeypatch)
     app = make_app()
+    t = app.theme
     pages = app.page_container._pages
+    named = {key: [w.cget("text") for w in _header_labels(page)] for key, page in pages.items()}
+    assert named == {"dashboard": ["Company trends"], "findings": ["Findings"],
+                     "process": ["Process"], "home": [], "model": [], "settings": []}
+    on_bar = {key for key, _label in TopBar.ITEMS}
     for key, page in pages.items():
-        assert _header_labels(page) == [], key
+        assert app.topbar.lights(key) == (key in on_bar), key
         has_actions = bool(page._header.actions_frame.winfo_children())
-        assert (page._header.winfo_manager() == "pack") == has_actions, key
-    # The Model page keeps its picker, window and run menus and its buttons; the Overview has none.
+        assert (page._header.winfo_manager() == "pack") == (has_actions or key not in on_bar), key
+        if key not in on_bar:
+            label = page._header.title_label
+            assert label.cget("font") is t.title(t.SIZE_HEADING), key
+            assert label.cget("font").cget("family") == "Marcellus", key
+            assert label.cget("text_color") == t.TEXT_PRIMARY, key
+            assert page.pack_slaves()[:2] == [page._header, page._header_rule], key
+    # Company trends: its name on the left and its window on the right, in one row.
+    trends = pages["dashboard"]
+    assert trends._header.title_label.pack_info()["side"] == "left"
+    assert trends._window_menu.master is trends._header.actions_frame
+    # The Model page keeps its picker, window and run menus and its buttons -- and no name; the
+    # Overview has neither, so no row.
     model = pages["model"]
-    assert model._header.winfo_manager() == "pack"
+    assert model._header.winfo_manager() == "pack" and model._header.title_label is None
     assert model._model_selector.master is model._header.actions_frame
     assert pages["home"]._header.winfo_manager() == ""
 

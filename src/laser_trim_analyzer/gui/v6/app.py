@@ -314,36 +314,45 @@ class V6App(ctk.CTk):
         from laser_trim_analyzer.gui.v6.pages.findings_page import FindingsPage
         from laser_trim_analyzer.gui.v6.pages.settings_page import SettingsPage
         from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage
-        self.page_container.add_page(
+        self._add_page(
             "home",
             HomePage(self.page_container, theme=self.theme, app=self, page_title="Overview"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "dashboard",
             # The key stays "dashboard"; the page reads "Company trends" everywhere (option B,
             # finish list 3) -- the Overview's link says so.
             DashboardPage(self.page_container, theme=self.theme, app=self,
                           page_title="Company trends"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "model",
             # Route key stays "model" (FOCUS rows and set_model_route navigate to
             # it); only what the user reads says "Models", matching the top bar.
             ModelPage(self.page_container, theme=self.theme, app=self,
                       page_title="Models"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "findings",
             FindingsPage(self.page_container, theme=self.theme, app=self, page_title="Findings"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "settings",
             SettingsPage(self.page_container, theme=self.theme, app=self, page_title="Settings"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "process",
             ProcessPage(self.page_container, theme=self.theme, app=self, page_title="Process"),
         )
+
+    def _add_page(self, key: str, page) -> None:
+        """Register `page` under `key`. A page the top bar has no item for -- Process, Findings,
+        Company trends -- names itself at the left of its own row: with nothing lit on the bar,
+        nothing on screen said where you were (review of option B, 2026-10-04). The bar names the
+        other three, which never say it twice (finish item 2)."""
+        self.page_container.add_page(key, page)
+        if not self.topbar.lights(key):
+            page.show_name()
 
     # ---- in-flight long runs ----
     def register_ingest(self, cancel, thread, name: str = "An ingest") -> None:
