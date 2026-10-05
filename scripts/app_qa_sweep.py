@@ -4711,6 +4711,91 @@ def check_usability_glosses() -> None:
         check(f"usability gloss: {what}", ok)
 
 
+def check_status_bar_on_database(db, raw) -> None:
+    """The status bar at the foot of every page (option B, 2026-10-04): what it says about the
+    database is `gui/v6/status_data.load_status`, held here to independent raw SQL on the copy --
+    "333 models" is every model the Models picker can open, "Newest file 29 Sep 2026" is the newest
+    trim file that counts (the Overview's own anchor), "70 files skipped" is the files that failed
+    to read -- and a database that cannot be read is named, never a zero.
+
+    Every check reads the loader's NUMBER against the SQL's, so a part the loader failed (None)
+    can never pass. `--only status-bar` runs this alone.
+
+    Falsify before trusting (2026-10-04, a scratch harness that swaps one part of the loader and
+    runs this function on a copy of the work database whose newest file is 29 Sep 2026): the
+    model count from analysis_results alone -- the two models checks go FAIL (324 vs 333); the
+    newest file read from final tests (one is dated December 2026: a mistyped date) or as the
+    OLDEST trim -- the two newest-file checks go FAIL; the skipped count reading every marker --
+    the two skipped checks go FAIL (21,484 vs 70); an unreadable database read as zeros -- the
+    last check goes FAIL. Not separable on that copy: the filters themselves (its newest file of
+    any kind is also graded, believed and not suspect -- the detail prints both);
+    tests/test_status_bar.py holds them with invented files.
+    """
+    from laser_trim_analyzer.gui.v6 import formats
+    from laser_trim_analyzer.gui.v6 import status_data as sd
+    from laser_trim_analyzer.ml.manager import list_known_models
+
+    status = sd.load_status(db)
+    check("status bar: every part of it loads on the copy", status.failed == {},
+          f"failed parts: {dict(status.failed)}")
+
+    sql_models = raw.execute(
+        "SELECT COUNT(*) FROM (SELECT model FROM analysis_results"
+        " WHERE model IS NOT NULL AND model <> ''"
+        " UNION SELECT model FROM smoothness_results WHERE model IS NOT NULL AND model <> '')"
+    ).fetchone()[0]
+    picker = len(list_known_models(db))
+    check("status bar: 'N models' is every model on file, as the Models picker lists them",
+          status.models == sql_models == picker,
+          f"bar {status.models} / SQL {sql_models} / picker {picker}")
+    check("status bar: the models words say that number",
+          sd.models_words(status)[0] == f"{sql_models:,} models", sd.models_words(status)[0])
+
+    horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    newest = raw.execute(
+        "SELECT MAX(file_date) FROM analysis_results"
+        " WHERE overall_status IN ('PASS', 'WARNING', 'FAIL') AND model IS NOT NULL"
+        " AND file_date IS NOT NULL AND file_date <= ?"
+        " AND (data_quality IS NULL OR data_quality <> 'suspect')", (horizon,)).fetchone()[0]
+    sql_newest = datetime.fromisoformat(newest) if newest else None
+    any_newest = raw.execute("SELECT MAX(file_date) FROM analysis_results").fetchone()[0]
+    check("status bar: 'Newest file' is the newest trim file that counts (graded, believed, not "
+          "suspect -- the Overview's anchor)",
+          sql_newest is not None and status.newest == sql_newest,
+          f"bar {status.newest} / SQL {sql_newest} (newest of any kind: {any_newest})")
+    check("status bar: the newest-file words say that day",
+          sd.newest_words(status)[0] == f"Newest file {formats.day(sql_newest)}",
+          sd.newest_words(status)[0])
+
+    sql_skipped = raw.execute(
+        "SELECT COUNT(*) FROM processed_files WHERE analysis_id IS NULL AND success = 1"
+        " AND error_message LIKE ?", (UNREADABLE_PREFIX + "%",)).fetchone()[0]
+    check("status bar: 'files skipped' is the files that failed to read (Retry unreadable files)",
+          status.skipped == sql_skipped, f"bar {status.skipped} / SQL {sql_skipped}")
+    want = ("" if not sql_skipped else "1 file skipped" if sql_skipped == 1
+            else f"{sql_skipped:,} files skipped")
+    words, tone = sd.skipped_words(status)
+    check("status bar: skipped files are said in the check colour, and only when there are some",
+          words == want and (tone == sd.CHECK or not want), f"{words!r} ({tone})")
+
+    class _Unreadable:
+        def session(self):
+            raise sqlite3.OperationalError("unable to open database file")
+    import logging
+    loader_log = logging.getLogger(sd.__name__)
+    was, loader_log.disabled = loader_log.disabled, True     # this failure is on purpose: no
+    try:                                                      # traceback in the sweep's output
+        dead = sd.load_status(_Unreadable())
+    finally:
+        loader_log.disabled = was
+    check("status bar: a database that cannot be read is named, and nothing is counted as 0",
+          dead.failed == {sd.PART_DATABASE: "OperationalError"}
+          and (dead.models, dead.newest, dead.skipped) == (None, None, None)
+          and sd.database_words(dead) == ("Database: could not read (OperationalError)", sd.CHECK)
+          and sd.models_words(dead)[0] == "",
+          f"{dict(dead.failed)} -> {sd.database_words(dead)}")
+
+
 def check_database_beside_the_app() -> None:
     """The copy handed to a coworker (2026-09-30): her config.yaml still names the ABSOLUTE path
     the database has on the owner's computer. The app must open the database BESIDE it, never
@@ -5161,6 +5246,9 @@ def main() -> int:
     except Exception as exc:
         check("shell: top bar/page registration contract", False,
               f"{type(exc).__name__}: {exc}")
+    # ---- the status bar: what it says about the database, against raw SQL (2026-10-04) --------
+    with _guard("status bar: its counts against raw SQL"):
+        check_status_bar_on_database(db, raw)
 
     # The "active set" check that stood here tested ml.manager.active_model_set, which only
     # Triage and the dead Settings → Active Models section called; both are gone (2026-10-02/04).
@@ -6345,6 +6433,7 @@ STANDALONE = {"glosses": check_usability_glosses,
 # Sections that read a COPY of the work database, run alone (the same refusals main() makes):
 #     python scripts/app_qa_sweep.py /path/to/COPY_of_analysis.db --only overview
 ON_DATABASE = {"overview": check_overview_on_database}
+ON_DATABASE["status-bar"] = check_status_bar_on_database
 
 
 def _run_on_database(name: str) -> int:

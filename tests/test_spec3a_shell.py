@@ -773,6 +773,10 @@ def test_v6app_puts_the_bar_above_the_pages(make_app):
     assert int(app.page_container.grid_info()["row"]) == 1
     assert int(app.grid_rowconfigure(1)["weight"]) == 1 and int(app.grid_rowconfigure(0)["weight"]) == 0
     assert int(app.grid_columnconfigure(0)["weight"]) == 1
+    # ...and the status bar under them (option B, 2026-10-04): its own height, every page.
+    foot = app.status_bar.grid_info()
+    assert int(foot["row"]) == 2 and foot["sticky"] == "ew"
+    assert int(app.grid_rowconfigure(2)["weight"]) == 0
 
 
 def test_v6app_has_all_pages(make_app):
