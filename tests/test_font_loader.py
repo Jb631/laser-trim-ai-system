@@ -194,3 +194,28 @@ def test_the_title_face_is_marcellus_where_tk_has_it_and_the_sans_bold_where_not
     fallback = ThemeManager()
     assert fallback.resolved_title is None
     assert fallback.title(22) is fallback.font(22, "bold")
+
+
+def test_the_app_registers_its_fonts_before_its_window_exists(monkeypatch):
+    """Tk on the Mac reads its font list once, when the first window is made: a font registered
+    after that is never seen, and every title fell back to the system font (2026-10-04). So the
+    app loads its fonts BEFORE CustomTkinter makes the window. No window opens here: the
+    window's constructor is replaced by one that records the moment and stops the app."""
+    import customtkinter as ctk
+    import pytest
+    from laser_trim_analyzer.gui.v6.app import V6App
+
+    order = []
+
+    class _Stop(Exception):
+        pass
+
+    def window_made(self, *args, **kwargs):
+        order.append("window")
+        raise _Stop
+
+    monkeypatch.setattr(font_loader, "load_bundled_fonts", lambda: order.append("fonts"))
+    monkeypatch.setattr(ctk.CTk, "__init__", window_made)
+    with pytest.raises(_Stop):
+        V6App(config=None)
+    assert order == ["fonts", "window"]

@@ -45,6 +45,12 @@ class V6App(ctk.CTk):
         # ingest worker. Workers never call Tk. See the function's docstring
         # for the measured cost of leaving it unguarded.
         guard_tk_font_finalizer()
+        # The bundled fonts BEFORE the window: Tk on the Mac reads its font list once, when the
+        # first window is made, so a font registered after it is never seen -- the titles fell
+        # back to the system font (measured 2026-10-04). Windows does not mind either order, and
+        # the theme below resolves its families from what Tk can see (font_loader explains).
+        from laser_trim_analyzer.gui.v6.font_loader import load_bundled_fonts
+        load_bundled_fonts()
         super().__init__()
         # Appearance set HERE (not at import) so importing this module never mutates
         # global CTk state for V5 or test runs.
@@ -55,10 +61,6 @@ class V6App(ctk.CTk):
         ctk_patches.apply()
 
         self.config = config
-        # Fonts first: the theme resolves its families from what Tk can see, so Plex must be
-        # loaded before the ThemeManager is built (font_loader explains the Windows detail).
-        from laser_trim_analyzer.gui.v6.font_loader import load_bundled_fonts
-        load_bundled_fonts()
         self.theme = ThemeManager()
         # Share ONE DatabaseManager with the rest of the app. Production: db is None ->
         # get_database() (same singleton Processor uses). Tests inject an isolated one.
