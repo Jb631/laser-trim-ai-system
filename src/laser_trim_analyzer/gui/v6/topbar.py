@@ -7,6 +7,12 @@ docs/superpowers/specs/2026-10-02-graphite-redesign-design.md, "Navigation" -- J
 fine"). Triage is retired; Findings and Dashboard left the bar for two quiet links at the foot of
 the Overview; the Process page is reached by the button.
 
+Finished on 2026-10-04 (option B, docs/superpowers/specs/2026-10-04-option-b-design.md): the name
+in the title face (Marcellus -- James: "6"); the three destinations GROUPED right beside it, each
+with its icon, where they used to spread across the bar (each was a 200-px frame, CustomTkinter's
+default width, held open by its underline); the blue button with the `process` icon. An icon takes
+its word's colour in every state -- bright when its page is on screen or under the pointer.
+
 The KEYS never changed. "model" is still "model" (it reads "Models" now), "home" is still "home"
 (it reads "Overview"). FOCUS rows, `set_model_route` and every deep link in the app navigate by
 key, and renaming one for a label would break click-through silently.
@@ -19,20 +25,25 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6.icons import icon
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 BAR_HEIGHT = 52
 UNDERLINE = 2           # the active destination's thin accent line
+ICON_SIZE = 18          # every icon on the bar, in CustomTkinter units
 
 
 class TopBar(ctk.CTkFrame):
     TITLE = "Laser Trim Analyzer"
     ITEMS: List[Tuple[str, str]] = [("home", "Overview"), ("model", "Models"), ("settings", "Settings")]
+    # Each destination's icon (a file in gui/v6/icons), by key.
+    ICONS: Dict[str, str] = {"home": "overview", "model": "models", "settings": "settings"}
     # Registered pages with no item on the bar, and how each is still one click away.
     OFF_BAR: Tuple[str, ...] = ("process",      # the blue button
                                 "findings",     # "All findings", at the foot of the Overview
                                 "dashboard")    # "Company trends", beside it
     PROCESS_LABEL = "Process new files"
+    PROCESS_ICON = "process"
 
     def __init__(self, master, on_select: Callable[[str], None], on_process: Callable[[], None],
                  theme: ThemeManager, **kwargs):
@@ -46,17 +57,22 @@ class TopBar(ctk.CTkFrame):
 
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(side="top", fill="both", expand=True, padx=t.SPACE_LG)
-        ctk.CTkLabel(row, text=self.TITLE, font=t.font(t.SIZE_HEADING, "bold"),
-                     text_color=t.TEXT_PRIMARY, anchor="w").pack(side="left", padx=(0, t.SPACE_XL))
+        # The size the bar James picked on 2 October had; only the face changed.
+        self._title = ctk.CTkLabel(row, text=self.TITLE, font=t.title(t.SIZE_HEADING),
+                                   text_color=t.TEXT_PRIMARY, anchor="w")
+        self._title.pack(side="left", padx=(0, t.SPACE_XL))
         for key, label in self.ITEMS:
-            item = _BarItem(row, key=key, label=label, theme=t, on_click=self._on_select)
+            item = _BarItem(row, key=key, label=label, icon_name=self.ICONS[key], theme=t,
+                            on_click=self._on_select)
             item.pack(side="left", fill="y", padx=(0, t.SPACE_LG))
             self._items[key] = item
         # The ONE blue button in the app (spec: "accent #3b82f6 (the single primary button)").
-        # Dark text: white on this blue measures 3.7:1, below the 4.5 minimum.
+        # Dark text: white on this blue measures 3.7:1, below the 4.5 minimum -- the icon is the
+        # text's colour too.
         self._process_button = ctk.CTkButton(
             row, text=self.PROCESS_LABEL, command=on_process, fg_color=t.ACCENT,
             hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
+            image=icon(self.PROCESS_ICON, t.TEXT_INVERSE, ICON_SIZE), compound="left",
             font=t.font(t.SIZE_BODY, "bold"), corner_radius=t.RADIUS_MD, height=32)
         self._process_button.pack(side="right")
         ctk.CTkFrame(self, height=1, fg_color=t.DIVIDER, corner_radius=0).pack(side="bottom", fill="x")
@@ -69,22 +85,31 @@ class TopBar(ctk.CTkFrame):
 
 
 class _BarItem(ctk.CTkFrame):
-    """One destination: its label, and under it the thin line that marks the page you are on."""
+    """One destination: its icon and its word, and under them the thin line that marks the page
+    you are on."""
 
-    def __init__(self, master, key: str, label: str, theme: ThemeManager,
+    def __init__(self, master, key: str, label: str, icon_name: str, theme: ThemeManager,
                  on_click: Callable[[str], None]):
         super().__init__(master, fg_color="transparent")
         t = self.theme = theme
         self.key = key
+        self._icon_name = icon_name
         self._cb = on_click
         self._active = False
-        self._label = ctk.CTkLabel(self, text=label, font=t.font(t.SIZE_BODY),
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(side="top", fill="both", expand=True, padx=t.SPACE_XS)
+        self._icon = ctk.CTkLabel(row, text="", width=ICON_SIZE,
+                                  image=icon(icon_name, t.TEXT_SECONDARY, ICON_SIZE))
+        self._icon.pack(side="left", padx=(0, t.SPACE_SM))
+        self._label = ctk.CTkLabel(row, text=label, font=t.font(t.SIZE_BODY),
                                    text_color=t.TEXT_SECONDARY)
-        self._label.pack(side="top", fill="both", expand=True)
-        self._underline = ctk.CTkFrame(self, height=UNDERLINE, corner_radius=0,
+        self._label.pack(side="left", fill="y")
+        # width=1: a CTkFrame with nothing in it asks for CustomTkinter's default 200 px, and this
+        # line set every item's width -- fill="x" stretches it under the icon and the word.
+        self._underline = ctk.CTkFrame(self, height=UNDERLINE, width=1, corner_radius=0,
                                        fg_color=t.SIDEBAR_BG)
         self._underline.pack(side="bottom", fill="x")
-        for w in (self, self._label):
+        for w in (self, row, self._icon, self._label):
             w.bind("<Button-1>", lambda _e: self._on_click())
             w.bind("<Enter>", lambda _e: self._hover(True))
             w.bind("<Leave>", lambda _e: self._hover(False))
@@ -96,15 +121,20 @@ class _BarItem(ctk.CTkFrame):
     def _on_click(self) -> None:
         self._cb(self.key)
 
+    def _tint(self, colour: str) -> None:
+        """The word and its icon, in one colour."""
+        self._label.configure(text_color=colour)
+        self._icon.configure(image=icon(self._icon_name, colour, ICON_SIZE))
+
     def _hover(self, on: bool) -> None:
         if not self._active:
             t = self.theme
-            self._label.configure(text_color=t.TEXT_PRIMARY if on else t.TEXT_SECONDARY)
+            self._tint(t.TEXT_PRIMARY if on else t.TEXT_SECONDARY)
 
     def set_active(self, active: bool) -> None:
-        """Bright text and the accent line -- the same font either way, so the items never shift
-        sideways when the page changes."""
+        """Bright text and icon and the accent line -- the same font either way, so the items never
+        shift sideways when the page changes."""
         self._active = active
         t = self.theme
-        self._label.configure(text_color=t.TEXT_PRIMARY if active else t.TEXT_SECONDARY)
+        self._tint(t.TEXT_PRIMARY if active else t.TEXT_SECONDARY)
         self._underline.configure(fg_color=t.SIDEBAR_STRIPE if active else t.SIDEBAR_BG)

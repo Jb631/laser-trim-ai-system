@@ -241,7 +241,10 @@ class V6App(ctk.CTk):
         )
         self.page_container.add_page(
             "dashboard",
-            DashboardPage(self.page_container, theme=self.theme, app=self, page_title="Dashboard"),
+            # The key stays "dashboard"; the page reads "Company trends" everywhere (option B,
+            # finish list 3) -- the Overview's link says so.
+            DashboardPage(self.page_container, theme=self.theme, app=self,
+                          page_title="Company trends"),
         )
         self.page_container.add_page(
             "model",

@@ -92,7 +92,9 @@ def test_the_overview_is_the_landing_page(make_app):
     assert app.page_container.current_page == "home"
     assert app.topbar._active_name == "home"
     assert _home(app).page_title == "Overview"
-    assert "Overview" in _labels(_home(app)._header)
+    # The top bar names it -- once (option B, 2026-10-04: "Overview" twice was finish item 2).
+    assert app.topbar._items["home"]._label.cget("text") == "Overview"
+    assert "Overview" not in _labels(_home(app))
 
 
 def test_every_route_is_still_reachable_and_triage_is_retired(make_app):
