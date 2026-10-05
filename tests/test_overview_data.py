@@ -1,12 +1,15 @@
-"""The Overview's one loader -- gui/v6/overview_data.load_overview (Graphite redesign, 2026-10-02).
+"""The Overview's one loader -- gui/v6/overview_data.load_overview (Graphite redesign, 2026-10-02;
+option B, 2026-10-04).
 
 James: "keep all 16 cards (fail rate up, or a signal moved), each with its reason". The cards are
 the union of the "Drifting now" fail-rate list (ml/spc.compute_focus_list) and the drift
 detector's flags (ml/manager.get_drifting_models); "Everything else" is every other active model;
 the inactive models are counted, never hidden. Pass % is the app's headline yield, with suspect
-files left out like the drift watch and the FOCUS list leave them out.
+files left out like the drift watch and the FOCUS list leave them out. Option B adds each model's
+lasers and the dollars lost at final test (the Company trends formula, over this page's own 90
+days), and the one header line that says them.
 
-Every database here is a tmp file; every model, serial and date is INVENTED.
+Every database here is a tmp file; every model, serial, date and PRICE is INVENTED.
 """
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -206,7 +209,8 @@ def test_the_windows_are_ninety_days_the_year_before_and_twelve_months(tmp_path)
     assert (row.trend, row.tone) == ("up 50 pts", "up")
     # Apr 2025 .. Mar 2026, oldest first: Dec 2025 holds -89 (10 FAIL) and -90 (10 PASS) days
     assert row.months == [None] * 8 + [pytest.approx(50.0), None, None, pytest.approx(100.0)]
-    assert od.window_caption(ov) == "Last 90 days · newest file 20 Mar 2026"
+    # ...and the header line names the clock: the newest counted file's day
+    assert od.header_line(ov).endswith(" · newest file 20 Mar 2026")
 
 
 def test_every_models_counts_come_from_one_grouped_query(tmp_path):
@@ -400,7 +404,7 @@ def test_an_empty_database_has_no_cards_no_rows_and_says_so(tmp_path):
     ov = od.load_overview(_db(tmp_path))
     assert ov.failed == {} and ov.cards == [] and ov.others == [] and ov.anchor is None
     assert od.card_count(ov) == 0
-    assert od.window_caption(ov) == "No trim files on record yet"
+    assert od.header_line(ov) == "No models need a look · no trim files on record yet"
 
 
 def test_a_failed_final_test_read_is_named_on_its_own_and_spoils_nothing_else(tmp_path, monkeypatch):
@@ -574,3 +578,193 @@ def test_a_chart_that_cannot_load_is_named_and_the_rest_still_loads(tmp_path, mo
     ov = od.load_overview(db)
     assert ov.trend is None and ov.failed == {od.PART_TREND: "RuntimeError: invented crash"}
     assert [r.model for r in ov.others] == ["M1"]
+
+
+# ---- option B (2026-10-04): the dollars lost at final test, each model's lasers, the header line --
+# Every price and cost ratio below is INVENTED: real prices are customer data (CLAUDE.md).
+
+PRICES = {"PRICED": 10.0, "CHEAP": 2.5, "NOFAILS": 7.0, "ZERO": 0.0}
+
+
+def _trims_on(db, model, when, system, *, passes=0, fails=0, errors=0, suspect_passes=0):
+    """`model`'s trim files on one laser (`system`, the code's letter)."""
+    from laser_trim_analyzer.database.models import AnalysisResult, StatusType, SystemType
+    with db.session() as s:
+        for status, count, quality in (("PASS", passes, "good"), ("FAIL", fails, "good"),
+                                       ("ERROR", errors, "good"), ("PASS", suspect_passes, "suspect")):
+            for _ in range(count):
+                n = next(_serial)
+                s.add(AnalysisResult(model=model, serial=f"{model}-{n}", system=SystemType[system],
+                                     filename=f"{model}_{n}.xls", file_date=when,
+                                     overall_status=StatusType[status], data_quality=quality))
+
+
+def _ft(db, model, when, status, count=1):
+    from laser_trim_analyzer.database.models import FinalTestResult, StatusType
+    with db.session() as s:
+        for _ in range(count):
+            n = next(_serial)
+            s.add(FinalTestResult(filename=f"FT_{model}_{n}.xls", model=model,
+                                  serial=f"{model}-ft-{n}", file_date=when,
+                                  overall_status=StatusType[status]))
+
+
+def _by_model(ov):
+    return {x.model: x for x in list(ov.cards) + list(ov.others)}
+
+
+def test_the_money_is_final_test_fails_in_the_ninety_days_times_price_times_ratio(tmp_path):
+    """The Company trends formula -- FT fails x unit price x cost ratio -- over the Overview's OWN
+    window: the 90 calendar days ending on the newest counted trim file's day."""
+    db = _db(tmp_path)
+    for m in ("PRICED", "CHEAP"):
+        _trims(db, m, ANCHOR, passes=5)
+    _ft(db, "PRICED", ANCHOR - timedelta(days=2), "FAIL", 3)               # counted
+    _ft(db, "PRICED", (ANCHOR - timedelta(days=89)).replace(hour=0, minute=1), "FAIL", 1)  # first day
+    _ft(db, "PRICED", ANCHOR - timedelta(days=90), "FAIL", 2)              # the day before: out
+    _ft(db, "PRICED", ANCHOR + timedelta(hours=10), "FAIL", 4)             # after the anchor's day
+    _ft(db, "PRICED", ANCHOR, "PASS", 6)                                   # passes cost nothing
+    _ft(db, "PRICED", ANCHOR, "WARNING", 2)                                # a watch, not a fail
+    _ft(db, "CHEAP", ANCHOR - timedelta(days=10), "FAIL", 4)
+    ov = od.load_overview(db, prices=PRICES, cost_ratio=0.4)
+    got = _by_model(ov)
+    assert (got["PRICED"].ft_fails, got["PRICED"].money) == (4, pytest.approx(4 * 10.0 * 0.4))
+    assert (got["CHEAP"].ft_fails, got["CHEAP"].money) == (4, pytest.approx(4 * 2.5 * 0.4))
+    assert ov.money_total == pytest.approx(16.0 + 4.0) and ov.unpriced == 0
+    assert ov.failed == {}
+
+
+def test_a_model_with_no_price_has_no_money_and_is_counted_only_when_it_failed(tmp_path):
+    db = _db(tmp_path)
+    for m in ("NOPRICE", "NOPRICECLEAN", "NOFAILS", "ZERO"):
+        _trims(db, m, ANCHOR, passes=5)
+    _ft(db, "NOPRICE", ANCHOR, "FAIL", 2)
+    _ft(db, "NOPRICECLEAN", ANCHOR, "PASS", 2)
+    _ft(db, "ZERO", ANCHOR, "FAIL", 3)                # a loaded price of 0 is a price, not "none"
+    ov = od.load_overview(db, prices=PRICES, cost_ratio=0.5)
+    got = _by_model(ov)
+    assert (got["NOPRICE"].money, got["NOPRICE"].ft_fails) == (None, 2)
+    assert (got["NOPRICECLEAN"].money, got["NOPRICECLEAN"].ft_fails) == (None, 0)
+    assert got["NOFAILS"].money == 0.0 and got["ZERO"].money == 0.0
+    assert ov.money_total == 0.0
+    assert ov.unpriced == 1                           # NOPRICE: it failed final test, no price
+
+
+def test_the_cost_ratio_defaults_to_half_and_prices_may_be_written_any_way(tmp_path):
+    db = _db(tmp_path)
+    _trims(db, "PRICED", ANCHOR, passes=5)
+    _trims(db, "9090", ANCHOR, passes=5)
+    _ft(db, "PRICED", ANCHOR, "FAIL", 2)
+    _ft(db, "9090", ANCHOR, "FAIL", 1)
+    ov = od.load_overview(db, prices={"PRICED": "10", 9090: 4.0, "BAD": "not a price"})
+    got = _by_model(ov)
+    assert got["PRICED"].money == pytest.approx(2 * 10.0 * 0.5)       # YAML may hand a string
+    assert got["9090"].money == pytest.approx(1 * 4.0 * 0.5)          # ...or a number for a key
+    assert od.load_overview(db).money_total == 0.0 and od.load_overview(db).unpriced == 2
+
+
+def test_a_final_test_card_is_charged_for_its_own_final_test_fails(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _trims(db, "OTHER", ANCHOR, passes=5)
+    _final_tests(db, "FTONLY", ANCHOR - timedelta(days=3), passes=8, fails=2)
+    _fake_sources(monkeypatch, flags=[_flag("FTONLY", DriftTier.DRIFT, 1.0, "ft_fail_fraction")],
+                  statuses={"FTONLY": _status("FTONLY", "ft_fail_fraction", 0.02, 0.2)})
+    (card,) = od.load_overview(db, prices={"FTONLY": 3.0}, cost_ratio=1.0).cards
+    assert card.final_test is True and (card.ft_fails, card.money) == (2, pytest.approx(6.0))
+
+
+def test_final_tests_past_the_window_or_undated_are_not_counted(tmp_path):
+    db = _db(tmp_path)
+    _trims(db, "PRICED", datetime.now() - timedelta(days=1), passes=5)
+    _ft(db, "PRICED", datetime.now() - timedelta(days=2), "FAIL", 1)
+    _ft(db, "PRICED", datetime.now() + timedelta(days=30), "FAIL", 9)      # more than a day ahead
+    _ft(db, "PRICED", None, "FAIL", 5)                                    # no date at all
+    (row,) = od.load_overview(db, prices=PRICES).others
+    assert row.ft_fails == 1
+
+
+def test_a_failed_money_read_is_named_and_never_reads_as_zero(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _trims(db, "PRICED", ANCHOR, passes=5)
+    _ft(db, "PRICED", ANCHOR, "FAIL", 2)
+    monkeypatch.setattr(od, "_ft_fails_by_model", _boom)
+    ov = od.load_overview(db, prices=PRICES)
+    assert ov.failed == {od.PART_MONEY: "RuntimeError: invented crash"}
+    assert ov.money_total is None
+    (row,) = ov.others
+    assert row.money is None and row.ft_fails is None and row.units == 5    # the rest still loads
+    assert od.money_text(ov, row) == "could not be worked out"
+
+
+def test_without_the_pass_rates_the_money_is_unknown_and_only_the_rates_are_named(tmp_path,
+                                                                                monkeypatch):
+    """The dollars are counted over the Overview's own window, which the pass rates anchor."""
+    db = _db(tmp_path)
+    _trims(db, "PRICED", ANCHOR, passes=5)
+    monkeypatch.setattr(od, "_rates_by_day", _boom)
+    ov = od.load_overview(db, prices=PRICES)
+    assert set(ov.failed) == {od.PART_RATES} and ov.money_total is None
+    assert "could not be worked out" in od.header_line(ov)
+
+
+def test_each_models_lasers_are_the_ones_with_graded_trims_in_the_window_in_laser_order(tmp_path):
+    db = _db(tmp_path)
+    _trims_on(db, "TWO", ANCHOR, "C", passes=2)                            # laser 3
+    _trims_on(db, "TWO", ANCHOR - timedelta(days=5), "A", fails=1)         # laser 2
+    _trims_on(db, "TWO", ANCHOR - timedelta(days=200), "B", passes=4)      # laser 1, before the window
+    _trims_on(db, "TWO", ANCHOR, "B", errors=3, suspect_passes=2)          # laser 1: none counted
+    _trims_on(db, "ONE", ANCHOR, "A", passes=1)
+    _trims_on(db, "ONE", ANCHOR, "B", passes=1)
+    got = _by_model(od.load_overview(db))
+    assert got["TWO"].lasers == ["A", "C"]                  # laser 2, laser 3 -- never the code's ABC
+    assert got["ONE"].lasers == ["B", "A"]                  # laser 1 first
+    assert got["ONE"].units == 2                            # one day, two lasers: both count
+    assert got["TWO"].newest == ANCHOR.date()
+
+
+def test_a_final_test_card_has_no_lasers_and_an_unknown_read_has_none_known(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _trims(db, "OTHER", ANCHOR, passes=5)
+    _final_tests(db, "FTONLY", ANCHOR - timedelta(days=3), passes=8, fails=2)
+    _fake_sources(monkeypatch, flags=[_flag("FTONLY", DriftTier.DRIFT, 1.0, "ft_fail_fraction")],
+                  statuses={"FTONLY": _status("FTONLY", "ft_fail_fraction", 0.02, 0.2)})
+    (card,) = od.load_overview(db).cards
+    assert card.lasers == [] and card.newest == (ANCHOR - timedelta(days=3)).date()
+    monkeypatch.setattr(od, "_rates_by_day", _boom)
+    (card,) = od.load_overview(db).cards
+    assert card.lasers is None and card.newest is None
+
+
+@pytest.mark.parametrize("kw,text", [
+    (dict(cards=13, money_total=1234.4),
+     "13 models need a look · $1,234 lost at final test in the last 90 days · newest file 20 Mar 2026"),
+    (dict(cards=1, money_total=0.0, unpriced=3),
+     "1 model needs a look · $0 lost at final test in the last 90 days · 3 without a price · "
+     "newest file 20 Mar 2026"),
+    (dict(cards=2, money_total=0.4),
+     "2 models need a look · <$1 lost at final test in the last 90 days · newest file 20 Mar 2026"),
+    (dict(cards=2, money_total=None, failed={od.PART_MONEY: "RuntimeError: x"}),
+     "2 models need a look · dollars lost at final test could not be worked out · newest file 20 Mar 2026"),
+    (dict(cards=2, money_total=50.0, failed={od.PART_DRIFT: "RuntimeError: x"}),
+     "Models that need a look · $50 lost at final test in the last 90 days · newest file 20 Mar 2026"),
+    (dict(cards=0, money_total=None, anchor=None),
+     "No models need a look · no trim files on record yet"),
+    (dict(cards=2, money_total=None, anchor=None, failed={od.PART_RATES: "RuntimeError: x"}),
+     "2 models need a look · dollars lost at final test could not be worked out"),
+])
+def test_the_header_line(kw, text):
+    kw = dict(kw)
+    cards = [od.Card(model=f"M{i}", reason="") for i in range(kw.pop("cards"))]
+    kw.setdefault("anchor", ANCHOR)
+    assert od.header_line(od.Overview(cards=cards, **kw)) == text
+
+
+def test_the_money_words_for_one_model():
+    ov = od.Overview(anchor=ANCHOR, money_total=10.0)
+    assert od.money_text(ov, od.Card(model="A", reason="", money=1234.5, ft_fails=12)) == \
+        "$1,234 · 12 failed final test"
+    assert od.money_text(ov, od.Card(model="A", reason="", money=None, ft_fails=1)) == \
+        "no price · 1 failed final test"
+    assert od.money_text(ov, od.Card(model="A", reason="", money=0.0, ft_fails=0)) == "$0"
+    assert od.money_text(ov, od.Card(model="A", reason="", money=None, ft_fails=0)) == "no price"
+

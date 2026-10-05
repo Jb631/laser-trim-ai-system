@@ -1,20 +1,26 @@
-"""The Overview -- the landing page, key "home" (Graphite redesign, 2026-10-02).
+"""The Overview -- the landing page, key "home" (Graphite redesign, 2026-10-02; option B, 2026-10-04).
 
-Spec: docs/superpowers/specs/2026-10-02-graphite-redesign-design.md. James: "there is so much
-going on its hard to see what is what". The numbers come from ONE loader,
-gui/v6/overview_data.load_overview (tests/test_overview_data.py pins them); these tests pin what
-the page DRAWS from what it is handed:
+Specs: docs/superpowers/specs/2026-10-02-graphite-redesign-design.md and
+2026-10-04-option-b-design.md. James: "there is so much going on its hard to see what is what";
+then, with Task Manager TMOG open, "i like B" -- a list of models with the selected model's detail
+beside it. The numbers come from ONE loader, gui/v6/overview_data.load_overview
+(tests/test_overview_data.py pins them); these tests pin what the page DRAWS from what it is
+handed:
 
   * the landing page, titled Overview; every other route still reachable; Triage retired;
-  * "N models need a look" and its window caption -- never a count it does not have;
-  * the cards (model, units, big pass %, "was", twelve bars, the reason in the fail colour, the
-    hand-trim tag), a click opening the model;
-  * "Everything else" as plain rows with their trend words;
-  * the inactive models on one collapsed line that expands in place;
-  * the two quiet links, the quiet notices on top, and a banner naming every part that failed;
+  * ONE header line -- "13 models need a look · $X lost at final test in the last 90 days · newest
+    file 20 Mar 2026" -- never a count or a sum it does not have;
+  * the yield-by-laser chart as a compact strip, always visible, above the list;
+  * the LIST: "Needs a look (N)" then "Everything else (N)", each row the model, its units, its
+    pass %, a twelve-month line in its laser's colour and the hand-trim tag; the selected row
+    ELEVATED with a border; "Other models on file" and "Inactive models" folded at its end;
+  * the DETAIL of the selected row (the first card on load, a click selects): the model in the
+    title face, its status word, a pass meter with "was", why it is here, twelve months, the facts,
+    and "Open full page ›";
+  * the quiet links, the quiet notices on top, and a banner naming every part that failed;
   * no blue button of its own (the top bar holds the one).
 
-Data here is INVENTED.
+Data and prices here are INVENTED.
 """
 from datetime import datetime, timedelta
 
@@ -55,11 +61,17 @@ def _card(model="7000", **kw):
     kw.setdefault("pass_pct", 71.6)
     kw.setdefault("was_pct", 84.0)
     kw.setdefault("months", list(MONTHS))
+    kw.setdefault("lasers", ["B", "A"])
+    kw.setdefault("ft_fails", 0)
+    kw.setdefault("newest", ANCHOR.date())
     return od.Card(model=model, **kw)
 
 
 def _row(model="7100", units=120, pass_pct=96.0, was_pct=95.0, **kw):
     trend, tone = od.trend_words(pass_pct, was_pct)
+    kw.setdefault("lasers", ["A"])
+    kw.setdefault("ft_fails", 0)
+    kw.setdefault("newest", ANCHOR.date())
     return od.Row(model=model, units=units, pass_pct=pass_pct, was_pct=was_pct, trend=trend,
                   tone=tone, months=list(MONTHS), **kw)
 
@@ -67,7 +79,32 @@ def _row(model="7100", units=120, pass_pct=96.0, was_pct=95.0, **kw):
 def _ov(cards=(), others=(), **kw):
     kw.setdefault("anchor", ANCHOR)
     kw.setdefault("inactive", {})
+    kw.setdefault("money_total", 0.0)
     return od.Overview(cards=list(cards), others=list(others), **kw)
+
+
+def _mapped(app, size="1280x720"):
+    """The app laid out at `size`, off-screen and transparent, so clicks and geometry are real."""
+    try:
+        app.attributes("-alpha", 0.0)
+    except Exception:
+        pass
+    app.overrideredirect(True)
+    app.geometry(f"{size}+20000+20000")
+    app.deiconify()
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
+
+
+def _click(app, widget, times=1):
+    """A real click -- or `times` in a row: Tk refuses to generate a <Double-...> event, but two
+    presses at one spot ARE a double click -- on `widget` (its own label for a CTk widget)."""
+    target = getattr(widget, "_label", None) or getattr(widget, "_canvas", None) or widget
+    for _ in range(times):
+        target.event_generate("<ButtonPress-1>", x=2, y=2)
+        target.event_generate("<ButtonRelease-1>", x=2, y=2)
+    app.update()
 
 
 def _show(app, monkeypatch, ov):
@@ -106,129 +143,267 @@ def test_every_route_is_still_reachable_and_triage_is_retired(make_app):
 
 def test_before_the_first_load_it_says_loading_and_no_count(make_app):
     page = _home(make_app())                   # the start-up load is still on its worker
-    assert page._need_heading.cget("text") == "Models that need a look"
-    assert page._need_caption.cget("text") == "Loading…"
-    assert page._card_widgets == [] and page._inactive_toggle.winfo_manager() == ""
-    # ...and the list under the cards says so too, never a bare heading over nothing.
-    assert page._others_note.cget("text") == "Loading…"
-    assert page._others_note.winfo_manager() == "pack"
+    assert page._headline.cget("text") == "Loading…"
+    assert not any(ch.isdigit() for ch in page._need_heading.cget("text"))
+    assert page._need_heading.cget("text") == "Needs a look"
+    assert page._card_rows == [] and page._other_rows == []
+    assert page._inactive_toggle.winfo_manager() == ""
+    # ...and the list says so under each heading, never a bare heading over nothing.
+    for note in (page._cards_note, page._others_note):
+        assert note.cget("text") == "Loading…" and note.winfo_manager() == "pack"
+    assert page._detail.note.cget("text") == "Loading…"
+    assert page._detail.head.winfo_manager() == ""            # no model drawn before a load
     # ...and the chart of each laser: "Loading…", never "No trim data" before it has looked.
     assert page._trend_note.cget("text") == "Loading…" and page._trend_note.winfo_manager() == "pack"
     assert page._trend_chart.winfo_manager() == ""
 
 
-# ---- "N models need a look" and the cards ------------------------------------------------------
+# ---- the header line ------------------------------------------------------------------------------
 
-def test_the_heading_counts_the_cards_and_the_caption_names_the_window(make_app, monkeypatch):
-    page = _show(make_app(), monkeypatch, _ov(cards=[_card("A"), _card("B"), _card("C")]))
-    assert page._need_heading.cget("text") == "3 models need a look"
-    assert page._need_caption.cget("text") == "Last 90 days · newest file 20 Mar 2026"
-    assert [w.card.model for w in page._card_widgets] == ["A", "B", "C"]
-
-
-def test_a_card_draws_its_numbers_bars_and_reason(make_app, monkeypatch):
-    page = _show(make_app(), monkeypatch, _ov(cards=[_card("7000")]))
+def test_the_header_line_counts_the_cards_the_dollars_and_names_the_window(make_app, monkeypatch):
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card("A"), _card("B"), _card("C")],
+                                              money_total=12345.4, unpriced=2))
+    assert page._headline.cget("text") == (
+        "3 models need a look · $12,345 lost at final test in the last 90 days · 2 without a "
+        "price · newest file 20 Mar 2026")
     t = page.theme
-    (card,) = page._card_widgets
-    texts = _labels(card)
-    assert texts[:2] == ["7000", "412 units"]
-    assert card._pass.cget("text") == "72%" and card._was.cget("text") == "was 84%"
-    assert card._pass.cget("font").cget("family") == t.resolved_mono_medium or \
-        card._pass.cget("font").cget("family") == t.resolved_mono          # the mono font
-    assert card._reason.cget("text") == "Fail rate 4% → 12%"
-    assert card._reason.cget("text_color") == t.FAIL_FG
-    assert (card.cget("fg_color"), card.cget("border_color")) == (t.CARD, t.BORDER)
-    bars = card._bars
-    fills = [bars.itemcget(i, "fill") for i in bars.find_withtag("bar")]
-    assert fills == [t.CHART_HISTORY, t.CHART_HISTORY, t.CHART_HIGHLIGHT]   # Dec, Feb, newest Mar
+    assert page._headline.cget("text_color") == t.TEXT_PRIMARY
+    order = page._body.pack_slaves()
+    assert order.index(page._headline) < order.index(page._trend_box) < order.index(page._split)
 
 
-def test_a_final_test_card_and_a_hand_trim_card_say_so(make_app, monkeypatch):
-    page = _show(make_app(), monkeypatch, _ov(cards=[
-        _card("8506", final_test=True, units=25, was_pct=None),
-        _card("8232-1", hand_trim=True)]))
-    ft, hand = page._card_widgets
-    assert "25 units · final test" in _labels(ft) and ft._was.cget("text") == "new"
-    assert "hand trim" in _labels(hand) and "hand trim" not in _labels(ft)
-
-
-def test_a_click_anywhere_on_a_card_opens_its_model(make_app, monkeypatch):
-    app = make_app()
-    page = _show(app, monkeypatch, _ov(cards=[_card("7000", metric="linearity_fail_fraction"),
-                                              _card("7001", metric="untrimmed_resistance")]))
-    calls = _routes(app, monkeypatch)
-    try:
-        app.attributes("-alpha", 0.0)
-    except Exception:
-        pass
-    app.geometry("1280x720+20000+20000")
-    app.deiconify()
-    app.update_idletasks()
-    app.update()
-    try:
-        page._card_widgets[1]._reason._label.event_generate("<Button-1>", x=2, y=2)
-        page._card_widgets[0]._bars.event_generate("<Button-1>", x=2, y=2)
-        app.update()
-    finally:
-        app.withdraw()
-    # On Summary, charting the signal the card's reason names (final review, 2026-10-02: a
-    # fail-rate card opened on whatever the previous model charted, or on its History tab).
-    assert calls == [
-        ("route", ("7001",), {"focus_metric": "untrimmed_resistance", "tab": "summary"}),
-        ("show", "model"),
-        ("route", ("7000",), {"focus_metric": "linearity_fail_fraction", "tab": "summary"}),
-        ("show", "model")]
-
-
-@pytest.mark.parametrize("size,columns", [((1400, 900), 4), ((1280, 720), 4), ((960, 640), 3)])
-def test_the_cards_sit_four_across_from_about_1280_and_fewer_below(make_app, monkeypatch, size,
-                                                                  columns):
-    app = make_app()
-    page = _show(app, monkeypatch, _ov(cards=[_card(f"M{i}") for i in range(9)]))
-    try:
-        app.attributes("-alpha", 0.0)
-    except Exception:
-        pass
-    app.overrideredirect(True)
-    app.geometry(f"{size[0]}x{size[1]}+20000+20000")
-    app.deiconify()
-    for _ in range(3):
-        app.update_idletasks()
-        app.update()
-    try:
-        cols = {int(w.grid_info()["column"]) for w in page._card_widgets}
-        assert cols == set(range(columns)), (size, cols)
-    finally:
-        app.withdraw()
-
-
-def test_a_failed_card_source_is_named_and_the_heading_has_no_count(make_app, monkeypatch):
+def test_a_header_line_with_a_failed_card_source_or_money_read_says_so(make_app, monkeypatch):
     page = _show(make_app(), monkeypatch, _ov(
-        cards=[_card("D1")], failed={od.PART_FOCUS: "RuntimeError: invented focus crash"}))
+        cards=[_card("D1")], money_total=None,
+        failed={od.PART_FOCUS: "RuntimeError: invented focus crash",
+                od.PART_MONEY: "RuntimeError: invented money crash"}))
+    said = page._headline.cget("text")
+    assert said.startswith("Models that need a look · dollars lost at final test could not be")
+    assert "$" not in said
+    banner = page._load_banner.cget("text")
+    assert "the dollars lost at final test (RuntimeError: invented money crash)" in banner
+
+
+# ---- the list ----------------------------------------------------------------------------------
+
+def test_the_list_is_needs_a_look_then_everything_else_then_the_folded_lines(make_app, monkeypatch):
+    page = _show(make_app(), monkeypatch, _ov(
+        cards=[_card("C1"), _card("C2")], others=[_row("R1"), _row("R2"), _row("R3")],
+        quiet={"Q1": datetime(2025, 6, 2)}, inactive={"OLD": datetime(2016, 3, 9)}))
+    assert page._need_heading.cget("text") == "Needs a look (2)"
+    assert page._others_heading.cget("text") == "Everything else (3)"
+    assert [r.model for r in page._card_rows] == ["C1", "C2"]
+    assert [r.model for r in page._other_rows] == ["R1", "R2", "R3"]
+    order = page._list.pack_slaves()
+    assert (order.index(page._need_heading) < order.index(page._cards_frame)
+            < order.index(page._others_heading) < order.index(page._others_frame)
+            < order.index(page._quiet_toggle) < order.index(page._inactive_toggle))
+    # The list sits in the left pane, the detail in the right, under the chart strip.
+    assert page._list.grid_info()["column"] == 0 and page._detail.grid_info()["column"] == 1
+
+
+def test_a_row_is_its_model_units_pass_and_a_mini_line_in_its_lasers_colour(make_app, monkeypatch):
+    page = _show(make_app(), monkeypatch, _ov(
+        cards=[_card("7000", lasers=["A", "C"]),                       # laser 2 first: teal
+               _card("8506", final_test=True, units=25, lasers=[]),     # final test only: neutral
+               _card("8232-1", hand_trim=True, lasers=["B"])],
+        others=[_row("7100", lasers=["C"])]))
     t = page.theme
-    assert page._need_heading.cget("text") == "Models that need a look"
+    first, ft, hand = page._card_rows
+    assert _labels(first) == ["7000", "412 units", "72%"]
+    assert first._pct.cget("font").cget("family") in (t.resolved_mono, t.resolved_mono_medium)
+    assert first._spark.color == t.series_color("A") == t.SERIES_A
+    assert first._spark.values == MONTHS
+    assert "25 units · final test" in _labels(ft) and ft._spark.color == t.CHART_REFERENCE
+    assert hand._spark.color == t.SERIES_B and "hand trim" in _labels(hand)
+    assert "hand trim" not in _labels(first)
+    (row,) = page._other_rows
+    assert _labels(row) == ["7100", "120 units", "96%"] and row._spark.color == t.SERIES_C
+
+
+def test_the_first_card_is_selected_on_load_elevated_with_a_border(make_app, monkeypatch):
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card("A"), _card("B")], others=[_row("R")]))
+    t = page.theme
+    assert page._selected == "A" and page._detail.title.cget("text") == "A"
+    a, b = page._card_rows
+    assert (a.cget("fg_color"), a.cget("border_color")) == (t.ELEVATED, t.BORDER)
+    assert b.cget("fg_color") != t.ELEVATED and b.cget("border_color") != t.BORDER
+    assert a._spark.cget("bg") == t.ELEVATED and b._spark.cget("bg") == b.cget("fg_color")
+
+
+def test_with_no_card_the_first_row_is_selected_and_a_reload_keeps_the_selection(make_app,
+                                                                               monkeypatch):
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(others=[_row("R1"), _row("R2")]))
+    assert page._selected == "R1"
+    page._select("R2")
+    page = _show(app, monkeypatch, _ov(cards=[_card("NEW")], others=[_row("R1"), _row("R2")]))
+    assert page._selected == "R2"                       # still there: still selected
+    page = _show(app, monkeypatch, _ov(cards=[_card("NEW")], others=[_row("R1")]))
+    assert page._selected == "NEW"                      # gone: the first card
+
+
+def test_a_click_selects_a_row_and_the_detail_follows_without_leaving_the_page(make_app,
+                                                                             monkeypatch):
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(cards=[_card("7000"), _card("7001")], others=[_row("7100")]))
+    calls = _routes(app, monkeypatch)
+    _mapped(app)
+    try:
+        _click(app, page._card_rows[1]._pct)
+        assert page._selected == "7001" and page._detail.title.cget("text") == "7001"
+        _click(app, page._other_rows[0]._spark)
+        assert page._selected == "7100" and page._detail.title.cget("text") == "7100"
+    finally:
+        app.withdraw()
+    t = page.theme
+    assert page._other_rows[0].cget("fg_color") == t.ELEVATED
+    assert page._card_rows[1].cget("fg_color") != t.ELEVATED
+    assert calls == []                                  # a click selects; it opens nothing
+
+
+def test_a_double_click_opens_the_full_page(make_app, monkeypatch):
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(cards=[_card("7000", metric="untrimmed_resistance")]))
+    calls = _routes(app, monkeypatch)
+    _mapped(app)
+    try:
+        _click(app, page._card_rows[0]._pct, times=2)
+    finally:
+        app.withdraw()
+    assert calls == [("route", ("7000",), {"focus_metric": "untrimmed_resistance", "tab": "summary"}),
+                     ("show", "model")]
+
+
+# ---- the detail ----------------------------------------------------------------------------------
+
+def test_the_detail_of_a_card(make_app, monkeypatch):
+    from laser_trim_analyzer.ml.drift_types import metric_label
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card(
+        "7000", lasers=["B", "A"], metric="untrimmed_resistance", money=1234.5, ft_fails=12,
+        reason="Untrimmed resistance 4,693 → 5,897", newest=datetime(2026, 3, 18).date(),
+        hand_trim=True)]))
+    t = page.theme
+    d = page._detail
+    assert d.title.cget("text") == "7000" and d.title.cget("font") is t.title(t.SIZE_TITLE)
+    assert d.status.cget("text") == "Drifting"
+    assert (d.status.cget("text_color"), d.status.cget("fg_color")) == (t.CHECK, t.CHECK_TINT)
+    assert d.hand.winfo_manager() == "pack" and d.hand.cget("text") == "hand trim"
+    assert d.pct.cget("text") == "72%" and d.was.cget("text") == "was 84%"
+    assert d.pct.cget("font").cget("family") in (t.resolved_mono, t.resolved_mono_medium)
+    assert d.meter.pct == 71.6 and len(d.meter.find_withtag("on")) == 14
+    assert d.reason.cget("text") == "Untrimmed resistance 4,693 → 5,897"
+    assert d.reason.cget("text_color") == t.FAIL_FG
+    assert d.chart.values == MONTHS and d.chart.color == t.SERIES_B
+    assert d.chart.labels == ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+                              "Jan", "Feb", "Mar"]
+    assert d.chart_caption.cget("text") == "Pass % by month, Apr 2025 – Mar 2026"
+    assert d.shown_facts() == {
+        "Units, last 90 days": "412",
+        "Lasers": "Laser 1 (LTS), Laser 2 (DLTS)",
+        "Signal": metric_label("untrimmed_resistance"),
+        "$ lost at final test, 90 days": "$1,234 · 12 failed final test",
+        "Newest file": "18 Mar 2026"}
+    assert d.open_link.cget("text") == "Open full page ›"
+
+
+def test_the_detail_of_an_everything_else_row_is_steady_with_its_trend_and_no_signal(
+        make_app, monkeypatch):
+    rows = [_row("UP", pass_pct=90.0, was_pct=80.0), _row("DOWN", pass_pct=60.0, was_pct=70.0),
+            _row("SAME", pass_pct=95.0, was_pct=93.0), _row("NEW", pass_pct=40.0, was_pct=None)]
+    page = _show(make_app(), monkeypatch, _ov(others=rows))
+    t = page.theme
+    said = {}
+    for r in rows:
+        page._select(r.model)
+        d = page._detail
+        assert d.status.cget("text") == "Steady" and d.hand.winfo_manager() == ""
+        assert "Signal" not in d.shown_facts()
+        said[r.model] = (d.reason.cget("text"), d.reason.cget("text_color"))
+    assert said == {
+        "UP": ("up 10 pts on the year before", t.PASS_FG),
+        "DOWN": ("down 10 pts on the year before", t.FAIL_FG),
+        "SAME": ("steady on the year before", t.TEXT_SECONDARY),
+        "NEW": ("new — nothing graded in the year before", t.TEXT_SECONDARY)}
+
+
+def test_a_final_test_card_and_an_unpriced_model_say_so_in_the_detail(make_app, monkeypatch):
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card(
+        "8506", final_test=True, units=25, lasers=[], money=None, ft_fails=3, was_pct=None)],
+        unpriced=1))
+    facts = page._detail.shown_facts()
+    assert facts["Units, last 90 days"] == "25 · final test"
+    assert facts["Lasers"] == "none in the last 90 days"
+    assert facts["$ lost at final test, 90 days"] == "no price · 3 failed final test"
+    assert page._detail.was.cget("text") == "new"
+    assert page._detail.chart_caption.cget("text").startswith("Final-test pass % by month")
+    assert page._detail.chart.color == page.theme.CHART_REFERENCE
+
+
+def test_open_full_page_routes_a_card_with_its_signal_and_a_row_to_its_summary(make_app,
+                                                                             monkeypatch):
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(cards=[_card("7000", metric="linearity_fail_fraction")],
+                                       others=[_row("7100")]))
+    calls = _routes(app, monkeypatch)
+    page._detail.open_link.invoke()
+    page._select("7100")
+    page._detail.open_link.invoke()
+    # On Summary, charting the signal the card's reason names (final review, 2026-10-02).
+    assert calls == [
+        ("route", ("7000",), {"focus_metric": "linearity_fail_fraction", "tab": "summary"}),
+        ("show", "model"),
+        ("route", ("7100",), {"tab": "summary"}), ("show", "model")]
+
+
+def test_with_nothing_to_show_the_detail_says_why(make_app, monkeypatch):
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(anchor=None, money_total=None))
+    assert page._detail.note.cget("text") == "No trim files on record yet."
+    assert page._detail.head.winfo_manager() == ""
+    page = _show(app, monkeypatch, _ov(anchor=None, money_total=None,
+                                       failed={od.PART_RATES: "RuntimeError: x",
+                                               od.PART_FOCUS: "RuntimeError: y"}))
+    assert page._detail.note.cget("text") == "Could not be worked out — the notice above says what failed."
+
+
+# ---- failures, named ---------------------------------------------------------------------------
+
+def test_a_failed_card_source_is_named_and_nothing_claims_a_count_or_a_steady_model(make_app,
+                                                                                  monkeypatch):
+    page = _show(make_app(), monkeypatch, _ov(
+        cards=[_card("D1")], others=[_row("R1")],
+        failed={od.PART_FOCUS: "RuntimeError: invented focus crash"}))
+    t = page.theme
+    assert page._headline.cget("text").startswith("Models that need a look · ")
+    assert page._need_heading.cget("text") == "Needs a look"
     assert page._load_banner.winfo_manager() == "pack"
     said = page._load_banner.cget("text")
     assert "the drifting-now list (RuntimeError: invented focus crash)" in said
     assert "not an all-clear" in said
     assert (page._load_banner.cget("fg_color"), page._load_banner.cget("text_color")) == (
         t.CHECK_TINT, t.CHECK)
-    assert len(page._card_widgets) == 1                    # what did load still shows
+    assert len(page._card_rows) == 1                       # what did load still shows
+    page._select("R1")                     # with a card source down, "Steady" would be a guess
+    assert page._detail.status.winfo_manager() == ""
 
 
-def test_with_both_card_sources_failed_the_cards_place_says_so(make_app, monkeypatch):
+def test_with_both_card_sources_failed_the_list_says_so(make_app, monkeypatch):
     page = _show(make_app(), monkeypatch, _ov(failed={od.PART_FOCUS: "RuntimeError: a",
                                                       od.PART_DRIFT: "RuntimeError: b"}))
-    assert page._need_heading.cget("text") == "Models that need a look"
-    assert page._cards_note.winfo_manager() == "grid"
+    assert page._need_heading.cget("text") == "Needs a look"
+    assert page._cards_note.winfo_manager() == "pack"
     assert "Could not be worked out" in page._cards_note.cget("text")
     assert not any("0 models" in s or "No models" in s for s in _labels(page))
+    assert "(" not in page._need_heading.cget("text")       # no count it does not have
 
 
-def test_with_nothing_drifting_the_heading_says_so_plainly(make_app, monkeypatch):
+def test_with_nothing_drifting_the_header_says_so_plainly(make_app, monkeypatch):
     page = _show(make_app(), monkeypatch, _ov(others=[_row()]))
-    assert page._need_heading.cget("text") == "No models need a look"
-    assert page._cards_note.winfo_manager() == "" and page._load_banner.winfo_manager() == ""
+    assert page._headline.cget("text").startswith("No models need a look · ")
+    assert page._need_heading.cget("text") == "Needs a look (0)"
+    assert page._cards_note.cget("text") == "No model needs a look."
+    assert page._load_banner.winfo_manager() == ""
 
 
 def test_a_good_load_after_a_failure_clears_the_banner(make_app, monkeypatch):
@@ -237,57 +412,22 @@ def test_a_good_load_after_a_failure_clears_the_banner(make_app, monkeypatch):
     assert page._load_banner.winfo_manager() == "pack"
     page = _show(app, monkeypatch, _ov(cards=[_card()]))
     assert page._load_banner.winfo_manager() == "" and page._load_banner.cget("text") == ""
-    assert page._need_heading.cget("text") == "1 model needs a look"
-
-
-# ---- "Everything else" --------------------------------------------------------------------------
-
-def test_everything_else_is_plain_rows_with_their_trend_words(make_app, monkeypatch):
-    rows = [_row("UP", units=300, pass_pct=90.0, was_pct=80.0),
-            _row("DOWN", units=200, pass_pct=60.0, was_pct=70.0),
-            _row("SAME", units=100, pass_pct=95.0, was_pct=93.0),
-            _row("8340-1", units=50, pass_pct=40.0, was_pct=None, hand_trim=True)]
-    page = _show(make_app(), monkeypatch, _ov(others=rows))
-    t = page.theme
-    drawn = page._others_frame.winfo_children()
-    assert [w.row.model for w in drawn] == ["UP", "DOWN", "SAME", "8340-1"]
-    assert _labels(drawn[0]) == ["UP", "300 units", "90%", "up 10 pts"]
-    assert [w._trend.cget("text") for w in drawn] == ["up 10 pts", "down 10 pts", "steady", "new"]
-    assert [w._trend.cget("text_color") for w in drawn] == [
-        t.PASS_FG, t.FAIL_FG, t.TEXT_SECONDARY, t.TEXT_SECONDARY]
-    assert "hand trim" in _labels(drawn[3]) and "hand trim" not in _labels(drawn[0])
-
-
-def test_a_row_click_opens_its_model(make_app, monkeypatch):
-    app = make_app()
-    page = _show(app, monkeypatch, _ov(others=[_row("7100")]))
-    calls = _routes(app, monkeypatch)
-    (row,) = page._others_frame.winfo_children()
-    try:
-        app.attributes("-alpha", 0.0)
-    except Exception:
-        pass
-    app.geometry("1280x720+20000+20000")
-    app.deiconify()
-    app.update_idletasks()
-    app.update()
-    try:
-        row._trend._label.event_generate("<Button-1>", x=2, y=2)
-        app.update()
-    finally:
-        app.withdraw()
-    assert calls == [("route", ("7100",), {"tab": "summary"}), ("show", "model")]
+    assert page._headline.cget("text").startswith("1 model needs a look · ")
 
 
 def test_failed_pass_rates_never_read_as_an_empty_list(make_app, monkeypatch):
     page = _show(make_app(), monkeypatch, _ov(
-        anchor=None, cards=[_card(pass_pct=None, units=0)],
-        failed={od.PART_RATES: "RuntimeError: invented rates crash"}))
-    assert page._others_frame.winfo_children() == []
+        anchor=None, cards=[_card(pass_pct=None, units=None, lasers=None, months=[])],
+        money_total=None, failed={od.PART_RATES: "RuntimeError: invented rates crash"}))
+    assert page._other_rows == []
     assert page._others_note.winfo_manager() == "pack"
     assert "Could not be worked out" in page._others_note.cget("text")
-    assert page._need_caption.cget("text") == "Last 90 days"
+    assert page._others_heading.cget("text") == "Everything else"
+    assert "newest file" not in page._headline.cget("text")
     assert "the pass rates (RuntimeError: invented rates crash)" in page._load_banner.cget("text")
+    facts = page._detail.shown_facts()
+    assert facts["Units, last 90 days"] == "—" and facts["Lasers"] == "—"
+    assert facts["$ lost at final test, 90 days"] == "could not be worked out"
 
 
 # ---- the inactive models: one line, expanding in place (F5) ------------------------------------
@@ -304,9 +444,9 @@ def test_the_inactive_line_is_collapsed_and_expands_in_place(make_app, monkeypat
     lines = "\n".join(_labels(page._inactive_list)).split("\n")
     assert lines == ["NEWER · last trimmed Jun 2019", "OLDER · last trimmed Mar 2016",
                      "NEVER · no trims on record"]
-    order = page._body.pack_slaves()
+    order = page._list.pack_slaves()                     # at the end of the list (option B)
     assert order.index(page._others_frame) < order.index(toggle) < order.index(page._inactive_list)
-    assert order.index(page._inactive_list) < order.index(page._links)
+    assert order[-1] is page._inactive_list
     toggle.invoke()
     assert toggle.cget("text").endswith("▸") and page._inactive_list.winfo_manager() == ""
 
@@ -356,7 +496,7 @@ def test_the_quiet_lines_sit_on_top_in_order(make_app, monkeypatch):
     order = page._body.pack_slaves()
     lines = [page._run_line, page._legacy_ft_label, page._unreadable_label, page._load_banner]
     assert [order.index(w) for w in lines] == sorted(order.index(w) for w in lines)
-    assert order.index(page._load_banner) < order.index(page._need_heading)
+    assert order.index(page._load_banner) < order.index(page._headline)
     assert "12 final-test records" in page._legacy_ft_label.cget("text")
     assert "70 files are being skipped" in page._unreadable_label.cget("text")
     for quiet in (page._run_line, page._legacy_ft_label, page._unreadable_label):
@@ -449,12 +589,12 @@ def test_an_older_load_never_overwrites_a_newer_one(make_app, monkeypatch, newer
     load.started()
     if newer == "async":                   # ...when a newer one starts and finishes first
         page.on_show()
-        assert _pump_until(app, lambda: [w.card.model for w in page._card_widgets] == ["NEWER"])
+        assert _pump_until(app, lambda: [r.model for r in page._card_rows] == ["NEWER"])
     else:
         page.reload_now()
     load.release()                         # the older load finishes LAST
     _pump_ui(app)
-    assert [w.card.model for w in page._card_widgets] == ["NEWER"]
+    assert [r.model for r in page._card_rows] == ["NEWER"]
     assert page._load_banner.winfo_manager() == "", "an older load overwrote a newer one"
 
 
@@ -469,7 +609,8 @@ def test_one_part_failing_to_draw_never_stops_the_others(make_app, monkeypatch, 
         page = _show(make_app(), monkeypatch, _ov(cards=[_card("A")], others=[_row()], legacy_ft=3,
                                                   inactive={"OLD": datetime(2016, 1, 1)}))
     assert "invented list render crash" in caplog.text
-    assert page._need_heading.cget("text") == "1 model needs a look"
+    assert page._headline.cget("text").startswith("1 model needs a look · ")
+    assert page._detail.title.cget("text") == "A"            # the detail draws on its own
     assert page._legacy_ft_label.winfo_manager() == "pack"
     assert page._inactive_toggle.winfo_manager() == "pack"
 
@@ -477,9 +618,9 @@ def test_one_part_failing_to_draw_never_stops_the_others(make_app, monkeypatch, 
 def test_a_load_with_nothing_new_redraws_nothing(make_app, monkeypatch):
     app = make_app()
     page = _show(app, monkeypatch, _ov(cards=[_card("A")], others=[_row()]))
-    before = (list(page._card_widgets), page._others_frame.winfo_children())
+    before = (list(page._card_rows), list(page._other_rows))
     page = _show(app, monkeypatch, _ov(cards=[_card("A")], others=[_row()]))
-    assert (page._card_widgets, page._others_frame.winfo_children()) == before
+    assert (page._card_rows, page._other_rows) == before
 
 
 # ---- end to end, on a real (invented) database ---------------------------------------------------
@@ -504,10 +645,10 @@ def test_the_page_draws_what_the_loader_finds_in_a_real_database(make_app):
     lot("CALM", ANCHOR - timedelta(days=3), 50, 0)
     page = _home(app)
     page.reload_now()
-    assert page._need_heading.cget("text") == "1 model needs a look"
-    (card,) = page._card_widgets
-    assert card.card.model == "HOT" and card._reason.cget("text") == "Fail rate 10% → 60%"
-    assert [w.row.model for w in page._others_frame.winfo_children()] == ["CALM"]
+    assert page._headline.cget("text").startswith("1 model needs a look · ")
+    (row,) = page._card_rows
+    assert row.model == "HOT" and page._detail.reason.cget("text") == "Fail rate 10% → 60%"
+    assert [r.model for r in page._other_rows] == ["CALM"]
 
 
 # ---- nothing is cut at 1280x720 (the render audit's own detector) --------------------------------
@@ -549,8 +690,8 @@ def test_a_card_whose_count_could_not_be_read_prints_none(make_app, monkeypatch)
     page = _show(make_app(), monkeypatch, _ov(
         cards=[_card("7000", units=None, pass_pct=None, was_pct=None)],
         failed={od.PART_RATES: "RuntimeError: invented rates crash"}))
-    (card,) = page._card_widgets
-    texts = _labels(card)
+    (row,) = page._card_rows
+    texts = _labels(row)
     assert texts[:2] == ["7000", "— units"]
     assert not any(t[:1].isdigit() and "unit" in t for t in texts)
 
@@ -563,8 +704,7 @@ def test_the_caption_says_what_puts_a_model_on_a_card(make_app, monkeypatch):
     assert rule == od.CARD_RULE
     assert f"last {RECENT_K} runs" in rule and "watched signal" in rule
     order = page._body.pack_slaves()
-    assert order.index(page._need_caption) < order.index(page._need_rule) < order.index(
-        page._cards_frame)
+    assert order.index(page._trend_box) < order.index(page._need_rule) < order.index(page._split)
 
 
 def test_other_models_on_file_are_one_collapsed_line_above_the_inactive_one(make_app, monkeypatch):
@@ -579,9 +719,9 @@ def test_other_models_on_file_are_one_collapsed_line_above_the_inactive_one(make
     assert page._quiet_list.winfo_manager() == "pack"
     lines = "\n".join(_labels(page._quiet_list)).split("\n")
     assert lines == ["Q2 · last trimmed Nov 2025", "Q1 · last trimmed Jun 2025"]
-    order = page._body.pack_slaves()
+    order = page._list.pack_slaves()
     assert (order.index(page._others_frame) < order.index(toggle) < order.index(page._quiet_list)
-            < order.index(page._inactive_toggle) < order.index(page._links))
+            < order.index(page._inactive_toggle))
     toggle.invoke()
     assert toggle.cget("text").endswith("▸") and page._quiet_list.winfo_manager() == ""
 
@@ -662,7 +802,11 @@ def test_the_overview_charts_each_laser_over_the_last_twelve_months(make_app, mo
     assert page._trend_heading.cget("text") == "Yield by laser — last 12 months"
     assert page._trend_chart.winfo_manager() == "pack" and page._trend_note.winfo_manager() == ""
     order = page._body.pack_slaves()
-    assert order.index(page._trend_box) < order.index(page._need_heading)
+    assert order.index(page._trend_box) < order.index(page._split)       # always above the list
+    # A compact strip (option B): the Company trends chart as it is, only shorter.
+    from laser_trim_analyzer.gui.v6.pages.home_page import STRIP_INCHES
+    fig = page._trend_chart._fig
+    assert int(page._trend_chart.canvas.get_tk_widget().cget("height")) == round(STRIP_INCHES * fig.dpi)
 
 
 def test_a_chart_that_cannot_load_says_so_and_the_banner_names_it(make_app, monkeypatch):
@@ -674,3 +818,80 @@ def test_a_chart_that_cannot_load_says_so_and_the_banner_names_it(make_app, monk
             in page._load_banner.cget("text"))
     order = page._body.pack_slaves()
     assert order.index(page._load_banner) < order.index(page._trend_box)    # the notice is above it
+
+
+# ---- option B (2026-10-04): the prices it is handed, and the two panes ---------------------------
+
+def test_the_page_hands_the_configured_prices_and_cost_ratio_to_the_loader(make_app, monkeypatch):
+    app = make_app()
+    page = _home(app)
+    _settle_workers(app)
+    app.config.active_models.model_prices = {"INVENTED": 12.5}
+    app.config.active_models.cost_ratio = 0.3
+    seen = []
+    monkeypatch.setattr(od, "load_overview", lambda db, **k: seen.append(k) or _ov())
+    page.reload_now()
+    page.on_show()
+    assert _pump_until(app, lambda: len(seen) == 2)
+    for k in seen:
+        assert k == {"prices": {"INVENTED": 12.5}, "cost_ratio": 0.3}
+    assert seen[0]["prices"] is not app.config.active_models.model_prices   # a copy, not the live dict
+
+
+def test_the_list_and_the_detail_fill_the_window_below_the_strip(make_app, monkeypatch):
+    """TMOG's two panes: the list and the detail reach the foot of the window -- and the page
+    itself has nothing to scroll -- not a fixed box with empty window under it."""
+    from laser_trim_analyzer.gui.v6.pages.home_page import SPLIT_MIN
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(cards=[_card(f"C{i}") for i in range(3)],
+                                       others=[_row(f"R{i}") for i in range(30)]))
+    _mapped(app, "1400x900")
+    try:
+        for _ in range(3):
+            app.update_idletasks()
+            app.update()
+        view = page._body._parent_canvas
+        assert view.yview() == (0.0, 1.0), "the page scrolls: the panes overran the window"
+        foot = page._links.winfo_rooty() + page._links.winfo_height()
+        assert view.winfo_rooty() + view.winfo_height() - foot < 40, "empty window under the panes"
+        assert page._list.cget("height") > SPLIT_MIN
+        assert page._list._parent_canvas.yview() != (0.0, 1.0)        # 33 rows: the list scrolls
+    finally:
+        app.withdraw()
+
+
+def test_the_wheel_over_a_pane_that_can_scroll_scrolls_that_pane_alone(make_app, monkeypatch):
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(
+        cards=[_card(f"C{i}") for i in range(3)], others=[_row(f"R{i}") for i in range(30)],
+        legacy_ft=1234, unreadable=56,
+        failed={od.PART_DRIFT: "RuntimeError: " + "a long invented explanation " * 40}))
+    _mapped(app, "960x640")
+    try:
+        for _ in range(3):
+            app.update_idletasks()
+            app.update()
+        row_label = page._other_rows[0]._pct._label
+        assert page._list._parent_canvas.yview() != (0.0, 1.0)
+        assert page._body.check_if_master_is_canvas(row_label) is False     # the list's own
+        assert page._list.check_if_master_is_canvas(row_label) is True
+        assert page._body.check_if_master_is_canvas(page._headline._label) is True
+    finally:
+        app.withdraw()
+
+
+def test_a_newly_selected_model_is_read_from_the_top_of_its_detail(make_app, monkeypatch):
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(cards=[_card("A", reason=_LONG), _card("B", reason=_LONG)]))
+    _mapped(app, "960x640")
+    try:
+        canvas = page._detail._parent_canvas
+        assert canvas.yview() != (0.0, 1.0), "the detail fits: nothing to scroll in this test"
+        canvas.yview_moveto(1.0)
+        app.update()
+        assert canvas.yview()[0] > 0.0
+        page._select("B")
+        app.update()
+        assert canvas.yview()[0] == 0.0
+    finally:
+        app.withdraw()
