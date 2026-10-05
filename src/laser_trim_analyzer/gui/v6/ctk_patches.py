@@ -22,6 +22,10 @@ fail, naming the file, if an internal changes:
   * widgets/blocks.py -- `_QuietArrow._draw` (every dropdown and combo box, finish pass 2026-10-04)
     repaints the "dropdown_arrow" canvas item after CTkOptionMenu's / CTkComboBox's own `_draw`,
     which paints it with text_color.
+  * pages/home_page.py (the Overview, option B 2026-10-04) -- `_PageScroll.check_if_master_is_canvas`
+    narrows CTkScrollableFrame's wheel routing so a pane that can scroll keeps the wheel; and
+    `_scrollbar_only_when_needed` wraps the canvas's yscrollcommand (5.2.2 pins it to the bar's set()),
+    reading `_scrollbar`, `_parent_canvas` and `_parent_frame`.
 
 ---- 1. CTkScrollbar's re-entrant redraw cascade ----------------------------
 
