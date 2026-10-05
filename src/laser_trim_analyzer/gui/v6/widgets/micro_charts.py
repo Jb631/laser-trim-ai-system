@@ -3,11 +3,14 @@
 Never matplotlib for these: the Overview's list draws one per model -- dozens on one page -- and
 a figure each would cost a full Agg render apiece on every load and resize.
 
-  MiniLine    twelve months of pass % as a line, in a laser's colour, with a GAP where a month had
-              no units (finish item 11: the cards' month bars read as broken). A month alone
-              between gaps is a dot -- never dropped.
+  MonthBars   a list row's twelve months of pass % as bars (James, 2026-10-04, of the line that
+              was here: "these little charts and % dont mean anything?" -- he picked bars from
+              mockups on his own data): one 0-100 scale on every row, the months the 90-day pass %
+              covers bright, a month with no units a faint flat mark -- a slot, never a gap that
+              reads as a broken chart (finish item 11) and never a bar that reads as 0%.
   PassMeter   a pass % as a row of segments: lit in the pass colour, the rest in the divider colour,
               and never all lit below 100% nor none lit above 0% (overview_data.pct_text's rule).
+              A pass % that could not be worked out draws nothing: an empty meter reads as 0%.
   MonthChart  the detail's twelve months of pass %: 0 / 50 / 100 guides, the months named under it,
               and the newest month's value said.
 
@@ -81,33 +84,45 @@ class _Canvas(tkinter.Canvas):
         raise NotImplementedError
 
 
-class MiniLine(_Canvas):
-    """Twelve months (or any number) of pass %, oldest first, as a line on a 0-100 scale."""
+class MonthBars(_Canvas):
+    """Twelve months (or any number) of pass %, oldest first, as bars on a 0-100 scale. The newest
+    `recent` months -- the ones the 90-day pass % beside them covers -- in CHART_BAR, the months
+    before in CHART_BAR_MUTED. A month with no units is a short flat mark on the baseline, in the
+    border colour and narrower than a bar. A month with units is never shorter than MIN_BAR, so a
+    month where nearly every unit failed still shows."""
 
-    def __init__(self, master, theme, values: Values, *, color: str, bg: str,
-                 width: int = 88, height: int = 26):
+    GAP = 2          # units between two bars
+    MIN_BAR = 2      # units: the shortest bar a month with units draws
+
+    def __init__(self, master, theme, values: Values, *, recent: int, bg: str,
+                 width: int = 84, height: int = 26):
         self.values = list(values or [])
-        self.color = color
+        self.recent = max(0, int(recent))
         super().__init__(master, theme, bg=bg, width=width, height=height)
         self.draw()
 
     def draw(self) -> None:
+        t = self.theme
         self.delete("all")
-        if not any(v is not None for v in self.values):
+        n = len(self.values)
+        if not n:
             return
         w, h = self.size()
-        pad = 3 * self.scale
-        xs = _xs(len(self.values), pad, w - pad)
-        ys = [None if v is None else _y(v, pad, h - pad) for v in self.values]
-        lw = max(1.0, 1.6 * self.scale)
-        segments, alone = _runs(self.values)
-        for i, j in segments:
-            self.create_line(xs[i], ys[i], xs[j], ys[j], fill=self.color, width=lw,
-                             capstyle="round", tags=("line",))
-        r = max(1.5, 1.8 * self.scale)
-        for i in alone:
-            self.create_oval(xs[i] - r, ys[i] - r, xs[i] + r, ys[i] + r, fill=self.color,
-                             outline="", tags=("dot",))
+        gap = self.GAP * self.scale
+        bar = max(1.0, (w - gap * (n - 1)) / n)
+        top, bottom = 0.0, float(h)
+        shortest = self.MIN_BAR * self.scale
+        for i, v in enumerate(self.values):
+            x0 = i * (bar + gap)
+            if v is None:
+                inset = bar / 4
+                self.create_rectangle(x0 + inset, bottom - max(1.0, self.scale), x0 + bar - inset,
+                                      bottom, width=0, fill=t.BORDER, tags=("empty",))
+                continue
+            recent = i >= n - self.recent
+            self.create_rectangle(x0, min(_y(v, top, bottom), bottom - shortest), x0 + bar, bottom,
+                                  width=0, fill=t.CHART_BAR if recent else t.CHART_BAR_MUTED,
+                                  tags=("bar", "recent" if recent else "older"))
 
 
 class PassMeter(_Canvas):
@@ -140,6 +155,8 @@ class PassMeter(_Canvas):
     def draw(self) -> None:
         t = self.theme
         self.delete("all")
+        if self.pct is None:
+            return                       # could not be worked out: no meter, never an empty one
         w, h = self.size()
         n = self.segments
         gap = max(1.0, 2 * self.scale)
@@ -164,13 +181,18 @@ class MonthChart(_Canvas):
         self.labels: List[str] = []
         self.color = theme.CHART_REFERENCE
         self.value_text: Callable[[float], str] = lambda v: f"{round(v)}%"
+        self.empty_text = self.EMPTY
         super().__init__(master, theme, bg=bg, width=width, height=height)
 
     def set_data(self, values: Values, labels: Sequence[str], color: str,
-                 value_text: Optional[Callable[[float], str]] = None) -> None:
+                 value_text: Optional[Callable[[float], str]] = None,
+                 empty_text: Optional[str] = None) -> None:
+        """`empty_text`: what to say when no month has a value -- EMPTY unless the caller knows
+        why (the months could not be read: never "no graded units" over a failure)."""
         self.values = list(values or [])
         self.labels = list(labels or [])
         self.color = color
+        self.empty_text = empty_text or self.EMPTY
         if value_text is not None:
             self.value_text = value_text
         self.draw()
@@ -201,7 +223,7 @@ class MonthChart(_Canvas):
                     self.create_text(xs[i], h - 2 * self.scale, text=text, anchor="s", font=words,
                                      fill=t.TEXT_SECONDARY, tags=("xlabel",))
         if not any(v is not None for v in self.values):
-            self.create_text((left + w) / 2, (top + bottom) / 2, text=self.EMPTY, font=words,
+            self.create_text((left + w) / 2, (top + bottom) / 2, text=self.empty_text, font=words,
                              fill=t.TEXT_SECONDARY, tags=("note",))
             return
         ys = [None if v is None else _y(v, top, bottom) for v in self.values]

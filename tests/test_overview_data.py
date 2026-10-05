@@ -122,8 +122,8 @@ def test_each_card_says_why_it_is_there_and_both_lists_join_with_a_dot(tmp_path,
                   "FT": _status("FT", "ft_fail_fraction", 0.025, 0.1875)})
     reasons = {c.model: c.reason for c in od.load_overview(db).cards}
     assert reasons == {
-        "F1": "Fail rate 4% → 12%",
-        "BOTH": "Fail rate 10% → 40% · Untrimmed error (max) 0.1 → 0.2",
+        "F1": "A recent run failed 12% (usually 4%)",
+        "BOTH": "A recent run failed 40% (usually 10%) · Untrimmed error (max) 0.1 → 0.2",
         "RES": "Untrimmed resistance 4,693 → 5,897",       # the theme's fmt_measure
         "FT": "Final-test lot fail rate 2.5% → 18.8%",     # a fraction reads as a percent
     }
@@ -153,7 +153,7 @@ def test_a_real_fail_rate_excursion_is_a_card_with_its_rates(tmp_path):
     ov = od.load_overview(db)
     hot = [c for c in ov.cards if c.model == "HOT"]
     assert len(hot) == 1, [c.model for c in ov.cards]
-    assert hot[0].reason == "Fail rate 10% → 60%"
+    assert hot[0].reason == "A recent run failed 60% (usually 10%)"
     assert hot[0].units == 240 and hot[0].pass_pct == pytest.approx(100 * 206 / 240)
 
 
@@ -947,3 +947,30 @@ def test_with_no_prices_the_money_check_holds_the_header_to_asking_for_them(tmp_
         patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
               "od.money_words = lambda ov: '$0 lost at final test in the last 90 days'")
     assert asks in {n for v, n, _ in results if v == "FAIL"}, results
+
+
+# ---- the list's words and bars (option C, James 2026-10-04: "these little charts and % dont mean
+# anything?") ----------------------------------------------------------------------------------------
+
+def test_a_fail_rate_reason_says_how_many_runs_failed_how_often_and_what_is_usual():
+    from types import SimpleNamespace as NS
+    assert od.focus_reason(NS(p_base=0.36, p_recent=0.74, n_flagged_recent=1)) == \
+        "A recent run failed 74% (usually 36%)"
+    assert od.focus_reason(NS(p_base=0.36, p_recent=0.74, n_flagged_recent=3)) == \
+        "3 recent runs failed 74% (usually 36%)"
+    # pct_text's rule: never rounded to all or nothing -- a 0.4% baseline is not "usually 0%".
+    assert od.focus_reason(NS(p_base=0.004, p_recent=1.0, n_flagged_recent=1)) == \
+        "A recent run failed 100% (usually 1%)"
+    assert od.focus_reason(NS(p_base=0.0, p_recent=0.9, n_flagged_recent=2)) == \
+        "2 recent runs failed 90% (usually 0%)"
+
+
+@pytest.mark.parametrize("anchor, months", [
+    (datetime(2026, 9, 29, 17, 22), 3),      # 2 Jul - 29 Sep: Jul, Aug, Sep
+    (datetime(2026, 9, 3, 8, 0), 4),         # 6 Jun - 3 Sep: Jun, Jul, Aug, Sep
+    (datetime(2026, 3, 31, 12, 0), 3),       # 1 Jan - 31 Mar
+    (datetime(2026, 3, 1, 12, 0), 4),        # 2 Dec 2025 - 1 Mar 2026, across the new year
+    (None, 0),
+])
+def test_the_bars_drawn_bright_are_the_months_the_90_days_touch(anchor, months):
+    assert od.window_months(anchor) == months

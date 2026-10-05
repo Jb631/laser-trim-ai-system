@@ -13,6 +13,12 @@ TMOG feels more like a finished peice of software". TMOG is the bar for FINISH, 
    ("im not sure i want to copy the excat fonts"). Body text and numbers stay IBM Plex.
 4. **Icons**: downloading allowed ("you can download"); the Tabler set (MIT) — built in 495c046.
 5. **Finish-pass screenshots**: yes (done 2026-10-04 on a copy; the list below).
+6. **The list's rows** (after seeing B built, with a screenshot of it: "these little charts and %
+   dont mean anything? they dont show anything?"). Shown three rows on his own data -- A words only,
+   B usual → now on one scale, C bars and why -- he picked **C**: each row says WHY (a card's reason,
+   "A recent run failed 74% (usually 36%)"; a row's 90 days against the year before), its twelve
+   months as bars on ONE 0-100 scale (the months the 90 days touch bright, the rest muted, a month
+   with no units a faint flat mark), and the 90-day pass %; each section names its columns.
 
 ## The screens
 **Top bar**: "Laser Trim Analyzer" in Marcellus; Overview · Models · Settings grouped beside it, each
@@ -27,9 +33,11 @@ repeated under the bar on any page.
 - the yield-by-laser chart as a compact strip, always visible;
 - the CARD_RULE caption;
 - below: a LIST (left, scrolls on its own) and a DETAIL (right):
-  - list: "Needs a look (13)" then "Everything else (42)"; each row: model, units, pass %, a
-    12-month mini-chart in its laser's colour (lime/teal/purple; final-test-only grey-blue);
-    hand-trim tag; "Other models on file (N) ▸" and "Inactive models (N) ▸" folded at the end;
+  - list: "Needs a look (13)" then "Everything else (42)", each under its column names (Model ·
+    What changed / On the year before · Pass by month · 90 days); each row: the model over its
+    units and its hand-trim / final-test tags, what changed, twelve month bars (decision 6), the
+    90-day pass % -- every column lined up down the list; "Other models on file (N) ▸" and
+    "Inactive models (N) ▸" folded at the end;
   - detail for the selected row (the first card on load): the model in Marcellus, its status
     word, a pass meter with the %, "was X%", why it is here (red), 12 months of pass %, a facts
     grid (units · lasers · the signal and its baseline → recent · $ lost at final test, 90 days ·
@@ -53,7 +61,8 @@ current (or updating) · files skipped · while a run is going, its progress ("P
 9. four lines of red/grey text before the Model-page chart → one headline and a compact facts
    line; the station-spec notice one quiet line that expands (finish);
 10. fail-rate chart axis to 125%, rotated "2025-10" labels → capped at 100%, month names (finish);
-11. card month bars broken by empty months → mini line charts (Overview B);
+11. card month bars broken by empty months → mini line charts (Overview B) → superseded by
+    decision 6: bars again, but on one scale with a flat mark for an empty month, never a gap;
 12. Process page: run-on line of network paths, two "Process new files" on one screen → one row
     per folder; the page drops its duplicate run button (finish);
 13. the dollars hidden on Company trends → on the Overview (Overview B).

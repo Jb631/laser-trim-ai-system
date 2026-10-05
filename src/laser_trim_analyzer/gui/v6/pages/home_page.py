@@ -19,9 +19,12 @@ Top to bottom:
   * the rule that puts a model on the list (`overview_data.CARD_RULE`);
   * the LIST (left, scrolls on its own): "Needs a look (N)" -- the fail-rate list united with the
     drift watch's flags -- then "Everything else (N)", every other active model, busiest first.
-    Each row: the model, its units, its pass %, twelve months as a line in its laser's colour
-    (micro_charts.MiniLine; a gap where a month had no units, finish item 11), the hand-trim tag.
-    The selected row is ELEVATED with a border. At its end, "Other models on file (N) ▸" and
+    Each section names its columns (James, 2026-10-04, of the line and the bare % that were here:
+    "these little charts and % dont mean anything?" -- he picked this from mockups on his data).
+    Each row: the model over its units (and its hand-trim / final-test tags); WHAT CHANGED -- a
+    card's reason ("A recent run failed 74% (usually 36%)"), a row's 90 days against the year
+    before; twelve months of pass % as bars on one 0-100 scale (micro_charts.MonthBars), the months
+    the 90 days touch bright; the 90-day pass %. The selected row is ELEVATED with a border. At its end, "Other models on file (N) ▸" and
     "Inactive models (N) ▸", folded, each expanding in place: every model on file is somewhere on
     this page -- labelled, never hidden (F5);
   * the DETAIL (right) of the selected row -- the first card on load; a click selects, a double
@@ -59,19 +62,28 @@ from laser_trim_analyzer.gui.v6 import overview_data as od
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
-from laser_trim_analyzer.gui.v6.widgets.micro_charts import MiniLine, MonthChart, PassMeter
+from laser_trim_analyzer.gui.v6.widgets.micro_charts import MonthBars, MonthChart, PassMeter
 from laser_trim_analyzer.ml.drift_types import metric_label
 
 logger = logging.getLogger(__name__)
 
 # Sizes in CustomTkinter's units.
-LIST_WIDTH = 360          # the list pane, its scrollbar included
+LIST_WIDTH = 480          # the list pane, its scrollbar included: room for a reason beside the bars
 SPLIT_MIN = 260           # the list and the detail never shorter: the page scrolls instead
 # A line of text is as tall as its text: CustomTkinter's default label is 28 units whatever its
 # font, which made each list row 68 px and pushed the detail's last line below the window.
 FIT = 0
-PCT_COLUMN = 44           # a row's pass % column: the percentages line up down the list
-SPARK_SIZE = (80, 26)     # a row's twelve-month line
+# A row's columns: model | what changed (takes the rest, wraps) | the month bars | the 90-day %.
+# Fixed widths, so the reasons, the bars and the percentages line up down the list.
+MODEL_COLUMN = 88         # the model, its units, its tags ("hand trim" is 84 wide)
+BARS_SIZE = (96, 26)      # twelve bars
+PCT_COLUMN = 52           # the 90-day pass % ("100%", and its column's name "90 days")
+# The column names (sentence case: test_blocks lints shouting).
+HEAD_MODEL = "Model"
+HEAD_WHY = "What changed"                  # Needs a look: why the model is there
+HEAD_YEAR = "On the year before"           # Everything else: its 90 days against the year before
+HEAD_BARS = "Pass by month"
+HEAD_PCT = "90 days"
 FOLDED_COLUMNS = 1        # the folded lines' models, one to a line in the list's width
 # The yield chart as a strip: the Company trends chart as it is, only shorter (its figure is 2.6 in)
 STRIP_INCHES = 1.9
@@ -192,6 +204,7 @@ class HomePage(PageBase):
         self._need_heading = ctk.CTkLabel(pane, text="Needs a look", anchor="w", height=FIT,
                                           font=t.font(t.SIZE_BODY, "bold"), text_color=t.TEXT_PRIMARY)
         self._need_heading.pack(side="top", fill="x", pady=(t.SPACE_SM, t.SPACE_XS), **pad)
+        self._cards_head = _ListHeader(pane, t, HEAD_WHY)          # packed while rows are shown
         self._cards_frame = ctk.CTkFrame(pane, fg_color="transparent")
         self._cards_frame.pack(side="top", fill="x")
         # "Loading…" under each heading until the first load lands -- never a bare heading.
@@ -205,6 +218,7 @@ class HomePage(PageBase):
                                             font=t.font(t.SIZE_BODY, "bold"),
                                             text_color=t.TEXT_PRIMARY)
         self._others_heading.pack(side="top", fill="x", pady=(t.SPACE_MD, t.SPACE_XS), **pad)
+        self._others_head = _ListHeader(pane, t, HEAD_YEAR)
         self._others_frame = ctk.CTkFrame(pane, fg_color="transparent")
         self._others_frame.pack(side="top", fill="x")
         self._others_note = ctk.CTkLabel(pane, text="Loading…", anchor="w", justify="left",
@@ -338,6 +352,14 @@ class HomePage(PageBase):
         pad = self.theme.SPACE_SM
         _show_note(self._cards_note, cards_note, after=self._cards_frame, padx=pad)
         _show_note(self._others_note, others_note, after=self._others_frame, padx=pad)
+        # Column names over rows only -- never over "No model needs a look." or a failure.
+        for head, items, frame in ((self._cards_head, ov.cards, self._cards_frame),
+                                   (self._others_head, ov.others, self._others_frame)):
+            if items:
+                head.pack(side="top", fill="x", padx=self.theme.SPACE_XS, pady=(0, 2),
+                          before=frame)
+            else:
+                head.pack_forget()
 
         # The selection first: it rests on what was loaded, never on which rows drew.
         models = [c.model for c in ov.cards] + [r.model for r in ov.others]
@@ -346,10 +368,11 @@ class HomePage(PageBase):
         for row in self._card_rows + self._other_rows:
             row.destroy()
         self._card_rows, self._other_rows = [], []
+        recent = od.window_months(ov.anchor)
         for items, frame, rows in ((ov.cards, self._cards_frame, self._card_rows),
                                    (ov.others, self._others_frame, self._other_rows)):
             for item in items:
-                row = _ListRow(frame, self.theme, item, colour=_series_colour(self.theme, item),
+                row = _ListRow(frame, self.theme, item, recent=recent,
                                selected=item.model == self._selected, on_select=self._select,
                                on_open=self._open_item)
                 row.pack(side="top", fill="x", padx=self.theme.SPACE_XS, pady=(0, 2))
@@ -536,10 +559,23 @@ def status_word(ov: od.Overview, item) -> Optional[str]:
 
 def _units_text(item) -> str:
     if item.units is None:
-        text = "— units"                       # its read failed: no count
-    else:
-        text = f"{item.units:,} unit" + ("" if item.units == 1 else "s")
-    return text + (" · final test" if getattr(item, "final_test", False) else "")
+        return "— units"                       # its read failed: no count
+    return f"{item.units:,} unit" + ("" if item.units == 1 else "s")
+
+
+def _row_tags(item) -> List[str]:
+    """The tags under a row's units: "hand trim" (its laser PASS is hand-trim workload, not
+    yield), "final test" (no trim to show: its numbers are final test's)."""
+    return ([w for w, on in (("hand trim", item.hand_trim),
+                             ("final test", getattr(item, "final_test", False))) if on])
+
+
+def _what_changed(theme, item) -> Tuple[str, str]:
+    """(words, colour) for a row's middle column: a card's reason, in the fail colour; a row's
+    90 days against the year before ("down 6 pts", "steady", "new"), in its tone's colour."""
+    if isinstance(item, od.Card):
+        return item.reason, theme.FAIL_FG
+    return item.trend, getattr(theme, _TONE.get(item.tone, "TEXT_SECONDARY"))
 
 
 def _trend_sentence(row: od.Row) -> str:
@@ -664,11 +700,47 @@ class _PageScroll(ctk.CTkScrollableFrame):
         return super().check_if_master_is_canvas(widget)
 
 
-class _ListRow(ctk.CTkFrame):
-    """One line of the list: the model (and its hand-trim tag) over its units, its twelve months
-    as a line, its pass %. A click selects it; a double click opens its page."""
+def _grid_columns(frame, theme) -> None:
+    """A row's (and a header's) four columns: fixed but the second, which takes the rest. The bars'
+    column holds the gap before them too -- a row's bars ask for it, a header's name does not, and
+    the two would part by that much (measured: 8 px)."""
+    frame.grid_columnconfigure(0, minsize=frame._apply_widget_scaling(MODEL_COLUMN))
+    frame.grid_columnconfigure(1, weight=1)
+    frame.grid_columnconfigure(2, minsize=frame._apply_widget_scaling(BARS_SIZE[0] + theme.SPACE_SM))
+    frame.grid_columnconfigure(3, minsize=frame._apply_widget_scaling(PCT_COLUMN))
 
-    def __init__(self, master, theme, item, *, colour: str, selected: bool,
+
+class _ListHeader(ctk.CTkFrame):
+    """A section's column names, on the rows' own columns, over a thin line."""
+
+    def __init__(self, master, theme, why: str):
+        t = theme
+        super().__init__(master, fg_color="transparent")
+        _grid_columns(self, t)
+        pad = t.SPACE_SM
+        font, colour = t.font(t.SIZE_CAPTION), t.TEXT_SECONDARY
+
+        def name(text, column, **grid):
+            label = ctk.CTkLabel(self, text=text, font=font, text_color=colour, height=FIT,
+                                 anchor=grid.pop("anchor", "w"))
+            label.grid(row=0, column=column, **grid)
+            return label
+        self.model = name(HEAD_MODEL, 0, sticky="w", padx=(pad, 0))
+        self.why = name(why, 1, sticky="w", padx=(pad, 0))
+        # "Pass by month" may run past the bars' width: it spans the % column too, whose own name
+        # sits at its right edge -- two short words, never overlapping.
+        self.bars = name(HEAD_BARS, 2, columnspan=2, sticky="w", padx=(pad, 0))
+        self.pct = name(HEAD_PCT, 3, sticky="e", padx=(0, pad), anchor="e")
+        ctk.CTkFrame(self, height=1, fg_color=t.BORDER, corner_radius=0).grid(
+            row=1, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+
+
+class _ListRow(ctk.CTkFrame):
+    """One line of the list, on four columns: the model over its units and tags; what changed (it
+    wraps); twelve months of pass % as bars; the 90-day pass %. A click selects it; a double click
+    opens its page."""
+
+    def __init__(self, master, theme, item, *, recent: int, selected: bool,
                  on_select: Callable[[str], None], on_open: Callable[[str], None]):
         t = theme
         super().__init__(master, fg_color=t.CARD, border_color=t.CARD, border_width=1,
@@ -676,28 +748,49 @@ class _ListRow(ctk.CTkFrame):
         self.theme = t
         self.item = item
         self.model = item.model
-        # model | its tag (the slack) | the line | the pass %; the units under the first two.
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_columnconfigure(3, minsize=self._apply_widget_scaling(PCT_COLUMN))
+        _grid_columns(self, t)
         pad = t.SPACE_XS + 2
+        side = t.SPACE_SM
         ctk.CTkLabel(self, text=item.model, font=t.mono(t.SIZE_BODY), text_color=t.TEXT_PRIMARY,
-                     anchor="w", height=FIT).grid(row=0, column=0, sticky="w",
-                                                  padx=(t.SPACE_SM, 0), pady=(pad, 0))
-        if item.hand_trim:
-            blocks.tag(self, t, "hand trim").grid(row=0, column=1, sticky="w",
-                                                  padx=(t.SPACE_SM, 0), pady=(pad, 0))
+                     anchor="w", height=FIT).grid(row=0, column=0, sticky="w", padx=(side, 0),
+                                                  pady=(pad, 0))
         self._units = ctk.CTkLabel(self, text=_units_text(item), font=t.font(t.SIZE_CAPTION),
                                    text_color=t.TEXT_SECONDARY, anchor="w", height=FIT)
-        self._units.grid(row=1, column=0, columnspan=2, sticky="w", padx=(t.SPACE_SM, 0),
-                         pady=(0, pad))
-        self._spark = MiniLine(self, t, item.months, color=colour, bg=t.CARD,
-                               width=SPARK_SIZE[0], height=SPARK_SIZE[1])
-        gap = self._apply_widget_scaling(t.SPACE_SM)            # a plain canvas: scaled here
-        self._spark.grid(row=0, column=2, rowspan=2, padx=(gap, gap))
+        self._units.grid(row=1, column=0, sticky="w", padx=(side, 0))
+        self._tags = [blocks.tag(self, t, word) for word in _row_tags(item)]
+        for i, tag in enumerate(self._tags):
+            tag.grid(row=2 + i, column=0, sticky="w", padx=(side, 0), pady=(2, 0))
+        # Under the model column's last line, a row that takes any height a long reason needs --
+        # so the model, its units and its tags stay together at the top. Every cell spans into it.
+        stretch = 2 + len(self._tags)
+        self.grid_rowconfigure(stretch, weight=1, minsize=self._apply_widget_scaling(pad))
+        span = stretch + 1
+
+        # What changed: wraps to whatever width the fixed columns leave it (blocks.wrap_to_width,
+        # bound to a frame built -- and destroyed -- with this row, so the binding never piles up).
+        words, colour = _what_changed(t, item)
+        self._why_box = ctk.CTkFrame(self, fg_color="transparent")
+        self._why_box.grid(row=0, column=1, rowspan=span, sticky="new", padx=(side, 0),
+                           pady=(pad, pad))
+        self._why = ctk.CTkLabel(self._why_box, text=words, font=t.font(t.SIZE_CAPTION),
+                                 text_color=colour, anchor="w", justify="left", height=FIT)
+        self._why.pack(side="top", fill="x")
+        blocks.wrap_to_width(self._why, self._why_box)
+
+        gap = self._apply_widget_scaling(side)              # a plain canvas: scaled here
+        top = self._apply_widget_scaling(pad)
+        if item.months:
+            self._bars = MonthBars(self, t, item.months, recent=recent, bg=t.CARD,
+                                   width=BARS_SIZE[0], height=BARS_SIZE[1])
+        else:
+            # Its read failed (the banner names it): a dash, as its units and its % say.
+            self._bars = ctk.CTkLabel(self, text="—", font=t.font(t.SIZE_CAPTION),
+                                      text_color=t.TEXT_SECONDARY, height=FIT)
+        self._bars.grid(row=0, column=2, rowspan=span, sticky="nw", padx=(gap, 0), pady=(top, top))
         self._pct = ctk.CTkLabel(self, text=od.pct_text(item.pass_pct),
                                  font=t.mono(t.SIZE_BODY, "bold"), text_color=t.TEXT_PRIMARY,
                                  anchor="e", height=FIT)
-        self._pct.grid(row=0, column=3, rowspan=2, sticky="e", padx=(0, t.SPACE_SM))
+        self._pct.grid(row=0, column=3, sticky="ne", padx=(0, side), pady=(pad, 0))
         self.set_selected(selected)
         _bind_click(self, lambda m=item.model: on_select(m), lambda m=item.model: on_open(m))
 
@@ -705,7 +798,8 @@ class _ListRow(ctk.CTkFrame):
         t = self.theme
         fill = t.ELEVATED if on else t.CARD
         self.configure(fg_color=fill, border_color=t.BORDER if on else t.CARD)
-        self._spark.set_background(fill)
+        if isinstance(self._bars, MonthBars):
+            self._bars.set_background(fill)
 
 
 class _Detail(ctk.CTkScrollableFrame):
@@ -825,8 +919,11 @@ class _Detail(ctk.CTkScrollableFrame):
         self.chart_caption.configure(
             text=f"{what}, {formats.month(months[0])} – {formats.month(months[-1])}" if months
             else what)
+        # A card whose read failed has no months: say so, never "No graded units" (the review of
+        # option B, 2026-10-04). Its meter draws nothing for the same reason (PassMeter).
         self.chart.set_data(item.months, [formats.month(d).split(" ")[0] for d in months],
-                            colour, value_text=od.pct_text)
+                            colour, value_text=od.pct_text,
+                            empty_text=FAILED_NOTE if item.units is None else None)
         for name, value in _facts(ov, item).items():
             label, shown = self._fact_names[name], self.facts[name]
             if value is None:

@@ -78,6 +78,15 @@ def test_chart_lines_stand_out_from_a_card(line):
     assert contrast(getattr(T, line), T.CARD) >= 3.0  # WCAG graphics minimum
 
 
+def test_the_month_bars_show_on_a_row_and_the_bright_ones_stand_apart():
+    """The Overview list's bars (James picked them, 2026-10-04): the months the 90-day % covers
+    bright, the months before muted -- muted, but never lost on a row, selected or not."""
+    assert contrast(T.CHART_BAR, T.CARD) >= 3.0                # WCAG graphics minimum
+    for surface in (T.CARD, T.ELEVATED):
+        assert contrast(T.CHART_BAR_MUTED, surface) >= 2.0
+    assert contrast(T.CHART_BAR, T.CHART_BAR_MUTED) >= 3.0
+
+
 def test_pass_can_never_be_mistaken_for_the_accent():
     d = abs((hue(T.PASS_FG) - hue(T.ACCENT) + 180) % 360 - 180)
     assert d >= 45, f"PASS green and the accent are only {d:.0f} degrees apart"

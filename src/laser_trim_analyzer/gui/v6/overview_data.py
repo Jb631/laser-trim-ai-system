@@ -274,7 +274,14 @@ def trend_words(pass_pct: Optional[float], was_pct: Optional[float]) -> Tuple[st
 
 
 def focus_reason(entry) -> str:
-    return f"Fail rate {entry.p_base:.0%} → {entry.p_recent:.0%}"
+    """"A recent run failed 74% (usually 36%)": the fail rate pooled over the run(s) of the last
+    RECENT_K that the fail-rate chart flagged, then the model's own normal rate. "3 recent runs"
+    when three were flagged. (James, 2026-10-04, of the list: "these little charts and % dont mean
+    anything?" -- the row now says why the model is there, in these words.)"""
+    n = int(getattr(entry, "n_flagged_recent", 1) or 1)
+    runs = "A recent run" if n == 1 else f"{n} recent runs"
+    return (f"{runs} failed {pct_text(entry.p_recent * 100)} "
+            f"(usually {pct_text(entry.p_base * 100)})")
 
 
 def drift_reason(status, metric: str) -> str:
@@ -629,6 +636,16 @@ def month_starts(anchor: Optional[datetime]) -> List[date]:
     if anchor is None:
         return []
     return [date(y, m + 1, 1) for y, m in _month_keys(anchor.date())]
+
+
+def window_months(anchor: Optional[datetime]) -> int:
+    """How many of the newest MONTHS months the 90 days touch -- the bars a list row draws bright,
+    so the eye ties them to the 90-day pass % beside them: 3 when the newest file is late in its
+    month (29 Sep: 2 Jul - 29 Sep), 4 when it is early (3 Sep: 6 Jun - 3 Sep). 0 with no anchor."""
+    if anchor is None:
+        return 0
+    first, _prior = _window(anchor.date())
+    return sum(1 for key in _month_keys(anchor.date()) if key >= (first.year, first.month - 1))
 
 
 def _month_keys(anchor_day: date) -> List[Tuple[int, int]]:

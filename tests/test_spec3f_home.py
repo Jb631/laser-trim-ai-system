@@ -11,9 +11,12 @@ handed:
   * ONE header line -- "13 models need a look · $X lost at final test in the last 90 days · newest
     file 20 Mar 2026" -- never a count or a sum it does not have;
   * the yield-by-laser chart as a compact strip, always visible, above the list;
-  * the LIST: "Needs a look (N)" then "Everything else (N)", each row the model, its units, its
-    pass %, a twelve-month line in its laser's colour and the hand-trim tag; the selected row
-    ELEVATED with a border; "Other models on file" and "Inactive models" folded at its end;
+  * the LIST: "Needs a look (N)" then "Everything else (N)", each section naming its columns; each
+    row the model over its units and tags, what changed (a card's reason, a row's year-on-year),
+    twelve months as bars on one scale, the 90-day pass % -- every column lined up down the list
+    (James, 2026-10-04, of the line and bare % before: "these little charts and % dont mean
+    anything?"); the selected row ELEVATED with a border; "Other models on file" and "Inactive
+    models" folded at its end;
   * the DETAIL of the selected row (the first card on load, a click selects): the model in the
     title face, its status word, a pass meter with "was", why it is here, twelve months, the facts,
     and "Open full page ›";
@@ -56,7 +59,7 @@ def _buttons(widget):
 
 
 def _card(model="7000", **kw):
-    kw.setdefault("reason", "Fail rate 4% → 12%")
+    kw.setdefault("reason", "A recent run failed 12% (usually 4%)")
     kw.setdefault("units", 412)
     kw.setdefault("pass_pct", 71.6)
     kw.setdefault("was_pct", 84.0)
@@ -215,23 +218,71 @@ def test_the_list_is_needs_a_look_then_everything_else_then_the_folded_lines(mak
     assert page._list.grid_info()["column"] == 0 and page._detail.grid_info()["column"] == 1
 
 
-def test_a_row_is_its_model_units_pass_and_a_mini_line_in_its_lasers_colour(make_app, monkeypatch):
+def test_a_row_is_its_model_units_what_changed_its_month_bars_and_its_pass(make_app, monkeypatch):
     page = _show(make_app(), monkeypatch, _ov(
-        cards=[_card("7000", lasers=["A", "C"]),                       # laser 2 first: teal
-               _card("8506", final_test=True, units=25, lasers=[]),     # final test only: neutral
+        cards=[_card("7000", lasers=["A", "C"]),
+               _card("8506", final_test=True, units=25, lasers=[]),
                _card("8232-1", hand_trim=True, lasers=["B"])],
-        others=[_row("7100", lasers=["C"])]))
+        others=[_row("7100", lasers=["C"]), _row("7200", pass_pct=61.0, was_pct=70.0)]))
     t = page.theme
     first, ft, hand = page._card_rows
-    assert _labels(first) == ["7000", "412 units", "72%"]
+    assert _labels(first) == ["7000", "412 units", "A recent run failed 12% (usually 4%)", "72%"]
+    assert first._why.cget("text_color") == t.FAIL_FG              # why it needs a look
     assert first._pct.cget("font").cget("family") in (t.resolved_mono, t.resolved_mono_medium)
-    assert first._spark.color == t.series_color("A") == t.SERIES_A
-    assert first._spark.values == MONTHS
-    assert "25 units · final test" in _labels(ft) and ft._spark.color == t.CHART_REFERENCE
-    assert hand._spark.color == t.SERIES_B and "hand trim" in _labels(hand)
-    assert "hand trim" not in _labels(first)
-    (row,) = page._other_rows
-    assert _labels(row) == ["7100", "120 units", "96%"] and row._spark.color == t.SERIES_C
+    assert first._bars.values == MONTHS
+    assert first._bars.recent == od.window_months(ANCHOR) == 4     # 22 Dec - 20 Mar
+    # The tags sit under the units: the numbers of a final-test card are final test's.
+    assert _labels(ft)[:3] == ["8506", "25 units", "final test"]
+    assert _labels(hand)[:3] == ["8232-1", "412 units", "hand trim"]
+    assert "hand trim" not in _labels(first) and "final test" not in _labels(first)
+    # Everything else: its 90 days against the year before, in that change's colour.
+    steady, down = page._other_rows
+    assert _labels(steady) == ["7100", "120 units", "steady", "96%"]
+    assert steady._why.cget("text_color") == t.TEXT_SECONDARY
+    assert _labels(down)[2] == "down 9 pts" and down._why.cget("text_color") == t.FAIL_FG
+
+
+def test_each_section_names_its_columns_and_only_over_rows(make_app, monkeypatch):
+    from laser_trim_analyzer.gui.v6.pages import home_page as hp
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card("A")], others=[_row("R")]))
+    assert _labels(page._cards_head) == ["Model", "What changed", "Pass by month", "90 days"]
+    assert _labels(page._others_head) == ["Model", "On the year before", "Pass by month", "90 days"]
+    order = page._list.pack_slaves()
+    assert (order.index(page._need_heading) < order.index(page._cards_head)
+            < order.index(page._cards_frame) < order.index(page._others_heading)
+            < order.index(page._others_head) < order.index(page._others_frame))
+    assert hp.HEAD_WHY == "What changed" and hp.HEAD_YEAR == "On the year before"
+    page = _show(page.app, monkeypatch, _ov(cards=[], others=[_row("R")]))
+    assert page._cards_head.winfo_manager() == ""                  # "No model needs a look."
+    assert page._others_head.winfo_manager() == "pack"
+
+
+def test_every_column_lines_up_down_the_list_and_under_its_name(make_app, monkeypatch):
+    app = make_app()
+    page = _show(app, monkeypatch, _ov(
+        cards=[_card("8232-1", hand_trim=True, pass_pct=41.0),
+               _card("8504-2", pass_pct=100.0, reason=_LONG),
+               _card("1844205", final_test=True, pass_pct=65.0)],
+        others=[_row("6126", pass_pct=94.5), _row("8877-4", pass_pct=100.0)]))
+    _mapped(app)
+    try:
+        rows = page._card_rows + page._other_rows
+        x = lambda w: w.winfo_rootx()                               # noqa: E731
+        right = lambda w: w.winfo_rootx() + w.winfo_width()         # noqa: E731
+        assert len({x(r._why_box) for r in rows}) == 1, [x(r._why_box) for r in rows]
+        assert len({x(r._bars) for r in rows}) == 1, [x(r._bars) for r in rows]
+        assert len({right(r._pct) for r in rows}) == 1, [right(r._pct) for r in rows]
+        for head in (page._cards_head, page._others_head):
+            assert abs(x(head.why) - x(rows[0]._why_box)) <= 1
+            assert abs(x(head.bars) - x(rows[0]._bars)) <= 1
+            assert abs(right(head.pct) - right(rows[0]._pct)) <= 1
+            assert right(head.bars) < x(head.pct), "the two names overlap"
+        # A long reason wraps inside its column: it never runs under the bars.
+        long_row = page._card_rows[1]
+        assert right(long_row._why) <= x(long_row._bars)
+        assert long_row._why.winfo_height() > page._card_rows[0]._why.winfo_height()
+    finally:
+        app.withdraw()
 
 
 def test_the_first_card_is_selected_on_load_elevated_with_a_border(make_app, monkeypatch):
@@ -241,7 +292,7 @@ def test_the_first_card_is_selected_on_load_elevated_with_a_border(make_app, mon
     a, b = page._card_rows
     assert (a.cget("fg_color"), a.cget("border_color")) == (t.ELEVATED, t.BORDER)
     assert b.cget("fg_color") != t.ELEVATED and b.cget("border_color") != t.BORDER
-    assert a._spark.cget("bg") == t.ELEVATED and b._spark.cget("bg") == b.cget("fg_color")
+    assert a._bars.cget("bg") == t.ELEVATED and b._bars.cget("bg") == b.cget("fg_color")
 
 
 def test_with_no_card_the_first_row_is_selected_and_a_reload_keeps_the_selection(make_app,
@@ -265,7 +316,7 @@ def test_a_click_selects_a_row_and_the_detail_follows_without_leaving_the_page(m
     try:
         _click(app, page._card_rows[1]._pct)
         assert page._selected == "7001" and page._detail.title.cget("text") == "7001"
-        _click(app, page._other_rows[0]._spark)
+        _click(app, page._other_rows[0]._bars)
         assert page._selected == "7100" and page._detail.title.cget("text") == "7100"
     finally:
         app.withdraw()
@@ -441,6 +492,14 @@ def test_failed_pass_rates_never_read_as_an_empty_list(make_app, monkeypatch):
     facts = page._detail.shown_facts()
     assert facts["Units, last 90 days"] == "—" and facts["Lasers"] == "—"
     assert facts["$ lost at final test, 90 days"] == "could not be worked out"
+    # The detail's chart and meter name the failure too -- never "No graded units", never an
+    # empty meter that reads as 0% (the review of option B, 2026-10-04).
+    from laser_trim_analyzer.gui.v6.pages.home_page import FAILED_NOTE
+    chart = page._detail.chart
+    assert [chart.itemcget(i, "text") for i in chart.find_withtag("note")] == [FAILED_NOTE]
+    assert page._detail.meter.find_all() == () and page._detail.pct.cget("text") == "—"
+    (row,) = page._card_rows
+    assert row._bars.cget("text") == "—"                           # the row's bars: a dash too
 
 
 # ---- the inactive models: one line, expanding in place (F5) ------------------------------------
@@ -660,13 +719,15 @@ def test_the_page_draws_what_the_loader_finds_in_a_real_database(make_app):
     page.reload_now()
     assert page._headline.cget("text").startswith("1 model needs a look · ")
     (row,) = page._card_rows
-    assert row.model == "HOT" and page._detail.reason.cget("text") == "Fail rate 10% → 60%"
+    assert row.model == "HOT"
+    assert page._detail.reason.cget("text") == "A recent run failed 60% (usually 10%)"
     assert [r.model for r in page._other_rows] == ["CALM"]
 
 
 # ---- nothing is cut at 1280x720 (the render audit's own detector) --------------------------------
 
-_LONG = "Untrimmed resistance 21,270 → 23,113 · Fail rate 34% → 74% · still passing"
+_LONG = ("3 recent runs failed 74% (usually 34%) · Untrimmed resistance 21,270 → 23,113 · "
+         "still passing")
 
 
 @pytest.mark.parametrize("scale", (1.0, 1.5))

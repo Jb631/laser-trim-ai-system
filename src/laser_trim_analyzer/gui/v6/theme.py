@@ -62,6 +62,9 @@ class ThemeManager:
     CHART_REFERENCE: str = "#8b8b93"
     CHART_HIGHLIGHT: str = "#60a5fa"; CHART_HISTORY: str = "#2a3a58"
     SERIES_A: str = "#2dd4bf"; SERIES_B: str = "#a3e635"; SERIES_C: str = "#c084fc"
+    # The Overview list's twelve month bars (James picked them from mockups, 2026-10-04): the
+    # months the 90-day pass % beside them covers in BAR, the months before in BAR_MUTED.
+    CHART_BAR: str = "#ededed"; CHART_BAR_MUTED: str = "#5b5b63"
     CHART_FONT_SMALL: float = 8.0; CHART_FONT: float = 9.0; CHART_FONT_LARGE: float = 10.0
     # Typography. On Windows (GDI) Plex Medium is its OWN family, not a weight of Plex Sans,
     # so "bold" is mapped onto it in font()/mono() when it is available.
