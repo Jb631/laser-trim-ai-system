@@ -34,7 +34,7 @@ repeated under the bar on any page.
 - the CARD_RULE caption;
 - below: a LIST (left, scrolls on its own) and a DETAIL (right):
   - list: "Needs a look (13)" then "Everything else (42)", each under its column names (Model ·
-    What changed / On the year before · Pass by month · 90 days); each row: the model over its
+    What changed / On the year before · Pass %: 12 months · 90 days); each row: the model over its
     units and its hand-trim / final-test tags, what changed, twelve month bars (decision 6), the
     90-day pass % -- every column lined up down the list; "Other models on file (N) ▸" and
     "Inactive models (N) ▸" folded at the end;

@@ -111,7 +111,7 @@ Months = List[Optional[float]]
 class Card:
     """One model that needs a look, and the line saying why."""
     model: str
-    reason: str
+    reason: str                          # one line: `why` joined by " · " (the detail's)
     # graded trims in the 90 days (final tests if final_test); None when the read it rests on
     # failed -- the banner names it, and the card prints no count it does not have
     units: Optional[int] = 0
@@ -130,6 +130,10 @@ class Card:
     ft_fails: Optional[int] = None
     money: Optional[float] = None
     newest: Optional[date] = None        # the day of its newest counted file (trim, or final test)
+    # The reason's parts, the signal first: ["A recent run failed 74%", "usually 36%",
+    # "Untrimmed resistance 5,223 → 6,226"]. A list row draws one per line -- never a phrase broken
+    # across two. [] = only `reason` is known (the row draws that).
+    why: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -273,15 +277,21 @@ def trend_words(pass_pct: Optional[float], was_pct: Optional[float]) -> Tuple[st
     return (f"up {pts} pts", "up") if pts > 0 else (f"down {-pts} pts", "down")
 
 
-def focus_reason(entry) -> str:
-    """"A recent run failed 74% (usually 36%)": the fail rate pooled over the run(s) of the last
-    RECENT_K that the fail-rate chart flagged, then the model's own normal rate. "3 recent runs"
-    when three were flagged. (James, 2026-10-04, of the list: "these little charts and % dont mean
-    anything?" -- the row now says why the model is there, in these words.)"""
+def focus_parts(entry) -> List[str]:
+    """["A recent run failed 74%", "usually 36%"]: the fail rate pooled over the run(s) of the last
+    RECENT_K that the fail-rate chart flagged, then the model's own normal rate -- "3 recent runs"
+    when three were flagged. Two parts, so a list row can put each on its own line (James,
+    2026-10-04, of the list: "these little charts and % dont mean anything?" -- each row now says
+    why the model is there, in these words)."""
     n = int(getattr(entry, "n_flagged_recent", 1) or 1)
     runs = "A recent run" if n == 1 else f"{n} recent runs"
-    return (f"{runs} failed {pct_text(entry.p_recent * 100)} "
-            f"(usually {pct_text(entry.p_base * 100)})")
+    return [f"{runs} failed {pct_text(entry.p_recent * 100)}",
+            f"usually {pct_text(entry.p_base * 100)}"]
+
+
+def focus_reason(entry) -> str:
+    """"A recent run failed 74% · usually 36%": focus_parts on one line."""
+    return " · ".join(focus_parts(entry))
 
 
 def drift_reason(status, metric: str) -> str:
@@ -371,7 +381,7 @@ def load_overview(db, *, prices: Optional[Dict[Any, Any]] = None, cost_ratio: Op
         newest = None if unknown else _newest(days, anchor_day)
         parts, metric = [], None
         if entry is not None:
-            parts.append(focus_reason(entry))
+            parts.extend(focus_parts(entry))
             metric = getattr(getattr(entry, "series", None), "metric", None) or FOCUS_METRIC
         flag = by_flag.get(model)
         if flag is not None:
@@ -379,7 +389,8 @@ def load_overview(db, *, prices: Optional[Dict[Any, Any]] = None, cost_ratio: Op
             metric = metric or flag.worst_metric
             if pass_pct is not None and pass_pct >= STILL_PASSING:
                 parts.append("still passing")
-        ov.cards.append(Card(model=model, reason=" · ".join(parts), units=units, pass_pct=pass_pct,
+        ov.cards.append(Card(model=model, reason=" · ".join(parts), why=list(parts), units=units,
+                             pass_pct=pass_pct,
                              was_pct=was_pct, months=months, final_test=final_test,
                              hand_trim=model in HAND_TRIM_MODELS, metric=metric,
                              lasers=_lasers(systems.get(model), anchor_day) if rates_known else None,

@@ -59,7 +59,9 @@ def _buttons(widget):
 
 
 def _card(model="7000", **kw):
-    kw.setdefault("reason", "A recent run failed 12% (usually 4%)")
+    if "reason" not in kw:                  # the loader's shape: the parts, and them on one line
+        kw.setdefault("why", ["A recent run failed 12%", "usually 4%"])
+        kw["reason"] = " · ".join(kw["why"])
     kw.setdefault("units", 412)
     kw.setdefault("pass_pct", 71.6)
     kw.setdefault("was_pct", 84.0)
@@ -226,8 +228,9 @@ def test_a_row_is_its_model_units_what_changed_its_month_bars_and_its_pass(make_
         others=[_row("7100", lasers=["C"]), _row("7200", pass_pct=61.0, was_pct=70.0)]))
     t = page.theme
     first, ft, hand = page._card_rows
-    assert _labels(first) == ["7000", "412 units", "A recent run failed 12% (usually 4%)", "72%"]
-    assert first._why.cget("text_color") == t.FAIL_FG              # why it needs a look
+    assert _labels(first) == ["7000", "412 units", "A recent run failed 12%", "usually 4%", "72%"]
+    assert first._why.cget("text_color") == t.FAIL_FG              # why it needs a look...
+    assert first._why_more.cget("text_color") == t.TEXT_SECONDARY  # ...and what qualifies it
     assert first._pct.cget("font").cget("family") in (t.resolved_mono, t.resolved_mono_medium)
     assert first._bars.values == MONTHS
     assert first._bars.recent == od.window_months(ANCHOR) == 4     # 22 Dec - 20 Mar
@@ -238,15 +241,28 @@ def test_a_row_is_its_model_units_what_changed_its_month_bars_and_its_pass(make_
     # Everything else: its 90 days against the year before, in that change's colour.
     steady, down = page._other_rows
     assert _labels(steady) == ["7100", "120 units", "steady", "96%"]
-    assert steady._why.cget("text_color") == t.TEXT_SECONDARY
+    assert steady._why.cget("text_color") == t.TEXT_SECONDARY and steady._why_more is None
     assert _labels(down)[2] == "down 9 pts" and down._why.cget("text_color") == t.FAIL_FG
+
+
+def test_a_cards_signal_comes_first_and_each_qualifier_on_its_own_quiet_line(make_app, monkeypatch):
+    """8889's shape on the work data: two signals. Each line whole -- "5,223 → 6,226" is never
+    broken at its arrow (non-breaking spaces round it)."""
+    why = ["A recent run failed 10%", "usually 0%", "Untrimmed resistance 5,223 → 6,226"]
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card("8889", why=why,
+                                                               reason=" · ".join(why))]))
+    (row,) = page._card_rows
+    assert row._why.cget("text") == "A recent run failed 10%"
+    assert row._why_more.cget("text") == "usually 0%\nUntrimmed resistance 5,223\u00a0→\u00a06,226"
+    assert page._detail.reason.cget("text") == " · ".join(why)     # the detail: one line, as is
 
 
 def test_each_section_names_its_columns_and_only_over_rows(make_app, monkeypatch):
     from laser_trim_analyzer.gui.v6.pages import home_page as hp
     page = _show(make_app(), monkeypatch, _ov(cards=[_card("A")], others=[_row("R")]))
-    assert _labels(page._cards_head) == ["Model", "What changed", "Pass by month", "90 days"]
-    assert _labels(page._others_head) == ["Model", "On the year before", "Pass by month", "90 days"]
+    assert _labels(page._cards_head) == ["Model", "What changed", "Pass %", "12 months", "90 days"]
+    assert _labels(page._others_head) == ["Model", "On the year before", "Pass %", "12 months",
+                                          "90 days"]
     order = page._list.pack_slaves()
     assert (order.index(page._need_heading) < order.index(page._cards_head)
             < order.index(page._cards_frame) < order.index(page._others_heading)
@@ -261,7 +277,7 @@ def test_every_column_lines_up_down_the_list_and_under_its_name(make_app, monkey
     app = make_app()
     page = _show(app, monkeypatch, _ov(
         cards=[_card("8232-1", hand_trim=True, pass_pct=41.0),
-               _card("8504-2", pass_pct=100.0, reason=_LONG),
+               _card("8504-2", pass_pct=100.0, why=_LONG.split(" · "), reason=_LONG),
                _card("1844205", final_test=True, pass_pct=65.0)],
         others=[_row("6126", pass_pct=94.5), _row("8877-4", pass_pct=100.0)]))
     _mapped(app)
@@ -277,10 +293,11 @@ def test_every_column_lines_up_down_the_list_and_under_its_name(make_app, monkey
             assert abs(x(head.bars) - x(rows[0]._bars)) <= 1
             assert abs(right(head.pct) - right(rows[0]._pct)) <= 1
             assert right(head.bars) < x(head.pct), "the two names overlap"
-        # A long reason wraps inside its column: it never runs under the bars.
+        # A reason's lines stay inside their column: never under the bars.
         long_row = page._card_rows[1]
         assert right(long_row._why) <= x(long_row._bars)
-        assert long_row._why.winfo_height() > page._card_rows[0]._why.winfo_height()
+        assert right(long_row._why_more) <= x(long_row._bars)
+        assert long_row._why_box.winfo_height() > page._card_rows[0]._why_box.winfo_height()
     finally:
         app.withdraw()
 
@@ -720,13 +737,15 @@ def test_the_page_draws_what_the_loader_finds_in_a_real_database(make_app):
     assert page._headline.cget("text").startswith("1 model needs a look · ")
     (row,) = page._card_rows
     assert row.model == "HOT"
-    assert page._detail.reason.cget("text") == "A recent run failed 60% (usually 10%)"
+    assert page._detail.reason.cget("text") == "A recent run failed 60% · usually 10%"
+    assert (row._why.cget("text"), row._why_more.cget("text")) == ("A recent run failed 60%",
+                                                                   "usually 10%")
     assert [r.model for r in page._other_rows] == ["CALM"]
 
 
 # ---- nothing is cut at 1280x720 (the render audit's own detector) --------------------------------
 
-_LONG = ("3 recent runs failed 74% (usually 34%) · Untrimmed resistance 21,270 → 23,113 · "
+_LONG = ("3 recent runs failed 74% · usually 34% · Untrimmed resistance 21,270 → 23,113 · "
          "still passing")
 
 

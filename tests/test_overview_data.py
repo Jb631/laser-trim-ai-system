@@ -122,11 +122,15 @@ def test_each_card_says_why_it_is_there_and_both_lists_join_with_a_dot(tmp_path,
                   "FT": _status("FT", "ft_fail_fraction", 0.025, 0.1875)})
     reasons = {c.model: c.reason for c in od.load_overview(db).cards}
     assert reasons == {
-        "F1": "A recent run failed 12% (usually 4%)",
-        "BOTH": "A recent run failed 40% (usually 10%) · Untrimmed error (max) 0.1 → 0.2",
+        "F1": "A recent run failed 12% · usually 4%",
+        "BOTH": "A recent run failed 40% · usually 10% · Untrimmed error (max) 0.1 → 0.2",
         "RES": "Untrimmed resistance 4,693 → 5,897",       # the theme's fmt_measure
         "FT": "Final-test lot fail rate 2.5% → 18.8%",     # a fraction reads as a percent
     }
+    # A list row's lines: the signal first, then what qualifies it -- one part per line.
+    why = {c.model: c.why for c in od.load_overview(db).cards}
+    assert why["BOTH"] == ["A recent run failed 40%", "usually 10%", "Untrimmed error (max) 0.1 → 0.2"]
+    assert why["RES"] == ["Untrimmed resistance 4,693 → 5,897"]
 
 
 def test_a_signal_that_moved_on_a_model_still_passing_says_so(tmp_path, monkeypatch):
@@ -141,6 +145,8 @@ def test_a_signal_that_moved_on_a_model_still_passing_says_so(tmp_path, monkeypa
     assert reasons["CLEAN"] == "Untrimmed error (max) 0.1 → 0.2 · still passing"
     assert reasons["EDGE"].endswith(" · still passing")
     assert reasons["SLIP"] == "Untrimmed error (max) 0.1 → 0.2"
+    clean = next(c for c in od.load_overview(db).cards if c.model == "CLEAN")
+    assert clean.why == ["Untrimmed error (max) 0.1 → 0.2", "still passing"]
 
 
 def test_a_real_fail_rate_excursion_is_a_card_with_its_rates(tmp_path):
@@ -153,7 +159,8 @@ def test_a_real_fail_rate_excursion_is_a_card_with_its_rates(tmp_path):
     ov = od.load_overview(db)
     hot = [c for c in ov.cards if c.model == "HOT"]
     assert len(hot) == 1, [c.model for c in ov.cards]
-    assert hot[0].reason == "A recent run failed 60% (usually 10%)"
+    assert hot[0].reason == "A recent run failed 60% · usually 10%"
+    assert hot[0].why == ["A recent run failed 60%", "usually 10%"]      # a row's lines
     assert hot[0].units == 240 and hot[0].pass_pct == pytest.approx(100 * 206 / 240)
 
 
@@ -954,15 +961,17 @@ def test_with_no_prices_the_money_check_holds_the_header_to_asking_for_them(tmp_
 
 def test_a_fail_rate_reason_says_how_many_runs_failed_how_often_and_what_is_usual():
     from types import SimpleNamespace as NS
+    assert od.focus_parts(NS(p_base=0.36, p_recent=0.74, n_flagged_recent=1)) == \
+        ["A recent run failed 74%", "usually 36%"]
     assert od.focus_reason(NS(p_base=0.36, p_recent=0.74, n_flagged_recent=1)) == \
-        "A recent run failed 74% (usually 36%)"
+        "A recent run failed 74% · usually 36%"
     assert od.focus_reason(NS(p_base=0.36, p_recent=0.74, n_flagged_recent=3)) == \
-        "3 recent runs failed 74% (usually 36%)"
+        "3 recent runs failed 74% · usually 36%"
     # pct_text's rule: never rounded to all or nothing -- a 0.4% baseline is not "usually 0%".
     assert od.focus_reason(NS(p_base=0.004, p_recent=1.0, n_flagged_recent=1)) == \
-        "A recent run failed 100% (usually 1%)"
+        "A recent run failed 100% · usually 1%"
     assert od.focus_reason(NS(p_base=0.0, p_recent=0.9, n_flagged_recent=2)) == \
-        "2 recent runs failed 90% (usually 0%)"
+        "2 recent runs failed 90% · usually 0%"
 
 
 @pytest.mark.parametrize("anchor, months", [

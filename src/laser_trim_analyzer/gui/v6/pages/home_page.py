@@ -76,14 +76,17 @@ FIT = 0
 # A row's columns: model | what changed (takes the rest, wraps) | the month bars | the 90-day %.
 # Fixed widths, so the reasons, the bars and the percentages line up down the list.
 MODEL_COLUMN = 88         # the model, its units, its tags ("hand trim" is 84 wide)
-BARS_SIZE = (96, 26)      # twelve bars
+BARS_SIZE = (84, 26)      # twelve bars
 PCT_COLUMN = 52           # the 90-day pass % ("100%", and its column's name "90 days")
 # The column names (sentence case: test_blocks lints shouting).
 HEAD_MODEL = "Model"
 HEAD_WHY = "What changed"                  # Needs a look: why the model is there
 HEAD_YEAR = "On the year before"           # Everything else: its 90 days against the year before
-HEAD_BARS = "Pass by month"
+HEAD_PASS = "Pass %"                       # over the last two: the bars and the % are both pass %
+HEAD_BARS = "12 months"
 HEAD_PCT = "90 days"
+# A reason's "before → after" kept on one line: wrapped, "→ 6,226" sat alone on the next.
+_KEEP_TOGETHER = (" → ", "\u00a0→\u00a0")
 FOLDED_COLUMNS = 1        # the folded lines' models, one to a line in the list's width
 # The yield chart as a strip: the Company trends chart as it is, only shorter (its figure is 2.6 in)
 STRIP_INCHES = 1.9
@@ -570,12 +573,15 @@ def _row_tags(item) -> List[str]:
                              ("final test", getattr(item, "final_test", False))) if on])
 
 
-def _what_changed(theme, item) -> Tuple[str, str]:
-    """(words, colour) for a row's middle column: a card's reason, in the fail colour; a row's
-    90 days against the year before ("down 6 pts", "steady", "new"), in its tone's colour."""
+def _what_changed(theme, item) -> Tuple[str, str, str]:
+    """(first line, its colour, the lines under it) for a row's middle column. A card: its signal
+    in the fail colour, then what qualifies it -- "usually 36%", another signal, "still passing" --
+    one per line, quiet (the mockup James picked, 2026-10-04). A row: its 90 days against the year
+    before ("down 6 pts", "steady", "new") in that change's colour."""
     if isinstance(item, od.Card):
-        return item.reason, theme.FAIL_FG
-    return item.trend, getattr(theme, _TONE.get(item.tone, "TEXT_SECONDARY"))
+        lines = [line.replace(*_KEEP_TOGETHER) for line in (list(item.why) or [item.reason])]
+        return lines[0], theme.FAIL_FG, "\n".join(lines[1:])
+    return item.trend, getattr(theme, _TONE.get(item.tone, "TEXT_SECONDARY")), ""
 
 
 def _trend_sentence(row: od.Row) -> str:
@@ -711,7 +717,9 @@ def _grid_columns(frame, theme) -> None:
 
 
 class _ListHeader(ctk.CTkFrame):
-    """A section's column names, on the rows' own columns, over a thin line."""
+    """A section's column names, on the rows' own columns, over a thin line -- "Pass %" over the
+    last two ("12 months" · "90 days"): side by side, "Pass by month" and "90 days" read as one
+    phrase (seen on the work data's copy, 2026-10-04)."""
 
     def __init__(self, master, theme, why: str):
         t = theme
@@ -720,19 +728,18 @@ class _ListHeader(ctk.CTkFrame):
         pad = t.SPACE_SM
         font, colour = t.font(t.SIZE_CAPTION), t.TEXT_SECONDARY
 
-        def name(text, column, **grid):
+        def name(text, row, column, **grid):
             label = ctk.CTkLabel(self, text=text, font=font, text_color=colour, height=FIT,
                                  anchor=grid.pop("anchor", "w"))
-            label.grid(row=0, column=column, **grid)
+            label.grid(row=row, column=column, **grid)
             return label
-        self.model = name(HEAD_MODEL, 0, sticky="w", padx=(pad, 0))
-        self.why = name(why, 1, sticky="w", padx=(pad, 0))
-        # "Pass by month" may run past the bars' width: it spans the % column too, whose own name
-        # sits at its right edge -- two short words, never overlapping.
-        self.bars = name(HEAD_BARS, 2, columnspan=2, sticky="w", padx=(pad, 0))
-        self.pct = name(HEAD_PCT, 3, sticky="e", padx=(0, pad), anchor="e")
+        self.model = name(HEAD_MODEL, 1, 0, sticky="sw", padx=(pad, 0))
+        self.why = name(why, 1, 1, sticky="sw", padx=(pad, 0))
+        self.passed = name(HEAD_PASS, 0, 2, columnspan=2, sticky="w", padx=(pad, 0))
+        self.bars = name(HEAD_BARS, 1, 2, sticky="w", padx=(pad, 0))
+        self.pct = name(HEAD_PCT, 1, 3, sticky="e", padx=(0, pad), anchor="e")
         ctk.CTkFrame(self, height=1, fg_color=t.BORDER, corner_radius=0).grid(
-            row=1, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+            row=2, column=0, columnspan=4, sticky="ew", pady=(2, 0))
 
 
 class _ListRow(ctk.CTkFrame):
@@ -768,14 +775,21 @@ class _ListRow(ctk.CTkFrame):
 
         # What changed: wraps to whatever width the fixed columns leave it (blocks.wrap_to_width,
         # bound to a frame built -- and destroyed -- with this row, so the binding never piles up).
-        words, colour = _what_changed(t, item)
+        first, colour, more = _what_changed(t, item)
         self._why_box = ctk.CTkFrame(self, fg_color="transparent")
         self._why_box.grid(row=0, column=1, rowspan=span, sticky="new", padx=(side, 0),
                            pady=(pad, pad))
-        self._why = ctk.CTkLabel(self._why_box, text=words, font=t.font(t.SIZE_CAPTION),
+        self._why = ctk.CTkLabel(self._why_box, text=first, font=t.font(t.SIZE_CAPTION),
                                  text_color=colour, anchor="w", justify="left", height=FIT)
         self._why.pack(side="top", fill="x")
         blocks.wrap_to_width(self._why, self._why_box)
+        self._why_more: Optional[ctk.CTkLabel] = None
+        if more:
+            self._why_more = ctk.CTkLabel(self._why_box, text=more, font=t.font(t.SIZE_CAPTION),
+                                          text_color=t.TEXT_SECONDARY, anchor="w", justify="left",
+                                          height=FIT)
+            self._why_more.pack(side="top", fill="x")
+            blocks.wrap_to_width(self._why_more, self._why_box)
 
         gap = self._apply_widget_scaling(side)              # a plain canvas: scaled here
         top = self._apply_widget_scaling(pad)
