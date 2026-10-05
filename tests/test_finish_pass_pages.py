@@ -529,3 +529,183 @@ def test_the_findings_page_opens_a_model_with_a_secondary_button(tk_root):
     (button,) = [b for b in view._detail.winfo_children() if isinstance(b, ctk.CTkButton)]
     assert button.cget("text") == "Open 6607"
     assert (button.cget("fg_color"), button.cget("border_width")) == (t.CARD, 1)
+
+
+# ---- 6. The Model page: tabs on the left, two lines before the chart ----------------------------
+
+def test_the_model_tabs_sit_on_the_left_and_are_easier_to_hit(make_app):
+    """"Small centred tabs" (2026-10-04): CustomTkinter centres a 26 px strip, each tab only as wide
+    as its word."""
+    app = make_app()
+    page = app.page_container.get_page("model")
+    tabs, t = page._tabs, page.theme
+    strip = tabs._segmented_button
+    assert tabs.cget("anchor") == "nw"
+    sticky = strip.grid_info()["sticky"]
+    assert "w" in sticky and "e" not in sticky, sticky
+    assert strip.cget("font").cget("size") == t.SIZE_BODY
+    assert strip.cget("height") >= 32
+    assert {name: b.cget("width") >= 96 for name, b in strip._buttons_dict.items()} == {
+        "Summary": True, "Units": True, "Final test": True, "History": True}
+
+
+def test_summary_says_two_lines_before_its_chart(make_app, monkeypatch):
+    """A red headline, a grey detail line and the Lots/Units caption stood under a full-width red
+    banner before the chart (2026-10-04). Now: the headline, then ONE line of facts with the
+    chart's own view switch at its end."""
+    import customtkinter as ctk
+    from test_spec3c_model import _worth_app
+    app, page = _worth_app(make_app, finding=False)
+    monkeypatch.setattr(page, "_compute_verdict", lambda *a, **k: (
+        "Drifting — an invented verdict  ·  an invented fact  ·  another one", page.theme.CHECK))
+    page.reload_now()
+    slaves = page._summary.pack_slaves()
+    before_chart = slaves[:slaves.index(page._focus_chart)]
+    texts = [w.cget("text") for part in before_chart for w in _walk(part)
+             if isinstance(w, ctk.CTkLabel) and w.cget("text")]
+    assert texts == ["Drifting — an invented verdict", "an invented fact  ·  another one"], texts
+    assert str(page._chart_toggle).startswith(str(page._headline_box) + ".")
+    assert page._chart_toggle.master is page._headline_detail.master       # the facts line
+
+
+def test_the_station_spec_notice_is_one_quiet_line_that_opens_on_a_click(make_app):
+    from laser_trim_analyzer.core.spec_alignment import SpecComparison
+    app = make_app()
+    page = app.page_container.get_page("model")
+    t = page.theme
+    note = ("100% of the positions both stations measure are graded to different limits "
+            "(trim ±0.030 V, final test ±0.100 V)")
+    page._set_spec_banner(SpecComparison(
+        status="differs", pct_positions_differing=1.0, matched_positions=200,
+        trim_typ_band=0.03, ft_typ_band=0.10, note=note))
+    line = page._spec_banner
+    assert line.winfo_manager() == "pack"
+    assert (line.cget("text_color"), line.cget("fg_color")) == (t.CHECK, "transparent")
+    short = line.cget("text")
+    assert note not in short and "\n" not in short and short.endswith("▸")
+    assert line._label.bind("<Button-1>"), "a click must open it"
+    page._toggle_spec_notice()                       # what that click runs
+    assert note in line.cget("text") and "(escapes, Gap)" in line.cget("text")
+    page._toggle_spec_notice()
+    assert line.cget("text") == short
+    # The load banner -- a failure -- stays loud, above the tabs.
+    page._set_load_banner(["unit list"])
+    assert page._load_banner.cget("fg_color") == t.CHECK_TINT
+    assert page._load_banner.master is page._body
+
+
+# ---- 7. A fail-rate axis stops at 100% ----------------------------------------------------------
+
+def _visible_ytick_labels(chart):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    FigureCanvasAgg(chart._fig).draw()
+    y0, y1 = chart._ax.get_ylim()
+    return [lbl.get_text() for loc, lbl in zip(chart._ax.yaxis.get_majorticklocs(),
+                                                chart._ax.get_yticklabels())
+            if y0 <= loc <= y1 and lbl.get_text()]
+
+
+def test_the_lot_charts_fail_rate_axis_stops_at_100_percent(tk_root):
+    """The headroom for a flagged lot's sentence ran the axis to 125% (2026-10-04)."""
+    from datetime import timedelta
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+    from laser_trim_analyzer.ml.spc import build_fraction_series
+    samples = []
+    for k in range(14):
+        day = datetime(2026, 1, 5) + timedelta(days=7 * k)
+        fails = 20 if k == 13 else 2                       # the newest lot: every unit failed
+        samples += [(day, 1.0 if i < fails else 0.0) for i in range(20)]
+    series = build_fraction_series("INV-1", "linearity_fail_fraction", samples,
+                                   anchor=samples[-1][0])
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_spc_series(series)
+    assert chart._ax.get_ylim()[1] <= 1.05
+    labels = _visible_ytick_labels(chart)
+    assert labels and all(lbl.endswith("%") for lbl in labels), labels
+    assert max(int(lbl.rstrip("%")) for lbl in labels) <= 100, labels
+
+
+def test_a_fail_rate_in_the_units_view_stops_at_100_percent_too(tk_root):
+    from datetime import timedelta
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    dates = [datetime(2026, 9, 1) + timedelta(days=i) for i in range(30)]
+    chart.set_series(metric="linearity_fail_fraction", dates=dates,
+                     values=[1.0 if i % 3 == 0 else 0.9 for i in range(30)],
+                     baseline_mean=0.9, baseline_std=0.08)      # a band reaching past 100%
+    y0, y1 = chart._ax.get_ylim()
+    assert y1 <= 1.05 and y0 >= -0.05
+    labels = _visible_ytick_labels(chart)
+    assert labels and max(int(lbl.rstrip("%")) for lbl in labels) <= 100, labels
+
+
+# ---- 8. The Process page: one row per folder, no run button of its own --------------------------
+
+def test_the_remembered_folders_are_one_row_each_name_over_path(make_app):
+    app = make_app()
+    t = app.theme
+    for folder in (r"\\192.0.2.9\Laser1\Trim Data", r"\\192.0.2.9\Laser2\Test Data",
+                   "/Volumes/Invented Share/Final Test"):
+        app.config.ingest.add(folder)
+    run = app.page_container.get_page("process")._new_files
+    run.refresh_folders()
+    assert run._folders_label.cget("text") == "3 folders, in this order:"
+    assert [r.name_label.cget("text") for r in run._folder_rows] == [
+        "Trim Data", "Test Data", "Final Test"]
+    assert [r.path_label.cget("text") for r in run._folder_rows] == list(app.config.ingest.folders)
+    assert all(r.path_label.cget("text_color") == t.TEXT_SECONDARY for r in run._folder_rows)
+    assert all(r.name_label.cget("text_color") == t.TEXT_PRIMARY for r in run._folder_rows)
+    assert not [x for x in _texts(run) if "→" in x]        # never the run-on line again
+
+
+def test_a_folders_name_is_the_last_part_of_its_path():
+    from laser_trim_analyzer.gui.v6.pages.process_page import folder_name
+    assert folder_name(r"\\192.0.2.9\Public\LaserTrim") == "LaserTrim"
+    assert folder_name("/Users/someone/Trim Data/") == "Trim Data"
+    assert folder_name("C:\\") == "C:\\"
+
+
+def test_the_process_page_has_no_run_button_the_top_bars_starts_it(make_app, monkeypatch, tmp_path):
+    import customtkinter as ctk
+    from test_spec3e_process import _NoThread, _no_threads
+    _no_threads(monkeypatch)
+    app = make_app()
+    app.config.ingest.add(str(tmp_path))
+    page = app.page_container.get_page("process")
+    page.on_show()
+    assert "Process new files" not in [w.cget("text") for w in _walk(page)
+                                       if isinstance(w, ctk.CTkButton)]
+    app.process_new_files()                         # what the top bar's blue button runs
+    run = page._new_files
+    assert run._running and run._stop_button.winfo_manager() == "pack"
+    assert run._progress.winfo_manager() == "pack"
+    assert [args for target, args in _NoThread.started if target == run._run]
+
+
+def test_the_database_line_names_the_file_not_its_whole_path(make_app):
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR, StatusType, SystemType
+    app = make_app()
+    page = app.page_container.get_page("process")
+    assert "EMPTY database" in page._database_line()
+    with app.db.session() as s:
+        s.add(DBAR(filename="x.xls", file_path="/f/x.xls", file_hash="hx", model="INV-1",
+                   serial="1", system=SystemType.A, file_date=datetime(2026, 9, 29, 17, 22),
+                   timestamp=datetime(2026, 9, 29, 17, 22), overall_status=StatusType.PASS,
+                   has_multi_tracks=False, processing_time=0.1))
+        s.commit()
+    path = app.db.database_path
+    said = page._database_line()
+    assert said == f"Database {path.name} · 1 trim unit on record · newest file 29 Sep 2026", said
+    assert str(path.parent) not in said
+
+
+def test_a_database_check_that_fails_says_so(make_app, monkeypatch):
+    app = make_app()
+    page = app.page_container.get_page("process")
+
+    def boom():
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(app.db, "session", boom)
+    assert page._database_line() == "Database check failed: database is locked"

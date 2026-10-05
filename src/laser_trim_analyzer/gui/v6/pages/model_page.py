@@ -464,6 +464,20 @@ class ModelPage(PageBase):
         # Built once with the page, so this binds once (blocks.wrap_to_width's rule).
         self._header_line.bind("<Configure>", lambda _e: self._rewrap_header(), add="+")
 
+    def _rewrap_facts(self) -> None:
+        """Wrap Summary's facts line to the room its view switch leaves beside it -- the units
+        blocks.wrap_to_width explains: widths are real pixels, wraplength CustomTkinter's."""
+        try:
+            width = self._facts_row.winfo_width()
+            if width <= 1:
+                return                                  # not laid out yet
+            label = self._headline_detail
+            unscale = label._reverse_widget_scaling
+            room = unscale(width) - unscale(self._chart_toggle.winfo_reqwidth()) - self.theme.SPACE_MD
+            label.configure(wraplength=int(max(120, room)))
+        except (tkinter.TclError, AttributeError):
+            pass
+
     def _rewrap_header(self) -> None:
         """Wrap the header's words to the room beside the model, status word and pass % -- the
         units blocks.wrap_to_width explains: widths are real pixels, wraplength CustomTkinter's."""
@@ -482,43 +496,49 @@ class ModelPage(PageBase):
 
     def _build_summary(self, s) -> None:
         t = self.theme
-        # The trim-vs-final-test spec mismatch banner at the top of Summary (design doc item 2) --
-        # check tone, packed only when it has something to say, directly above the headline it
-        # qualifies (_set_spec_banner packs it before=_headline_box). A failed loader's banner is
-        # above the tabs (build_content).
-        self._spec_banner = blocks.banner(s, t, "", wrap_to=s)
-        # (1) The verdict in ONE sentence -- the first clause of _compute_verdict's line -- and the
-        # evidence clauses after it, quieter, beneath. `s` lives as long as the page, so each
-        # wrap binds once.
+        # The trim-vs-final-test spec notice at the top of Summary (design doc item 2): ONE quiet
+        # line -- CHECK text, no red block -- that opens to its full sentence on a click and closes
+        # on the next (finish pass, 2026-10-04: a full-width red banner stood above three more lines
+        # before the chart). Packed only when it has something to say, directly above the headline
+        # it qualifies (_set_spec_banner packs it before=_headline_box). A failed loader's banner
+        # stays loud, above the tabs (build_content). `s` lives as long as the page, so each wrap
+        # and each binding here is made once.
+        self._spec_banner = ctk.CTkLabel(s, text="", font=t.font(t.SIZE_CAPTION),
+                                         text_color=t.CHECK, fg_color="transparent", anchor="w",
+                                         justify="left", cursor="hand2")
+        self._spec_banner.bind("<Button-1>", lambda _e: self._toggle_spec_notice(), add="+")
+        blocks.wrap_to_width(self._spec_banner, s)
+        self._spec_texts: Tuple[str, str] = ("", "")       # (one line, the full sentence)
+        self._spec_open = False                           # the reader's choice; survives reloads
+        # (1) The verdict in ONE sentence -- the first clause of _compute_verdict's line -- and (2)
+        # ONE compact line of the facts after it, quieter, with the chart's view switch at its end.
+        # Two lines before the chart, where there were four (the red headline, a grey detail line,
+        # and the Lots/Units caption under the banner).
         self._headline_box = ctk.CTkFrame(s, fg_color="transparent")
-        self._headline_box.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        self._headline_box.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         self._headline = ctk.CTkLabel(self._headline_box, text="—", anchor="w", justify="left",
                                       font=t.font(t.SIZE_HEADING, "bold"),
                                       text_color=t.TEXT_PRIMARY)
         self._headline.pack(side="top", fill="x")
-        self._headline_detail = ctk.CTkLabel(self._headline_box, text="", anchor="w",
-                                             justify="left", font=t.font(t.SIZE_BODY),
-                                             text_color=t.TEXT_SECONDARY)
-        self._headline_detail.pack(side="top", fill="x")
         blocks.wrap_to_width(self._headline, s)
-        blocks.wrap_to_width(self._headline_detail, s)
-        # (2) The run chart of the moving signal. The view toggle sits with the chart it controls,
-        # styled like every other "this switches what you're looking at" control.
-        chart_head = ctk.CTkFrame(s, fg_color="transparent")
-        chart_head.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        self._facts_row = ctk.CTkFrame(self._headline_box, fg_color="transparent")
+        self._facts_row.pack(side="top", fill="x", pady=(t.SPACE_XS, 0))
+        # The view switch sits with the chart it controls, at the end of the facts line, styled
+        # like every other "this switches what you're looking at" control. Its two words and the
+        # chart's own title say what each view is (the caption that explained them is gone).
         self._chart_toggle = ctk.CTkSegmentedButton(
-            chart_head, values=[_VIEW_LOTS, _VIEW_UNITS], width=200,
+            self._facts_row, values=[_VIEW_LOTS, _VIEW_UNITS], width=200,
             command=self._on_chart_view_change,
             fg_color=t.CARD, selected_color=t.SEGMENT_SELECTED,
             selected_hover_color=t.SEGMENT_SELECTED_HOVER, unselected_color=t.CARD,
             unselected_hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY)
         self._chart_toggle.set(_VIEW_LOTS if self._chart_view == "lots" else _VIEW_UNITS)
-        self._chart_toggle.pack(side="right")
-        ctk.CTkLabel(chart_head,
-                     text=("Lots = one point per production run, judged against this "
-                           "model's own history. Units = every measurement."),
-                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
-                     anchor="w").pack(side="left")
+        self._chart_toggle.pack(side="right", anchor="n", padx=(t.SPACE_MD, 0))
+        self._headline_detail = ctk.CTkLabel(self._facts_row, text="", anchor="w",
+                                             justify="left", font=t.font(t.SIZE_BODY),
+                                             text_color=t.TEXT_SECONDARY)
+        self._headline_detail.pack(side="left", fill="x", expand=True)
+        self._facts_row.bind("<Configure>", lambda _e: self._rewrap_facts(), add="+")
         self._focus_chart = FocusChart(s, theme=t)
         self._focus_chart.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         # (3) "Also moving" and (4) "Worth changing": rebuilt on every apply. Each always keeps a
@@ -924,12 +944,10 @@ class ModelPage(PageBase):
                 _try("headline", lambda: self._set_headline(shown))
                 _try("also moving", lambda: self._set_also_moving(
                     status if "drift status" not in failed else None, chosen, recent))
-                # Load banner first, spec banner second: both pack with
-                # before=self._headline_box (a fixed anchor, never each other -- see
-                # _set_load_banner / _set_spec_banner), and pack(before=X) always lands a
-                # widget immediately next to X -- so calling load then spec puts spec
-                # (packed second) closer to X, i.e. load (an error) leads and spec follows
-                # when both have something to say on the same pass.
+                # The load banner (loud, above the tabs: before=self._tabs) and the station-spec
+                # notice (one quiet line at the top of Summary: before=self._headline_box) each
+                # pack against a fixed anchor of their own, never each other -- see
+                # _set_load_banner / _set_spec_banner.
                 _try("load banner", lambda: self._set_load_banner(failed))
                 _try("spec banner", lambda: self._set_spec_banner(spec))
                 _try("worth changing", lambda: self._set_findings_section(findings_data, failed,
@@ -999,32 +1017,50 @@ class ModelPage(PageBase):
         self._reload()
 
     def _set_spec_banner(self, comparison) -> None:
-        """Show the check-tone banner only when the two stations really do differ.
+        """Show the station-spec notice only when the two stations really do differ.
 
         "aligned" and "insufficient" both say nothing: one is good news that
-        needs no banner, the other is an unanswered question, and dressing an
+        needs no notice, the other is an unanswered question, and dressing an
         unanswered question as a warning is how a warning stops being believed.
 
+        One quiet line -- what differs, and on how much of the travel -- that a click opens to the
+        full sentence: what the stations require there, and why the cross-station numbers on this
+        page compare different requirements (finish pass, 2026-10-04: it was a full-width red block,
+        the first thing on Summary, above the headline). _toggle_spec_notice opens and closes it.
+
         `before=self._headline_box`: a fixed, always-present sibling at the top
-        of Summary, so pack() re-inserts this banner in the same place --
+        of Summary, so pack() re-inserts this line in the same place --
         directly above the verdict it qualifies -- every time it is shown
-        again, instead of re-appending it at the foot of the tab. See the
-        load-then-spec call order in apply() for how the two banners end up
-        ordered load-first when both fire on the same pass.
+        again, instead of re-appending it at the foot of the tab.
         """
         if comparison is None or comparison.status != "differs":
+            self._spec_texts = ("", "")
             self._spec_banner.pack_forget()
             return
+        share = getattr(comparison, "pct_positions_differing", None)
+        where = (f" at {share * 100:.0f}% of the positions both measure"
+                 if isinstance(share, (int, float)) else "")
         # "at those positions", not a flat "compare different requirements":
-        # the banner now fires from a tenth of the travel upward, and the note
+        # the notice fires from a tenth of the travel upward, and the note
         # it follows already says what share that is.
-        self._spec_banner.configure(
-            text=("⚠ " + comparison.note + " — cross-station numbers "
-                  "(escapes, Gap) compare different requirements at those "
-                  "positions."))
+        self._spec_texts = (
+            f"⚠ Trim and final test grade to different limits{where} ▸",
+            ("⚠ " + comparison.note + " — cross-station numbers "
+             "(escapes, Gap) compare different requirements at those "
+             "positions. ▾"))
+        self._show_spec_text()
         self._spec_banner.pack(side="top", fill="x",
                                pady=(0, self.theme.SPACE_SM),
                                before=self._headline_box)
+
+    def _toggle_spec_notice(self) -> None:
+        """A click on the station-spec line: open it to its full sentence, or close it again."""
+        self._spec_open = not self._spec_open
+        self._show_spec_text()
+
+    def _show_spec_text(self) -> None:
+        short, full = self._spec_texts
+        self._spec_banner.configure(text=full if self._spec_open else short)
 
     def _set_load_banner(self, failed) -> None:
         """Name every loader that raised this pass, so a crash never reads as

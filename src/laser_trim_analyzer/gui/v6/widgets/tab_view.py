@@ -24,9 +24,18 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
 class ThemedTabView(ctk.CTkTabview):
+    # The tabs sit on the LEFT, under the page's header, and are easier to hit (finish pass,
+    # 2026-10-04: "small centred tabs"). CustomTkinter centres a 26 px strip whose tabs are each
+    # only as wide as their word; here the strip is anchored north-west (CTkTabview's own `anchor`),
+    # 34 px tall (its class-level _button_height, which its grid and the strip both read), every
+    # tab at least TAB_MIN_WIDTH wide, in the body text size.
+    _button_height = 34
+    TAB_MIN_WIDTH = 104          # CustomTkinter units
+
     def __init__(self, master, theme: ThemeManager, **kwargs):
         # The selected tab is SEGMENT_SELECTED, not ACCENT: CTk draws every tab's text in the one
         # text_color, and TEXT_PRIMARY on ACCENT measured 1.66:1 (theme.py says why this teal).
+        kwargs.setdefault("anchor", "nw")
         super().__init__(master, fg_color=theme.SURFACE, segmented_button_fg_color=theme.CARD,
                          segmented_button_selected_color=theme.SEGMENT_SELECTED,
                          segmented_button_selected_hover_color=theme.SEGMENT_SELECTED_HOVER,
@@ -34,10 +43,13 @@ class ThemedTabView(ctk.CTkTabview):
                          segmented_button_unselected_hover_color=theme.ELEVATED,
                          text_color=theme.TEXT_PRIMARY, corner_radius=theme.RADIUS_MD, **kwargs)
         self.theme = theme
+        # The strip keeps this font for every tab added after it (CTkSegmentedButton._create_button).
+        self._segmented_button.configure(font=theme.font(theme.SIZE_BODY))
 
     def insert(self, index: int, name: str):
         """CTkTabview.insert (add() calls it), plus: whenever this tab is shown -- by a click, by
-        set(), by anything -- its scrolling frames are watched (see the module docstring).
+        set(), by anything -- its scrolling frames are watched (see the module docstring); and the
+        tab's button is given its TAB_MIN_WIDTH.
 
         Bound on the tab frame's own <Map>, with tkinter's bind (CTkFrame.bind would bind its
         internal canvas instead), and resolved at that moment rather than here: a tab's content
@@ -45,6 +57,9 @@ class ThemedTabView(ctk.CTkTabview):
         is mapped BEFORE the widgets inside it are, so the watch is in place in time for the
         canvases' own <Map> on the same showing."""
         tab = super().insert(index, name)
+        button = self._segmented_button._buttons_dict.get(name)
+        if button is not None:
+            button.configure(width=self.TAB_MIN_WIDTH)
         tkinter.Misc.bind(tab, "<Map>", lambda _event, tab=tab: _redraw_scrolled_content_on_map(tab),
                           "+")
         return tab

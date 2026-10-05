@@ -1322,11 +1322,18 @@ def test_model_page_banners_a_trim_vs_ft_spec_mismatch(make_app):
         trim_typ_band=0.03, ft_typ_band=0.10,
         note=("100% of the positions both stations measure are graded to "
               "different limits (trim ±0.030 V, final test ±0.100 V)")))
+    # One quiet line saying WHAT differs, and on how much of the travel; a click opens the whole
+    # sentence -- the limits, and WHY it matters to the page's numbers (finish pass, 2026-10-04:
+    # it was a full-width red block above the headline).
+    assert page._spec_banner.cget("text") == (
+        "⚠ Trim and final test grade to different limits at 100% of the positions both "
+        "measure ▸")
+    page._toggle_spec_notice()
     assert page._spec_banner.cget("text") == (
         "⚠ 100% of the positions both stations measure are graded to "
         "different limits (trim ±0.030 V, final test ±0.100 V) — "
         "cross-station numbers (escapes, Gap) compare different "
-        "requirements at those positions.")
+        "requirements at those positions. ▾")
     assert page._spec_banner.winfo_manager() == "pack"
     # It qualifies the page's verdict, so it stays pinned at the top of Summary, directly above
     # the verdict sentence (layout C) -- pack() would otherwise re-append it at the bottom of the
@@ -2132,12 +2139,17 @@ def test_one_teal_button_on_the_model_page_whichever_tab_is_open(make_app):
     assert bar == ["Process new files"]
 
 
-def test_spec_and_load_banners_are_check_tone_blocks_hidden_when_quiet(make_app):
+def test_the_load_banner_is_a_check_block_the_spec_notice_a_quiet_line_both_hidden_when_quiet(
+        make_app):
+    """A failed load stays loud -- a CHECK block above the tabs. The station-spec notice is one
+    quiet CHECK line with no block behind it (finish pass, 2026-10-04)."""
     app, page = _worth_app(make_app, finding=False)
     t = page.theme
+    assert (page._load_banner.cget("text_color"), page._load_banner.cget("fg_color")) == (
+        t.CHECK, t.CHECK_TINT)
+    assert (page._spec_banner.cget("text_color"), page._spec_banner.cget("fg_color")) == (
+        t.CHECK, "transparent")
     for banner in (page._spec_banner, page._load_banner):
-        assert banner.cget("text_color") == t.CHECK
-        assert banner.cget("fg_color") == t.CHECK_TINT
         assert banner.winfo_manager() == ""        # nothing to say on a healthy load
 
 

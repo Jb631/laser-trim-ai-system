@@ -13,7 +13,7 @@ import customtkinter as ctk
 import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-from matplotlib.ticker import Formatter
+from matplotlib.ticker import Formatter, FuncFormatter
 
 from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
@@ -51,6 +51,20 @@ _HEADER_LINE_HEIGHT_PT = 14.0
 _ROLLING_WINDOW_SWITCH_DAYS = 548          # ~18 months
 _ROLLING_MIN_UNITS = 5
 _ROLLING_GAP_BREAK_DAYS = 30
+
+
+# A fail rate's axis stops a hair past 100% (and below 0%), never at 125% (finish pass, 2026-10-04)
+# -- just enough for a dot drawn at 100% to show whole.
+_FRACTION_TOP_MARGIN = 0.03
+
+
+def _ticks_within_a_rate(ax) -> None:
+    """The y ticks of a rate axis: nice steps, none below 0% or past 100%."""
+    from matplotlib.ticker import FixedLocator, MaxNLocator
+    y0, y1 = ax.get_ylim()
+    ticks = [v for v in MaxNLocator(nbins=5).tick_values(max(0.0, y0), min(1.0, y1))
+             if -1e-9 <= v <= 1.0 + 1e-9]
+    ax.yaxis.set_major_locator(FixedLocator(ticks))
 
 
 def _tick_unit(days: List[datetime]) -> str:
@@ -314,6 +328,16 @@ class FocusChart(ctk.CTkFrame):
                     lo, hi = lo - 1.0, hi + 1.0
             pad = (hi - lo) * 0.08 or abs(hi) * 0.1 or 1.0
             ax.set_ylim(lo - pad, hi + pad)
+        rate = metric in FRACTION_METRICS
+        if rate:
+            # A fail rate lives between 0% and 100%: the window never runs past either end, however
+            # wide the baseline's band (finish pass, 2026-10-04: the lot view read 125%).
+            b0, b1 = ax.get_ylim()
+            b0, b1 = max(b0, -_FRACTION_TOP_MARGIN), min(b1, 1.0 + _FRACTION_TOP_MARGIN)
+            if b1 > b0:
+                ax.set_ylim(b0, b1)
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v * 100:.0f}%"))
+            _ticks_within_a_rate(ax)
         y0, y1 = ax.get_ylim()
 
         # ---- Units + the one strong line. Both live only with a baseline to
@@ -644,10 +668,18 @@ class FocusChart(ctk.CTkFrame):
         span = (hi - lo) or (abs(hi) * 0.1) or 1.0
         # Extra headroom when a sentence is annotated above a flagged lot.
         top_pad = 0.30 if p["labels"] else 0.15
-        ax.set_ylim(lo - span * 0.06, hi + span * top_pad)
+        top = hi + span * top_pad
+        if fraction:
+            # A fail rate ends at 100%: the axis stops there, a hair above so a 100% lot's dot is
+            # whole (finish pass, 2026-10-04: the headroom for a sentence ran it to 125%). A
+            # sentence on a lot that high goes below it -- the placement further down flips at 70%.
+            top = min(top, 1.0 + _FRACTION_TOP_MARGIN)
+        ax.set_ylim(lo - span * 0.06, top)
         ax.yaxis.set_major_formatter(FuncFormatter(
             (lambda v, _pos: f"{v * 100:.0f}%") if fraction
             else (lambda v, _pos: t.fmt_measure(v, 4))))
+        if fraction:
+            _ticks_within_a_rate(ax)
 
         # ---- x labels: lot end date, with the lot SIZE under it. n is not
         # decoration — it is why the band above that lot is the width it is.
