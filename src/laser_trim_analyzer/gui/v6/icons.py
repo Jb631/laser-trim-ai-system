@@ -4,12 +4,17 @@ scripts/build_icons.py) tinted to a theme colour and sized for CustomTkinter.
     icon("overview", theme.TEXT_SECONDARY, 18)  ->  a CTkImage, or None when the image is missing
 
 None is never a crash: a widget given image=None shows its text alone, and the missing file is
-logged once. One CTkImage per (name, colour, size), shared -- as theme.font() shares fonts.
+logged once. One CTkImage per (name, colour, size), shared -- as theme.font() shares fonts, and for
+the same reason dropped whenever the Tk root changes: a CTkImage keeps the Tk images it has drawn,
+and those die with their window. Shared across windows, the second window's first icon raised
+'image "pyimage1" doesn't exist' (2026-10-04: every test after the first that built the top bar).
+The app has one window; the tests build one per test.
 """
 import logging
+import tkinter
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 import customtkinter as ctk
 from PIL import Image
@@ -37,10 +42,20 @@ def _tinted(name: str, color: str) -> Optional[Image.Image]:
     return img
 
 
-@lru_cache(maxsize=None)
+_cache: Dict[Tuple[str, str, int], Optional[ctk.CTkImage]] = {}
+_cache_root: Optional[object] = None
+
+
 def icon(name: str, color: str, size: int = 18) -> Optional[ctk.CTkImage]:
     """`name` (a file in icons/, without .png) drawn in `color` at `size` CustomTkinter units."""
-    img = _tinted(name, color)
-    if img is None:
-        return None
-    return ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
+    global _cache_root
+    root = getattr(tkinter, "_default_root", None)
+    if root is not _cache_root:
+        _cache.clear()
+        _cache_root = root
+    key = (name, color, size)
+    if key not in _cache:
+        img = _tinted(name, color)
+        _cache[key] = (None if img is None
+                       else ctk.CTkImage(light_image=img, dark_image=img, size=(size, size)))
+    return _cache[key]

@@ -30,7 +30,7 @@ after the first cut only ever saw whichever Model-page TAB happened to already b
 below) -- and the facelift spec names the Model page, not any one tab of it, as the most likely place
 for the bigger Step 1 text (SIZE_CAPTION 12, BODY 14, HEADING 17, TITLE 22, READOUT 20) to overflow an
 unchanged layout:
-  * every page in `page_keys()`, plain, and the top bar once per size;
+  * every page in `page_keys()`, plain, and the top bar and the status bar once per size;
   * the Overview with its inactive models expanded (where each one's "last trimmed Mon YYYY" is drawn
     in full -- Triage's "All models" scope carried them until Triage was retired, 2026-10-02), and
     the Process page with both runs' progress showing, as a started run shows it;
@@ -720,6 +720,10 @@ def run_audit(app, target_model: Optional[str], ft_model: Optional[str],
                             _BANNER_WAIT_SECONDS)
             app.update_idletasks()
             _walk_page(app, key, key, size_label, clipped)
+        # The status bar (option B, 2026-10-04) likewise sits under every page and inside none:
+        # one walk per size, once every page has been shown and its counts have landed.
+        clipped.extend(find_clipped_text_widgets(app.status_bar, page="status bar",
+                                                 window_size=size_label))
         _walk_overview_expanded(app, size_label, clipped)
         _walk_process_running(app, size_label, clipped)
         if target_model:

@@ -372,6 +372,59 @@ def test_no_v6_segmented_control_or_checkbox_is_built_without_its_readable_colou
     assert not bad, bad
 
 
+def _tint(image):
+    """An icon's colour: the RGB of its solid pixels (gui/v6/icons tints one colour per image)."""
+    img = image.cget("dark_image")
+    return "#%02x%02x%02x" % next(px[:3] for px in img.getdata() if px[3] == 255)
+
+
+def test_the_top_bar_and_the_status_bar_read_on_their_own_fills(make_app):
+    """Option B (2026-10-04): the two bars every page sits between. Each word against its bar's
+    own fill (4.5:1), each icon and the health dot as graphics (3:1) -- in every state they take:
+    a destination active, idle and hovered; the status bar with a part failed and files skipped."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6 import status_data as sd
+
+    app = make_app()
+    bar, foot = app.topbar, app.status_bar
+    bad = []
+
+    def measure(what, fg, bg, floor):
+        ratio = contrast(fg, bg)
+        if ratio < floor:
+            bad.append(f"{what}: {fg} on {bg} = {ratio:.2f}:1")
+
+    top = _hex(bar, bar.cget("fg_color"))
+    measure("the app's name", _hex(bar, bar._title.cget("text_color")), top, 4.5)
+    for active in ("home", "process"):
+        bar.set_active(active)
+        for key, item in bar._items.items():
+            for hovered in (False, True):
+                item._hover(hovered)
+                state = (f"{key} ({'active' if key == active else 'idle'}"
+                         f"{', hovered' if hovered else ''})")
+                measure(state, _hex(bar, item._label.cget("text_color")), top, 4.5)
+                measure(f"{state} icon", _tint(item._icon.cget("image")), top, 3.0)
+            item._hover(False)
+    b = bar._process_button
+    for state, fill in (("", b.cget("fg_color")), (", hovered", b.cget("hover_color"))):
+        measure(f"the blue button's words{state}", _hex(b, b.cget("text_color")), _hex(b, fill),
+                4.5)
+        measure(f"the blue button's icon{state}", _tint(b.cget("image")), _hex(b, fill), 3.0)
+
+    foot.show_status(sd.Status(newest=None, skipped=4, failed={sd.PART_MODELS: "OperationalError"}))
+    bottom = _hex(foot, foot.cget("fg_color"))
+    labels = [w for w in _walk(foot) if isinstance(w, ctk.CTkLabel) and w.cget("text")]
+    assert len(labels) >= 5, [w.cget("text") for w in labels]        # the walk reached the words
+    for w in labels:
+        measure(w.cget("text"), _hex(w, w.cget("text_color")), bottom, 4.5)
+    measure("the health dot", _hex(foot, foot._dot.cget("fg_color")), bottom, 3.0)
+    foot.show_status(sd.Status(failed={sd.PART_DATABASE: "OperationalError"}))
+    measure("the health dot, failed", _hex(foot, foot._dot.cget("fg_color")), bottom, 3.0)
+    measure("the database, failed", _hex(foot, foot._database.cget("text_color")), bottom, 4.5)
+    assert not bad, "\n".join(bad)
+
+
 def test_the_three_lasers_are_told_apart_at_a_glance():
     """James, 2026-10-04, on the Overview's chart of each laser: "the colors are too similare you
     cant tell them apart" -- violet, fuchsia and pink sat 37 degrees apart. Each pair of lasers

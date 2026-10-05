@@ -1,13 +1,20 @@
-"""V6App root — the top bar over the page container, and the pages. Foundations §2.2.
+"""V6App root — the top bar over the page container, the status bar under it, and the pages.
+Foundations §2.2.
 
 The top bar replaced the sidebar on 2026-10-02 (Graphite redesign,
 docs/superpowers/specs/2026-10-02-graphite-redesign-design.md): Overview, Models and Settings
 on the bar, and one blue "Process new files" that runs the remembered folders on the Process
 page (`process_new_files`). Page KEYS never change -- every deep link navigates by key.
+
+The status bar joined on 2026-10-04 (option B,
+docs/superpowers/specs/2026-10-04-option-b-design.md): the database's health and counts, the drift
+watch (`drift_watch`), and the run in flight. The run line is fed by a small observer here
+(`add_run_listener` / `report_run_progress` / `run_progress`): the Process page reports the progress
+its two runs already receive, and nothing about a run itself changed.
 """
 import logging
 import time
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
@@ -15,6 +22,9 @@ from laser_trim_analyzer.config import Config
 from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.gui.v6 import ctk_patches
 from laser_trim_analyzer.gui.v6.page_container import PageContainer
+from laser_trim_analyzer.gui.v6.status_bar import StatusBar
+from laser_trim_analyzer.gui.v6.status_data import (
+    DRIFT_CURRENT, DRIFT_FAILED, DRIFT_UPDATING, RunState)
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.topbar import TopBar
 from laser_trim_analyzer.gui.v6.ui_dispatch import UiDispatcher
@@ -66,6 +76,16 @@ class V6App(ctk.CTk):
         # gone. The name is what `active_run_name` reports when a second run
         # is refused.
         self._ingest_runs: List[Tuple[object, object, str]] = []
+        # The run observer (the status bar's run line): what each registered run last reported,
+        # keyed by id() of its cancel Event -- alive while registered, so never reused meanwhile
+        # -- and who wants to hear when a run starts, moves or ends.
+        self._run_reports: Dict[int, _RunReport] = {}
+        self._run_listeners: List[Callable[[], None]] = []
+        # The drift watch, for the status bar: (state, the exception's class when it failed). A
+        # start-up catch-up is scheduled below when auto-train is on, and until it has run the
+        # flags on screen may be behind -- "updating", not a "current" nothing has checked yet.
+        self._drift_watch: Tuple[str, Optional[str]] = (
+            DRIFT_UPDATING if auto_train_on_first_run else DRIFT_CURRENT, None)
 
         # Main-thread UI dispatcher: workers post callbacks here instead of
         # touching Tk from their own threads (see ui_dispatch.py).
@@ -77,6 +97,7 @@ class V6App(ctk.CTk):
         self._build_pages()
         # Home is the landing page (app-shape spec §1, 2026-08-31). Dashboard
         # stays registered and reachable — its retirement is a later call.
+        # Showing the Overview is also the status bar's first load (show_page).
         self.show_page("home")
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         # Data-gated first-startup auto-train (Spec 3d / D3). Disabled in tests via
@@ -86,14 +107,19 @@ class V6App(ctk.CTk):
             # Catch-up advance: consume any data ingested since the last session
             # (e.g. batches processed in V5 or by scripts) so the Overview isn't stale.
             # Delayed so it doesn't compete with the first page load for the DB.
-            self.after(5000, self._advance_drift_catchup)
+            self.after(5000, self._start_drift_catchup)
 
     # ---- navigation ----
     def show_page(self, name: str) -> None:
         if self.page_container.get_page(name) is None:
             return
+        arriving = self.page_container.current_page != name
         self.page_container.show(name)
         self.topbar.set_active(name)
+        if name == "home" and arriving:
+            # The Overview reloads whenever it is shown (its on_show); the status bar's counts
+            # are read again with it -- the start-up load included.
+            self.status_bar.refresh()
 
     def process_new_files(self) -> None:
         """The top bar's one blue button: show the Process page and start the remembered-folder
@@ -168,14 +194,25 @@ class V6App(ctk.CTk):
         import threading
         threading.Thread(target=gate_check, daemon=True).start()
 
-    def _advance_drift_catchup(self) -> None:
+    def _start_drift_catchup(self) -> None:
+        """The start-up rebuild and catch-up, with the status bar's drift line around it: "updating"
+        while it runs, then "current" -- or what failed (Tk thread)."""
+        self._set_drift_watch(DRIFT_UPDATING)
+        self._advance_drift_catchup(on_done=lambda error: self.ui.post(
+            lambda: self._set_drift_watch(DRIFT_FAILED if error else DRIFT_CURRENT, error)))
+
+    def _advance_drift_catchup(self, on_done: Optional[Callable[[Optional[str]], None]] = None
+                               ) -> None:
         """Advance all trained drift detectors over data that arrived since the
-        last run. Worker thread; a no-op when nothing is new."""
+        last run. Worker thread; a no-op when nothing is new. `on_done(error)` is called on the
+        worker when it has finished -- `error` the class name of the first step that failed, or
+        None."""
         def work():
             import logging
             log = logging.getLogger(__name__)
             from laser_trim_analyzer.ml.drift_training import (
                 advance_drift_state, ensure_drift_rules)
+            error = None
             # The drift rules changed since this state was built (2026-10-02: dirty readings,
             # small lots, old evidence, improvements): retrain once, about ten seconds, before
             # catching up. Its own try: a retrain that fails (a locked database during an
@@ -186,17 +223,41 @@ class V6App(ctk.CTk):
                     log.info("Startup: drift state retrained under the current rules")
                     # The page on screen loaded its flags before this finished.
                     self.ui.post(self._reload_visible_page)
-            except Exception:
+            except Exception as exc:
+                error = type(exc).__name__
                 log.exception("Startup drift retrain under the current rules failed; "
                               "the next start tries again")
             try:
                 n = advance_drift_state(self.db)
                 if n:
                     log.info("Startup drift catch-up: advanced %d (model, metric) rows", n)
-            except Exception:
+            except Exception as exc:
+                error = error or type(exc).__name__
                 log.exception("Startup drift catch-up failed")
+            if on_done is not None:
+                try:
+                    on_done(error)
+                except Exception:
+                    log.exception("Could not report the drift catch-up's end")
         import threading
         threading.Thread(target=work, daemon=True).start()
+
+    def drift_watch(self) -> Tuple[str, Optional[str]]:
+        """(state, error) for the status bar: DRIFT_UPDATING while the start-up rebuild/catch-up
+        runs (and from start-up until it has, when one is scheduled), DRIFT_CURRENT once it has,
+        DRIFT_FAILED with the class name of what failed."""
+        return self._drift_watch
+
+    def _set_drift_watch(self, state: str, error: Optional[str] = None) -> None:
+        """Tk thread. Once the catch-up has finished, either way, the bar reads the database again
+        ("after the drift rebuild")."""
+        self._drift_watch = (state, error)
+        bar = getattr(self, "status_bar", None)
+        if bar is None:
+            return
+        bar.show_drift()
+        if state != DRIFT_UPDATING:
+            bar.refresh()
 
     def _reload_visible_page(self) -> None:
         """Reload the page on screen (Tk thread only): its data changed underneath it. Through the
@@ -215,6 +276,7 @@ class V6App(ctk.CTk):
         self.configure(fg_color=self.theme.BG)
         self.grid_rowconfigure(0, weight=0)          # the top bar, its own height
         self.grid_rowconfigure(1, weight=1)          # the pages take the rest
+        self.grid_rowconfigure(2, weight=0)          # the status bar, its own height
         self.grid_columnconfigure(0, weight=1)
 
     def _build_layout(self) -> None:
@@ -223,6 +285,8 @@ class V6App(ctk.CTk):
         self.topbar.grid(row=0, column=0, sticky="ew")
         self.page_container = PageContainer(self, theme=self.theme)
         self.page_container.grid(row=1, column=0, sticky="nsew")
+        self.status_bar = StatusBar(self, app=self, theme=self.theme)
+        self.status_bar.grid(row=2, column=0, sticky="ew")
 
     def _build_pages(self) -> None:
         # All pages are real. The Overview (key "home") is the landing; Models and Settings are
@@ -241,7 +305,10 @@ class V6App(ctk.CTk):
         )
         self.page_container.add_page(
             "dashboard",
-            DashboardPage(self.page_container, theme=self.theme, app=self, page_title="Dashboard"),
+            # The key stays "dashboard"; the page reads "Company trends" everywhere (option B,
+            # finish list 3) -- the Overview's link says so.
+            DashboardPage(self.page_container, theme=self.theme, app=self,
+                          page_title="Company trends"),
         )
         self.page_container.add_page(
             "model",
@@ -277,6 +344,9 @@ class V6App(ctk.CTk):
         """
         self._ingest_runs = [r for r in self._ingest_runs if _alive(r[1])]
         self._ingest_runs.append((cancel, thread, name))
+        self._run_reports = {id(r[0]): self._run_reports.get(id(r[0])) or _RunReport()
+                             for r in self._ingest_runs}
+        self._tell_run_listeners()
 
     def unregister_ingest(self, cancel) -> None:
         """Forget a run that has finished. Tk thread only.
@@ -291,6 +361,50 @@ class V6App(ctk.CTk):
         """
         self._ingest_runs = [r for r in self._ingest_runs
                              if r[0] is not cancel and _alive(r[1])]
+        self._run_reports = {id(r[0]): self._run_reports.get(id(r[0])) or _RunReport()
+                             for r in self._ingest_runs}
+        self._tell_run_listeners()
+
+    # ---- the run observer: each run's progress, app-wide (the status bar's run line) ----
+    def add_run_listener(self, fn: Callable[[], None]) -> None:
+        """Call `fn()` on the Tk thread whenever a run starts, reports progress, or ends."""
+        self._run_listeners.append(fn)
+
+    def report_run_progress(self, run, label: str, done: int, total: int) -> None:
+        """A run's live progress, from the page that receives it (Tk thread): the numbers its own
+        progress line was just painted with, so the rest of the app can show them too. `run` is
+        the cancel Event the run registered with; a paint that lands after its run unregistered
+        (the ticker's last tick) -- or from a page with no run started -- is dropped. `total` 0 =
+        not known yet. Never raises: it is called from inside a run's own paint."""
+        try:
+            report = self._run_reports.get(id(run)) if run is not None else None
+            if report is None:
+                return
+            now = (label, int(done or 0), int(total or 0))
+            if (report.label, report.done, report.total) == now:
+                return
+            report.label, report.done, report.total = now
+            self._tell_run_listeners()
+        except Exception:
+            logger.exception("Could not take a run's progress")
+
+    def run_progress(self) -> Optional[RunState]:
+        """The run in flight -- the one `active_run_name` names -- with what it last reported, or
+        None when nothing is running. A run that reports no progress of its own (a re-grade, a
+        findings refresh) comes back with no label."""
+        for cancel, thread, name in self._ingest_runs:
+            if _alive(thread):
+                report = self._run_reports.get(id(cancel)) or _RunReport()
+                return RunState(name=name, label=report.label, done=report.done,
+                                total=report.total, started=report.started)
+        return None
+
+    def _tell_run_listeners(self) -> None:
+        for fn in list(self._run_listeners):
+            try:
+                fn()
+            except Exception:
+                logger.exception("A run listener failed")
 
     def active_run_name(self) -> Optional[str]:
         """The name of a long job in flight, or None.
@@ -365,3 +479,14 @@ def _alive(thread) -> bool:
         return bool(thread.is_alive())
     except Exception:
         return False
+
+
+class _RunReport:
+    """What one registered run last reported (`report_run_progress`), and when it registered."""
+    __slots__ = ("label", "done", "total", "started")
+
+    def __init__(self) -> None:
+        self.label: Optional[str] = None
+        self.done = 0
+        self.total = 0
+        self.started = time.monotonic()

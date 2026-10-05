@@ -223,6 +223,141 @@ def test_the_bar_holds_one_blue_button_and_it_processes_new_files(tk_root):
     assert pressed == ["pressed"]
 
 
+# ---- option B (2026-10-04): the bar finished --------------------------------------------------
+# The finish list's first item: "top-bar items spread with gaps, no icons -> grouped, with icons".
+# Each destination was a 200-px frame (CustomTkinter's default width, held by its underline), so the
+# three sat 216 px apart across the bar. The app's name is in Marcellus (James: "6").
+
+class _Mapped:
+    """Lay a root out for real: off-screen, transparent, mapped. A withdrawn root leaves every child
+    at Tk's 1x1 placeholder (scripts/render_pages.py, point 1), so x-positions mean nothing."""
+
+    def __init__(self, root, size="1280x120"):
+        self.root, self.size = root, size
+
+    def __enter__(self):
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        self.root.geometry(f"{self.size}+20000+20000")
+        self.root.deiconify()
+        self.root.update_idletasks()
+        self.root.update()
+        return self.root
+
+    def __exit__(self, *exc):
+        self.root.withdraw()
+        return False
+
+
+def _tint(image) -> str:
+    """The colour an icon was tinted to: the RGB of its solid pixels."""
+    img = image.cget("dark_image")
+    solid = {px[:3] for px in img.getdata() if px[3] == 255}
+    assert len(solid) == 1, solid
+    return "#%02x%02x%02x" % solid.pop()
+
+
+def test_the_apps_name_is_in_the_title_face(tk_root, monkeypatch):
+    """What Tk can see is faked, as the bold->Medium test above fakes it: on the Mac, Tk's family
+    list is read once per process, so whether Marcellus shows up in it depends on which test asked
+    first (font_loader registers it for the process; the app asks after loading, always)."""
+    import tkinter.font as tkfont
+    monkeypatch.setattr(tkfont, "families", lambda: ["IBM Plex Sans", "Marcellus"])
+    bar = _bar(tk_root)
+    t = bar.theme
+    font = bar._title.cget("font")
+    assert bar._title.cget("text") == "Laser Trim Analyzer"
+    assert t.resolved_title == "Marcellus"
+    assert font is t.title(t.SIZE_HEADING) and font.cget("family") == "Marcellus"
+    # Where Tk cannot see it: the Sans's bold, never a face that is not there.
+    monkeypatch.setattr(tkfont, "families", lambda: ["IBM Plex Sans"])
+    bar = _bar(tk_root)
+    assert bar._title.cget("font") is bar.theme.font(bar.theme.SIZE_HEADING, "bold")
+
+
+def test_the_three_destinations_sit_together_beside_the_name(tk_root):
+    from laser_trim_analyzer.gui.v6.topbar import TopBar
+    bar = _bar(tk_root)
+    bar.pack(side="top", fill="x")
+    t = bar.theme
+    items = [bar._items[key] for key, _label in TopBar.ITEMS]
+    with _Mapped(tk_root):
+        # Each one as wide as its icon and its word -- not CustomTkinter's 200-px default.
+        assert all(i.winfo_reqwidth() < 120 for i in items), [i.winfo_reqwidth() for i in items]
+        right_of = lambda w: w.winfo_x() + w.winfo_width()          # noqa: E731
+        gaps = [items[0].winfo_x() - right_of(bar._title)]
+        gaps += [b.winfo_x() - right_of(a) for a, b in zip(items, items[1:])]
+        assert all(0 <= g <= t.SPACE_XL for g in gaps), gaps
+        # Grouped at the left; the blue button alone on the right.
+        assert right_of(items[-1]) < bar.winfo_width() / 2
+        assert bar._process_button.winfo_x() > bar.winfo_width() / 2
+
+
+def test_each_destination_carries_its_icon_tinted_like_its_words(tk_root):
+    from laser_trim_analyzer.gui.v6 import icons
+    from laser_trim_analyzer.gui.v6.topbar import ICON_SIZE, TopBar
+    assert TopBar.ICONS == {"home": "overview", "model": "models", "settings": "settings"}
+    bar = _bar(tk_root)
+    t = bar.theme
+    for active in ("model", "home", "process"):          # "process": a page with no item
+        bar.set_active(active)
+        for key, item in bar._items.items():
+            colour = t.TEXT_PRIMARY if key == active else t.TEXT_SECONDARY
+            image = item._icon.cget("image")
+            assert image is icons.icon(TopBar.ICONS[key], colour, ICON_SIZE), (active, key)
+            assert _tint(image) == colour and item._label.cget("text_color") == colour
+    bar.set_active("home")
+    item = bar._items["settings"]
+    item._hover(True)                                    # the icon brightens with the word
+    assert _tint(item._icon.cget("image")) == t.TEXT_PRIMARY == item._label.cget("text_color")
+    item._hover(False)
+    assert _tint(item._icon.cget("image")) == t.TEXT_SECONDARY
+
+
+def test_a_click_on_the_icon_goes_where_the_word_goes(tk_root):
+    got = []
+    bar = _bar(tk_root, selected=got)
+    bar.pack(side="top", fill="x")
+    item = bar._items["settings"]
+    with _Mapped(tk_root):
+        # A CTkLabel's own bind() lands on the Tk label inside it -- where a click lands too.
+        item._icon._label.event_generate("<Button-1>")
+        item._label._label.event_generate("<Button-1>")
+        tk_root.update()
+    assert got == ["settings", "settings"]
+
+
+def test_an_icon_is_drawn_in_each_new_window_not_a_dead_one():
+    """icons.icon shared one CTkImage per (name, colour, size) for the whole process, and a
+    CTkImage keeps the Tk images it has drawn -- which die with their window. The second window to
+    draw the bar raised 'image "pyimage1" doesn't exist'. One per window now, as theme.font() does.
+    (One root at a time here, each destroyed before the next: never two live roots.)"""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6 import icons
+    for _ in range(2):
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            image = icons.icon("overview", "#3b82f6", 18)
+            ctk.CTkLabel(root, text="", image=image)          # drawn in THIS window
+            assert icons.icon("overview", "#3b82f6", 18) is image   # and shared within it
+        finally:
+            root.destroy()
+
+
+def test_the_blue_button_carries_the_process_icon_in_its_own_text_colour(tk_root):
+    from laser_trim_analyzer.gui.v6 import icons
+    from laser_trim_analyzer.gui.v6.topbar import ICON_SIZE
+    bar = _bar(tk_root)
+    t = bar.theme
+    b = bar._process_button
+    assert b.cget("image") is icons.icon("process", t.TEXT_INVERSE, ICON_SIZE)
+    assert _tint(b.cget("image")) == t.TEXT_INVERSE and b.cget("compound") == "left"
+    assert (b.cget("fg_color"), b.cget("text_color")) == (t.ACCENT, t.TEXT_INVERSE)
+
+
 # ---- Task 3: PageBase + PageContainer -------------------------------------
 
 def test_page_base_requires_build_content(tk_root):
@@ -268,6 +403,68 @@ def test_page_base_header_actions_receives_parent(tk_root):
 
     _P(tk_root, theme=ThemeManager())
     assert seen["parent_is_actions_frame"] is True
+
+
+# ---- option B (2026-10-04): no page repeats its name under the bar ------------------------------
+# "Overview" twice, "Models" over "8232-1" (finish list 2). The top bar names the page; a page's
+# own row under it holds only its actions -- and is not there at all when it has none.
+
+def _header_labels(page):
+    """Every label in the page's own row that is not one of its actions."""
+    import customtkinter as ctk
+    actions = set(_walk(page._header.actions_frame))
+    return [w for w in _walk(page._header) if isinstance(w, ctk.CTkLabel) and w not in actions]
+
+
+def test_a_page_with_no_actions_has_no_band_under_the_bar(tk_root):
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    class _P(PageBase):
+        page_title = "Somewhere"
+        def build_content(self, parent): pass
+
+    p = _P(tk_root, theme=ThemeManager())
+    assert p.page_title == "Somewhere"            # kept: tests, render_pages and the window use it
+    assert p._header.winfo_manager() == ""
+    assert p.pack_slaves() == [p._content]        # no title, no rule, no empty band
+    p.set_caption("A headline")
+    assert p.pack_slaves() == [p._caption, p._content]
+
+
+def test_a_page_with_actions_keeps_them_right_aligned_with_no_title(tk_root):
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    class _P(PageBase):
+        page_title = "Somewhere"
+        def build_content(self, parent): pass
+        def header_actions(self, parent):
+            ctk.CTkButton(parent, text="Go").pack(side="right")
+
+    p = _P(tk_root, theme=ThemeManager())
+    slaves = p.pack_slaves()
+    assert slaves[0] is p._header and slaves[-1] is p._content
+    assert p._header.actions_frame.pack_info()["side"] == "right"
+    assert _header_labels(p) == []
+    p.set_caption("A headline")                   # under the actions, above the content
+    slaves = p.pack_slaves()
+    assert slaves.index(p._header) < slaves.index(p._caption) < slaves.index(p._content)
+
+
+def test_no_page_in_the_app_shows_its_name_under_the_bar(make_app):
+    app = make_app()
+    pages = app.page_container._pages
+    for key, page in pages.items():
+        assert _header_labels(page) == [], key
+        has_actions = bool(page._header.actions_frame.winfo_children())
+        assert (page._header.winfo_manager() == "pack") == has_actions, key
+    # The Model page keeps its picker, window and run menus and its buttons; the Overview has none.
+    model = pages["model"]
+    assert model._header.winfo_manager() == "pack"
+    assert model._model_selector.master is model._header.actions_frame
+    assert pages["home"]._header.winfo_manager() == ""
 
 
 def test_page_base_lifecycle_hooks(tk_root):
@@ -576,6 +773,10 @@ def test_v6app_puts_the_bar_above_the_pages(make_app):
     assert int(app.page_container.grid_info()["row"]) == 1
     assert int(app.grid_rowconfigure(1)["weight"]) == 1 and int(app.grid_rowconfigure(0)["weight"]) == 0
     assert int(app.grid_columnconfigure(0)["weight"]) == 1
+    # ...and the status bar under them (option B, 2026-10-04): its own height, every page.
+    foot = app.status_bar.grid_info()
+    assert int(foot["row"]) == 2 and foot["sticky"] == "ew"
+    assert int(app.grid_rowconfigure(2)["weight"]) == 0
 
 
 def test_v6app_has_all_pages(make_app):

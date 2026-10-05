@@ -239,6 +239,9 @@ class ProcessPage(PageBase):
         """
         snap = coalescer.drain()
         eta.note(snap["processed"])
+        # The status bar's run line: these same numbers, app-wide (V6App.report_run_progress).
+        getattr(self.app, "report_run_progress", lambda *_a: None)(
+            self._cancel, "Processing a folder", snap["done"], state["n"])
         if snap["scan_msg"] and not snap["moved"]:
             self._progress.set_phase(snap["scan_msg"])
             return
@@ -455,6 +458,9 @@ class NewFilesRun(ctk.CTkFrame):
         """
         snap = coalescer.drain()
         eta.note(snap["processed"])
+        # The status bar's run line: these same numbers, app-wide (V6App.report_run_progress).
+        getattr(self.app, "report_run_progress", lambda *_a: None)(
+            self._cancel, "Processing new files", snap["done"], state["n"])
         if snap["scan_msg"] and not snap["moved"]:
             # set_phase, never set_idle: set_idle zeroes the bar, and a bar that drops to zero
             # mid-run reads as progress thrown away.

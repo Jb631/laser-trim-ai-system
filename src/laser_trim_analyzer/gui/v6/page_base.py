@@ -6,6 +6,12 @@ Subclass contract:
   * header_actions(parent)  — OPTIONAL; build widgets WITH `parent` and pack them right
   * on_show() / on_hide()   — OPTIONAL
 PageBase stores `self.app` (V6App | None) and `self.theme`, and offers safe_after().
+
+No page draws its own name (option B, 2026-10-04 -- the finish list's second item: "Overview" twice,
+"Models" over "8232-1"): the top bar says where you are. `page_title` stays an attribute -- tests,
+the render audit and the app read it. The row under the bar holds a page's header_actions, right-
+aligned, and is there only when the page has some (the Model page's pickers and buttons, Company
+trends' window); a page with none starts straight under the bar, with no empty band.
 """
 import logging
 import sys
@@ -102,7 +108,8 @@ class PageBase(ctk.CTkFrame):
         return wrap
 
     def set_caption(self, text: str) -> None:
-        """One line under the page title -- a page's headline in words. '' hides it.
+        """One line at the top of the page (under its actions, when it has any) -- a page's
+        headline in words. '' hides it.
 
         Keyed on the geometry manager's own state (winfo_manager() == "pack"), not
         winfo_ismapped(): PageContainer switches pages with grid() + tkraise(), which only
@@ -165,10 +172,11 @@ class PageBase(ctk.CTkFrame):
 
     # ---- internal ----
     def _build_chrome(self) -> None:
-        self._header = _PageHeader(self, theme=self.theme, title=self.page_title)
-        self._header.pack(side="top", fill="x")
-        ctk.CTkFrame(self, height=1, fg_color=self.theme.DIVIDER, corner_radius=0)\
-            .pack(side="top", fill="x")
+        # The actions row and the line under it: built here, packed at the end of this method
+        # only if header_actions put something in the row (see the module docstring).
+        self._header = _PageHeader(self, theme=self.theme)
+        self._header_rule = ctk.CTkFrame(self, height=1, fg_color=self.theme.DIVIDER,
+                                         corner_radius=0)
         # Created here but NOT packed -- set_caption() packs it (before self._content) the
         # first time a page gives it text, and unpacks it again on "".
         self._caption = ctk.CTkLabel(self, text="", font=self.theme.font(self.theme.SIZE_BODY),
@@ -187,16 +195,18 @@ class PageBase(ctk.CTkFrame):
                            padx=self.theme.SPACE_LG, pady=self.theme.SPACE_MD)
         # Build header actions into the header's actions frame (correct parent).
         self.header_actions(self._header.actions_frame)
+        if self._header.actions_frame.winfo_children():
+            self._header.pack(side="top", fill="x", before=self._content)
+            self._header_rule.pack(side="top", fill="x", before=self._content)
 
 
 class _PageHeader(ctk.CTkFrame):
-    def __init__(self, master, theme: ThemeManager, title: str):
+    """A page's actions, right-aligned in one row -- and no title: the top bar names the page."""
+
+    def __init__(self, master, theme: ThemeManager):
         super().__init__(master, height=HEADER_HEIGHT, fg_color=theme.SURFACE, corner_radius=0)
         self.theme = theme
         self.pack_propagate(False)
-        ctk.CTkLabel(self, text=title, font=theme.font(theme.SIZE_TITLE, "bold"),
-                     text_color=theme.TEXT_PRIMARY, anchor="w")\
-            .pack(side="left", fill="y", padx=(theme.SPACE_LG, theme.SPACE_MD))
         # Right-aligned actions frame; subclasses pack widgets here.
         self.actions_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.actions_frame.pack(side="right", fill="y", padx=(theme.SPACE_MD, theme.SPACE_LG))
