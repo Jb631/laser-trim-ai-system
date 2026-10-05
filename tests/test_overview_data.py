@@ -660,7 +660,30 @@ def test_the_cost_ratio_defaults_to_half_and_prices_may_be_written_any_way(tmp_p
     got = _by_model(ov)
     assert got["PRICED"].money == pytest.approx(2 * 10.0 * 0.5)       # YAML may hand a string
     assert got["9090"].money == pytest.approx(1 * 4.0 * 0.5)          # ...or a number for a key
-    assert od.load_overview(db).money_total == 0.0 and od.load_overview(db).unpriced == 2
+    bare = od.load_overview(db)                       # no prices handed over at all
+    assert (bare.money_total, bare.unpriced, bare.no_prices) == (0.0, 2, True)
+    assert od.load_overview(db, prices={"PRICED": 1.0}).no_prices is False
+
+
+def test_the_header_total_is_the_full_cost_every_priced_model_on_the_page_or_not(tmp_path):
+    """The header's dollars are every final-test FAIL in the Overview's 90 days on a model with a
+    price -- a model on no card and in no list too (a name found only on final tests, a model
+    trimmed before the window): the full cost, as Company trends counts it. A row's dollars stay
+    its own (coordinator, 2026-10-04)."""
+    db = _db(tmp_path)
+    _trims(db, "PRICED", ANCHOR, passes=5)                            # on the page
+    _ft(db, "PRICED", ANCHOR, "FAIL", 2)
+    _ft(db, "OFFPAGE", ANCHOR - timedelta(days=5), "FAIL", 3)         # final tests only: no row
+    _ft(db, "OFFPAGE", ANCHOR - timedelta(days=95), "FAIL", 9)        # before the 90 days
+    _ft(db, "OFFPAGE", ANCHOR + timedelta(hours=10), "FAIL", 4)       # after the anchor's day
+    _ft(db, "STRAY", ANCHOR - timedelta(days=1), "FAIL", 4)           # no price, no row
+    _ft(db, "CLEANOFF", ANCHOR, "PASS", 5)                            # no price, never failed
+    ov = od.load_overview(db, prices={"PRICED": 10.0, "OFFPAGE": 2.0}, cost_ratio=0.5)
+    (row,) = ov.others
+    assert row.model == "PRICED" and row.money == pytest.approx(2 * 10.0 * 0.5)
+    assert ov.money_total == pytest.approx(2 * 10.0 * 0.5 + 3 * 2.0 * 0.5)
+    assert ov.unpriced == 1                                           # STRAY: failed, no price
+    assert ov.no_prices is False
 
 
 def test_a_final_test_card_is_charged_for_its_own_final_test_fails(tmp_path, monkeypatch):
@@ -751,6 +774,13 @@ def test_a_final_test_card_has_no_lasers_and_an_unknown_read_has_none_known(tmp_
      "No models need a look · no trim files on record yet"),
     (dict(cards=2, money_total=None, anchor=None, failed={od.PART_RATES: "RuntimeError: x"}),
      "2 models need a look · dollars lost at final test could not be worked out"),
+    # No price loaded at all: a missing input never reads as "$0" (coordinator, 2026-10-04).
+    (dict(cards=2, money_total=0.0, unpriced=3, no_prices=True),
+     "2 models need a look · add prices in Settings → Backlog to see the dollars lost at final "
+     "test · newest file 20 Mar 2026"),
+    (dict(cards=2, money_total=None, no_prices=True, failed={od.PART_MONEY: "RuntimeError: x"}),
+     "2 models need a look · dollars lost at final test could not be worked out · newest file "
+     "20 Mar 2026"),
 ])
 def test_the_header_line(kw, text):
     kw = dict(kw)
@@ -773,8 +803,11 @@ def test_the_money_words_for_one_model():
 # check_overview_money_on_database reads the CONFIG's prices; these hand it invented ones. The sweep
 # stubs tkinter at import, so it runs in a subprocess (tests/test_sweep_db_checks.py's runner).
 
-SWEEP_PRICES = {"PRICED": 12.5, "CHEAP": 3.25}         # invented; "NOPRICE" has none
+# Invented. "NOPRICE" and "STRAY" have none; "OFFPAGE" and "STRAY" are on no card and in no list
+# (final tests only) -- the header's total and its unpriced count are every model's.
+SWEEP_PRICES = {"PRICED": 12.5, "CHEAP": 3.25, "OFFPAGE": 6.75}
 SWEEP_RATIO = 0.4
+SWEEP_FAILS = {"PRICED": 7, "CHEAP": 9, "OFFPAGE": 2}    # each priced model's fails in the window
 
 
 def _money_scratch(tmp_path):
@@ -787,10 +820,13 @@ def _money_scratch(tmp_path):
     _ft(db, "CHEAP", ANCHOR - timedelta(days=40), "FAIL", 9)
     _ft(db, "NOPRICE", ANCHOR - timedelta(days=1), "FAIL", 4)
     _ft(db, "CLEAN", ANCHOR, "PASS", 6)
+    _ft(db, "OFFPAGE", ANCHOR - timedelta(days=6), "FAIL", 2)          # priced, not on the page
+    _ft(db, "STRAY", ANCHOR - timedelta(days=2), "FAIL", 3)            # no price, not on the page
     return db
 
 
-def _run_money_check(db, patch=""):
+def _run_money_check(db, patch="", prices=None):
+    prices = SWEEP_PRICES if prices is None else prices
     from test_sweep_db_checks import _run_code
     db.close()
     code = (
@@ -799,7 +835,7 @@ def _run_money_check(db, patch=""):
         "import laser_trim_analyzer.database.manager as _m, laser_trim_analyzer.database as _d\n"
         f"_db = _m.DatabaseManager(r'{db.database_path}'); _m._db_manager = _db; _d._db_manager = _db\n"
         f"{patch}\n"
-        f"cfg = SimpleNamespace(active_models=SimpleNamespace(model_prices={SWEEP_PRICES!r},"
+        f"cfg = SimpleNamespace(active_models=SimpleNamespace(model_prices={prices!r},"
         f" cost_ratio={SWEEP_RATIO!r}))\n"
         f"raw = sqlite3.connect('file:{db.database_path}?mode=ro', uri=True)\n"
         "sweep.check_overview_money_on_database(_db, raw, cfg)\n")
@@ -811,8 +847,8 @@ def _run_money_check(db, patch=""):
 def _never_a_price(results):
     """A check may name models and counts -- never a price or a dollar figure."""
     said = " ".join(f"{n} {d}" for _v, n, d in results)
-    dollars = (7 * 12.5 * SWEEP_RATIO, 9 * 3.25 * SWEEP_RATIO)          # PRICED's and CHEAP's
-    for figure in list(SWEEP_PRICES.values()) + list(dollars) + [sum(dollars)]:
+    dollars = [n * SWEEP_PRICES[m] * SWEEP_RATIO for m, n in SWEEP_FAILS.items()]
+    for figure in list(SWEEP_PRICES.values()) + dollars + [sum(dollars)]:
         assert str(figure) not in said and f"{figure:.2f}" not in said, (figure, said)
     assert "$" not in said, said
 
@@ -825,6 +861,8 @@ def test_the_money_check_passes_when_the_dollars_match_their_definition(tmp_path
     assert any(n.startswith("overview money: each card's and row's dollars") for n in passed)
     assert any(n.startswith("overview money: the header's total") for n in passed)
     assert any(n.startswith("overview money: 'without a price'") for n in passed)
+    assert any("3 priced models failed final test, 1 of them not on the page" in d
+               for _v, _n, d in results), results
     _never_a_price(results)
 
 
@@ -868,3 +906,44 @@ def test_the_money_check_never_passes_on_nothing(tmp_path):
     results = _run_money_check(db)
     assert not any(v == "PASS" for v, _n, _d in results), results
     assert any(v == "WARN" for v, _n, _d in results), results
+
+
+def test_the_money_check_fails_when_the_total_counts_only_the_models_on_the_page(tmp_path):
+    results = _run_money_check(
+        _money_scratch(tmp_path),
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "_real = od._charge\n"
+              "def _charge(ov, fails, prices, ratio):\n"
+              "    _real(ov, fails, prices, ratio)\n"
+              "    ov.money_total = sum(x.money or 0.0 for x in ov.cards + ov.others)\n"
+              "od._charge = _charge")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any(n.startswith("overview money: the header's total") for n, d in failed), results
+    _never_a_price(results)
+
+
+def test_the_money_check_fails_when_without_a_price_counts_only_the_models_on_the_page(tmp_path):
+    results = _run_money_check(
+        _money_scratch(tmp_path),
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "_real = od._charge\n"
+              "def _charge(ov, fails, prices, ratio):\n"
+              "    _real(ov, fails, prices, ratio)\n"
+              "    ov.unpriced = sum(1 for x in ov.cards + ov.others if x.ft_fails and x.money is None)\n"
+              "od._charge = _charge")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any("without a price" in n and "STRAY" in d for n, d in failed), results
+
+
+def test_with_no_prices_the_money_check_holds_the_header_to_asking_for_them(tmp_path):
+    asks = "overview money: with no price loaded the header asks for prices, never '$0'"
+    results = _run_money_check(_money_scratch(tmp_path), prices={})
+    assert asks in {n for v, n, _ in results if v == "PASS"}, results
+    assert not [x for x in results if x[0] == "FAIL"], results
+    again = tmp_path / "again"
+    again.mkdir()
+    results = _run_money_check(
+        _money_scratch(again), prices={},
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "od.money_words = lambda ov: '$0 lost at final test in the last 90 days'")
+    assert asks in {n for v, n, _ in results if v == "FAIL"}, results

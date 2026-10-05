@@ -16,9 +16,12 @@ What the page draws, top to bottom, and where each part comes from:
   * (option B, 2026-10-04: James, "the dollars hidden on Company trends -> on the Overview") each
     card's and row's DOLLARS lost at final test -- the Company trends formula, final-test FAILs x
     the model's unit price x the cost ratio (core/cost_priorities) -- counted over THIS page's
-    own 90 days, with the final-test filters `_ft_rates_by_day` reads; their total, and how many
-    of those models failed final test with no price (counted, never read as $0). And each model's
-    LASERS: the systems with a graded trim in the 90 days, in the shop's order.
+    own 90 days, with the final-test filters `_ft_rates_by_day` reads. The header's TOTAL is the
+    full cost: every model with a price that failed final test in those days, on the page or not,
+    as Company trends counts it; and how many models failed final test with no price (counted,
+    never read as $0). With no price loaded at all, the header asks for prices -- a missing input
+    never reads as "$0 lost". And each model's LASERS: the systems with a graded trim in the 90
+    days, in the shop's order.
 
 PASS % is the app's headline yield (`core/yield_stats.compute_yield`'s linearity_yield):
 (PASS + WARNING) / (PASS + WARNING + FAIL) -- a WARNING is a sigma watch, never a rejection
@@ -151,11 +154,14 @@ class Overview:
     anchor: Optional[datetime] = None    # the newest file that counts; the windows end on its day
     cards: List[Card] = field(default_factory=list)
     others: List[Row] = field(default_factory=list)
-    # The dollars lost at final test in the 90 days over every card and row with a price; None when
-    # they could not be worked out (the money read failed, or no window: the pass rates failed or
-    # no trim is on record). `unpriced`: the cards and rows that failed final test with no price.
+    # The dollars lost at final test in the 90 days -- every model with a price that failed final
+    # test then, on the page or not: the full cost. None when they could not be worked out (the
+    # money read failed, or no window: the pass rates failed or no trim is on record). `unpriced`:
+    # every model that failed final test then with no price. `no_prices`: no price was loaded at
+    # all -- the header asks for them rather than say "$0 lost".
     money_total: Optional[float] = None
     unpriced: int = 0
+    no_prices: bool = False
     # {model: its newest trim file, or None for "no trims on record"}; None = could not be worked out
     inactive: Optional[Dict[str, Optional[datetime]]] = None
     # The chart of each laser: database.get_company_yield_trend's shape; None = could not be loaded
@@ -199,14 +205,22 @@ def money_known(ov: Overview) -> bool:
     return ov.money_total is not None and PART_MONEY not in ov.failed
 
 
+# With no price loaded at all, the header says where they come from (gui/v6/sections/backlog.py:
+# one open-order upload sets each model's price) -- never "$0 lost" over a missing input.
+NO_PRICES = "add prices in Settings → Backlog to see the dollars lost at final test"
+
+
 def money_words(ov: Overview) -> str:
     """The header line's dollars: "$12,345 lost at final test in the last 90 days · 3 without a
-    price"; "" with no trim file on record (no window to count over); and when the read -- or the
-    pass rates that anchor its window -- failed, says so: never "$0" for a crash."""
+    price"; "" with no trim file on record (no window to count over); NO_PRICES with no price
+    loaded at all; and when the read -- or the pass rates that anchor its window -- failed, says
+    so: never "$0" for a crash, nor for a price list that is empty."""
     if PART_MONEY in ov.failed or PART_RATES in ov.failed:
         return "dollars lost at final test could not be worked out"
     if ov.money_total is None:
         return ""
+    if ov.no_prices:
+        return NO_PRICES
     words = f"{dollars(ov.money_total)} lost at final test in the last {WINDOW_DAYS} days"
     if ov.unpriced:
         words += f" · {ov.unpriced:,} without a price"
@@ -382,8 +396,7 @@ def load_overview(db, *, prices: Optional[Dict[Any, Any]] = None, cost_ratio: Op
     # without them (or with no trim on record) there is no window, and the total stays unknown.
     if anchor_day is not None and rates_known:
         try:
-            _charge(ov, _ft_fails_by_model(db, [x.model for x in ov.cards + ov.others],
-                                           anchor_day, now),
+            _charge(ov, _ft_fails_by_model(db, anchor_day, now),
                     _clean_prices(prices), _clean_ratio(cost_ratio))
         except Exception as exc:
             logger.exception("Overview: the dollars lost at final test could not be worked out")
@@ -513,22 +526,17 @@ def _ft_rates_by_day(db, models: Iterable[str], anchor_day: date, now: Optional[
     return _by_model_day(rows)
 
 
-def _ft_fails_by_model(db, models: Iterable[str], anchor_day: date,
-                       now: Optional[datetime]) -> Dict[str, int]:
-    """{model: final-test FAILs in the 90 calendar days ending on the anchor's day} for `models`
-    -- the final tests `_ft_rates_by_day` counts, the FAIL ones, in the window the cards and rows
-    count. A model with none is absent."""
+def _ft_fails_by_model(db, anchor_day: date, now: Optional[datetime]) -> Dict[str, int]:
+    """{model: final-test FAILs in the 90 calendar days ending on the anchor's day} for EVERY model
+    that has one -- on the page or not: the header's total is the full cost. The final tests
+    `_ft_rates_by_day` counts, the FAIL ones, in the window the cards and rows count."""
     from sqlalchemy import func
     from laser_trim_analyzer.database.models import FinalTestResult as DBFT, StatusType
-    models = sorted(set(models))
-    if not models:
-        return {}
     first, _prior = _window(anchor_day)
     with db.session() as s:
         # By calendar DAY, as the cards' and rows' own counts are (_summarise reads date()).
         rows = (s.query(DBFT.model, func.count(DBFT.id))
-                .filter(DBFT.model.in_(models), DBFT.overall_status == StatusType.FAIL,
-                        *_ft_counted(DBFT, now),
+                .filter(DBFT.overall_status == StatusType.FAIL, *_ft_counted(DBFT, now),
                         func.date(DBFT.file_date).between(first.isoformat(), anchor_day.isoformat()))
                 .group_by(DBFT.model).all())
     return {m: int(n) for m, n in rows if m and n}
@@ -558,18 +566,16 @@ def _clean_ratio(cost_ratio) -> float:
 
 
 def _charge(ov: Overview, fails: Dict[str, int], prices: Dict[str, float], ratio: float) -> None:
-    """Each card's and row's final-test fails and dollars; the total; the unpriced count."""
-    total, unpriced = 0.0, 0
+    """Each card's and row's final-test fails and dollars (its own); the header's total and the
+    unpriced count over EVERY model that failed final test in the window; whether any price was
+    loaded at all."""
     for item in list(ov.cards) + list(ov.others):
         item.ft_fails = fails.get(item.model, 0)
         price = prices.get(item.model)
-        if price is None:
-            item.money = None
-            unpriced += 1 if item.ft_fails else 0
-        else:
-            item.money = item.ft_fails * price * ratio
-            total += item.money
-    ov.money_total, ov.unpriced = total, unpriced
+        item.money = None if price is None else item.ft_fails * price * ratio
+    ov.money_total = sum((n * prices[m] * ratio for m, n in fails.items() if m in prices), 0.0)
+    ov.unpriced = sum(1 for m, n in fails.items() if n and m not in prices)
+    ov.no_prices = not prices
 
 
 def _lasers(newest_by_system: Optional[Dict[str, date]], anchor_day: Optional[date]) -> List[str]:

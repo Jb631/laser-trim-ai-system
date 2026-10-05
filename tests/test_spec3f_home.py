@@ -184,6 +184,17 @@ def test_a_header_line_with_a_failed_card_source_or_money_read_says_so(make_app,
     assert "the dollars lost at final test (RuntimeError: invented money crash)" in banner
 
 
+def test_with_no_price_loaded_the_header_asks_for_prices_never_zero(make_app, monkeypatch):
+    """A missing input never reads as a zero (coordinator, 2026-10-04): with no price loaded at
+    all the header says where prices come from, not "$0 lost"."""
+    page = _show(make_app(), monkeypatch, _ov(cards=[_card("A")], money_total=0.0, unpriced=4,
+                                              no_prices=True))
+    said = page._headline.cget("text")
+    assert "$" not in said and "without a price" not in said
+    assert said == ("1 model needs a look · add prices in Settings → Backlog to see the dollars "
+                    "lost at final test · newest file 20 Mar 2026")
+
+
 # ---- the list ----------------------------------------------------------------------------------
 
 def test_the_list_is_needs_a_look_then_everything_else_then_the_folded_lines(make_app, monkeypatch):
