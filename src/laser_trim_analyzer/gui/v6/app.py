@@ -208,12 +208,29 @@ class V6App(ctk.CTk):
         """Advance all trained drift detectors over data that arrived since the
         last run. Worker thread; a no-op when nothing is new. `on_done(error)` is called on the
         worker when it has finished -- `error` the class name of the first step that failed, or
-        None."""
+        None -- every time, even when the drift code itself will not load."""
         def work():
             import logging
             log = logging.getLogger(__name__)
-            from laser_trim_analyzer.ml.drift_training import (
-                advance_drift_state, ensure_drift_rules)
+
+            def report(error: Optional[str]) -> None:
+                if on_done is not None:
+                    try:
+                        on_done(error)
+                    except Exception:
+                        log.exception("Could not report the drift catch-up's end")
+
+            # Guarded like every step below (review of option B, 2026-10-04). This import used to
+            # sit outside both guards: a drift module that would not load ended the thread before
+            # it reported, and the status bar said "Drift watch updating…" for good -- a failure
+            # reading as work in progress. Now it is named, the way a failed step is.
+            try:
+                from laser_trim_analyzer.ml.drift_training import (
+                    advance_drift_state, ensure_drift_rules)
+            except Exception as exc:
+                log.exception("Startup drift catch-up: the drift code would not load")
+                report(type(exc).__name__)
+                return
             error = None
             # The drift rules changed since this state was built (2026-10-02: dirty readings,
             # small lots, old evidence, improvements): retrain once, about ten seconds, before
@@ -236,11 +253,7 @@ class V6App(ctk.CTk):
             except Exception as exc:
                 error = error or type(exc).__name__
                 log.exception("Startup drift catch-up failed")
-            if on_done is not None:
-                try:
-                    on_done(error)
-                except Exception:
-                    log.exception("Could not report the drift catch-up's end")
+            report(error)
         import threading
         threading.Thread(target=work, daemon=True).start()
 
@@ -301,36 +314,45 @@ class V6App(ctk.CTk):
         from laser_trim_analyzer.gui.v6.pages.findings_page import FindingsPage
         from laser_trim_analyzer.gui.v6.pages.settings_page import SettingsPage
         from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage
-        self.page_container.add_page(
+        self._add_page(
             "home",
             HomePage(self.page_container, theme=self.theme, app=self, page_title="Overview"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "dashboard",
             # The key stays "dashboard"; the page reads "Company trends" everywhere (option B,
             # finish list 3) -- the Overview's link says so.
             DashboardPage(self.page_container, theme=self.theme, app=self,
                           page_title="Company trends"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "model",
             # Route key stays "model" (FOCUS rows and set_model_route navigate to
             # it); only what the user reads says "Models", matching the top bar.
             ModelPage(self.page_container, theme=self.theme, app=self,
                       page_title="Models"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "findings",
             FindingsPage(self.page_container, theme=self.theme, app=self, page_title="Findings"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "settings",
             SettingsPage(self.page_container, theme=self.theme, app=self, page_title="Settings"),
         )
-        self.page_container.add_page(
+        self._add_page(
             "process",
             ProcessPage(self.page_container, theme=self.theme, app=self, page_title="Process"),
         )
+
+    def _add_page(self, key: str, page) -> None:
+        """Register `page` under `key`. A page the top bar has no item for -- Process, Findings,
+        Company trends -- names itself at the left of its own row: with nothing lit on the bar,
+        nothing on screen said where you were (review of option B, 2026-10-04). The bar names the
+        other three, which never say it twice (finish item 2)."""
+        self.page_container.add_page(key, page)
+        if not self.topbar.lights(key):
+            page.show_name()
 
     # ---- in-flight long runs ----
     def register_ingest(self, cancel, thread, name: str = "An ingest") -> None:

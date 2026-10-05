@@ -8,24 +8,42 @@ worse. Applied once, from `V6App.__init__`.
 
 ---- The pin covers more than this file ------------------------------------
 
-Three more places override PRIVATE CustomTkinter code, in the app's own classes rather than here,
-and are right only while 5.2.2's internals mean what they were read to mean (F4 review, 2026-09-25).
-A pin bump must re-read them too -- the version-mismatch message below names all three, and
-tests/test_ui_responsiveness.py (the first two) and tests/test_finish_pass_pages.py (the third)
-fail, naming the file, if an internal changes:
+Other places override, wrap or read PRIVATE CustomTkinter code, in the app's own classes rather
+than here, and are right only while 5.2.2's internals mean what they were read to mean (F4 review,
+2026-09-25). A pin bump must re-read every one. `PRIVATE_USES` below names each, with the private
+names it rests on; the version-mismatch message is built from it, so it cannot leave one out again
+(option B review, 2026-10-04: this note counted "three" over four places, and the message named
+three); tests/test_ui_responsiveness.py checks that this list, the message and the files agree.
+What each one relies on is pinned by its own tests -- test_ui_responsiveness (tab_view's deferred
+forget, model_page's hook), test_finish_pass_pages (the arrows' colour, the tabs' width),
+test_spec3f_home (the Overview's wheel), test_stats_table and test_spec3c_model (a live change of
+scaling):
 
   * widgets/tab_view.py -- `ThemedTabView._grid_forget_all_tabs` overrides CTkTabview's: it relies on
     that method taking `exclude_name`, and on `CTkTabview.set()` calling it 100 ms later with the
-    name it switched to (ctk_tabview.py set()).
+    name it switched to (ctk_tabview.py set()). The class also sets CTkTabview's class-level
+    `_button_height` (34 px: CTkTabview's grid and its strip both read it), and reaches into the
+    strip -- `_segmented_button` and its `_buttons_dict` -- for the tabs' font and each tab's
+    width (finish pass, 2026-10-04).
   * pages/model_page.py -- replaces the model selector's `CTkComboBox._open_dropdown_menu` (the
-    method `_clicked` calls) with the searchable model picker.
+    method `_clicked` calls) with the searchable model picker; and scrolls a tab to the part a
+    link names, or Summary back to its chart, through a CTkScrollableFrame's own canvas,
+    `_parent_canvas` (inside a try: a rename there would quietly stop the scroll, not raise).
   * widgets/blocks.py -- `_QuietArrow._draw` (every dropdown and combo box, finish pass 2026-10-04)
-    repaints the "dropdown_arrow" canvas item after CTkOptionMenu's / CTkComboBox's own `_draw`,
-    which paints it with text_color.
+    repaints the "dropdown_arrow" item on the widget's `_canvas` after CTkOptionMenu's /
+    CTkComboBox's own `_draw`, which paints it with text_color.
   * pages/home_page.py (the Overview, option B 2026-10-04) -- `_PageScroll.check_if_master_is_canvas`
     narrows CTkScrollableFrame's wheel routing so a pane that can scroll keeps the wheel; and
     `_scrollbar_only_when_needed` wraps the canvas's yscrollcommand (5.2.2 pins it to the bar's set()),
     reading `_scrollbar`, `_parent_canvas` and `_parent_frame`.
+  * widgets/stats_table.py and widgets/drift_metrics_tab.py -- each overrides `_set_scaling`, the
+    method CustomTkinter calls when the display scaling changes live, to re-apply its scaled column
+    minimums (re-review, 2026-09-25); stats_table also raises its row bands above a frame's own
+    `_canvas`.
+  * Throughout gui/v6: CustomTkinter's unit helpers, `_apply_widget_scaling`,
+    `_reverse_widget_scaling` and `_get_widget_scaling`, turn its unscaled units into real pixels
+    and back (blocks.wrap_to_width says why). The text-wrapping callers sit inside a try, so a
+    rename there would quietly stop a wrap rather than raise.
 
 ---- 1. CTkScrollbar's re-entrant redraw cascade ----------------------------
 
@@ -64,7 +82,7 @@ its scrollbar or a programmatic `yview_moveto` changes.
 """
 import logging
 import sys
-from typing import Optional
+from typing import Optional, Tuple
 
 import customtkinter as ctk
 
@@ -72,6 +90,27 @@ logger = logging.getLogger(__name__)
 
 # The version this file has been read against. See module docstring.
 PINNED_CTK_VERSION = "5.2.2"
+
+# Every place OUTSIDE this file that rests on CustomTkinter's private code (the module docstring
+# says what each relies on): its file under gui/v6, the app's own class or function there, and the
+# private names it uses. apply() names them all from here when the version moves.
+PRIVATE_USES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    ("widgets/tab_view.py", "ThemedTabView",
+     ("_grid_forget_all_tabs", "_button_height", "_segmented_button", "_buttons_dict")),
+    ("pages/model_page.py", "ModelPage, _scroll_into_view",
+     ("_open_dropdown_menu", "_parent_canvas")),
+    ("widgets/blocks.py", "_QuietArrow",
+     ("_draw", "_canvas", "dropdown_arrow")),
+    ("pages/home_page.py", "_PageScroll, _scrollbar_only_when_needed",
+     ("check_if_master_is_canvas", "_scrollbar", "_parent_canvas", "_parent_frame")),
+    ("widgets/stats_table.py", "_TableGrid, StatsTableZone",
+     ("_set_scaling", "_canvas")),
+    ("widgets/drift_metrics_tab.py", "_Columns",
+     ("_set_scaling",)),
+)
+# ...and called throughout gui/v6, so named in the message without a file.
+UNIT_HELPERS: Tuple[str, ...] = ("_apply_widget_scaling", "_reverse_widget_scaling",
+                                 "_get_widget_scaling")
 
 # Pixels a scrolling frame moves per wheel unit on the Mac (patch 2): a notch, 30 px; a trackpad
 # swipe, the same per unit it reports.
@@ -140,6 +179,18 @@ def _patch_mac_wheel_step() -> None:
     ctk.CTkScrollableFrame.__init__ = __init__
 
 
+def _version_mismatch(version: Optional[str]) -> str:
+    """What apply() says on a CustomTkinter other than the pinned one: every place to re-read,
+    from PRIVATE_USES -- so a place added to the list is named here without anyone remembering to."""
+    places = "; ".join(f"{path} ({where}: {', '.join(names)})"
+                       for path, where, names in PRIVATE_USES)
+    return (f"customtkinter {version} is not the pinned {PINNED_CTK_VERSION}; UI patches NOT "
+            f"applied. Re-read ctk_patches.py against the new version (its docstring says what "
+            f"each place relies on) -- and every other place that rests on CustomTkinter's "
+            f"private code: {places}; and the unit helpers {', '.join(UNIT_HELPERS)}, called "
+            f"throughout gui/v6.")
+
+
 def apply(strict: bool = False) -> bool:
     """Install the patches. Idempotent; safe to call from every V6App.
 
@@ -154,15 +205,7 @@ def apply(strict: bool = False) -> bool:
 
     version: Optional[str] = getattr(ctk, "__version__", None)
     if version != PINNED_CTK_VERSION:
-        message = (f"customtkinter {version} is not the pinned "
-                   f"{PINNED_CTK_VERSION}; UI patches NOT applied. Re-read "
-                   f"ctk_patches.py against the new version -- and the app's two other "
-                   f"private overrides: widgets/tab_view.py (ThemedTabView."
-                   f"_grid_forget_all_tabs, which relies on CTkTabview.set() deferring it "
-                   f"with exclude_name), pages/model_page.py (the model selector's "
-                   f"CTkComboBox._open_dropdown_menu, replaced by the model picker) and "
-                   f"widgets/blocks.py (_QuietArrow._draw, which repaints the dropdowns' "
-                   f"\"dropdown_arrow\" canvas item after CustomTkinter's own _draw).")
+        message = _version_mismatch(version)
         if strict:
             raise RuntimeError(message)
         logger.warning(message)

@@ -20,9 +20,22 @@ from pathlib import Path
 import customtkinter as ctk
 
 from laser_trim_analyzer.core.backlog import Backlog, BacklogFormatError, parse_backlog
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
 from laser_trim_analyzer.gui.v6.widgets import blocks
+
+
+_UPLOADED = " · uploaded "
+
+
+def _source_on_screen(source: str) -> str:
+    """The saved label with its upload day in the app's words -- "Backlog 09-18-26.xls · uploaded
+    20 Sep 2026" -- where it said "uploaded 2026-09-20" (review of option B, 2026-10-04: the one
+    ISO date left in Settings). A label with no readable day is shown as it was saved."""
+    name, said, day = (source or "").rpartition(_UPLOADED)
+    words = formats.day(day) if said else formats.NONE
+    return source if words == formats.NONE else f"{name}{said}{words}"
 
 
 def rebuild_active_list(cfg) -> None:
@@ -41,7 +54,9 @@ def _apply_parsed_backlog(app, backlog: Backlog, source_name: str) -> str:
     merged_prices = dict(cfg.model_prices or {})
     merged_prices.update(backlog.prices)          # MERGE: absent-this-week keeps its old price
     cfg.model_prices = merged_prices
-    cfg.backlog_source = f"{source_name} · uploaded {date.today().isoformat()}"
+    # Saved with the ISO day: config.yaml is data, and every label saved before 2026-10-04 says
+    # it that way too. The screen says it the app's way (_source_on_screen).
+    cfg.backlog_source = f"{source_name}{_UPLOADED}{date.today().isoformat()}"
     rebuild_active_list(cfg)
     app.config.save()
     return _full_summary(cfg.backlog_source, backlog)
@@ -68,7 +83,7 @@ def apply_backlog(app, df, source_name: str) -> str:
 def _full_summary(source_line: str, backlog: Backlog) -> str:
     """The summary shown right after a successful upload, while the parsed
     Backlog (and so its unmatched count) is still at hand."""
-    return (f"{source_line} — {len(backlog.models)} active models · "
+    return (f"{_source_on_screen(source_line)} — {len(backlog.models)} active models · "
             f"{backlog.matched_units:,} open units · {len(backlog.prices)} priced · "
             f"{len(backlog.unmatched)} backlog items not recognised (add-ons such as "
             f"FAI/LAT/TEST UNITS, and products the app does not track)")
@@ -86,7 +101,7 @@ def _summary_from_config(cfg) -> str:
     n_units = sum((cfg.backlog_open_qty or {}).values())
     prices = cfg.model_prices or {}
     n_priced = sum(1 for m in (cfg.backlog_models or []) if m in prices)
-    source = cfg.backlog_source or "(backlog)"
+    source = _source_on_screen(cfg.backlog_source) or "(backlog)"
     return (f"{source} — {n_models} active models · {n_units:,} open units · "
             f"{n_priced} priced")
 

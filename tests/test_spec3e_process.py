@@ -440,6 +440,9 @@ def test_a_stopped_one_off_folder_stays(make_app):
 
 
 # ---- the full-width lines fit (moved from Home; final review, 2026-09-24) ----------------------
+# Since the finish pass (2026-10-04) the folders are ONE ROW EACH: a name over its whole path. These
+# fill those real rows with long network paths -- they used to fill the count line above them with a
+# run-on string of paths that no screen shows any more (review of option B, #5).
 
 def _map_offscreen(app, size="1280x720"):
     try:
@@ -452,47 +455,81 @@ def _map_offscreen(app, size="1280x720"):
     app.update()
 
 
-def test_the_full_width_lines_fit_at_1280_by_720(make_app):
-    """Measured with the audit's own detector, on a real mapped window (invisible), with invented
-    folder names long enough to wrap."""
+def _long_shares(n=8):
+    """Invented network folders, each path too long for one line of a 1280-wide page: about 300
+    characters, some 1,650 px in the caption face, where a row is under 1,250."""
+    return [rf"\\server-invented\share\Laser trim archive {i}\Production line {i}\Trim data "
+            rf"exports\Weekly folders kept for the invented audit\Second shift\Calibrated "
+            rf"stations only\Exported by the invented line computer\Kept until the invented "
+            rf"review is done\Invented station B\Folder {i} of a long invented chain"
+            for i in range(1, n + 1)]
+
+
+def _row_text_paths(run):
+    """The real Tk label behind every piece of text in the folder rows -- each row's place, name
+    and path -- by the name find_clipped_text_widgets reports a widget under."""
+    import tkinter
+    found = []
+
+    def walk(widget):
+        for child in tkinter.Misc.winfo_children(widget):
+            if isinstance(child, tkinter.Label):
+                found.append(str(child))
+            walk(child)
+    walk(run._folder_list)
+    return found
+
+
+def test_the_folder_rows_and_the_summary_fit_at_1280_by_720(make_app):
+    """Measured with the audit's own detector, on a real mapped window (invisible): eight
+    remembered folders on invented network paths, each long enough that it fits only by wrapping."""
     import pathlib
     import sys
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
     from render_pages import find_clipped_text_widgets
     app = make_app()
     app.show_page("process")
-    run = _new_files(app)
-    folders = "  →  ".join(f"/invented/share/laser-{i}/Trim Data/Production line {i}" for i in range(1, 9))
-    run._folders_label.configure(text=f"8 folders, in this order:  {folders}")
-    run._summary.configure(text=f"Summary line {folders}")
+    shares = _long_shares()
+    run = _with_folders(app, *shares)
+    run._summary.configure(text="Summary line " + "  ·  ".join(shares))
     _map_offscreen(app)
     try:
-        leads = ("8 folders", "Summary line")
-        ours = [c for c in find_clipped_text_widgets(_process(app), page="process", window_size="1280x720")
-                if c.text.startswith(leads)]
-        assert not ours, [c.line() for c in ours]
+        t = app.theme
+        rows = run._folder_rows
+        assert [r.path_label.cget("text") for r in rows] == shares
+        assert all(t.font(t.SIZE_CAPTION).measure(r.path_label.cget("text"))
+                   > r.path_label.master.winfo_width() > 1 for r in rows)      # it must wrap
+        ours = set(_row_text_paths(run)) | {str(run._summary._label), str(run._folders_label._label)}
+        assert all(str(r.path_label._label) in ours and str(r.name_label._label) in ours
+                   for r in rows)
+        cut = [c for c in find_clipped_text_widgets(_process(app), page="process",
+                                                   window_size="1280x720")
+               if c.path in ours]
+        assert not cut, [c.line() for c in cut]
     finally:
         app.withdraw()
 
 
 @pytest.mark.parametrize("scale", (1.0, 1.5))
-def test_the_folders_and_summary_lines_wrap_to_their_container(make_app, scale):
+def test_the_folder_paths_and_the_summary_wrap_to_their_container(make_app, scale):
     """global-constraints.md: no fixed pixel wraplength on page-width text. At 150% too:
-    wraplength is CustomTkinter's unscaled units, the container's width real pixels."""
+    wraplength is CustomTkinter's unscaled units, the container's width real pixels. A path wraps
+    to the frame built with its row (blocks.wrap_to_width's rule), the summary to the section."""
     import customtkinter as ctk
     ctk.set_widget_scaling(scale)
     try:
         app = make_app()
         app.show_page("process")
-        run = _new_files(app)
-        folders = "  →  ".join(f"/invented/share/laser-{i}/Trim Data" for i in range(1, 9))
-        run._folders_label.configure(text=f"8 folders, in this order:  {folders}")
-        run._summary.configure(text=f"Summary line {folders}")
+        shares = _long_shares()
+        run = _with_folders(app, *shares)
+        run._summary.configure(text="Summary line " + "  ·  ".join(shares))
         _map_offscreen(app)
         try:
-            width = run._folders_label.master.winfo_width()
-            for label in (run._folders_label, run._summary):
-                assert label.cget("wraplength") == int(width / scale)
+            rows = run._folder_rows
+            assert [r.path_label.cget("text") for r in rows] == shares
+            for label in [r.path_label for r in rows] + [run._summary]:
+                width = label.master.winfo_width()
+                assert label.cget("wraplength") == int(width / scale), label.cget("text")[:40]
                 assert label._label.winfo_reqwidth() <= width
         finally:
             app.withdraw()

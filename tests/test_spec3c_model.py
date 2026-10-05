@@ -2521,6 +2521,21 @@ def test_the_header_line_shows_the_model_its_status_its_pass_rate_and_its_lasers
     assert page._body.pack_slaves().index(page._header_line) < page._body.pack_slaves().index(page._tabs)
 
 
+def test_the_models_name_is_in_the_title_face_as_on_the_overview(make_app, monkeypatch):
+    """The Overview's detail names a model in the title face; this page named the same model, one
+    click later, in the Sans's bold (review of option B, #6). What Tk can see is faked before the
+    app builds its theme, as test_spec3a_shell's title-face test fakes it: whether Marcellus is in
+    Tk's list on this Mac depends on which test asked first."""
+    import tkinter.font as tkfont
+    monkeypatch.setattr(tkfont, "families", lambda: ["IBM Plex Sans", "Marcellus"])
+    app = make_app()
+    t = app.theme
+    font = app.page_container.get_page("model")._model_title.cget("font")
+    assert t.resolved_title == "Marcellus"
+    assert font is t.title(t.SIZE_TITLE) and font.cget("family") == "Marcellus"
+    assert font.cget("size") == t.SIZE_TITLE                           # the size it had
+
+
 def test_a_model_with_only_final_tests_shows_its_final_test_pass(tmp_path):
     """The Overview's rule for 8506 (its trims are stored as 8506A/B): no trims, so the header's
     number is its FINAL-TEST pass rate, and says so."""

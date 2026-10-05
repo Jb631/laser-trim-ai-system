@@ -18,8 +18,9 @@ The KEYS never changed. "model" is still "model" (it reads "Models" now), "home"
 key, and renaming one for a label would break click-through silently.
 
 `on_select(key)` on a click; `set_active(key)` from V6App.show_page -- a page with no item here
-(Process, Findings, Dashboard) lights none. `on_process()` when the button is pressed: V6App shows
-the Process page and starts the remembered-folder run there.
+(Process, Findings, Dashboard) lights none, and so names itself under the bar (`lights`, read by
+V6App when it registers the pages). `on_process()` when the button is pressed: V6App shows the
+Process page and starts the remembered-folder run there.
 """
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -77,11 +78,16 @@ class TopBar(ctk.CTkFrame):
         self._process_button.pack(side="right")
         ctk.CTkFrame(self, height=1, fg_color=t.DIVIDER, corner_radius=0).pack(side="bottom", fill="x")
 
+    def lights(self, key: str) -> bool:
+        """True when the bar has an item for page `key`: it lights that page, and its word names
+        it. A page it does not light names itself (PageBase.show_name)."""
+        return key in self._items
+
     def set_active(self, name: str) -> None:
         """Light `name`'s item -- or none, for a page that has no item on the bar."""
         for key, item in self._items.items():
             item.set_active(key == name)
-        self._active_name = name if name in self._items else None
+        self._active_name = name if self.lights(name) else None
 
 
 class _BarItem(ctk.CTkFrame):

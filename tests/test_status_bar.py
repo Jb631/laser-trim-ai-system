@@ -537,6 +537,31 @@ def test_a_catch_up_that_failed_is_named_never_current(make_app, monkeypatch):
     assert bar._drift.cget("text_color") == app.theme.CHECK
 
 
+def test_a_catch_up_whose_code_will_not_load_is_named_never_updating_forever(monkeypatch):
+    """The worker imported the drift code OUTSIDE both of its guards (review of option B,
+    2026-10-04): an import that raised ended the thread before it reported, and the bar said
+    "Drift watch updating…" for good -- a failure reading as work in progress. No window: the
+    catch-up and the drift line's state are plain methods, driven here on a stand-in."""
+    import sys
+    import types
+    from types import SimpleNamespace
+    from laser_trim_analyzer.gui.v6.app import V6App
+    # A drift_training that loads without the two functions the worker asks for: a broken install.
+    monkeypatch.setitem(sys.modules, "laser_trim_analyzer.ml.drift_training",
+                        types.ModuleType("laser_trim_analyzer.ml.drift_training"))
+    ended = Event()
+    app = SimpleNamespace(db=object(), _reload_visible_page=lambda: None,
+                          config=SimpleNamespace(ml=SimpleNamespace(drift_sensitivity="standard")))
+    app.ui = SimpleNamespace(post=lambda fn: (fn(), ended.set()))
+    app._set_drift_watch = lambda state, error=None: V6App._set_drift_watch(app, state, error)
+    app._advance_drift_catchup = lambda on_done=None: V6App._advance_drift_catchup(app, on_done)
+    V6App._start_drift_catchup(app)
+    assert ended.wait(5.0), "the catch-up never said it had ended: the bar would read 'updating…'"
+    assert V6App.drift_watch(app) == (sd.DRIFT_FAILED, "ImportError")
+    assert sd.drift_words(*V6App.drift_watch(app))[0] == \
+        "Drift watch: could not update (ImportError)"
+
+
 def test_an_app_that_will_catch_up_says_updating_from_the_start(tmp_path):
     """Production: the catch-up is scheduled five seconds after start, and the flags on screen
     may be behind until it has run -- "current" before then would be a claim not yet checked."""

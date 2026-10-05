@@ -181,3 +181,42 @@ def test_settings_page_shows_backlog_section_not_the_old_two(make_app):
     assert "Backlog — active models and pricing" in titles
     assert not any("Active Models (MPS" in t for t in titles)
     assert "Pricing" not in titles
+
+
+# ---- 8. the upload's day, on screen, the app's way (review of option B, #3) ---------------------
+# Settings -> Backlog said "· uploaded 2026-10-04". config.yaml keeps the ISO day -- it is data, and
+# every label saved before this says it that way -- and the screen says "4 Oct 2026"
+# (gui/v6/formats), for a label saved months ago too. Both summaries are plain functions: no window.
+
+def test_a_saved_upload_label_shows_its_day_the_apps_way():
+    from types import SimpleNamespace
+    from laser_trim_analyzer.gui.v6.sections.backlog import _summary_from_config
+    cfg = SimpleNamespace(backlog_source="Invented backlog.xls · uploaded 2026-09-20",
+                          backlog_models=["INV-1"], backlog_open_qty={"INV-1": 3},
+                          model_prices={"INV-1": 12.5})
+    said = _summary_from_config(cfg)
+    assert said == ("Invented backlog.xls · uploaded 20 Sep 2026 — 1 active models · "
+                    "3 open units · 1 priced"), said
+    # A label with no readable day is shown as it was saved, never with a dash for a date.
+    cfg.backlog_source = "old.xls"
+    assert _summary_from_config(cfg).startswith("old.xls — 1 active models")
+
+
+def test_an_upload_keeps_the_iso_day_and_says_the_apps():
+    from datetime import date
+    from types import SimpleNamespace
+    from laser_trim_analyzer.core.backlog import Backlog
+    from laser_trim_analyzer.gui.v6 import formats
+    from laser_trim_analyzer.gui.v6.sections.backlog import _apply_parsed_backlog
+    am = SimpleNamespace(backlog_models=[], backlog_open_qty={}, model_prices={},
+                         pinned_models=[], backlog_source="", mps_models=[])
+    saved = []
+    app = SimpleNamespace(config=SimpleNamespace(active_models=am, save=lambda: saved.append(1)))
+    backlog = Backlog(models=["INV-1"], prices={"INV-1": 12.5}, open_qty={"INV-1": 3},
+                      matched_units=3)
+    said = _apply_parsed_backlog(app, backlog, "Invented backlog.xls")
+    today = date.today()
+    assert am.backlog_source == f"Invented backlog.xls · uploaded {today.isoformat()}"
+    assert said.startswith(f"Invented backlog.xls · uploaded {formats.day(today)} — 1 active "
+                           f"models · 3 open units · 1 priced"), said
+    assert today.isoformat() not in said and saved == [1]
