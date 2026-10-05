@@ -1126,6 +1126,125 @@ def check_overview_on_database(db, raw) -> None:
               f"app {c.units} units {c.pass_pct} vs SQL {n} units {sql_pct}")
 
 
+def check_overview_money_on_database(db, raw, config=None) -> None:
+    """The Overview's dollars lost at final test (option B, 2026-10-04; finish item 13: the dollars
+    hidden on Company trends, on the Overview), held to INDEPENDENT SQL with the CONFIG's prices:
+      * every card's and row's final-test fails are this file's own count of FAIL final tests --
+        dated, believable (not more than a day ahead) -- in the 90 calendar days ending on the newest
+        graded, believable, not-suspect trim file's day;
+      * its dollars are those fails x its configured unit price x the cost ratio -- none for a model
+        with no price, never $0;
+      * the header's total is the FULL cost: every model with a price that failed final test in
+        those days, on the page or not (as Company trends counts it); "N without a price" counts
+        every model that failed final test then with no price, on the page or not;
+      * with no price loaded at all, the header asks for prices -- never "$0 lost".
+    Prices are CUSTOMER data: this prints model names and counts, never a price or a dollar figure.
+    `config` is for tests (invented prices); the sweep reads the app's own (config.get_config).
+    Made to FAIL first (tests/test_overview_data.py): fails counted over a wider window, the cost
+    ratio ignored, the total or the unpriced count taken over the page's models only, an unpriced
+    model left uncounted, "$0 lost" with no prices. Nothing to compare is a WARN, never a PASS."""
+    import math
+    from laser_trim_analyzer.gui.v6 import overview_data as od
+    if config is None:
+        from laser_trim_analyzer.config import get_config
+        config = get_config()
+    am = config.active_models
+    prices = {}
+    for model, price in (am.model_prices or {}).items():
+        try:
+            value = float(price)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            prices[str(model)] = value
+    try:
+        ratio = float(am.cost_ratio)
+    except (TypeError, ValueError):
+        ratio = 0.5
+    ov = od.load_overview(db, prices=am.model_prices, cost_ratio=am.cost_ratio)
+    if not prices:
+        warn("overview money: the config has no unit prices -- every model reads 'no price', and "
+             "the dollars are checked on nothing")
+
+    horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    newest = raw.execute(
+        "SELECT MAX(file_date) FROM analysis_results WHERE overall_status IN ('PASS', 'WARNING',"
+        " 'FAIL') AND model IS NOT NULL AND file_date IS NOT NULL AND file_date <= ?"
+        " AND (data_quality IS NULL OR data_quality <> 'suspect')", (horizon,)).fetchone()[0]
+    if newest is None:
+        warn("overview money: no graded trim on this copy -- no window, the dollars are checked "
+             "on nothing")
+        return
+    if od.PART_MONEY in ov.failed or ov.money_total is None:
+        check("overview money: the dollars lost at final test could be worked out", False,
+              f"failed: {sorted(ov.failed)}")              # the parts, never a reason with values
+        return
+    if not prices:
+        # A missing input never reads as a zero. The line itself is not printed: had it said a
+        # dollar figure, the figure would be on this output.
+        line = od.header_line(ov)
+        check("overview money: with no price loaded the header asks for prices, never '$0'",
+              ov.no_prices and "$" not in line and "Settings → Backlog" in line,
+              f"no_prices={ov.no_prices}, a dollar sign in the line: {'$' in line}")
+    day = str(newest)[:10]
+    fails = {m: n for m, n in raw.execute(
+        "SELECT model, COUNT(*) FROM final_test_results WHERE overall_status = 'FAIL'"
+        " AND file_date IS NOT NULL AND file_date <= ?"
+        " AND date(file_date) BETWEEN date(?, '-89 days') AND date(?) GROUP BY model",
+        (horizon, day, day)).fetchall() if m and n}
+    if not fails:
+        warn("overview money: no model failed final test in the 90 days -- the dollars are checked "
+             "on nothing")
+        return
+    items = list(ov.cards) + list(ov.others)
+    on_page = {x.model for x in items}
+    failing = [x for x in items if fails.get(x.model, 0)]
+    if not failing:
+        warn("overview money: no card or row failed final test in the 90 days -- each model's "
+             "dollars are checked on nothing", f"{len(items)} models on the page")
+    else:
+        wrong = sorted(x.model for x in items if x.ft_fails != fails.get(x.model, 0))
+        check("overview money: each card's and row's final-test fails are the 90 days' FAIL final "
+              "tests, by independent SQL",
+              not wrong,
+              f"{len(failing)} of {len(items)} models failed final test, "
+              f"{sum(fails.get(x.model, 0) for x in items):,} fails; differ: "
+              + ", ".join(f"{m} app={next(x.ft_fails for x in items if x.model == m)} "
+                          f"sql={fails.get(m, 0)}" for m in wrong[:6]))
+
+        def expected(x):
+            price = prices.get(x.model)
+            return None if price is None else fails.get(x.model, 0) * price * ratio
+
+        off = sorted(x.model for x in items
+                     if (expected(x) is None) != (x.money is None)
+                     or (x.money is not None and not math.isclose(x.money, expected(x),
+                                                                  rel_tol=1e-9, abs_tol=1e-9)))
+        priced = [x for x in items if x.model in prices]
+        check("overview money: each card's and row's dollars are its fails x its configured price "
+              "x the cost ratio (none without a price)",
+              not off, f"{len(priced)} priced, {len(items) - len(priced)} without a price; "
+                       f"differ: {off[:8]}")
+
+    # The header: the full cost and the unpriced count, over EVERY model in the window.
+    priced_fails = {m: n for m, n in fails.items() if m in prices}
+    if not priced_fails:
+        warn("overview money: no priced model failed final test -- the header's total is checked "
+             "on nothing", f"{len(prices)} priced in the config")
+    else:
+        total = sum(n * prices[m] * ratio for m, n in priced_fails.items())
+        check("overview money: the header's total is every priced model's final-test fails x price "
+              "x the cost ratio -- on the page or not",
+              math.isclose(ov.money_total, total, rel_tol=1e-9, abs_tol=1e-6),
+              f"{len(priced_fails)} priced models failed final test, "
+              f"{len(set(priced_fails) - on_page)} of them not on the page")
+    unpriced = sorted(m for m in fails if m not in prices)
+    check("overview money: 'without a price' counts every model that failed final test with no "
+          "price -- on the page or not", ov.unpriced == len(unpriced),
+          f"app {ov.unpriced} vs SQL {len(unpriced)} ({len(set(unpriced) - on_page)} not on the "
+          f"page): {unpriced[:8]}")
+
+
 def check_drift_trust_rules(db, raw) -> None:
     """The drift watch raises no alarm the data cannot support (James, 2026-10-02: "im also
     concerned about dirty data and accuracy of the app telling me things are drifting"). On the
@@ -5214,6 +5333,8 @@ def main() -> int:
     # ---- the Overview: its cards are FOCUS united with the detector, its pass % the definition --
     with _guard("overview: its cards and pass rates"):
         check_overview_on_database(db, raw)
+    with _guard("overview: the dollars lost at final test"):
+        check_overview_money_on_database(db, raw)
     # ---- the screens count what they draw; a failed load is never a zero (final review M9)
     with _guard("screens: each count is the rows its section is handed"):
         check_screens_count_what_they_draw(db)
@@ -6432,8 +6553,9 @@ STANDALONE = {"glosses": check_usability_glosses,
 
 # Sections that read a COPY of the work database, run alone (the same refusals main() makes):
 #     python scripts/app_qa_sweep.py /path/to/COPY_of_analysis.db --only overview
-ON_DATABASE = {"overview": check_overview_on_database}
-ON_DATABASE["status-bar"] = check_status_bar_on_database
+ON_DATABASE = {"overview": check_overview_on_database,
+               "overview-money": check_overview_money_on_database,
+               "status-bar": check_status_bar_on_database}
 
 
 def _run_on_database(name: str) -> int:

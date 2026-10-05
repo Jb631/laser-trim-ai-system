@@ -1,32 +1,43 @@
-"""The Overview -- the landing page (key "home"; Graphite redesign, 2026-10-02).
+"""The Overview -- the landing page (key "home"; Graphite redesign, 2026-10-02; option B, 2026-10-04).
 
-Spec: docs/superpowers/specs/2026-10-02-graphite-redesign-design.md. James: "im just not happy
-with the app, there is so much going on its hard to see what is what". This page REMOVES: Home's
-ingest card went to the Process page (the top bar's "Process new files" runs it there), its
-"Worth changing" list into each model's page, and Triage is retired -- what it showed is here.
+Specs: docs/superpowers/specs/2026-10-02-graphite-redesign-design.md, and
+2026-10-04-option-b-design.md -- James, with Task Manager TMOG open: "now this is an example of a
+finished peice of solftware"; shown three versions on his own data, "i like B": a LIST of models
+with the selected model's DETAIL beside it. TMOG is the bar for finish, not a template.
 
 Top to bottom:
   * the last finished run's one-line summary, quietly (`set_run_summary`; a run lands here), and
     under it "See the run ›" -- the Process page and that run's tally, without starting another;
   * the quiet data-health notices (final tests graded before the ignore-window fix, files skipped
     as unreadable) and, in the check colour, any part of this page that could not be loaded;
-  * "Yield by laser — last 12 months": the Company trends chart -- each laser and the company,
-    month by month (James, 2026-10-04: "on the overveiw screen i no longer have each laser charted
-    overall?");
-  * "N models need a look" over "Last 90 days · newest file DD Mon YYYY" and the rule that puts a
-    model on a card (`overview_data.CARD_RULE`), and the CARDS: the fail-rate list united with the
-    drift watch's flags, each saying in one line why it is there (James: "keep all 16 cards (fail
-    rate up, or a signal moved), each with its reason"); a click opens its Summary, charting the
-    signal its reason names;
-  * "Everything else": every other active model, busiest first;
-  * "Other models on file (N) ▸" and "Inactive models (N) ▸", collapsed, each expanding in place:
-    every model on file is somewhere on this page -- labelled, never hidden (F5);
+  * ONE header line: "13 models need a look · $X lost at final test in the last 90 days · newest
+    file 29 Sep 2026" (overview_data.header_line: the dollars the Company trends page used to hide,
+    finish item 13; never a count or a sum it does not have);
+  * "Yield by laser — last 12 months": the Company trends chart itself as a compact strip, always
+    visible, above the list (James, 2026-10-04: "on the overveiw screen i no longer have each laser
+    charted overall?");
+  * the rule that puts a model on the list (`overview_data.CARD_RULE`);
+  * the LIST (left, scrolls on its own): "Needs a look (N)" -- the fail-rate list united with the
+    drift watch's flags -- then "Everything else (N)", every other active model, busiest first.
+    Each row: the model, its units, its pass %, twelve months as a line in its laser's colour
+    (micro_charts.MiniLine; a gap where a month had no units, finish item 11), the hand-trim tag.
+    The selected row is ELEVATED with a border. At its end, "Other models on file (N) ▸" and
+    "Inactive models (N) ▸", folded, each expanding in place: every model on file is somewhere on
+    this page -- labelled, never hidden (F5);
+  * the DETAIL (right) of the selected row -- the first card on load; a click selects, a double
+    click opens -- the model in the title face, its status word, a pass meter with "was", why it is
+    here (in the fail colour), twelve months of pass %, its facts (units, lasers, the signal, the
+    dollars lost at final test, the newest file) and "Open full page ›": its Summary, charting the
+    signal a card names;
   * three quiet links: "All findings", "Company trends", "Process a specific folder".
+
+The list and the detail fill the window below the strip (`_fit_split`), never shorter than
+SPLIT_MIN: when the notices on top leave less than that, the page scrolls instead.
 
 Every number comes from ONE loader, `gui/v6/overview_data.load_overview`, on a worker thread;
 this page only draws what it is handed. Three states, never confused: loading (nothing has landed
-yet -- no count, "Loading…"), loaded, and failed (each failed part named in a banner; a count it
-does not have is never printed -- never "0 models need a look" over a crash).
+yet -- no count, "Loading…"), loaded, and failed (each failed part named in a banner; a count or a
+sum it does not have is never printed -- never "0 models need a look" over a crash).
 
 Thread discipline (CLAUDE.md rule 5): the worker posts back through `safe_after`; Tk is touched
 on the Tk thread only.
@@ -34,30 +45,51 @@ on the Tk thread only.
 import logging
 import threading
 import tkinter
-from typing import Callable, List, Optional
+from datetime import date
+from typing import Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.core.activity import activity_unknown_notice
 from laser_trim_analyzer.core.ft_regrade import legacy_ft_notice
 from laser_trim_analyzer.core.ingest_run import unreadable_notice
+from laser_trim_analyzer.core.models import laser_label
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6 import overview_data as od
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
+from laser_trim_analyzer.gui.v6.widgets.micro_charts import MiniLine, MonthChart, PassMeter
+from laser_trim_analyzer.ml.drift_types import metric_label
 
 logger = logging.getLogger(__name__)
 
-# Cards: four columns from about 1280 px of window, fewer below (each at least CARD_MIN wide).
-MAX_COLUMNS = 4
-CARD_MIN = 280
-BARS_HEIGHT = 40
-# "Everything else": fixed column widths, so the plain rows line up (CustomTkinter units).
-LIST_COLUMNS = (180, 110, 70, 140)
-INACTIVE_COLUMNS = 3
+# Sizes in CustomTkinter's units.
+LIST_WIDTH = 360          # the list pane, its scrollbar included
+SPLIT_MIN = 260           # the list and the detail never shorter: the page scrolls instead
+# A line of text is as tall as its text: CustomTkinter's default label is 28 units whatever its
+# font, which made each list row 68 px and pushed the detail's last line below the window.
+FIT = 0
+PCT_COLUMN = 44           # a row's pass % column: the percentages line up down the list
+SPARK_SIZE = (80, 26)     # a row's twelve-month line
+FOLDED_COLUMNS = 1        # the folded lines' models, one to a line in the list's width
+# The yield chart as a strip: the Company trends chart as it is, only shorter (its figure is 2.6 in)
+STRIP_INCHES = 1.9
 TREND_TITLE = "Yield by laser — last 12 months"
 
+# The detail's facts, in order. "Signal" only for a model on the list's first part (a card).
+FACT_UNITS = "Units, last 90 days"
+FACT_LASERS = "Lasers"
+FACT_SIGNAL = "Signal"
+FACT_MONEY = "$ lost at final test, 90 days"
+FACT_NEWEST = "Newest file"
+FACTS = (FACT_UNITS, FACT_LASERS, FACT_SIGNAL, FACT_MONEY, FACT_NEWEST)
+
+FAILED_NOTE = "Could not be worked out — the notice above says what failed."
+
 _TONE = {"up": "PASS_FG", "down": "FAIL_FG", "steady": "TEXT_SECONDARY", "new": "TEXT_SECONDARY"}
+
+Item = object             # an overview_data.Card or Row
 
 
 class HomePage(PageBase):
@@ -65,9 +97,12 @@ class HomePage(PageBase):
 
     def __init__(self, master, *, theme, app, page_title="Overview"):
         self._ov: Optional[od.Overview] = None      # what is on screen; None until a load lands
-        self._card_widgets: List[_ModelCard] = []
-        self._columns = 0
+        self._card_rows: List[_ListRow] = []
+        self._other_rows: List[_ListRow] = []
+        self._selected: Optional[str] = None        # the model whose detail is shown
+        self._quiet_open = False
         self._inactive_open = False
+        self._split_height: Optional[int] = None
         # Reload generation (the Model page's _reload_gen pattern, facelift F4): a load's apply is
         # dropped unless it is still the newest -- workers finish in any order. Tk thread only.
         self._reload_gen = 0
@@ -76,9 +111,8 @@ class HomePage(PageBase):
     # ---- construction ------------------------------------------------------
     def build_content(self, parent):
         t = self.theme
-        # Scrollable: 16 cards, a list of every active model and an expanded inactive list are
-        # taller than any window.
-        self._body = body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        # The page scrolls only when the notices on top leave the panes less than SPLIT_MIN.
+        self._body = body = _PageScroll(parent, fg_color="transparent")
         body.pack(side="top", fill="both", expand=True)
 
         # The lines at the top, each packed only while it has something to say (_place_top).
@@ -90,69 +124,53 @@ class HomePage(PageBase):
         self._unreadable_label = blocks.banner(body, t, "", tone="quiet", wrap_to=body)
         self._load_banner = blocks.banner(body, t, "", wrap_to=body)        # check tone
 
-        # Each laser and the company, month by month: the Company trends chart itself. Its place is
-        # held from the start; the chart is packed once a load has landed -- "Loading…" until then,
-        # never "No trim data" before it has looked.
+        # The one header line: "Loading…" until a load lands -- never a count before it has looked.
+        self._headline = ctk.CTkLabel(body, text="Loading…", anchor="w", justify="left", height=FIT,
+                                      font=t.font(t.SIZE_HEADING, "bold"), text_color=t.TEXT_PRIMARY)
+        self._headline.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        blocks.wrap_to_width(self._headline, body)          # built once with the page: binds once
+
+        # Each laser and the company, month by month: the Company trends chart itself, as a strip.
+        # Its place is held from the start; the chart is packed once a load has landed -- "Loading…"
+        # until then, never "No trim data" before it has looked.
         self._trend_box = ctk.CTkFrame(body, fg_color="transparent")
-        self._trend_box.pack(side="top", fill="x", pady=(0, t.SPACE_LG))
-        self._trend_heading = ctk.CTkLabel(self._trend_box, text=TREND_TITLE, anchor="w",
-                                           font=t.font(t.SIZE_HEADING, "bold"),
-                                           text_color=t.TEXT_PRIMARY)
+        self._trend_box.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._trend_heading = ctk.CTkLabel(self._trend_box, text=TREND_TITLE, anchor="w", height=FIT,
+                                           font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
         self._trend_heading.pack(side="top", fill="x")
         self._trend_note = ctk.CTkLabel(self._trend_box, text="Loading…", anchor="w",
                                         font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
         self._trend_note.pack(side="top", fill="x")
         self._trend_chart = CompanyTrendChart(self._trend_box, theme=t)
+        _as_strip(self._trend_chart)
 
-        self._need_heading = ctk.CTkLabel(body, text=od.need_a_look(None), anchor="w",
-                                          font=t.font(t.SIZE_HEADING, "bold"),
-                                          text_color=t.TEXT_PRIMARY)
-        self._need_heading.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
-        self._need_caption = ctk.CTkLabel(body, text="Loading…", anchor="w", justify="left",
-                                          font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
-        self._need_caption.pack(side="top", fill="x")
+        # What puts a model on the list's first part, said where the list is read.
         self._need_rule = ctk.CTkLabel(body, text=od.CARD_RULE, anchor="w", justify="left",
-                                       font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
+                                       height=FIT, font=t.font(t.SIZE_CAPTION),
+                                       text_color=t.TEXT_SECONDARY)
         self._need_rule.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
-        blocks.wrap_to_width(self._need_rule, body)        # built once with the page: binds once
-        self._cards_frame = ctk.CTkFrame(body, fg_color="transparent")
-        self._cards_frame.pack(side="top", fill="x", pady=(0, t.SPACE_XL))
-        # Bound ONCE, on a frame that lives as long as the page: re-grids the cards when the
-        # number of columns the width allows changes.
-        self._cards_frame.bind("<Configure>", self._regrid_cards, add="+")
-        self._cards_note = ctk.CTkLabel(self._cards_frame, text="", anchor="w", justify="left",
-                                        font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
+        blocks.wrap_to_width(self._need_rule, body)
 
-        self._others_heading = ctk.CTkLabel(body, text="Everything else", anchor="w",
-                                            font=t.font(t.SIZE_HEADING, "bold"),
-                                            text_color=t.TEXT_PRIMARY)
-        self._others_heading.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-        self._others_frame = ctk.CTkFrame(body, fg_color="transparent")
-        self._others_frame.pack(side="top", fill="x")
-        # "Loading…" until the first load lands -- never a bare heading over nothing.
-        self._others_note = ctk.CTkLabel(body, text="Loading…", anchor="w", justify="left",
-                                         font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
-        self._others_note.pack(side="top", fill="x", after=self._others_frame)
-
-        # "Other models on file (N) ▸": trimmed, but on no card, in no list and not inactive --
-        # on file, and otherwise nowhere on this page. Packed once the count is known.
-        self._quiet_open = False
-        self._quiet_toggle = ctk.CTkButton(
-            body, text="", command=self._toggle_quiet, fg_color="transparent",
-            hover_color=t.CARD, text_color=t.TEXT_SECONDARY, font=t.font(t.SIZE_BODY),
-            anchor="w", width=0, height=28)
-        self._quiet_list = ctk.CTkFrame(body, fg_color="transparent")
-
-        # "Inactive models (N) ▸": packed once the count is known; the list below it only while
-        # it is open.
-        self._inactive_toggle = ctk.CTkButton(
-            body, text="", command=self._toggle_inactive, fg_color="transparent",
-            hover_color=t.CARD, text_color=t.TEXT_SECONDARY, font=t.font(t.SIZE_BODY),
-            anchor="w", width=0, height=28)
-        self._inactive_list = ctk.CTkFrame(body, fg_color="transparent")
+        # The two panes: the list (left, a fixed width) and the detail (right, the rest).
+        self._split = ctk.CTkFrame(body, fg_color="transparent")
+        self._split.pack(side="top", fill="x")
+        self._split.grid_columnconfigure(0, minsize=self._split._apply_widget_scaling(LIST_WIDTH))
+        self._split.grid_columnconfigure(1, weight=1)
+        self._split.grid_rowconfigure(0, weight=1)
+        inner = SPLIT_MIN - 2 * _pane_inset(t)
+        self._list = ctk.CTkScrollableFrame(
+            self._split, width=LIST_WIDTH - 2 * _pane_inset(t) - 16, height=inner, fg_color=t.CARD,
+            border_color=t.BORDER, border_width=1, corner_radius=t.RADIUS_LG)
+        self._list.grid(row=0, column=0, sticky="nsew")
+        self._detail = _Detail(self._split, t, height=inner, on_open=self._open_selected)
+        self._detail.grid(row=0, column=1, sticky="nsew", padx=(t.SPACE_MD, 0))
+        body.panes = (self._list, self._detail)
+        for frame in (body, self._list, self._detail):
+            _scrollbar_only_when_needed(frame)
+        self._build_list(self._list)
 
         self._links = ctk.CTkFrame(body, fg_color="transparent")
-        self._links.pack(side="top", fill="x", pady=(t.SPACE_LG, 0))
+        self._links.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
         self._findings_link = blocks.link_button(self._links, t, "All findings", self._open_findings)
         self._findings_link.pack(side="left")
         self._trends_link = blocks.link_button(self._links, t, "Company trends", self._open_trends)
@@ -163,14 +181,69 @@ class HomePage(PageBase):
                                                 self._open_process)
         self._process_link.pack(side="left", padx=(t.SPACE_LG, 0))
 
+        # The panes reach the foot of the window: refitted when the window's size changes and when
+        # anything above them changes height (which moves the split: <Configure> fires on a move).
+        body._parent_canvas.bind("<Configure>", self._fit_split, add="+")
+        self._split.bind("<Configure>", self._fit_split, add="+")
+
+    def _build_list(self, pane) -> None:
+        t = self.theme
+        pad = dict(padx=t.SPACE_SM)
+        self._need_heading = ctk.CTkLabel(pane, text="Needs a look", anchor="w", height=FIT,
+                                          font=t.font(t.SIZE_BODY, "bold"), text_color=t.TEXT_PRIMARY)
+        self._need_heading.pack(side="top", fill="x", pady=(t.SPACE_SM, t.SPACE_XS), **pad)
+        self._cards_frame = ctk.CTkFrame(pane, fg_color="transparent")
+        self._cards_frame.pack(side="top", fill="x")
+        # "Loading…" under each heading until the first load lands -- never a bare heading.
+        self._cards_note = ctk.CTkLabel(pane, text="Loading…", anchor="w", justify="left",
+                                        height=FIT, font=t.font(t.SIZE_CAPTION),
+                                        text_color=t.TEXT_SECONDARY)
+        self._cards_note.pack(side="top", fill="x", after=self._cards_frame, **pad)
+        blocks.wrap_to_width(self._cards_note, pane, padding=2 * t.SPACE_SM)
+
+        self._others_heading = ctk.CTkLabel(pane, text="Everything else", anchor="w", height=FIT,
+                                            font=t.font(t.SIZE_BODY, "bold"),
+                                            text_color=t.TEXT_PRIMARY)
+        self._others_heading.pack(side="top", fill="x", pady=(t.SPACE_MD, t.SPACE_XS), **pad)
+        self._others_frame = ctk.CTkFrame(pane, fg_color="transparent")
+        self._others_frame.pack(side="top", fill="x")
+        self._others_note = ctk.CTkLabel(pane, text="Loading…", anchor="w", justify="left",
+                                         height=FIT, font=t.font(t.SIZE_CAPTION),
+                                         text_color=t.TEXT_SECONDARY)
+        self._others_note.pack(side="top", fill="x", after=self._others_frame, **pad)
+        blocks.wrap_to_width(self._others_note, pane, padding=2 * t.SPACE_SM)
+
+        # "Other models on file (N) ▸": trimmed, but on no card, in no list and not inactive --
+        # on file, and otherwise nowhere on this page. Packed once the count is known.
+        self._quiet_toggle = ctk.CTkButton(
+            pane, text="", command=self._toggle_quiet, fg_color="transparent",
+            hover_color=t.ELEVATED, text_color=t.TEXT_SECONDARY, font=t.font(t.SIZE_BODY),
+            anchor="w", width=0, height=28)
+        self._quiet_list = ctk.CTkFrame(pane, fg_color="transparent")
+        # "Inactive models (N) ▸": packed once the count is known; the list below it only while
+        # it is open.
+        self._inactive_toggle = ctk.CTkButton(
+            pane, text="", command=self._toggle_inactive, fg_color="transparent",
+            hover_color=t.ELEVATED, text_color=t.TEXT_SECONDARY, font=t.font(t.SIZE_BODY),
+            anchor="w", width=0, height=28)
+        self._inactive_list = ctk.CTkFrame(pane, fg_color="transparent")
+
     # ---- data ----------------------------------------------------------------
+    def _money_settings(self) -> Tuple[Dict, object]:
+        """The config's prices and cost ratio, read on the Tk thread -- and the prices COPIED: the
+        worker must not read a dict Settings may be rewriting."""
+        am = getattr(getattr(self.app, "config", None), "active_models", None)
+        prices = dict(getattr(am, "model_prices", None) or {})
+        return prices, getattr(am, "cost_ratio", od.DEFAULT_COST_RATIO)
+
     def on_show(self):
         """Load on a worker; apply on the Tk thread -- unless a newer load has started since."""
         self._reload_gen += 1
         gen = self._reload_gen
+        prices, ratio = self._money_settings()
 
         def work():
-            data = od.load_overview(self.app.db)
+            data = od.load_overview(self.app.db, prices=prices, cost_ratio=ratio)
 
             def apply():
                 if gen == self._reload_gen:          # else a newer load superseded this one
@@ -182,7 +255,8 @@ class HomePage(PageBase):
         """Synchronous load + apply (the test path). The newest load: anything still in flight is
         dropped when it lands."""
         self._reload_gen += 1
-        self._apply(od.load_overview(self.app.db))
+        prices, ratio = self._money_settings()
+        self._apply(od.load_overview(self.app.db, prices=prices, cost_ratio=ratio))
 
     def _apply(self, ov: od.Overview) -> None:
         """Draw one load. Each part under its own guard (the Model page's _try): a render error in
@@ -191,15 +265,17 @@ class HomePage(PageBase):
             return                   # nothing changed since the last load: nothing to redraw
         self._ov = ov
         for what, draw in (("notices", lambda: self._draw_notices(ov)),
+                           ("header line", lambda: self._headline.configure(text=od.header_line(ov))),
                            ("yield chart", lambda: self._draw_trend(ov)),
-                           ("cards", lambda: self._draw_cards(ov)),
-                           ("list", lambda: self._draw_others(ov)),
+                           ("list", lambda: self._draw_list(ov)),
                            ("other models line", lambda: self._draw_quiet(ov)),
-                           ("inactive line", lambda: self._draw_inactive(ov))):
+                           ("inactive line", lambda: self._draw_inactive(ov)),
+                           ("detail", lambda: self._draw_detail(ov))):
             try:
                 draw()
             except Exception:
                 logger.exception("Overview: the %s could not be drawn", what)
+        self.after_idle(self._fit_split)
 
     # ---- the top lines -------------------------------------------------------
     def set_run_summary(self, text: str, *, ok: bool = True) -> None:
@@ -217,14 +293,14 @@ class HomePage(PageBase):
         self._place_top()
 
     def _place_top(self) -> None:
-        """The four top lines, in order, each only while it has text -- all above the heading."""
+        """The four top lines, in order, each only while it has text -- all above the header."""
         lines = (self._run_line, self._legacy_ft_label, self._unreadable_label, self._load_banner)
         for line in lines + (self._run_link,):
             line.pack_forget()
         for line in lines:
             if line.cget("text"):
                 line.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM),
-                          before=self._trend_box)
+                          before=self._headline)
         if self._run_line.cget("text"):
             self._run_line.pack_configure(pady=0)
             self._run_link.pack(side="top", anchor="w", pady=(0, self.theme.SPACE_SM),
@@ -240,67 +316,74 @@ class HomePage(PageBase):
         self._trend_chart.set_data(None if od.PART_TREND in ov.failed else (ov.trend or {}),
                                    period_label=od.TREND_PERIOD)
 
-    # ---- the cards -------------------------------------------------------------
-    def _draw_cards(self, ov: od.Overview) -> None:
-        t = self.theme
-        self._need_heading.configure(text=od.need_a_look(od.card_count(ov)))
-        self._need_caption.configure(text=od.window_caption(ov))
-        for w in self._card_widgets:
-            w.destroy()
-        self._card_widgets = [_ModelCard(self._cards_frame, t, card, self._open_card)
-                              for card in ov.cards]
-        failed = od.card_count(ov) is None
-        self._cards_note.configure(
-            text="Could not be worked out — the notice above says what failed."
-            if failed and not ov.cards else "")
-        self._columns = 0                       # force a fresh grid
-        self._regrid_cards()
-
-    def _columns_for_width(self) -> int:
-        width = self._cards_frame.winfo_width()
-        if width <= 1:
-            return MAX_COLUMNS                  # not laid out yet: its <Configure> follows
-        unscaled = self._cards_frame._reverse_widget_scaling(width)
-        gap = self.theme.SPACE_MD
-        return max(1, min(MAX_COLUMNS, int((unscaled + gap) // (CARD_MIN + gap))))
-
-    def _regrid_cards(self, _event=None) -> None:
-        columns = self._columns_for_width()
-        if columns == self._columns:
-            return
-        self._columns = columns
-        gap = self.theme.SPACE_MD
-        for i in range(MAX_COLUMNS):
-            self._cards_frame.grid_columnconfigure(i, weight=1 if i < columns else 0,
-                                                   uniform="cards" if i < columns else "")
-        self._cards_note.grid_forget()
-        for i, w in enumerate(self._card_widgets):
-            r, c = divmod(i, columns)
-            w.grid(row=r, column=c, sticky="nsew",
-                   padx=(0 if c == 0 else gap // 2, 0 if c == columns - 1 else gap // 2),
-                   pady=(0, gap))
-        if self._cards_note.cget("text"):
-            self._cards_note.grid(row=0, column=0, columnspan=columns, sticky="w")
-
-    # ---- "Everything else" ------------------------------------------------------
-    def _draw_others(self, ov: od.Overview) -> None:
-        t = self.theme
-        for child in self._others_frame.winfo_children():
-            child.destroy()
-        if od.PART_RATES in ov.failed:
-            note = "Could not be worked out — the notice above says what failed."
+    # ---- the list -------------------------------------------------------------
+    def _draw_list(self, ov: od.Overview) -> None:
+        count = od.card_count(ov)
+        rates_failed = od.PART_RATES in ov.failed
+        self._need_heading.configure(
+            text="Needs a look" if count is None else f"Needs a look ({count:,})")
+        self._others_heading.configure(
+            text="Everything else" if rates_failed else f"Everything else ({len(ov.others):,})")
+        if count is None and not ov.cards:
+            cards_note = FAILED_NOTE
+        else:
+            cards_note = "" if ov.cards else "No model needs a look."
+        if rates_failed:
+            others_note = FAILED_NOTE
         elif not ov.others:
-            note = (f"No other model has a graded trim in the last {od.WINDOW_DAYS} days."
-                    if ov.anchor is not None else "")
+            others_note = (f"No other model has a graded trim in the last {od.WINDOW_DAYS} days."
+                           if ov.anchor is not None else "No trim files on record yet.")
         else:
-            note = ""
-        self._others_note.configure(text=note)
-        if note:
-            self._others_note.pack(side="top", fill="x", after=self._others_frame)
-        else:
-            self._others_note.pack_forget()
-        for row in ov.others:
-            _ListRow(self._others_frame, t, row, self._open_model).pack(side="top", fill="x")
+            others_note = ""
+        pad = self.theme.SPACE_SM
+        _show_note(self._cards_note, cards_note, after=self._cards_frame, padx=pad)
+        _show_note(self._others_note, others_note, after=self._others_frame, padx=pad)
+
+        # The selection first: it rests on what was loaded, never on which rows drew.
+        models = [c.model for c in ov.cards] + [r.model for r in ov.others]
+        if self._selected not in models:
+            self._selected = models[0] if models else None
+        for row in self._card_rows + self._other_rows:
+            row.destroy()
+        self._card_rows, self._other_rows = [], []
+        for items, frame, rows in ((ov.cards, self._cards_frame, self._card_rows),
+                                   (ov.others, self._others_frame, self._other_rows)):
+            for item in items:
+                row = _ListRow(frame, self.theme, item, colour=_series_colour(self.theme, item),
+                               selected=item.model == self._selected, on_select=self._select,
+                               on_open=self._open_item)
+                row.pack(side="top", fill="x", padx=self.theme.SPACE_XS, pady=(0, 2))
+                rows.append(row)
+
+    def _select(self, model: str) -> None:
+        """Show `model`'s detail and mark its row. Tk thread."""
+        if self._ov is None:
+            return
+        self._selected = model
+        for row in self._card_rows + self._other_rows:
+            row.set_selected(row.model == model)
+        self._draw_detail(self._ov)
+
+    def _item(self, model: Optional[str]) -> Optional[Item]:
+        if self._ov is None or model is None:
+            return None
+        return next((x for x in list(self._ov.cards) + list(self._ov.others) if x.model == model),
+                    None)
+
+    # ---- the detail -------------------------------------------------------------
+    def _draw_detail(self, ov: od.Overview) -> None:
+        item = self._item(self._selected)
+        if item is None:
+            if (od.PART_RATES in ov.failed or od.card_count(ov) is None) and not (
+                    ov.cards or ov.others):
+                self._detail.say(FAILED_NOTE)
+            elif ov.anchor is None:
+                self._detail.say("No trim files on record yet.")
+            else:
+                self._detail.say(f"No model has a graded trim in the last {od.WINDOW_DAYS} days.")
+            return
+        self._detail.show(item, ov, status=status_word(ov, item),
+                          colour=_series_colour(self.theme, item), months=od.month_starts(ov.anchor))
 
     # ---- the other models on file --------------------------------------------------------
     def _draw_quiet(self, ov: od.Overview) -> None:
@@ -312,9 +395,10 @@ class HomePage(PageBase):
         arrow = "▾" if self._quiet_open else "▸"
         self._quiet_toggle.configure(text=f"Other models on file ({len(ov.quiet):,}) {arrow}")
         if self._quiet_toggle.winfo_manager() == "":
-            below = self._inactive_toggle if self._inactive_toggle.winfo_manager() else self._links
-            self._quiet_toggle.pack(side="top", anchor="w", pady=(self.theme.SPACE_MD, 0),
-                                    before=below)
+            where = ({"before": self._inactive_toggle} if self._inactive_toggle.winfo_manager()
+                     else {})
+            self._quiet_toggle.pack(side="top", anchor="w", pady=(self.theme.SPACE_SM, 0),
+                                    padx=self.theme.SPACE_XS, **where)
         self._fill_folded(self._quiet_list, ov.quiet, self._quiet_open, after=self._quiet_toggle,
                           none_text="no trim file on record")
 
@@ -334,8 +418,8 @@ class HomePage(PageBase):
         arrow = "▾" if self._inactive_open else "▸"
         self._inactive_toggle.configure(text=f"Inactive models ({n:,}) {arrow}")
         if self._inactive_toggle.winfo_manager() == "":
-            self._inactive_toggle.pack(side="top", anchor="w", pady=(self.theme.SPACE_MD, 0),
-                                       before=self._links)
+            self._inactive_toggle.pack(side="top", anchor="w", pady=(self.theme.SPACE_SM, 0),
+                                       padx=self.theme.SPACE_XS)
         self._fill_folded(self._inactive_list, ov.inactive or {}, self._inactive_open,
                           after=self._inactive_toggle)
 
@@ -347,7 +431,7 @@ class HomePage(PageBase):
     def _fill_folded(self, frame, models, is_open: bool, *, after,
                      none_text: str = "no trims on record") -> None:
         """A folded line's list, expanded in place under its toggle: every model with its last
-        trim, newest first, in INACTIVE_COLUMNS columns."""
+        trim, newest first, in FOLDED_COLUMNS columns."""
         t = self.theme
         for child in frame.winfo_children():
             child.destroy()
@@ -355,15 +439,36 @@ class HomePage(PageBase):
             frame.pack_forget()
             return
         lines = _inactive_lines(models, none_text)
-        per = -(-len(lines) // INACTIVE_COLUMNS)              # ceiling division
-        for i in range(INACTIVE_COLUMNS):
+        per = -(-len(lines) // FOLDED_COLUMNS)                # ceiling division
+        for i in range(FOLDED_COLUMNS):
             chunk = lines[i * per:(i + 1) * per]
             if not chunk:
                 break
             ctk.CTkLabel(frame, text="\n".join(chunk), anchor="nw", justify="left",
                          font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY
-                         ).grid(row=0, column=i, sticky="nw", padx=(0, t.SPACE_XL))
-        frame.pack(side="top", fill="x", pady=(t.SPACE_XS, 0), after=after)
+                         ).grid(row=0, column=i, sticky="nw", padx=(t.SPACE_SM, t.SPACE_XL))
+        frame.pack(side="top", fill="x", pady=(t.SPACE_XS, t.SPACE_SM), after=after)
+
+    # ---- the panes fill the window ------------------------------------------------
+    def _fit_split(self, _event=None) -> None:
+        """The list and the detail as tall as the page's view leaves them below the strip, never
+        under SPLIT_MIN. Real pixels in, CustomTkinter units out (wrap_to_width's rule)."""
+        try:
+            view = self._body._parent_canvas.winfo_height()
+            if view <= 1:
+                return                          # not laid out yet: its <Configure> follows
+            split = self._split
+            below = (self._links.winfo_reqheight()
+                     + split._apply_widget_scaling(self.theme.SPACE_SM) + 2)
+            height = max(SPLIT_MIN, int(split._reverse_widget_scaling(view - split.winfo_y() - below)))
+            if height == self._split_height:
+                return
+            self._split_height = height
+            inner = height - 2 * _pane_inset(self.theme)
+            for pane in (self._list, self._detail):
+                pane.configure(height=inner)
+        except Exception:                       # destroyed first (teardown order)
+            logger.debug("Overview: the panes could not be fitted", exc_info=True)
 
     # ---- routing -------------------------------------------------------------------
     def _open_card(self, card: od.Card) -> None:
@@ -376,6 +481,16 @@ class HomePage(PageBase):
         self.app.set_model_route(model, tab="summary")
         self.app.show_page("model")
 
+    def _open_item(self, model: str) -> None:
+        item = self._item(model)
+        if isinstance(item, od.Card):
+            self._open_card(item)
+        elif item is not None:
+            self._open_model(item.model)
+
+    def _open_selected(self) -> None:
+        self._open_item(self._selected)
+
     def _open_process(self) -> None:
         self.app.show_page("process")             # opens it -- never starts a run
 
@@ -385,6 +500,8 @@ class HomePage(PageBase):
     def _open_trends(self) -> None:
         self.app.show_page("dashboard")
 
+
+# ---- the words (pure) -------------------------------------------------------------------------
 
 def _failure_text(ov: od.Overview) -> str:
     """Every part that failed, named -- or "" when everything loaded."""
@@ -405,15 +522,120 @@ def _inactive_lines(inactive, none_text: str = "no trims on record") -> List[str
     dated = sorted(((m, d) for m, d in inactive.items() if d is not None),
                    key=lambda md: (md[1], md[0]), reverse=True)
     never = sorted(m for m, d in inactive.items() if d is None)
-    return ([f"{m} · last trimmed {d:%b %Y}" for m, d in dated]
+    return ([f"{m} · last trimmed {formats.month(d)}" for m, d in dated]
             + [f"{m} · {none_text}" for m in never])
 
 
-def _bind_click(widget, on_click: Callable[[], None]) -> None:
-    """One click anywhere on `widget` or inside it. CTk widgets' own .bind() already reaches
-    their internal canvas/label, so those are skipped on the way down (blocks.row's rule: binding
-    them twice fires one click twice)."""
+def status_word(ov: od.Overview, item) -> Optional[str]:
+    """"Drifting" for a model on the list's first part; "Steady" for the rest -- but only while
+    both card sources loaded: with one down, a model not on a card may be drifting unseen."""
+    if isinstance(item, od.Card):
+        return "Drifting"
+    return "Steady" if od.card_count(ov) is not None else None
+
+
+def _units_text(item) -> str:
+    if item.units is None:
+        text = "— units"                       # its read failed: no count
+    else:
+        text = f"{item.units:,} unit" + ("" if item.units == 1 else "s")
+    return text + (" · final test" if getattr(item, "final_test", False) else "")
+
+
+def _trend_sentence(row: od.Row) -> str:
+    if row.tone == "new":
+        return "new — nothing graded in the year before"
+    return f"{row.trend} on the year before"
+
+
+def _facts(ov: od.Overview, item) -> Dict[str, Optional[str]]:
+    """The detail's facts; a value of None is a fact this item does not have (no line drawn)."""
+    if item.units is None:
+        units = "—"
+    else:
+        units = f"{item.units:,}" + (" · final test" if getattr(item, "final_test", False) else "")
+    if item.lasers is None:
+        lasers = "—"                            # the pass rates failed: the banner says so
+    elif not item.lasers:
+        lasers = f"none in the last {od.WINDOW_DAYS} days"
+    else:
+        lasers = ", ".join(laser_label(s) for s in item.lasers)
+    signal = None
+    if isinstance(item, od.Card):
+        signal = metric_label(item.metric) if item.metric else "—"
+    return {FACT_UNITS: units, FACT_LASERS: lasers, FACT_SIGNAL: signal,
+            FACT_MONEY: od.money_text(ov, item), FACT_NEWEST: formats.day(item.newest)}
+
+
+def _series_colour(theme, item) -> str:
+    """A model's line: its first laser's colour (laser 1, 2, 3 order); a model with no trim to
+    show -- its numbers are final test's -- the neutral reference colour."""
+    lasers = getattr(item, "lasers", None)
+    if lasers and not getattr(item, "final_test", False):
+        return theme.series_color(lasers[0])
+    return theme.CHART_REFERENCE
+
+
+# ---- building blocks ---------------------------------------------------------------------------
+
+def _pane_inset(theme) -> int:
+    """How far a pane's rounded border insets its content (CTkScrollableFrame grids its canvas
+    that far in: corner radius + border width)."""
+    return theme.RADIUS_LG + 1
+
+
+def _as_strip(chart: CompanyTrendChart) -> None:
+    """The Company trends chart, unedited, as a strip STRIP_INCHES tall: its figure and its Tk
+    canvas both -- a figure resized alone is laid back out to the canvas's old 2.6 in on the next
+    <Configure> (no figure manager to forward the size to)."""
+    fig = chart._fig
+    fig.set_size_inches(fig.get_size_inches()[0], STRIP_INCHES)
+    chart.canvas.get_tk_widget().configure(height=round(STRIP_INCHES * fig.dpi))
+
+
+def _show_note(label, text: str, *, after, padx: int) -> None:
+    """A list note under its rows -- packed only while it has something to say."""
+    label.configure(text=text)
+    if text:
+        label.pack(side="top", fill="x", after=after, padx=padx)
+    else:
+        label.pack_forget()
+
+
+def _scrollbar_only_when_needed(frame) -> None:
+    """A scrolling frame's bar shown only while there is something to scroll: three panes each
+    showing a full-length bar over nothing is clutter, not information. Wraps the canvas's
+    yscrollcommand (CustomTkinter 5.2.2 sets it to the bar's own set(), pinned). With the bar
+    gone the canvas keeps the same inset on the right as on the left -- CustomTkinter grids it
+    flush against the bar's column, and alone it would cover the pane's right border."""
+    bar, canvas = frame._scrollbar, frame._parent_canvas
+
+    def inset() -> float:
+        outer = frame._parent_frame
+        return frame._apply_widget_scaling(outer.cget("corner_radius") + outer.cget("border_width"))
+
+    def on_scroll(first, last) -> None:
+        bar.set(first, last)
+        needed = float(first) > 0.0 or float(last) < 1.0
+        shown = bar.winfo_manager() != ""
+        if needed and not shown:
+            bar.grid()
+            canvas.grid_configure(padx=(inset(), 0))
+        elif shown and not needed:
+            bar.grid_remove()
+            canvas.grid_configure(padx=(inset(), inset()))
+
+    canvas.configure(yscrollcommand=on_scroll)
+
+
+def _bind_click(widget, on_click: Callable[[], None],
+                on_double: Optional[Callable[[], None]] = None) -> None:
+    """One click (and a double click) anywhere on `widget` or inside it. CTk widgets' own .bind()
+    already reaches their internal canvas/label, so those are skipped on the way down (blocks.row's
+    rule: binding them twice fires one click twice)."""
     widget.bind("<Button-1>", lambda _e: on_click(), add="+")
+    if on_double is not None:
+        widget.bind("<Double-Button-1>", lambda _e: on_double(), add="+")
     try:
         widget.configure(cursor="hand2")
     except Exception:                 # some CTk internals refuse a cursor; clicks still work
@@ -421,116 +643,201 @@ def _bind_click(widget, on_click: Callable[[], None]) -> None:
     internals = {getattr(widget, n) for n in ("_canvas", "_label") if hasattr(widget, n)}
     for child in tkinter.Misc.winfo_children(widget):
         if child not in internals:
-            _bind_click(child, on_click)
+            _bind_click(child, on_click, on_double)
 
 
-class _ModelCard(ctk.CTkFrame):
-    """One card: the model, its units, its pass % (large, mono) and "was", twelve monthly bars,
-    and the reason it is here, in the fail colour. A click anywhere opens its Model page."""
+class _PageScroll(ctk.CTkScrollableFrame):
+    """The page's own scrolling frame. CustomTkinter scrolls EVERY scrolling frame under the
+    pointer, so a wheel over the list also scrolled the page beneath it whenever both could
+    scroll: over a pane that has something to scroll, only that pane does."""
 
-    def __init__(self, master, theme, card: od.Card, on_open: Callable[[od.Card], None]):
-        t = theme
-        super().__init__(master, fg_color=t.CARD, border_color=t.BORDER, border_width=1,
-                         corner_radius=t.RADIUS_LG)
-        self.card = card
-        inner = ctk.CTkFrame(self, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=t.SPACE_MD, pady=t.SPACE_MD)
-        top = ctk.CTkFrame(inner, fg_color="transparent")
-        top.pack(side="top", fill="x")
-        ctk.CTkLabel(top, text=card.model, anchor="w", font=t.font(t.SIZE_HEADING, "bold"),
-                     text_color=t.TEXT_PRIMARY).pack(side="left")
-        if card.hand_trim:
-            blocks.tag(top, t, "hand trim").pack(side="left", padx=(t.SPACE_SM, 0))
-        units = ("— units" if card.units is None             # its read failed: no count
-                 else f"{card.units:,} unit" + ("" if card.units == 1 else "s"))
-        if card.final_test:
-            units += " · final test"
-        ctk.CTkLabel(inner, text=units, anchor="w", font=t.font(t.SIZE_CAPTION),
-                     text_color=t.TEXT_SECONDARY).pack(side="top", fill="x")
-        nums = ctk.CTkFrame(inner, fg_color="transparent")
-        nums.pack(side="top", fill="x", pady=(t.SPACE_XS, 0))
-        self._pass = ctk.CTkLabel(nums, text=od.pct_text(card.pass_pct),
-                                  font=t.mono(t.SIZE_DISPLAY, "bold"), text_color=t.TEXT_PRIMARY)
-        self._pass.pack(side="left")
-        was = (f"was {od.pct_text(card.was_pct)}" if card.was_pct is not None
-               else ("new" if card.units else ""))
-        self._was = ctk.CTkLabel(nums, text=was, font=t.font(t.SIZE_CAPTION),
-                                 text_color=t.TEXT_SECONDARY)
-        self._was.pack(side="left", padx=(t.SPACE_SM, 0), pady=(t.SPACE_SM, 0))
-        self._bars = _MonthBars(inner, t, card.months)
-        self._bars.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
-        self._reason = ctk.CTkLabel(inner, text=card.reason, anchor="w", justify="left",
-                                    font=t.font(t.SIZE_BODY), text_color=t.FAIL_FG)
-        self._reason.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
-        # `inner` is built and destroyed with this card, so the binding never outlives it.
-        blocks.wrap_to_width(self._reason, inner)
-        _bind_click(self, lambda c=card: on_open(c))
+    panes: tuple = ()
 
-
-class _MonthBars(tkinter.Canvas):
-    """Twelve months of pass %, oldest first, as bars on a plain Tk canvas (never matplotlib -- a
-    dozen-plus of these on one page): the history colour, the newest month highlighted, nothing
-    drawn for a month with no units. Redrawn to its width on every <Configure>."""
-
-    def __init__(self, master, theme, months):
+    def check_if_master_is_canvas(self, widget):
         try:
-            scale = float(master._get_widget_scaling())
-        except Exception:
-            scale = 1.0
-        self.theme = theme
-        self.months = list(months or [])
-        super().__init__(master, height=int(BARS_HEIGHT * scale), width=120, bg=theme.CARD,
-                         highlightthickness=0, bd=0)
-        self.bind("<Configure>", lambda _e: self.draw(), add="+")
-        self.draw()
-
-    def draw(self) -> None:
-        t = self.theme
-        self.delete("all")
-        w = max(int(self.winfo_width()), int(self.cget("width")))
-        h = max(int(self.winfo_height()), int(self.cget("height")))
-        if not self.months:
-            return
-        n = len(self.months)
-        gap = max(2, w // (n * 6))
-        bar_w = max(1.0, (w - gap * (n - 1)) / n)
-        self.create_line(0, h - 1, w, h - 1, fill=t.DIVIDER)            # the floor
-        for i, v in enumerate(self.months):
-            if v is None:
-                continue
-            x0 = i * (bar_w + gap)
-            top = h - 1 - max(1.0, (h - 2) * v / 100.0)
-            self.create_rectangle(x0, top, x0 + bar_w, h - 1, width=0, tags=("bar",),
-                                  fill=t.CHART_HIGHLIGHT if i == n - 1 else t.CHART_HISTORY)
+            for pane in self.panes:
+                if (pane.check_if_master_is_canvas(widget)
+                        and pane._parent_canvas.yview() != (0.0, 1.0)):
+                    return False
+        except Exception:             # a widget CustomTkinter does not know: its own rule below
+            pass
+        return super().check_if_master_is_canvas(widget)
 
 
 class _ListRow(ctk.CTkFrame):
-    """One "Everything else" line: model (and its hand-trim tag) · units · pass % · trend, over a
-    divider. A click opens the model."""
+    """One line of the list: the model (and its hand-trim tag) over its units, its twelve months
+    as a line, its pass %. A click selects it; a double click opens its page."""
 
-    def __init__(self, master, theme, row: od.Row, on_open: Callable[[str], None]):
+    def __init__(self, master, theme, item, *, colour: str, selected: bool,
+                 on_select: Callable[[str], None], on_open: Callable[[str], None]):
         t = theme
-        super().__init__(master, fg_color="transparent")
-        self.row = row
-        for i, width in enumerate(LIST_COLUMNS):
-            self.grid_columnconfigure(i, minsize=self._apply_widget_scaling(width))
-        self.grid_columnconfigure(len(LIST_COLUMNS), weight=1)
-        name = ctk.CTkFrame(self, fg_color="transparent")
-        name.grid(row=0, column=0, sticky="w", pady=t.SPACE_SM)
-        ctk.CTkLabel(name, text=row.model, font=t.mono(t.SIZE_BODY), text_color=t.TEXT_PRIMARY,
-                     anchor="w").pack(side="left")
-        if row.hand_trim:
-            blocks.tag(name, t, "hand trim").pack(side="left", padx=(t.SPACE_SM, 0))
-        units = f"{row.units:,} unit" + ("" if row.units == 1 else "s")
-        ctk.CTkLabel(self, text=units, font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY,
-                     anchor="e").grid(row=0, column=1, sticky="e", padx=(0, t.SPACE_LG))
-        ctk.CTkLabel(self, text=od.pct_text(row.pass_pct), font=t.mono(t.SIZE_BODY, "bold"),
-                     text_color=t.TEXT_PRIMARY, anchor="e").grid(row=0, column=2, sticky="e",
-                                                                 padx=(0, t.SPACE_LG))
-        self._trend = ctk.CTkLabel(self, text=row.trend, font=t.font(t.SIZE_BODY),
-                                   text_color=getattr(t, _TONE.get(row.tone, "TEXT_SECONDARY")),
-                                   anchor="w")
-        self._trend.grid(row=0, column=3, sticky="w")
-        ctk.CTkFrame(self, height=1, fg_color=t.DIVIDER, corner_radius=0
-                     ).grid(row=1, column=0, columnspan=len(LIST_COLUMNS) + 1, sticky="ew")
-        _bind_click(self, lambda m=row.model: on_open(m))
+        super().__init__(master, fg_color=t.CARD, border_color=t.CARD, border_width=1,
+                         corner_radius=t.RADIUS_MD)
+        self.theme = t
+        self.item = item
+        self.model = item.model
+        # model | its tag (the slack) | the line | the pass %; the units under the first two.
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(3, minsize=self._apply_widget_scaling(PCT_COLUMN))
+        pad = t.SPACE_XS + 2
+        ctk.CTkLabel(self, text=item.model, font=t.mono(t.SIZE_BODY), text_color=t.TEXT_PRIMARY,
+                     anchor="w", height=FIT).grid(row=0, column=0, sticky="w",
+                                                  padx=(t.SPACE_SM, 0), pady=(pad, 0))
+        if item.hand_trim:
+            blocks.tag(self, t, "hand trim").grid(row=0, column=1, sticky="w",
+                                                  padx=(t.SPACE_SM, 0), pady=(pad, 0))
+        self._units = ctk.CTkLabel(self, text=_units_text(item), font=t.font(t.SIZE_CAPTION),
+                                   text_color=t.TEXT_SECONDARY, anchor="w", height=FIT)
+        self._units.grid(row=1, column=0, columnspan=2, sticky="w", padx=(t.SPACE_SM, 0),
+                         pady=(0, pad))
+        self._spark = MiniLine(self, t, item.months, color=colour, bg=t.CARD,
+                               width=SPARK_SIZE[0], height=SPARK_SIZE[1])
+        gap = self._apply_widget_scaling(t.SPACE_SM)            # a plain canvas: scaled here
+        self._spark.grid(row=0, column=2, rowspan=2, padx=(gap, gap))
+        self._pct = ctk.CTkLabel(self, text=od.pct_text(item.pass_pct),
+                                 font=t.mono(t.SIZE_BODY, "bold"), text_color=t.TEXT_PRIMARY,
+                                 anchor="e", height=FIT)
+        self._pct.grid(row=0, column=3, rowspan=2, sticky="e", padx=(0, t.SPACE_SM))
+        self.set_selected(selected)
+        _bind_click(self, lambda m=item.model: on_select(m), lambda m=item.model: on_open(m))
+
+    def set_selected(self, on: bool) -> None:
+        t = self.theme
+        fill = t.ELEVATED if on else t.CARD
+        self.configure(fg_color=fill, border_color=t.BORDER if on else t.CARD)
+        self._spark.set_background(fill)
+
+
+class _Detail(ctk.CTkScrollableFrame):
+    """The selected model: its name in the title face, its status word (and hand-trim tag) and
+    "Open full page ›" on that first line -- never below the facts, where a short window would
+    scroll it out of sight; its pass % large, "was", and a meter; why it is on the list; its
+    twelve months; its facts. Built once; `show` fills it, `say` replaces it with one line."""
+
+    CHART_HEIGHT = 100
+
+    def __init__(self, master, theme, *, height: int, on_open: Callable[[], None]):
+        t = theme
+        super().__init__(master, height=height, fg_color=t.CARD, border_color=t.BORDER,
+                         border_width=1, corner_radius=t.RADIUS_LG)
+        self.theme = t
+        side = t.SPACE_LG
+        px = self._apply_widget_scaling          # a plain canvas's padding is scaled here
+        self.note = ctk.CTkLabel(self, text="Loading…", anchor="w", justify="left", height=FIT,
+                                 font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY)
+        self.note.pack(side="top", fill="x", padx=side, pady=side)
+
+        self.head = ctk.CTkFrame(self, fg_color="transparent")
+        self.title = ctk.CTkLabel(self.head, text="", anchor="w", font=t.title(t.SIZE_TITLE),
+                                  text_color=t.TEXT_PRIMARY, height=FIT)
+        self.title.pack(side="left")
+        self.status = ctk.CTkLabel(self.head, text="", font=t.font(t.SIZE_CAPTION),
+                                   corner_radius=t.RADIUS_SM, padx=7, height=20)
+        self.hand = blocks.tag(self.head, t, "hand trim")
+        self.open_link = blocks.link_button(self.head, t, "Open full page ›", on_open)
+        self.open_link.pack(side="right")
+
+        self._nums = ctk.CTkFrame(self, fg_color="transparent")
+        self.pct = ctk.CTkLabel(self._nums, text="—", font=t.mono(t.SIZE_DISPLAY, "bold"),
+                                text_color=t.TEXT_PRIMARY, height=FIT)
+        self.pct.pack(side="left")
+        self.was = ctk.CTkLabel(self._nums, text="", font=t.font(t.SIZE_CAPTION),
+                                text_color=t.TEXT_SECONDARY, height=FIT)
+        self.was.pack(side="left", padx=(t.SPACE_SM, 0), pady=(t.SPACE_SM, 0))
+        self.meter = PassMeter(self._nums, t, None, bg=t.CARD)
+        self.meter.pack(side="left", padx=(px(t.SPACE_LG), 0), pady=(px(t.SPACE_XS), 0))
+
+        self.reason = ctk.CTkLabel(self, text="", anchor="w", justify="left", height=FIT,
+                                   font=t.font(t.SIZE_BODY), text_color=t.FAIL_FG)
+        # Built once with the page and never rebuilt: the binding is made once (wrap_to_width).
+        blocks.wrap_to_width(self.reason, self, padding=2 * side)
+        self.chart_caption = ctk.CTkLabel(self, text="", anchor="w", height=FIT,
+                                          font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
+        self.chart = MonthChart(self, t, bg=t.CARD, height=self.CHART_HEIGHT)
+
+        self._facts = ctk.CTkFrame(self, fg_color="transparent")
+        self._facts.grid_columnconfigure(1, weight=1)
+        self.facts: Dict[str, ctk.CTkLabel] = {}
+        self._fact_names: Dict[str, ctk.CTkLabel] = {}
+        for i, name in enumerate(FACTS):
+            self._fact_names[name] = ctk.CTkLabel(self._facts, text=name, anchor="w", height=FIT,
+                                                  font=t.font(t.SIZE_CAPTION),
+                                                  text_color=t.TEXT_SECONDARY)
+            self._fact_names[name].grid(row=i, column=0, sticky="w", padx=(0, t.SPACE_LG),
+                                        pady=(0, 2))
+            self.facts[name] = ctk.CTkLabel(self._facts, text="", anchor="w", height=FIT,
+                                            font=t.font(t.SIZE_BODY), text_color=t.TEXT_PRIMARY)
+            self.facts[name].grid(row=i, column=1, sticky="w", pady=(0, 2))
+
+        # (widget, its pack options) in order. CustomTkinter scales a CTk widget's padding itself;
+        # the chart -- a plain canvas -- gets its scaled here.
+        self._parts = (
+            (self.head, dict(fill="x", padx=(side, t.SPACE_SM), pady=(t.SPACE_MD, 0))),
+            (self._nums, dict(fill="x", padx=side, pady=(t.SPACE_XS, 0))),
+            (self.reason, dict(fill="x", padx=side, pady=(t.SPACE_SM, 0))),
+            (self.chart_caption, dict(fill="x", padx=side, pady=(t.SPACE_MD, 0))),
+            (self.chart, dict(fill="x", padx=px(side), pady=(px(t.SPACE_XS), 0))),
+            (self._facts, dict(fill="x", padx=side, pady=(t.SPACE_MD, side))),
+        )
+        self._showing = False
+        self._shown: Optional[str] = None        # the model drawn now
+
+    def say(self, text: str) -> None:
+        """One line instead of a model: loading, nothing to show, or what failed."""
+        for widget, _how in self._parts:
+            widget.pack_forget()
+        self._showing = False
+        self._shown = None
+        self.note.configure(text=text)
+        self.note.pack(side="top", fill="x", padx=self.theme.SPACE_LG, pady=self.theme.SPACE_LG)
+
+    def show(self, item, ov: od.Overview, *, status: Optional[str], colour: str,
+             months: List[date]) -> None:
+        t = self.theme
+        if not self._showing:
+            self.note.pack_forget()
+            for widget, how in self._parts:
+                widget.pack(side="top", **how)
+            self._showing = True
+        if item.model != self._shown:
+            self._parent_canvas.yview_moveto(0.0)     # a new model is read from its top
+            self._shown = item.model
+        self.title.configure(text=item.model)
+        self.status.pack_forget()
+        self.hand.pack_forget()
+        if status:
+            fg, bg = ((t.CHECK, t.CHECK_TINT) if status == "Drifting"
+                      else (t.NEUTRAL_FG, t.NEUTRAL_BG))
+            self.status.configure(text=status, text_color=fg, fg_color=bg)
+            self.status.pack(side="left", padx=(t.SPACE_MD, 0))
+        if item.hand_trim:
+            self.hand.pack(side="left", padx=(t.SPACE_SM, 0))
+        self.pct.configure(text=od.pct_text(item.pass_pct))
+        self.was.configure(text=f"was {od.pct_text(item.was_pct)}" if item.was_pct is not None
+                           else ("new" if item.units else ""))
+        self.meter.set_value(item.pass_pct)
+        if isinstance(item, od.Card):
+            self.reason.configure(text=item.reason, text_color=t.FAIL_FG)
+        else:
+            self.reason.configure(text=_trend_sentence(item),
+                                  text_color=getattr(t, _TONE.get(item.tone, "TEXT_SECONDARY")))
+        what = "Final-test pass % by month" if getattr(item, "final_test", False) else "Pass % by month"
+        self.chart_caption.configure(
+            text=f"{what}, {formats.month(months[0])} – {formats.month(months[-1])}" if months
+            else what)
+        self.chart.set_data(item.months, [formats.month(d).split(" ")[0] for d in months],
+                            colour, value_text=od.pct_text)
+        for name, value in _facts(ov, item).items():
+            label, shown = self._fact_names[name], self.facts[name]
+            if value is None:
+                label.grid_remove()
+                shown.grid_remove()
+            else:
+                shown.configure(text=value)
+                label.grid()
+                shown.grid()
+
+    def shown_facts(self) -> Dict[str, str]:
+        """{fact: its value} for every fact drawn now (a test hook, and the render audit's)."""
+        return {name: v.cget("text") for name, v in self.facts.items()
+                if v.winfo_manager() == "grid"}
