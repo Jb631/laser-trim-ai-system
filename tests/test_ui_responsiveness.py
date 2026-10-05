@@ -152,11 +152,12 @@ def test_nested_scrollbar_draw_does_not_pump_the_idle_queue_again(tk_root, patch
     sb.destroy()
 
 
-# ---- The app's other private CustomTkinter overrides (F4 review, Minor 2) --
-# ctk_patches.py is not the only code that rests on the pin: widgets/tab_view.py overrides
-# CTkTabview._grid_forget_all_tabs, and pages/model_page.py replaces a CTkComboBox's
-# _open_dropdown_menu. Whoever bumps the pin must be pointed at both, and a changed meaning must
-# fail here, naming the file to re-read -- not surface as an empty tab area at work.
+# ---- The app's other private CustomTkinter uses (F4 review, Minor 2; option B review #4) --
+# ctk_patches.py is not the only code that rests on the pin: ctk_patches.PRIVATE_USES lists every
+# other file that overrides, wraps or reads CustomTkinter's private code, with the names it rests
+# on. Whoever bumps the pin must be pointed at every one, and a changed meaning must fail here,
+# naming the file to re-read -- not surface as an empty tab area at work. (2026-10-04: the note
+# said "three more places" over four, and the message named three of them.)
 
 def test_a_version_mismatch_names_every_private_override_it_puts_at_risk(monkeypatch):
     from laser_trim_analyzer.gui.v6 import ctk_patches
@@ -166,10 +167,39 @@ def test_a_version_mismatch_names_every_private_override_it_puts_at_risk(monkeyp
         ctk_patches.apply(strict=True)
     message = str(raised.value)
     assert "ctk_patches.py" in message
-    assert "widgets/tab_view.py" in message and "_grid_forget_all_tabs" in message
-    assert "pages/model_page.py" in message and "_open_dropdown_menu" in message
+    # Named outright, so an emptied list cannot pass: the two the F4 review found, and the ones
+    # the option B review found missing from the note or the message.
+    for path, name in (("widgets/tab_view.py", "_grid_forget_all_tabs"),
+                       ("pages/model_page.py", "_open_dropdown_menu"),
+                       ("widgets/blocks.py", "_QuietArrow"),
+                       ("pages/home_page.py", "check_if_master_is_canvas"),
+                       ("pages/home_page.py", "_scrollbar_only_when_needed"),
+                       ("widgets/tab_view.py", "_button_height"),
+                       ("widgets/tab_view.py", "_buttons_dict")):
+        assert path in message and name in message, (path, name)
     doc = ctk_patches.__doc__
-    assert "widgets/tab_view.py" in doc and "pages/model_page.py" in doc
+    assert "Three more places" not in doc                  # the count that was wrong; no count now
+    for path, where, names in ctk_patches.PRIVATE_USES:
+        assert path in doc, f"the docstring's list leaves out {path}"
+        assert path in message and where in message, path
+        assert all(name in message for name in names), (path, names)
+
+
+def test_every_place_the_pin_list_names_still_uses_what_it_cites():
+    """Read as text, no window: each file ctk_patches.PRIVATE_USES names exists under gui/v6 and
+    still says each name it is listed with -- its own class or function, and each private name of
+    CustomTkinter's it rests on. A list that names code which has moved sends whoever bumps the
+    pin to re-read the wrong thing."""
+    import pathlib
+    import re
+    from laser_trim_analyzer.gui.v6 import ctk_patches
+    v6 = pathlib.Path(ctk_patches.__file__).resolve().parent
+    assert len(ctk_patches.PRIVATE_USES) >= 6
+    for path, where, names in ctk_patches.PRIVATE_USES:
+        source = (v6 / path).read_text()
+        for name in [w.strip() for w in where.split(",")] + list(names):
+            assert re.search(rf"\b{re.escape(name)}\b", source), (
+                f"{path} no longer says {name!r} -- update ctk_patches.PRIVATE_USES")
 
 
 def test_ctktabview_still_defers_the_forget_that_tab_view_py_overrides(tk_root):
