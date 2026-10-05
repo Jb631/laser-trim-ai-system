@@ -768,3 +768,103 @@ def test_the_money_words_for_one_model():
     assert od.money_text(ov, od.Card(model="A", reason="", money=0.0, ft_fails=0)) == "$0"
     assert od.money_text(ov, od.Card(model="A", reason="", money=None, ft_fails=0)) == "no price"
 
+
+# ---- the sweep holds the dollars to independent SQL (scripts/app_qa_sweep.py) -------------------
+# check_overview_money_on_database reads the CONFIG's prices; these hand it invented ones. The sweep
+# stubs tkinter at import, so it runs in a subprocess (tests/test_sweep_db_checks.py's runner).
+
+SWEEP_PRICES = {"PRICED": 12.5, "CHEAP": 3.25}         # invented; "NOPRICE" has none
+SWEEP_RATIO = 0.4
+
+
+def _money_scratch(tmp_path):
+    db = _db(tmp_path)
+    for m in ("PRICED", "CHEAP", "NOPRICE", "CLEAN"):
+        _trims(db, m, ANCHOR, passes=5)
+    _ft(db, "PRICED", ANCHOR - timedelta(days=3), "FAIL", 7)
+    _ft(db, "PRICED", ANCHOR - timedelta(days=95), "FAIL", 5)          # before the 90 days
+    _ft(db, "PRICED", ANCHOR, "WARNING", 2)
+    _ft(db, "CHEAP", ANCHOR - timedelta(days=40), "FAIL", 9)
+    _ft(db, "NOPRICE", ANCHOR - timedelta(days=1), "FAIL", 4)
+    _ft(db, "CLEAN", ANCHOR, "PASS", 6)
+    return db
+
+
+def _run_money_check(db, patch=""):
+    from test_sweep_db_checks import _run_code
+    db.close()
+    code = (
+        "import sqlite3\n"
+        "from types import SimpleNamespace\n"
+        "import laser_trim_analyzer.database.manager as _m, laser_trim_analyzer.database as _d\n"
+        f"_db = _m.DatabaseManager(r'{db.database_path}'); _m._db_manager = _db; _d._db_manager = _db\n"
+        f"{patch}\n"
+        f"cfg = SimpleNamespace(active_models=SimpleNamespace(model_prices={SWEEP_PRICES!r},"
+        f" cost_ratio={SWEEP_RATIO!r}))\n"
+        f"raw = sqlite3.connect('file:{db.database_path}?mode=ro', uri=True)\n"
+        "sweep.check_overview_money_on_database(_db, raw, cfg)\n")
+    r, results = _run_code(code)
+    assert r.returncode == 0 and results is not None, r.stdout[-3000:] + r.stderr[-3000:]
+    return results
+
+
+def _never_a_price(results):
+    """A check may name models and counts -- never a price or a dollar figure."""
+    said = " ".join(f"{n} {d}" for _v, n, d in results)
+    dollars = (7 * 12.5 * SWEEP_RATIO, 9 * 3.25 * SWEEP_RATIO)          # PRICED's and CHEAP's
+    for figure in list(SWEEP_PRICES.values()) + list(dollars) + [sum(dollars)]:
+        assert str(figure) not in said and f"{figure:.2f}" not in said, (figure, said)
+    assert "$" not in said, said
+
+
+def test_the_money_check_passes_when_the_dollars_match_their_definition(tmp_path):
+    results = _run_money_check(_money_scratch(tmp_path))
+    assert not [x for x in results if x[0] == "FAIL"], results
+    passed = {n for v, n, _ in results if v == "PASS"}
+    assert any(n.startswith("overview money: each card's and row's final-test fails") for n in passed)
+    assert any(n.startswith("overview money: each card's and row's dollars") for n in passed)
+    assert any(n.startswith("overview money: the header's total") for n in passed)
+    assert any(n.startswith("overview money: 'without a price'") for n in passed)
+    _never_a_price(results)
+
+
+def test_the_money_check_fails_when_fails_before_the_window_are_counted(tmp_path):
+    results = _run_money_check(
+        _money_scratch(tmp_path),
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "od._window = lambda anchor_day: (anchor_day - od.timedelta(days=120),"
+              " anchor_day - od.timedelta(days=485))")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any("final-test fails" in n and "PRICED" in d for n, d in failed), results
+    _never_a_price(results)
+
+
+def test_the_money_check_fails_when_the_cost_ratio_is_ignored(tmp_path):
+    results = _run_money_check(
+        _money_scratch(tmp_path),
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\nod._clean_ratio = lambda r: 1.0")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any("dollars" in n and "PRICED" in d and "CHEAP" in d for n, d in failed), results
+    assert any("total" in n for n, d in failed), results
+    _never_a_price(results)
+
+
+def test_the_money_check_fails_when_an_unpriced_model_is_not_counted(tmp_path):
+    results = _run_money_check(
+        _money_scratch(tmp_path),
+        patch="import laser_trim_analyzer.gui.v6.overview_data as od\n"
+              "_real = od._charge\n"
+              "def _charge(ov, fails, prices, ratio):\n"
+              "    _real(ov, fails, prices, ratio)\n"
+              "    ov.unpriced = 0\n"
+              "od._charge = _charge")
+    failed = [(n, d) for v, n, d in results if v == "FAIL"]
+    assert any("without a price" in n and "NOPRICE" in d for n, d in failed), results
+
+
+def test_the_money_check_never_passes_on_nothing(tmp_path):
+    db = _db(tmp_path)
+    _trims(db, "PRICED", ANCHOR, passes=5)                     # trims, but no final test at all
+    results = _run_money_check(db)
+    assert not any(v == "PASS" for v, _n, _d in results), results
+    assert any(v == "WARN" for v, _n, _d in results), results
