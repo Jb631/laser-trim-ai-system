@@ -34,6 +34,7 @@ from laser_trim_analyzer.core.spec_alignment import compare_station_specs
 from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
 from laser_trim_analyzer.findings import presentation as P
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
@@ -1864,8 +1865,10 @@ class ModelPage(PageBase):
                             date_s = data.get("date") if is_ft else None
                             if not date_s:
                                 fd = u.get("file_date")
-                                date_s = (fd.strftime("%Y-%m-%d")
-                                          if hasattr(fd, "strftime") else "nodate")
+                                # The page's own words for the day ("5 Jan 2026"), as the
+                                # unit chart window's title says it.
+                                date_s = (formats.day(fd) if hasattr(fd, "strftime")
+                                          else "nodate")
                             meta = {"model": data.get("model") or model,
                                     "serial": data.get("serial") or u.get("serial"),
                                     "system": data.get("system", ""),

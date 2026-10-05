@@ -10,6 +10,7 @@ from typing import Callable, Dict, List, Optional
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 # The shared render budget for the Model page's row lists — rationale lives in
 # units_tab's module docstring. This tab is the one that measured worst: 500
@@ -136,7 +137,7 @@ class FtUnitsTab(RowBudgetMixin, ctk.CTkFrame):
                               command=lambda: self._toggle_select(u, bool(chk.get())))
         chk.pack(side="left", padx=(t.SPACE_SM, 0))
         vals = [str(u.get("serial") or "—"),
-                (u["file_date"].strftime("%Y-%m-%d") if u.get("file_date") else "—"),
+                formats.day(u.get("file_date")),
                 str(u.get("result") or "—"),
                 "yes" if u.get("linked") else "no",
                 (f"{u['match']}%" if u.get("match") is not None else "—")]

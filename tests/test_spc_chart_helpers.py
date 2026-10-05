@@ -65,7 +65,13 @@ def test_vectors_match_the_series():
     assert p["ucls"] == [pt.ucl for pt in s.points]
     assert p["center"] == s.p_base
     assert p["n_labels"] == ["n=20"] * len(s.points)
-    assert p["x_dates"] == [pt.end.strftime("%m/%d") for pt in s.points]
+    # The lots' end days in the app's words (gui/v6/formats; finish pass, 2026-10-04 -- it read
+    # "01/05"), and the thinned axis labels the newest lot.
+    from laser_trim_analyzer.gui.v6 import formats
+    assert p["x_dates"] == formats.axis_labels([pt.end for pt in s.points])
+    assert p["x_dates"][0] == "5 Jan 2026" and not [x for x in p["x_dates"] if "/" in x]
+    assert p["ticks"][-1] == len(s.points) - 1
+    assert p["tick_labels"] == formats.axis_labels([s.points[i].end for i in p["ticks"]])
     # A fail fraction's band always starts at zero: a lot that ran BETTER than
     # baseline is good news, so there is no lower alarm edge to draw.
     assert p["band_lo"] == [0.0] * len(s.points)
@@ -94,8 +100,14 @@ def test_x_dates_carry_the_year_once_the_lots_cross_one():
     hist += _make_history(n_lots=6, start=datetime(2026, 6, 1))
     s = _series(hist, hist[-1][0])
     p = spc_draw_params(s)
-    assert p["x_dates"] == [pt.end.strftime("%m/%d/%y") for pt in s.points]
-    assert p["x_dates"][0].endswith("/25") and p["x_dates"][-1].endswith("/26")
+    # In the app's words since the finish pass (2026-10-04): the year said where it changes --
+    # the first lot of 2026 carries it, and nothing reads as a month/day pair.
+    first_2026 = next(i for i, pt in enumerate(s.points) if pt.end.year == 2026)
+    assert p["x_dates"][first_2026].endswith(" 2026")
+    assert not [x for x in p["x_dates"] if "/" in x]
+    # ...on the axis as drawn, too: the year goes on a label that is actually shown.
+    shown = [s.points[i].end.year for i in p["ticks"]]
+    assert p["tick_labels"][shown.index(2026)].endswith(" 2026")
 
 
 def test_labels_only_for_recent_flags():

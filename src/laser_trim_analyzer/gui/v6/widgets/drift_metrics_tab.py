@@ -11,6 +11,8 @@ from typing import Callable, Dict, List
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.core.model_stats import decimals_for, fixed
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.widgets import blocks
 from laser_trim_analyzer.ml.drift_types import (
@@ -25,7 +27,7 @@ def alert_text(ms) -> str:
     while the Triage cards humanized it (2026-07-07 sweep) -- and, for a metric whose newest
     judged lot is too old to alarm (drift_types.RECENT_LOT_DAYS), how old its evidence is."""
     if not getattr(ms, "is_recent", True) and getattr(ms, "newest_lot", None) is not None:
-        return f"No lot since {ms.newest_lot:%b %Y}"
+        return f"No lot since {formats.month(ms.newest_lot)}"
     if ms.alert_type is None:
         return "—"
     return "Step change" if ms.alert_type == AlertType.STEP_CHANGE else "Slow drift"
@@ -160,8 +162,8 @@ class DriftMetricsTab(ctk.CTkFrame):
             return
         if req:
             eff, note, at = req
-            txt = (f"Baseline period: data since {str(eff)[:10]} "
-                   f"(requalified {str(at)[:10]}"
+            txt = (f"Baseline period: data since {formats.day(eff)} "
+                   f"(requalified {formats.day(at)}"
                    + (f" — {note}" if note else "") + ")")
         else:
             txt = "Baseline period: full history (no requalification on record)"
@@ -226,8 +228,11 @@ class _MetricRow(_Columns):
         # for every model at work (2026-07-10) because the per-widget guard
         # swallowed the AttributeError. Now covered by the app sweep.
         # Fraction metrics (fail/escape rates) read as percent everywhere —
-        # "5.2% ± 2.0%" not "0.052 ± 0.02" (2026-07-13).
-        _fmt = lambda v: format_metric_value(ms.metric, v, theme.fmt_measure)  # noqa: E731
+        # "5.2% ± 2.0%" not "0.052 ± 0.02" (2026-07-13). Every other number in the row shares ONE
+        # precision -- baseline, its σ and the last lot (finish pass, 2026-10-04: "0.003235 ±
+        # 0.0007776" beside a last lot of "0.0035").
+        places = decimals_for((ms.baseline_mean, ms.baseline_std, recent_val))
+        _fmt = lambda v: format_metric_value(ms.metric, v, lambda x: fixed(x, places))  # noqa: E731
         recent = _fmt(recent_val)
         # Honest shift, verifiable against the Baseline & Recent cells beside it:
         # (recent - baseline) / baseline_std. Replaces the old `magnitude` (CUSUM

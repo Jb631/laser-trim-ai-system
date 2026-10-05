@@ -347,7 +347,9 @@ def test_a_non_error_row_never_shows_not_graded(tk_root):
     tab.set_units(units)
     texts = [w.cget("text") for w in _all_labels(tab._rows[0])]
     assert not any("not graded" in t for t in texts), texts
-    assert "0.004" in texts
+    # Its own value -- at the precision its column shares (three significant digits since the
+    # finish pass, 2026-10-04; it read "0.004" by a per-value rule).
+    assert "0.00400" in texts
 
 
 def test_an_error_row_with_no_reason_still_shows_the_dash(tk_root):

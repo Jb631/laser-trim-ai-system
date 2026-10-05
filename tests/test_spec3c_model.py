@@ -1595,9 +1595,12 @@ def _stats_row(key="untrimmed_resistance", *, n=3, avg=4281.8, low=422.0,
 
 
 def test_stats_cells_render_one_unit_per_row():
+    """One unit for the row (422 Ω reads 0.4 kΩ beside 29.6 kΩ) -- and, since the finish pass
+    (2026-10-04), one precision for it too: the decimals three significant digits give the
+    largest, so no cell picks its own (it read 4.28 beside 29.6 beside 0.422)."""
     from laser_trim_analyzer.gui.v6.widgets.stats_table import cell_texts
     row = _stats_row()
-    assert cell_texts(row, row.all_) == ["3", "4.28 kΩ", "0.422 kΩ", "29.6 kΩ"]
+    assert cell_texts(row, row.all_) == ["3", "4.3 kΩ", "0.4 kΩ", "29.6 kΩ"]
 
 
 def test_rate_cells_render_count_and_percent():
@@ -1641,7 +1644,7 @@ def test_summary_line_names_the_window_and_the_drops():
                           cutoff=datetime(2026, 5, 13), lot=None, future_dated=0,
                           note="")
     assert summary_line(windowed).startswith(
-        "302 track measurements since May 13, 2026")
+        "302 track measurements since 13 May 2026")     # the app's one date format (formats.day)
     lot_scoped = ModelStats(model="6607", rows=[_stats_row()], tracks=15, records=15,
                             cutoff=None, lot=object(), future_dated=0, note="")
     assert summary_line(lot_scoped).startswith(
@@ -1658,7 +1661,8 @@ def test_lot_line_carries_the_numbers_and_the_verdict():
                          normal_low=1000.0, normal_high=9800.0,
                          text="Untrimmed resistance for this lot is within its normal")
     text = lot_line(row, cell, verdict)
-    assert text.startswith("this lot: 69 readings · avg 4.43 kΩ · 4.10 kΩ to 4.80 kΩ")
+    # In its row's unit and precision (the row above it reaches 29.6 kΩ: one decimal).
+    assert text.startswith("this lot: 69 readings · avg 4.4 kΩ · 4.1 kΩ to 4.8 kΩ")
     assert "within its normal" in text
     assert lot_line(row, Cell(n=0, excluded=0, missing=5), None) \
         == "this lot: nothing recorded"

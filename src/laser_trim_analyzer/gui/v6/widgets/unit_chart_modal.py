@@ -3,6 +3,7 @@ from typing import List, Optional
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
@@ -264,17 +265,33 @@ def load_unit_track(db, analysis_id: int,
         }
 
 
+def _day_or_none(value) -> Optional[str]:
+    """The day in the app's words (gui/v6/formats), or None when there is no readable date."""
+    text = formats.day(value)
+    return None if text == formats.NONE else text
+
+
+def _window_title(lead: str, when, verdict: str) -> str:
+    """"Unit S1 — 5 Jan 2026 — PASS": the lead, the day when there is one, the verdict when known."""
+    parts = [lead]
+    day = _day_or_none(when)
+    if day:
+        parts.append(day)
+    if verdict:
+        parts.append(verdict.upper())
+    return " — ".join(parts)
+
+
 class UnitChartModal(ctk.CTkToplevel):
     def __init__(self, master, theme: ThemeManager, db, unit: dict):
         super().__init__(master)
         self.theme = theme
         self._unit = unit
         status = str(unit.get("overall_status", "") or "").strip()
-        date_only = str(unit.get("file_date", "")).split(" ")[0]
-        # Day-granularity data: '2026-05-27 00:00:00' is noise; status in the
-        # title answers 'is this unit good?' without reading the chart.
-        self.title(f"Unit {unit.get('serial', '')} — {date_only}"
-                   + (f" — {status.upper()}" if status else ""))
+        # Day-granularity data: '2026-05-27 00:00:00' is noise -- the day, in the app's words
+        # ("27 May 2026"); status in the title answers 'is this unit good?' without reading the
+        # chart.
+        self.title(_window_title(f"Unit {unit.get('serial', '')}", unit.get("file_date"), status))
         self.geometry("900x600")
         self.configure(fg_color=theme.SURFACE)
         self.transient(master)
@@ -466,7 +483,7 @@ class UnitChartModal(ctk.CTkToplevel):
             offset=data.get("optimal_offset") or 0.0,
             k=_k, theory_data=_theory,
             trim_improvement_percent=data.get("trim_improvement_percent"),
-            trim_date=str(unit.get("file_date", "")).split(" ")[0] or None,
+            trim_date=_day_or_none(unit.get("file_date")),
             fail_points=fp, unmeasured_points=unmeasured,
             ft_overlay=ft_overlay if self._show_ft else None,
             title=title, serial_number=str(unit.get("serial", "")),
@@ -584,10 +601,8 @@ class FtUnitChartModal(ctk.CTkToplevel):
         self._db = db
         self._ft = ft_unit
         result = str(ft_unit.get("result", "") or "").strip()
-        date_only = (ft_unit["file_date"].strftime("%Y-%m-%d")
-                     if ft_unit.get("file_date") else "")
-        self.title(f"Final test — {ft_unit.get('serial', '')} — {date_only}"
-                   + (f" — {result.upper()}" if result else ""))
+        self.title(_window_title(f"Final test — {ft_unit.get('serial', '')}",
+                                 ft_unit.get("file_date"), result))
         self.geometry("900x600")
         self.configure(fg_color=theme.SURFACE)
         self.transient(master)

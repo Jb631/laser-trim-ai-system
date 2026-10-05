@@ -8,12 +8,14 @@ LTS3 (System C) ramp tracks the established lasers.
 Dumb widget: page fetches db.get_company_yield_trend and calls set_data.
 """
 from laser_trim_analyzer.core.models import laser_label, LASER_ORDER
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Sequence
 
 import customtkinter as ctk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
@@ -23,6 +25,63 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 # Laser 1 (B) circles, laser 2 (A) squares, laser 3 (C) triangles; the company line keeps its dots.
 _LASER_MARKERS = {"B": "o", "A": "s", "C": "^"}
+
+# Month ticks fall on whole months -- every month, every 2nd, 3rd, 6th, then whole years -- the
+# smallest step that leaves at most this many labels (a rotated "2025-10" under every month was
+# the 2026-10-04 screenshot).
+_MAX_MONTH_TICKS = 12
+_MONTH_STEPS = (1, 2, 3, 6, 12, 24, 60)
+
+
+def period_day(period) -> Optional[datetime]:
+    """A period key as the day it starts: "2025-10" -> 1 Oct 2025; "2025-W40" -> that week's Monday
+    (SQLite's %W: weeks start on Monday). Week 00 holds a year's days before its first Monday, so
+    it starts on 1 January, never on the Monday of the year before. None for a key it cannot read."""
+    text = str(period or "")
+    try:
+        if "-W" in text:
+            day = datetime.strptime(f"{text}-1", "%Y-W%W-%w")
+            year = int(text[:4])
+            return day if day.year == year else datetime(year, 1, 1)
+        return datetime.strptime(text[:7], "%Y-%m")
+    except ValueError:
+        return None
+
+
+def month_ticks(days: Sequence[Optional[datetime]]) -> List[int]:
+    """Which months of a chart by month carry a label: whole-month steps (January always among them,
+    so the year is named there), at most _MAX_MONTH_TICKS of them."""
+    n = len(days)
+    step = next((s for s in _MONTH_STEPS if -(-n // s) <= _MAX_MONTH_TICKS), _MONTH_STEPS[-1])
+    if step < 12:
+        ticks = [i for i, d in enumerate(days) if d is not None and (d.month - 1) % step == 0]
+    else:
+        ticks = [i for i, d in enumerate(days)
+                 if d is not None and d.month == 1 and d.year % (step // 12) == 0]
+    return ticks or [i for i, d in enumerate(days) if d is not None][:1]
+
+
+def period_ticks(periods: Sequence[str]) -> List[int]:
+    """Which periods carry a label: whole months for a chart by month (month_ticks); for one by
+    week, every so many weeks from the first (at most about ten), and the newest always."""
+    days = [period_day(p) for p in periods]
+    if any("-W" in str(p) for p in periods):
+        step = max(1, len(periods) // 10)
+        ticks = list(range(0, len(periods), step))
+        if ticks and ticks[-1] != len(periods) - 1:
+            ticks.append(len(periods) - 1)
+        return ticks
+    return month_ticks(days)
+
+
+def period_labels(periods: Sequence[str], ticks: Sequence[int]) -> List[str]:
+    """The labels for those ticks, in the app's words: "Oct", "Nov", ... "Jan 2026" by month;
+    "29 Dec", "1 Jan 2026" by week -- the year on January (formats.axis_labels; up front when the
+    chart never reaches a January). A key that cannot be read is shown as it came."""
+    weekly = any("-W" in str(p) for p in periods)
+    days = [period_day(periods[i]) for i in ticks]
+    words = formats.axis_labels(days, "day" if weekly else "month")
+    return [w if d is not None else str(periods[i]) for w, d, i in zip(words, days, ticks)]
 
 
 class CompanyTrendChart(ctk.CTkFrame):
@@ -146,18 +205,16 @@ class CompanyTrendChart(ctk.CTkFrame):
                         textcoords="offset points", xytext=(6, 8),
                         fontsize=t.CHART_FONT_SMALL, color=t.TEXT_SECONDARY)
 
-        # Readable x labels: at most ~10 ticks (always include the last).
-        step = max(1, len(periods) // 10)
-        ticks = list(range(0, len(periods), step))
-        if ticks[-1] != len(periods) - 1:
-            ticks.append(len(periods) - 1)
+        # Readable x labels, flat, in the app's words: month names on whole months by month, the
+        # weeks' Mondays by week (period_ticks / period_labels).
+        ticks = period_ticks(periods)
         ax.set_xticks(ticks)
-        ax.set_xticklabels([periods[i] for i in ticks], rotation=30, ha="right")
+        ax.set_xticklabels(period_labels(periods, ticks), rotation=0, ha="center")
         ax.set_ylabel("linearity yield %", color=t.TEXT_SECONDARY, fontsize=t.CHART_FONT)
 
         # Data vintage: batch-loaded data lags production — say how fresh it is.
         if data_through is not None:
-            ax.text(0.995, 1.02, f"Data through {data_through:%Y-%m-%d}",
+            ax.text(0.995, 1.02, f"Data through {formats.day(data_through)}",
                     transform=ax.transAxes, ha="right", va="bottom",
                     fontsize=t.CHART_FONT_SMALL, color=t.TEXT_SECONDARY)
         # Aggregation override disclosure (e.g. weekly coarsened to monthly for

@@ -5,6 +5,7 @@ import customtkinter as ctk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from laser_trim_analyzer.gui.v6 import formats
 from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
@@ -74,8 +75,8 @@ class MiniTrendChart(ctk.CTkFrame):
             ax.annotate(f"last day {ys[-1]:.0f}%", (len(ys_ds) - 1, ys_ds[-1]),
                         textcoords="offset points", xytext=(-2, 6), ha="right",
                         fontsize=t.CHART_FONT_SMALL, color=t.TEXT_PRIMARY)
-            # What it is + when it spans.
-            first_d, last_d = str(points[0][0]), str(points[-1][0])
+            # What it is + when it spans -- in the app's words ("7 Jul 2026"; it said "2026-07-07").
+            first_d, last_d = formats.day(points[0][0]), formats.day(points[-1][0])
             ax.text(0.0, -0.02, f"{first_d}", transform=ax.transAxes, ha="left",
                     va="top", fontsize=t.CHART_FONT_SMALL, color=t.TEXT_DISABLED)
             ax.text(1.0, -0.02, f"{last_d}", transform=ax.transAxes, ha="right",
