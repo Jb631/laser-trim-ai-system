@@ -444,8 +444,10 @@ class ModelPage(PageBase):
         t = self.theme
         self._header_line = ctk.CTkFrame(parent, fg_color="transparent")
         self._header_line.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        # The model's name in the title face, at the size it had -- as the Overview's detail names
+        # the same model one click before (review of option B, 2026-10-04: it was the Sans bold).
         self._model_title = ctk.CTkLabel(self._header_line, text="", anchor="w",
-                                         font=t.font(t.SIZE_TITLE, "bold"),
+                                         font=t.title(t.SIZE_TITLE),
                                          text_color=t.TEXT_PRIMARY)
         self._model_title.pack(side="left", padx=(0, t.SPACE_MD))
         self._status_word = ctk.CTkLabel(self._header_line, text="", anchor="w",
