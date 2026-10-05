@@ -343,7 +343,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                     res = db.recompute_overall_statuses(dry_run=False)
                     return (f"Re-graded {res['changed']} units "
                             f"({', '.join(f'{k}: {v}' for k, v in sorted(res['transitions'].items()))}). "
-                            f"Open the Overview or the Dashboard again to see the updated yields.")
+                            f"Open the Overview or Company trends again to see the updated yields.")
                 _async(do_execute)
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()

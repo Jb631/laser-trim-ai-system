@@ -88,7 +88,7 @@ class CompanyTrendChart(ctk.CTkFrame):
         ax.clear()
         vol.clear()
         self._style()
-        # No axes title: the page's section header already says "Company trend"
+        # No axes title: the page's section header already says "Yield by laser"
         # and the period is on the toggle — the title row is better spent on
         # the legend (which used to sit on the data).
         if trend is None:

@@ -141,8 +141,8 @@ class StatsTableZone(ctk.CTkFrame):
                "never a zero.")
     RATE_CAPTION = ("These two count TRACK measurements, not units: a two-track "
                     "unit is two rows here, and a re-trimmed track is one row "
-                    "per attempt. Not a unit yield — for that, see the "
-                    "Dashboard's yield, which takes each track's last attempt "
+                    "per attempt. Not a unit yield — for that, see the yield "
+                    "on Company trends, which takes each track's last attempt "
                     "of the day and requires every track to pass.")
     LOT_CAPTION = ("\"Typically\" is the lot's median — the value the control "
                    "chart plots and the limits were built from; the avg column "

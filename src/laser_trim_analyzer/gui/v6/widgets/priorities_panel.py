@@ -1,4 +1,4 @@
-"""Dashboard — PrioritiesPanel: 'this week's priorities', models ranked by the
+"""Company trends — PrioritiesPanel: 'this week's priorities', models ranked by the
 money leaking at final test. Clickable rows route to the Model page for the
 reason and evidence (mirrors WorstModelsList's drill-down)."""
 from typing import Callable, List, Optional
@@ -36,7 +36,7 @@ class PrioritiesPanel(ctk.CTkFrame):
         ctk.CTkLabel(self, text=(
             "$ lost = final-test failures × unit price × cost ratio, in the window — final "
             "test is the most expensive place to lose a unit. Models with no loaded price "
-            "show counts only (add prices in Settings → Pricing). Click a model for the "
+            "show counts only (add prices in Settings → Backlog). Click a model for the "
             "reason and evidence."),
             font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w",
             justify="left", wraplength=950).pack(side="top", fill="x", pady=(0, t.SPACE_SM))
@@ -78,7 +78,7 @@ class PrioritiesPanel(ctk.CTkFrame):
         self._cap.configure(
             text=f"{len(rows)} model(s) · {priced} priced · ${total:,.0f} at risk in window"
                  + ("" if priced == len(rows)
-                    else "  ·  price the rest in Settings → Pricing to rank them"))
+                    else "  ·  price the rest in Settings → Backlog to rank them"))
 
 
 class _PriorityRow(ctk.CTkFrame):

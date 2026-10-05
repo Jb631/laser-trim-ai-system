@@ -1,5 +1,10 @@
-"""Dashboard — Production Health landing: trim + final-test yield panels with trend,
-and a clickable lowest-yield-models list that routes to the Model page."""
+"""Company trends (the page's key is still "dashboard") -- trim + final-test yield panels with
+trend, the money leaking at final test, the yield-by-laser chart, and a clickable lowest-yield list
+that routes to the Model page.
+
+It is called what the Overview's link calls it (finish pass, 2026-10-04: the link said "Company
+trends" and the page it opened said "Dashboard"). The KEY never changes -- every deep link
+navigates by key -- only the words a person reads."""
 import logging
 import threading
 from datetime import datetime, timedelta
@@ -43,13 +48,16 @@ def _rate_text(stats) -> str:
 
 
 class DashboardPage(PageBase):
-    page_title = "Dashboard"
+    page_title = "Company trends"
 
-    def __init__(self, master, *, theme, app, page_title="Dashboard"):
+    def __init__(self, master, *, theme, app, page_title=None):
         self._window_choice = "90d"
         self._trend_period_choice = "Weekly"
         self._reload_gen = 0
-        super().__init__(master, theme=theme, app=app, page_title=page_title)
+        # The page names itself: app.py registered it as "Dashboard", the key's old word, and the
+        # page then read differently from the link that opens it. `page_title` stays a parameter
+        # so a caller that passes one still constructs it.
+        super().__init__(master, theme=theme, app=app, page_title=type(self).page_title)
 
     def header_actions(self, parent):
         t = self.theme
@@ -89,7 +97,7 @@ class DashboardPage(PageBase):
         # time, per-system overlay, volume backdrop. Honors the page window.
         trend_hdr = ctk.CTkFrame(body, fg_color="transparent")
         trend_hdr.pack(side="top", fill="x")
-        ctk.CTkLabel(trend_hdr, text="Company trend", font=t.font(t.SIZE_BODY, "bold"),
+        ctk.CTkLabel(trend_hdr, text="Yield by laser", font=t.font(t.SIZE_BODY, "bold"),
                      text_color=t.TEXT_PRIMARY, anchor="w").pack(side="left")
         self._trend_period_menu = ctk.CTkOptionMenu(
             trend_hdr, values=list(_TREND_PERIODS), width=100,

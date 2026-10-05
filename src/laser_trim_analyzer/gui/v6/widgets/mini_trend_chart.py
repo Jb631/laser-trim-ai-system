@@ -1,4 +1,4 @@
-"""Dashboard — MiniTrendChart: a compact pass-rate-over-time line (no SPC overlays)."""
+"""Company trends — MiniTrendChart: a compact pass-rate-over-time line (no SPC overlays)."""
 from typing import List, Tuple
 
 import customtkinter as ctk

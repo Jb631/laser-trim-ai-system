@@ -1,4 +1,4 @@
-"""Dashboard — YieldPanel: headline pass-rate %, Pass/Warn/Fail counts, total, trend."""
+"""Company trends — YieldPanel: headline pass-rate %, Pass/Warn/Fail counts, total, trend."""
 from typing import Optional
 
 import customtkinter as ctk
